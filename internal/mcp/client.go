@@ -93,5 +93,6 @@ func (c *Client) Stop() {
 	if c.inner != nil && !c.closed {
 		c.inner.Close()
 		c.closed = true
+		c.inner = nil
 	}
 }
