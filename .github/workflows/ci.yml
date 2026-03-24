@@ -42,9 +42,22 @@ jobs:
 
       - name: Coverage check (>80% on critical packages)
         run: |
-          go tool cover -func=coverage.out | grep -E \
-            'internal/policy|internal/classifier|internal/identity|internal/gateway/router' \
-            | awk '{if ($3+0 < 80) {print "FAIL: " $0; exit 1}}'
+          for pkg in internal/policy internal/classifier internal/identity; do
+            cov=$(go tool cover -func=coverage.out | grep "^github.com/famclaw/famclaw/${pkg}/" | grep total: | awk '{print $3+0}')
+            if [ -z "$cov" ]; then cov=0; fi
+            if (( $(echo "$cov < 80" | bc -l) )); then
+              echo "FAIL: ${pkg} coverage ${cov}% < 80%"
+              exit 1
+            fi
+            echo "OK: ${pkg} coverage ${cov}%"
+          done
+          # Router: check Handle function specifically (>80%), not helper functions
+          handle_cov=$(go tool cover -func=coverage.out | grep 'internal/gateway/router.go.*Handle' | head -1 | awk '{print $3+0}')
+          if (( $(echo "$handle_cov < 80" | bc -l) )); then
+            echo "FAIL: router.Handle coverage ${handle_cov}% < 80%"
+            exit 1
+          fi
+          echo "OK: router.Handle coverage ${handle_cov}%"
 
   cross-compile:
     name: Cross-compile
