@@ -154,3 +154,48 @@ func TestPoolListToolsEmpty(t *testing.T) {
 		t.Errorf("expected 0 tools, got %d", len(tools))
 	}
 }
+
+// TestClientLifecycle exercises the real Client Start/Stop/reconnect path.
+func TestClientLifecycle(t *testing.T) {
+	c := NewClient("nonexistent-binary-that-should-fail")
+
+	// Start should fail with a bad binary
+	err := c.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected error starting with bad binary")
+	}
+
+	// inner should still be nil after failed start
+	if c.inner != nil {
+		t.Error("inner should be nil after failed start")
+	}
+
+	// Tools should be empty
+	if len(c.Tools()) != 0 {
+		t.Error("tools should be empty after failed start")
+	}
+
+	// Stop should not panic on never-started client
+	c.Stop()
+}
+
+// TestClientStopAndReconnect verifies Stop nils inner to allow reconnect.
+func TestClientStopAndReconnect(t *testing.T) {
+	c := newTestClient(t)
+
+	// Should have tools
+	if len(c.Tools()) == 0 {
+		t.Fatal("expected tools")
+	}
+
+	// Stop
+	c.Stop()
+
+	// inner should be nil after stop
+	if c.inner != nil {
+		t.Error("inner should be nil after Stop")
+	}
+	if !c.closed {
+		t.Error("closed should be true after Stop")
+	}
+}

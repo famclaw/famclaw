@@ -317,6 +317,41 @@ func TestRouterChatError(t *testing.T) {
 	}
 }
 
+func TestStartAll(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	started := make(chan string, 2)
+	gw := &mockGateway{
+		name: "mock",
+		startFn: func(ctx context.Context, h func(context.Context, Message) Reply) error {
+			started <- "mock"
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+
+	StartAll(ctx, []Gateway{gw}, func(ctx context.Context, msg Message) Reply {
+		return Reply{Text: "ok"}
+	})
+
+	// Wait for gateway to start
+	name := <-started
+	if name != "mock" {
+		t.Errorf("expected mock, got %q", name)
+	}
+	cancel()
+}
+
+type mockGateway struct {
+	name    string
+	startFn func(ctx context.Context, h func(context.Context, Message) Reply) error
+}
+
+func (m *mockGateway) Start(ctx context.Context, h func(context.Context, Message) Reply) error {
+	return m.startFn(ctx, h)
+}
+func (m *mockGateway) Name() string { return m.name }
+
 func TestRouterPendingApproval(t *testing.T) {
 	router, identStore := setupRouter(t, panicChat)
 	identStore.LinkAccount("emma", "telegram", "emma-123")
