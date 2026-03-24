@@ -216,11 +216,12 @@ Instructions for the agent...
 
 **Scope:** `internal/mcp/`
 
+**Uses:** `github.com/mark3labs/mcp-go` — official Go MCP SDK
+
 **Deliverables:**
-- `client.go` — `Client`: spawn process, JSON-RPC 2.0 over stdio, `CallTool(ctx, name, args) (json.RawMessage, error)`
-- `pool.go` — `Pool`: manage N MCP clients (one per skill), lazy start, keepalive
-- `types.go` — MCP protocol types (initialize, tools/list, tools/call)
-- `mcp_test.go` — mock MCP server process, test full RPC round-trip
+- `client.go` — `Client`: wraps mcp-go stdio client, `CallTool(ctx, name, args) (*mcp.CallToolResult, error)`
+- `pool.go` — `Pool`: manage N MCP clients (one per skill), lazy start, auto-restart
+- `mcp_test.go` — in-process mock MCP server via mcp-go, test full tool call round-trip
 
 **Agent patch:** Update `internal/agent/agent.go`:
 - After LLM responds, check if response contains tool_call

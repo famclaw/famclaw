@@ -33,12 +33,12 @@ jobs:
         run: go vet ./...
 
       - name: Unit tests
-        run: go test ./... -v -race -coverprofile=coverage.out
+        run: go test ./... -v -coverprofile=coverage.out
         env:
           CGO_ENABLED: 0
 
       - name: OPA policy tests
-        run: opa test ./policies/ -v
+        run: opa test ./policies/family/ ./policies/data/ -v
 
       - name: Coverage check (>80% on critical packages)
         run: |

@@ -2,10 +2,11 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // Pool manages multiple MCP clients (one per skill), with lazy start and auto-restart.
@@ -29,19 +30,15 @@ func NewPool() *Pool {
 }
 
 // Register adds an MCP server to the pool.
-// Tools from this server become available by name.
 func (p *Pool) Register(cmd string, args ...string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	client := NewClient(cmd, args...)
 	mc := &managedClient{
-		client: client,
+		client: NewClient(cmd, args...),
 		cmd:    cmd,
 		args:   args,
 	}
-
-	// Store by command name as key until tools are discovered
 	p.clients[cmd] = mc
 }
 
@@ -50,7 +47,6 @@ func (p *Pool) StartAll(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Start each client and remap by tool name
 	newClients := make(map[string]*managedClient)
 	for key, mc := range p.clients {
 		if err := mc.client.Start(ctx); err != nil {
@@ -60,7 +56,6 @@ func (p *Pool) StartAll(ctx context.Context) error {
 		for _, tool := range mc.client.Tools() {
 			newClients[tool.Name] = mc
 		}
-		// Keep the original key mapping too
 		newClients[key] = mc
 	}
 	p.clients = newClients
@@ -69,7 +64,7 @@ func (p *Pool) StartAll(ctx context.Context) error {
 
 // CallTool calls a tool by name, lazily starting the server if needed.
 // Restarts crashed servers once automatically.
-func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (json.RawMessage, error) {
+func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {
 	p.mu.RLock()
 	mc, ok := p.clients[name]
 	p.mu.RUnlock()
@@ -80,8 +75,7 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 
 	result, err := mc.client.CallTool(ctx, name, args)
 	if err != nil && mc.restartCnt < 1 {
-		// Auto-restart once
-		log.Printf("[mcp-pool] tool %q failed, restarting server: %v", name, err)
+		log.Printf("[mcp-pool] tool %q failed, restarting: %v", name, err)
 		mc.restartCnt++
 		mc.client.Stop()
 		mc.client = NewClient(mc.cmd, mc.args...)

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,6 +23,11 @@ func panicChat(ctx context.Context, user *config.UserConfig, text string) (strin
 // echoChat returns a predictable response for testing the allow path.
 func echoChat(ctx context.Context, user *config.UserConfig, text string) (string, error) {
 	return "echo: " + text, nil
+}
+
+// errorChat simulates an LLM error.
+func errorChat(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+	return "", fmt.Errorf("LLM unavailable")
 }
 
 func setupRouter(t *testing.T, chatFn ChatFunc) (*Router, *identity.Store) {
@@ -284,5 +290,48 @@ func TestRouterTeenRequestsApprovalHighRisk(t *testing.T) {
 
 	if reply.PolicyAction != "request_approval" {
 		t.Errorf("teen + high-risk should request approval, got %q", reply.PolicyAction)
+	}
+}
+
+func TestRouterUserNotInConfig(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+	identStore.LinkAccount("ghost", "telegram", "ghost-123")
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "ghost-123", Text: "hello",
+	})
+	if reply.PolicyAction != "onboarding" {
+		t.Errorf("user not in config should get onboarding, got %q", reply.PolicyAction)
+	}
+}
+
+func TestRouterChatError(t *testing.T) {
+	router, identStore := setupRouter(t, errorChat)
+	identStore.LinkAccount("parent", "telegram", "parent-123")
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "parent-123", Text: "hello",
+	})
+	if reply.PolicyAction != "error" {
+		t.Errorf("chat error should return error, got %q", reply.PolicyAction)
+	}
+}
+
+func TestRouterPendingApproval(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+	identStore.LinkAccount("emma", "telegram", "emma-123")
+
+	reply1 := router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "emma-123", Text: "can I use instagram and tiktok",
+	})
+	if reply1.PolicyAction != "request_approval" {
+		t.Fatalf("first request should be request_approval, got %q", reply1.PolicyAction)
+	}
+
+	reply2 := router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "emma-123", Text: "what about snapchat and social media",
+	})
+	if reply2.PolicyAction != "pending" {
+		t.Errorf("second request should be pending, got %q", reply2.PolicyAction)
 	}
 }
