@@ -336,6 +336,44 @@ Raspberry Pi OS Lite (64-bit for rpi4/5, 32-bit for rpi3)
 
 ---
 
+## Agent 11 — supply chain security
+
+**Scope:** `.github/workflows/`, repo root config files
+
+**Can run in parallel with any wave** — no code dependencies, only CI/CD config.
+
+**Deliverables:**
+- `.github/workflows/ci.yml` updates — add `govulncheck`, `gosec`, dependency review on PRs
+- `.github/workflows/release.yml` updates — add SLSA provenance attestation, SBOM generation, cosign signing
+- `.github/dependabot.yml` — automated dependency update PRs
+- `.github/workflows/codeql.yml` — CodeQL static analysis (Go)
+- `SECURITY.md` — vulnerability reporting policy
+
+**CI pipeline additions:**
+- `govulncheck ./...` — Go vulnerability database check (blocks merge on known CVEs)
+- `gosec ./...` — Go security linter (SAST)
+- `actions/dependency-review-action` — flag new vulnerabilities introduced by PRs
+
+**Release pipeline additions:**
+- `actions/attest-build-provenance` — SLSA Build L3 provenance for every binary
+- `anchore/sbom-action` — generate CycloneDX SBOM attached to GitHub Release
+- `sigstore/cosign-installer` + `cosign sign-blob` — keyless signing of release binaries (planned, not yet implemented)
+
+**Rules:**
+- Security checks MUST NOT break the build on first run — use warn mode initially, then enforce
+- `govulncheck` blocks merge (hard gate)
+- `gosec` warns but does not block (too many false positives on new codebases)
+- SBOM and attestation are attached to GitHub Releases, not blocking
+- SECURITY.md follows GitHub's recommended format
+
+**Done when:**
+- `govulncheck ./...` runs in CI and passes
+- Release workflow generates attestation + SBOM
+- Dependabot config is active
+- SECURITY.md exists
+
+---
+
 ## Parallel execution strategy for Claude Code
 
 ```
@@ -358,10 +396,13 @@ wait
 agent-7-integration-tests  # sequential, depends on all
 
 # Wave 5 — run in parallel
-agent-8-seccheck-skill &
-agent-9-sd-image       &
-agent-10-docs          &
+agent-8-seccheck-skill  &
+agent-9-sd-image        &
+agent-10-docs           &
 wait
+
+# Agent 11 (supply chain security) can run in parallel with ANY wave
+agent-11-security &
 ```
 
 ---

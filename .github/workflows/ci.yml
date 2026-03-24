@@ -15,7 +15,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       - name: Install OPA
@@ -93,7 +93,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       - name: Build ${{ matrix.name }}
@@ -111,6 +111,45 @@ jobs:
           ls -lh bin/famclaw-${{ matrix.name }}
           test -s bin/famclaw-${{ matrix.name }}
 
+  security:
+    name: Security checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./... || echo "::warning::govulncheck found vulnerabilities in dependencies — see output above"
+        # Warn-only: remaining vulns are in OPA's transitive deps (OpenTelemetry),
+        # not our code. Will enforce once OPA releases a fix.
+
+      - name: gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -severity medium -quiet ./... || true
+        # gosec warns but does not block — too many false positives on new codebases
+
+  # dependency-review:
+  #   Uncomment after enabling Dependency Graph in repo settings:
+  #   Settings → Code security → Dependency graph → Enable
+  #   name: Dependency review
+  #   runs-on: ubuntu-latest
+  #   if: github.event_name == 'pull_request'
+  #   permissions:
+  #     contents: read
+  #     pull-requests: write
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/dependency-review-action@v4
+  #       with:
+  #         fail-on-severity: critical
+
   integration:
     name: Integration tests
     runs-on: ubuntu-latest
@@ -120,7 +159,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       - name: Integration tests

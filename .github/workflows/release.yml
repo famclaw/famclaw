@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write        # SLSA provenance attestation
+  attestations: write    # GitHub artifact attestation
 
 jobs:
   build-binaries:
@@ -72,10 +74,24 @@ jobs:
           cd dist
           xz -9 famclaw-${{ matrix.name }}
 
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0.23.1
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/famclaw-${{ matrix.name }}.sbom.json
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/famclaw-${{ matrix.name }}.xz
+
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.name }}
-          path: dist/famclaw-${{ matrix.name }}.xz
+          path: |
+            dist/famclaw-${{ matrix.name }}.xz
+            dist/famclaw-${{ matrix.name }}.sbom.json
 
   build-sd-images:
     name: Build SD images
@@ -196,5 +212,6 @@ jobs:
           files: |
             dist/*.xz
             dist/*.sha256
+            dist/*.sbom.json
             scripts/install-rpi.sh
             scripts/install-termux.sh
