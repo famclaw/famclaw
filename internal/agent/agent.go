@@ -63,7 +63,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	cat := a.classifier.Classify(userMessage)
 
 	// ── 2. Evaluate policy ────────────────────────────────────────────────────
-	requestID := approvalID(a.user.Name, string(cat))
+	requestID := ApprovalID(a.user.Name, string(cat))
 	approvals, _ := a.db.AllApprovalsForOPA()
 
 	decision, err := a.evaluator.Evaluate(ctx, policy.Input{
@@ -181,8 +181,8 @@ func ageContextPrompt(user *config.UserConfig) string {
 	}
 }
 
-// approvalID generates a deterministic approval ID for user+category+day.
-func approvalID(userName, category string) string {
+// ApprovalID generates a deterministic approval ID for user+category+day.
+func ApprovalID(userName, category string) string {
 	day := time.Now().UTC().Format("2006-01-02")
 	h := sha256.Sum256([]byte(userName + ":" + category + ":" + day))
 	return hex.EncodeToString(h[:8])

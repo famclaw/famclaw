@@ -12,12 +12,34 @@ type Config struct {
 	Server        ServerConfig        `yaml:"server"`
 	LLM           LLMConfig           `yaml:"llm"`
 	Users         []UserConfig        `yaml:"users"`
+	Gateways      GatewaysConfig      `yaml:"gateways"`
 	Policies      PoliciesConfig      `yaml:"policies"`
 	Approval      ApprovalConfig      `yaml:"approval"`
 	Skills        SkillsConfig        `yaml:"skills"`
 	Notifications NotificationsConfig `yaml:"notifications"`
 	Storage       StorageConfig       `yaml:"storage"`
 	SecCheck      SecCheckConfig      `yaml:"seccheck"`
+}
+
+type GatewaysConfig struct {
+	Telegram TelegramConfig `yaml:"telegram"`
+	WhatsApp WhatsAppConfig `yaml:"whatsapp"`
+	Discord  DiscordGWConfig `yaml:"discord"`
+}
+
+type TelegramConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Token   string `yaml:"token"`
+}
+
+type WhatsAppConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	DBPath   string `yaml:"db_path"`
+}
+
+type DiscordGWConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Token   string `yaml:"token"`
 }
 
 type ServerConfig struct {

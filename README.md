@@ -1,165 +1,167 @@
 # 🛡️ FamClaw
 
-**A family AI assistant built for privacy, security, and local-first deployment.**
+**A secure, local-first family AI gateway. Runs on Raspberry Pi, Mac, or an old Android phone.**
 
-FamClaw is a ground-up Go rewrite of the OpenClaw agent architecture, purpose-built as a family assistant that runs entirely on your local network — no cloud, no subscriptions, no data leaving your home.
-
----
-
-## What it does
-
-- **Family chat interface** — each family member has a profile. Kids get age-appropriate responses, parents get full access.
-- **OPA policy engine** — every query is evaluated by Open Policy Agent before reaching the LLM. Topics are allowed, blocked, or sent to parents for approval.
-- **Parental approval workflow** — kids asking about age-restricted topics sends a notification to parents via email/SMS/Slack/Discord/ntfy. One-click approve or deny from any device.
-- **SecCheck** — security scanner for OpenClaw skills/MCP repos before you install them. Static analysis + CVE checks via osv.dev + sandbox execution.
-- **Runs everywhere locally** — RPi 3/4/5, old Android phones via Termux, Mac Mini, any Linux box.
+FamClaw is a lightweight Go gateway that connects your family to any AI model — local or cloud — through Telegram, WhatsApp, Discord, and a web interface. Every message goes through a policy engine before the AI ever sees it.
 
 ---
 
-## Architecture
+## What it is
+
+- **A gateway, not an AI.** FamClaw routes messages between your family and whatever LLM you configure — Ollama on your home server, OpenAI, Anthropic, OpenRouter, or any OpenAI-compatible endpoint.
+- **A policy enforcer.** Every message is evaluated by OPA (Open Policy Agent) before reaching the LLM. Kids get age-appropriate responses. Sensitive topics require parental approval.
+- **A family assistant.** Age-aware profiles, parental approval workflow, notification to parents via email/SMS/Slack/Discord/ntfy.
+
+---
+
+## How it works
 
 ```
-famclaw/
-├── cmd/famclaw/          # Single binary entry point
-├── internal/
-│   ├── agent/            # Conversation loop + LLM streaming
-│   ├── classifier/       # Query → topic category (no LLM needed)
-│   ├── config/           # YAML config + env var expansion
-│   ├── llm/              # Ollama client (streaming)
-│   ├── mdns/             # LAN discovery (famclaw.local)
-│   ├── notify/           # Email, Slack, Discord, SMS, ntfy
-│   ├── policy/           # OPA evaluator (embedded)
-│   ├── seccheck/         # Security scanner
-│   ├── store/            # SQLite (pure Go, no CGO)
-│   └── web/              # HTTP + WebSocket server + embedded UI
-├── policies/
-│   ├── family/           # OPA Rego policies
-│   └── data/             # Topic taxonomy JSON
-├── scripts/
-│   ├── install-rpi.sh    # One-command RPi installer
-│   └── install-termux.sh # Android (Termux) installer
-└── Makefile              # Cross-compile for all targets
+Family member sends message
+  → via Telegram / WhatsApp / Discord / Web UI
+    → FamClaw identifies user from gateway account
+      → OPA policy evaluates: allow / block / request approval
+        → if allow: forwards to your LLM endpoint
+          → streams response back
+```
+
+FamClaw itself uses ~20MB RAM. The LLM runs elsewhere — on a Mac Mini on your LAN, a cloud API, or any OpenAI-compatible server.
+
+---
+
+## Hardware
+
+| Device | Role |
+|--------|------|
+| Raspberry Pi 3/4/5 | Run FamClaw 24/7, flash SD card and plug in |
+| Mac Mini | Run as background daemon |
+| Old Android phone | Run via the FamClaw Android app, plug into charger |
+| Any Linux box | One binary, no dependencies |
+
+---
+
+## LLM backends
+
+FamClaw talks to any OpenAI-compatible endpoint:
+
+```yaml
+llm:
+  primary:
+    base_url: "http://192.168.1.10:11434"  # Ollama on your Mac Mini
+    model: "llama3.2:3b"
+
+  fallbacks:
+    - base_url: "https://api.openai.com/v1"
+      model: "gpt-4o-mini"
+      api_key: "${OPENAI_API_KEY}"
 ```
 
 ---
 
 ## Quick start
 
-### Mac Mini / Linux
+### Raspberry Pi (flash and plug in)
+```bash
+# Flash famclaw-rpi4-arm64.img.xz to SD card with Raspberry Pi Imager
+# Plug in, wait 2 minutes, open:
+http://famclaw.local:8080
+```
+
+### Mac / Linux
+```bash
+curl -fsSL https://github.com/famclaw/famclaw/releases/latest/download/install.sh | bash
+```
+
+### Build from source
 ```bash
 git clone https://github.com/famclaw/famclaw
 cd famclaw
-cp .env.example .env && nano .env   # Add notification credentials
 make build
-make run
-# Open http://localhost:8080
-```
-
-### Raspberry Pi (fresh install)
-```bash
-curl -fsSL https://raw.githubusercontent.com/famclaw/famclaw/main/scripts/install-rpi.sh | bash
-# Open http://famclaw.local:8080 from any device on your network
-```
-
-### Old Android phone (Termux)
-```bash
-# 1. Install Termux from F-Droid (not Play Store)
-# 2. In Termux:
-curl -fsSL https://raw.githubusercontent.com/famclaw/famclaw/main/scripts/install-termux.sh | bash
-famclaw-start
+./bin/famclaw --config config.yaml
 ```
 
 ---
 
-## LLM model recommendations
+## Messaging gateways
 
-| Hardware | RAM | Recommended model |
-|---|---|---|
-| RPi 5 | 8GB | `llama3.1:8b` |
-| RPi 5 / Mac Mini | 4–8GB | `llama3.2:3b` |
-| RPi 4 | 4GB | `phi3:mini` |
-| RPi 3 / old phone | 2GB | `tinyllama` |
+| Gateway | Status |
+|---------|--------|
+| Web UI | Built — HTTP + WebSocket + embedded UI |
+| Telegram | Built — long-poll Bot API |
+| Discord | Built — via discordgo |
+| WhatsApp | Placeholder — needs whatsmeow QR pairing |
 
-All models run locally via [Ollama](https://ollama.com).
-
----
-
-## SecCheck
-
-Run a security scan on any OpenClaw skill or MCP repo before installing:
-
-```bash
-famclaw --seccheck https://github.com/some-user/some-skill
-```
-
-**Scans for:**
-- Hardcoded secrets & API keys (30+ patterns)
-- Network exfiltration patterns
-- Typosquatting (dependency names vs 50+ popular packages)
-- CVEs via [osv.dev](https://osv.dev) (free, no key needed)
-- Data access vs SKILL.md declaration mismatch
-- Runtime behavior in Docker sandbox (falls back to macOS `sandbox-exec`)
-
----
-
-## Cross-compilation
-
-```bash
-make cross          # All platforms
-make cross-rpi4     # RPi 4/5 (arm64)
-make cross-rpi3     # RPi 2/3/Zero (armv7)
-make cross-android  # Android arm64 + armv7
-make cross-mac-arm  # Mac Apple Silicon
-make cross-linux64  # Linux x86_64
-
-# Deploy directly to RPi over SSH
-RPI_HOST=pi@192.168.1.50 make install-rpi
-```
-
-All binaries are CGO-free — no C toolchain needed for cross-compilation.
-
----
-
-## Notification channels
-
-All configurable in `config.yaml`, all independent:
-
-| Channel | Use case |
-|---|---|
-| Email (SMTP) | Full approval email with one-click buttons |
-| Slack | Team/family Slack workspace |
-| Discord | Family Discord server |
-| SMS (Twilio) | Any phone, no app needed |
-| ntfy | Self-hosted push, zero cloud dependency |
+Each family member's gateway account maps to their profile. Emma's Telegram account → Emma's age policy. Parent's Discord account → parent access.
 
 ---
 
 ## Policy system
 
-Policies are written in [OPA Rego](https://www.openpolicyagent.org/docs/latest/policy-language/). The decision tree:
+Policies are [OPA Rego](https://www.openpolicyagent.org/) files. Edit them, test them with `opa test`, or ask an LLM to write new rules in plain English.
 
-1. **Parent** → always allow
-2. **Hard blocked** → always deny (adult content, weapons, etc.)
-3. **Previously approved** → allow
-4. **Age-appropriate topic** → allow
-5. **Needs approval** → notify parents, queue request
-6. **Already pending** → tell child to wait
+Three tiers per age group:
 
-Customize `policies/family/decision.rego` and `policies/data/topics.json` to fit your family.
+```
+allow        → goes straight to LLM
+request_approval → parent gets notified, child waits
+block        → never reaches LLM
+```
+
+Default age groups: `under_8`, `age_8_12`, `age_13_17`, `parent`.
 
 ---
 
-## OpenClaw skill compatibility
+## Skills
 
-FamClaw can read `SKILL.md` files from OpenClaw skills. Import a skill:
+FamClaw uses the [AgentSkills](https://docs.openclaw.ai/tools/skills) spec — the same `SKILL.md` format used by OpenClaw and PicoClaw. Skills from [famclaw/skills](https://github.com/famclaw/skills) work in all three runtimes.
 
 ```bash
-famclaw skill install https://github.com/some-user/some-openclaw-skill
-# Always runs seccheck first (configurable)
+famclaw skill install seccheck
 ```
+
+---
+
+## SecCheck
+
+Before installing any skill, scan it:
+
+```bash
+famclaw --seccheck https://github.com/someone/some-skill
+```
+
+Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosquatting, and runs in a sandbox.
+
+---
+
+## Status
+
+🚧 **Active development — Waves 1 & 2 complete.**
+
+| Component | Status | Tests |
+|-----------|--------|-------|
+| `internal/classifier` | Built | 59 pass — keyword-based topic classification (22 categories) |
+| `internal/policy` | Built | 28 pass + 27 OPA Rego tests — age-based policy engine |
+| `internal/notify` | Built | 16 pass — email, Slack, Discord webhook, Twilio SMS, ntfy |
+| `internal/identity` | Built | 9 pass — gateway account → user mapping |
+| `internal/gateway` | Built | 12 pass — router with policy gate (panic-LLM proof) |
+| `internal/gateway/telegram` | Built | Long-poll Telegram Bot API |
+| `internal/gateway/discord` | Built | Discord via discordgo |
+| `internal/gateway/whatsapp` | Placeholder | Needs whatsmeow QR pairing flow |
+| `internal/agent` | Built | Conversation loop with streaming |
+| `internal/llm` | Built | Ollama-compatible streaming client |
+| `internal/store` | Built | Pure-Go SQLite (modernc), no CGO |
+| `internal/web` | Built | HTTP + WebSocket + embedded UI |
+| `internal/seccheck` | Built | Security scanner for skills/repos |
+| `internal/config` | Built | YAML + env expansion |
+| `internal/mdns` | Built | LAN discovery (famclaw.local) |
+| `policies/` | Built | OPA Rego policies + topics.json taxonomy |
+| `internal/skillbridge` | Not started | Wave 3 |
+| `internal/mcp` | Not started | Wave 3 |
+
+See [AGENTS.md](./AGENTS.md) for the full build plan.
 
 ---
 
 ## License
 
-MIT — fork it, run it, own it. Your data stays yours.
+[AGPL-3.0](./LICENSE) — free for personal and family use. Contact us for commercial licensing.

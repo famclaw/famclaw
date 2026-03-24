@@ -102,9 +102,19 @@ func (d *DB) migrate() error {
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS gateway_accounts (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_name   TEXT NOT NULL,
+		gateway     TEXT NOT NULL,
+		external_id TEXT NOT NULL,
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(gateway, external_id)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
 	CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
 	CREATE INDEX IF NOT EXISTS idx_approvals_user ON approvals(user_name);
+	CREATE INDEX IF NOT EXISTS idx_gateway_accounts_lookup ON gateway_accounts(gateway, external_id);
 	`)
 	return err
 }
@@ -336,6 +346,51 @@ func (d *DB) ListSkills() ([]*Skill, error) {
 	}
 	return out, rows.Err()
 }
+
+// ── Gateway Accounts ──────────────────────────────────────────────────────────
+
+func (d *DB) LinkGatewayAccount(userName, gateway, externalID string) error {
+	_, err := d.sql.Exec(`
+		INSERT INTO gateway_accounts (user_name, gateway, external_id)
+		VALUES (?, ?, ?)
+		ON CONFLICT(gateway, external_id) DO UPDATE SET user_name=excluded.user_name`,
+		userName, gateway, externalID)
+	if err != nil {
+		return fmt.Errorf("linking gateway account: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) ResolveGatewayAccount(gateway, externalID string) (string, error) {
+	var userName string
+	err := d.sql.QueryRow(`SELECT user_name FROM gateway_accounts WHERE gateway=? AND external_id=?`,
+		gateway, externalID).Scan(&userName)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolving gateway account: %w", err)
+	}
+	return userName, nil
+}
+
+func (d *DB) IsGatewayAccountRegistered(gateway, externalID string) bool {
+	var count int
+	d.sql.QueryRow(`SELECT COUNT(*) FROM gateway_accounts WHERE gateway=? AND external_id=?`,
+		gateway, externalID).Scan(&count) //nolint:errcheck
+	return count > 0
+}
+
+func (d *DB) UnlinkGatewayAccount(gateway, externalID string) error {
+	_, err := d.sql.Exec(`DELETE FROM gateway_accounts WHERE gateway=? AND external_id=?`,
+		gateway, externalID)
+	if err != nil {
+		return fmt.Errorf("unlinking gateway account: %w", err)
+	}
+	return nil
+}
+
+// ── SecCheck Reports ──────────────────────────────────────────────────────────
 
 func (d *DB) SaveSecCheckReport(skillID, repoURL, commitSHA string, score int, verdict, summary, reportJSON string) error {
 	_, err := d.sql.Exec(`

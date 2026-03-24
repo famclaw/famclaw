@@ -1,0 +1,26 @@
+{
+  "categories": {
+    "general":          {"description": "General knowledge, homework help, creative writing", "risk": "none"},
+    "science":          {"description": "Science, nature, space, experiments", "risk": "none"},
+    "math":             {"description": "Mathematics, arithmetic, geometry", "risk": "none"},
+    "history":          {"description": "History, historical events, civilizations", "risk": "none"},
+    "arts":             {"description": "Art, music, drawing, crafts", "risk": "none"},
+    "sports":           {"description": "Sports, games, physical activities", "risk": "none"},
+    "technology":       {"description": "Computers, programming, tech how-tos", "risk": "none"},
+    "health":           {"description": "Basic health, hygiene, nutrition, exercise", "risk": "low"},
+    "social_media":     {"description": "Social media platforms, online presence", "risk": "medium"},
+    "dating":           {"description": "Romantic relationships, dating advice", "risk": "medium"},
+    "religion":         {"description": "Religion, spirituality, faith", "risk": "medium"},
+    "politics":         {"description": "Politics, government, elections", "risk": "medium"},
+    "finance":          {"description": "Money, banking, cryptocurrency", "risk": "medium"},
+    "mental_health":    {"description": "Depression, anxiety, self-harm ideation", "risk": "high"},
+    "violence":         {"description": "Violence, weapons, fighting", "risk": "high"},
+    "drugs":            {"description": "Drugs, alcohol, substance abuse", "risk": "high"},
+    "sexual_content":   {"description": "Sexual content, pornography", "risk": "critical"},
+    "gambling":         {"description": "Gambling, betting", "risk": "high"},
+    "hacking":          {"description": "Hacking, exploits, unauthorized access", "risk": "high"},
+    "self_harm":        {"description": "Self-harm, suicide", "risk": "critical"},
+    "hate_speech":      {"description": "Hate speech, discrimination, slurs", "risk": "critical"},
+    "illegal_activity": {"description": "Illegal activities, crime instructions", "risk": "critical"}
+  }
+}

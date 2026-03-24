@@ -295,8 +295,8 @@ func scanDataAccess(_ context.Context, dir string) ([]Finding, error) {
 // ── CVE check via osv.dev ─────────────────────────────────────────────────────
 
 func (s *Scanner) checkCVEs(ctx context.Context, dir string) ([]Finding, error) {
-	pkgs := collectDependencies(dir)
-	if len(pkgs) == 0 {
+	rawPkgs := collectDependencies(dir)
+	if len(rawPkgs) == 0 {
 		return nil, nil
 	}
 
@@ -306,7 +306,7 @@ func (s *Scanner) checkCVEs(ctx context.Context, dir string) ([]Finding, error) 
 		Version   string `json:"version,omitempty"`
 	}
 	type osvQuery struct {
-		Packages []osvPkg `json:"packages"`
+		Packages []any `json:"packages"`
 	}
 	type osvVuln struct {
 		ID       string `json:"id"`
@@ -322,7 +322,7 @@ func (s *Scanner) checkCVEs(ctx context.Context, dir string) ([]Finding, error) 
 		} `json:"results"`
 	}
 
-	query := osvQuery{Packages: pkgs}
+	query := osvQuery{Packages: rawPkgs}
 	body, _ := json.Marshal(query)
 
 	api := s.opts.OSVAPI
@@ -413,7 +413,7 @@ func (s *Scanner) scanSupplyChain(_ context.Context, dir string) ([]Finding, err
 
 // ── Runtime sandbox ───────────────────────────────────────────────────────────
 
-func (s *Scanner) runSandbox(ctx context.Context, dir string) ([]Finding, sbUsed string, _ error) {
+func (s *Scanner) runSandbox(ctx context.Context, dir string) ([]Finding, string, error) {
 	sandbox := s.opts.Sandbox
 	if sandbox == "auto" {
 		if hasDocker() {
