@@ -1,24 +1,46 @@
 version: 2
+
 updates:
+  # ── Go modules ────────────────────────────────────────────────────────────
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
       day: monday
+      time: "06:00"
+      timezone: "UTC"
+    groups:
+      go-minor-patch:
+        update-types:
+          - minor
+          - patch
     labels:
       - dependencies
       - go
     commit-message:
-      prefix: "deps"
-    open-pull-requests-limit: 10
+      prefix: "chore(deps)"
+      include: scope
+    target-branch: main
+    open-pull-requests-limit: 5
 
+  # ── GitHub Actions ────────────────────────────────────────────────────────
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: monday
+      time: "06:00"
+      timezone: "UTC"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch
     labels:
       - dependencies
       - ci
     commit-message:
-      prefix: "ci"
+      prefix: "chore(deps)"
+      include: scope
+    target-branch: main
+    open-pull-requests-limit: 5

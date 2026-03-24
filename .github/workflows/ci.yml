@@ -5,6 +5,15 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  merge_group:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -166,3 +175,20 @@ jobs:
         run: go test -tags integration ./... -v -timeout 120s
         env:
           CGO_ENABLED: 0
+
+  # ── Required gate (register "CI Pass" as the required status check) ─────
+  ci-pass:
+    name: CI Pass
+    if: always()
+    needs: [test, cross-compile, security, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all jobs succeeded
+        run: |
+          results='${{ toJSON(needs) }}'
+          echo "$results"
+          if echo "$results" | grep -q '"result":"failure"\|"result":"cancelled"'; then
+            echo "One or more jobs failed or were cancelled."
+            exit 1
+          fi
+          echo "All jobs passed."
