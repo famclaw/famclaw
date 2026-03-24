@@ -1,0 +1,20 @@
+# TruffleHog configuration for CodeRabbit secret scanning
+# https://docs.coderabbit.ai/tools/trufflehog
+
+detectors:
+  - name: AWS
+  - name: Azure
+  - name: GCP
+  - name: GitHub
+  - name: GitLab
+  - name: Slack
+  - name: Twilio
+  - name: SendGrid
+  - name: Mailgun
+  - name: DiscordBotToken
+  - name: DiscordWebhook
+  - name: TelegramBotToken
+  - name: OpenAI
+  - name: Anthropic
+  - name: PrivateKey
+  - name: JWT
