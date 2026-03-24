@@ -135,7 +135,7 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 
 ## Status
 
-🚧 **Active development — Waves 1 & 2 complete.**
+🚧 **Active development — Waves 1, 2 & 3 complete.**
 
 | Component | Status | Tests |
 |-----------|--------|-------|
@@ -147,6 +147,8 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 | `internal/gateway/telegram` | Built | Long-poll Telegram Bot API |
 | `internal/gateway/discord` | Built | Discord via discordgo |
 | `internal/gateway/whatsapp` | Placeholder | Needs whatsmeow QR pairing flow |
+| `internal/skillbridge` | Built | 18 pass — SKILL.md parser, registry, AgentSkills XML loader |
+| `internal/mcp` | Built | 4 pass — JSON-RPC 2.0 client, pool with lazy start + auto-restart |
 | `internal/agent` | Built | Conversation loop with streaming |
 | `internal/llm` | Built | Ollama-compatible streaming client |
 | `internal/store` | Built | Pure-Go SQLite (modernc), no CGO |
@@ -155,8 +157,6 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 | `internal/config` | Built | YAML + env expansion |
 | `internal/mdns` | Built | LAN discovery (famclaw.local) |
 | `policies/` | Built | OPA Rego policies + topics.json taxonomy |
-| `internal/skillbridge` | Not started | Wave 3 |
-| `internal/mcp` | Not started | Wave 3 |
 
 See [AGENTS.md](./AGENTS.md) for the full build plan.
 
