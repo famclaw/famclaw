@@ -144,20 +144,18 @@ jobs:
           gosec -severity medium -quiet ./... || true
         # gosec warns but does not block — too many false positives on new codebases
 
-  # dependency-review:
-  #   Uncomment after enabling Dependency Graph in repo settings:
-  #   Settings → Code security → Dependency graph → Enable
-  #   name: Dependency review
-  #   runs-on: ubuntu-latest
-  #   if: github.event_name == 'pull_request'
-  #   permissions:
-  #     contents: read
-  #     pull-requests: write
-  #   steps:
-  #     - uses: actions/checkout@v6
-  #     - uses: actions/dependency-review-action@v4
-  #       with:
-  #         fail-on-severity: critical
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: critical
 
   integration:
     name: Integration tests
@@ -180,7 +178,7 @@ jobs:
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [test, cross-compile, security, integration]
+    needs: [test, cross-compile, security, dependency-review, integration]
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs succeeded
