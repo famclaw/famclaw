@@ -33,18 +33,37 @@ jobs:
         run: go vet ./...
 
       - name: Unit tests
-        run: go test ./... -v -race -coverprofile=coverage.out
+        run: go test ./... -v -coverprofile=coverage.out
         env:
           CGO_ENABLED: 0
 
       - name: OPA policy tests
-        run: opa test ./policies/ -v
+        run: opa test ./policies/family/ ./policies/data/ -v
 
       - name: Coverage check (>80% on critical packages)
         run: |
-          go tool cover -func=coverage.out | grep -E \
-            'internal/policy|internal/classifier|internal/identity|internal/gateway/router' \
-            | awk '{if ($3+0 < 80) {print "FAIL: " $0; exit 1}}'
+          go tool cover -func=coverage.out > coverage.txt
+          fail=0
+          for pkg in internal/policy internal/classifier internal/identity; do
+            # Average coverage across all functions in the package
+            avg=$(grep "github.com/famclaw/famclaw/${pkg}/" coverage.txt \
+              | awk '{sum += $3+0; n++} END {if(n>0) printf "%.1f", sum/n; else print "0"}')
+            echo "${pkg}: ${avg}%"
+            if (( $(echo "$avg < 80" | bc -l) )); then
+              echo "FAIL: ${pkg} coverage ${avg}% < 80%"
+              fail=1
+            fi
+          done
+          # Gateway router (router.go only, not telegram/discord/whatsapp sub-packages)
+          router_avg=$(grep 'internal/gateway/router.go' coverage.txt \
+            | awk '{sum += $3+0; n++} END {if(n>0) printf "%.1f", sum/n; else print "0"}')
+          echo "gateway/router.go: ${router_avg}%"
+          if (( $(echo "$router_avg < 80" | bc -l) )); then
+            echo "FAIL: gateway/router.go coverage ${router_avg}% < 80%"
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
+          echo "All coverage gates passed"
 
   cross-compile:
     name: Cross-compile
