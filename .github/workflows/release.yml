@@ -1,0 +1,200 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: arm64
+            name: linux-arm64
+            label: "Raspberry Pi 4/5 (64-bit)"
+          - goos: linux
+            goarch: arm
+            goarm: 7
+            name: linux-armv7
+            label: "Raspberry Pi 2/3/Zero"
+          - goos: linux
+            goarch: amd64
+            name: linux-amd64
+            label: "Linux x86_64"
+          - goos: darwin
+            goarch: arm64
+            name: darwin-arm64
+            label: "Mac Apple Silicon"
+          - goos: darwin
+            goarch: amd64
+            name: darwin-amd64
+            label: "Mac Intel"
+          - goos: android
+            goarch: arm64
+            name: android-arm64
+            label: "Android arm64 (Termux)"
+          - goos: android
+            goarch: arm
+            goarm: 7
+            name: android-armv7
+            label: "Android armv7 (Termux)"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Build
+        run: |
+          GOOS=${{ matrix.goos }} \
+          GOARCH=${{ matrix.goarch }} \
+          GOARM=${{ matrix.goarm || '' }} \
+          CGO_ENABLED=0 \
+          go build \
+            -ldflags="-s -w -X main.Version=${{ github.ref_name }}" \
+            -o dist/famclaw-${{ matrix.name }} \
+            ./cmd/famclaw
+        env:
+          CGO_ENABLED: 0
+
+      - name: Compress
+        run: |
+          cd dist
+          xz -9 famclaw-${{ matrix.name }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.name }}
+          path: dist/famclaw-${{ matrix.name }}.xz
+
+  build-sd-images:
+    name: Build SD images
+    runs-on: ubuntu-latest
+    needs: build-binaries
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            binary: linux-arm64
+            image_name: famclaw-rpi4-arm64
+            label: "RPi 4/5 64-bit"
+          - arch: armhf
+            binary: linux-armv7
+            image_name: famclaw-rpi3-armv7
+            label: "RPi 3/2/Zero 32-bit"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-${{ matrix.binary }}
+          path: dist/
+
+      - name: Decompress binary
+        run: |
+          cd dist
+          xz -d famclaw-${{ matrix.binary }}.xz
+          chmod +x famclaw-${{ matrix.binary }}
+
+      - name: Install image tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y kpartx qemu-user-static
+
+      - name: Build SD image
+        run: |
+          chmod +x scripts/build-image.sh
+          sudo scripts/build-image.sh \
+            dist/famclaw-${{ matrix.binary }} \
+            ${{ matrix.arch }} \
+            dist/${{ matrix.image_name }}.img \
+            ${{ github.ref_name }}
+
+      - name: Compress image
+        run: |
+          cd dist
+          xz -9 --threads=0 ${{ matrix.image_name }}.img
+          sha256sum ${{ matrix.image_name }}.img.xz > ${{ matrix.image_name }}.img.xz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.image_name }}
+          path: |
+            dist/${{ matrix.image_name }}.img.xz
+            dist/${{ matrix.image_name }}.img.xz.sha256
+
+  release:
+    name: Create release
+    runs-on: ubuntu-latest
+    needs: [build-binaries, build-sd-images]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Generate release notes
+        run: |
+          cat > release-notes.md << 'EOF'
+          ## FamClaw ${{ github.ref_name }}
+
+          ### Flashable SD Card Images (recommended)
+          Flash directly with [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
+
+          | Image | Hardware |
+          |-------|----------|
+          | `famclaw-rpi4-arm64.img.xz` | Raspberry Pi 4, Pi 5 |
+          | `famclaw-rpi3-armv7.img.xz` | Raspberry Pi 3, Pi 2, Pi Zero 2W |
+
+          **First boot:** Connect to your network, open `http://famclaw.local:8080`
+
+          ### Standalone Binaries
+          For manual installation on existing systems.
+
+          | Binary | Platform |
+          |--------|----------|
+          | `famclaw-linux-arm64.xz` | RPi 4/5, Linux arm64 |
+          | `famclaw-linux-armv7.xz` | RPi 2/3, Linux armv7 |
+          | `famclaw-linux-amd64.xz` | Linux x86_64 |
+          | `famclaw-darwin-arm64.xz` | Mac Apple Silicon |
+          | `famclaw-darwin-amd64.xz` | Mac Intel |
+          | `famclaw-android-arm64.xz` | Android via Termux (arm64) |
+          | `famclaw-android-armv7.xz` | Android via Termux (armv7) |
+
+          ### Quick install (RPi / Linux)
+          ```bash
+          curl -fsSL https://github.com/famclaw/famclaw/releases/latest/download/install-rpi.sh | bash
+          ```
+
+          ### Verify checksums
+          ```bash
+          sha256sum -c famclaw-rpi4-arm64.img.xz.sha256
+          ```
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
+          files: |
+            dist/*.xz
+            dist/*.sha256
+            scripts/install-rpi.sh
+            scripts/install-termux.sh

@@ -1,0 +1,131 @@
+# ╔═══════════════════════════════════════════════════════════╗
+# ║              FamClaw Configuration                        ║
+# ║  Use ${ENV_VAR} for secrets. See .env.example.           ║
+# ╚═══════════════════════════════════════════════════════════╝
+
+# ── Server ────────────────────────────────────────────────────────────────────
+server:
+  host: "0.0.0.0"          # Bind all interfaces — access from any device on LAN
+  port: 8080
+  # Secret key for signing tokens — CHANGE THIS
+  secret: "${FAMCLAW_SECRET:-please-change-this-secret}"
+  # Local domain for mDNS — access via http://famclaw.local on your network
+  mdns_name: "famclaw"
+
+# ── LLM backend ───────────────────────────────────────────────────────────────
+llm:
+  # Provider: "ollama" (recommended — fully local)
+  provider: "ollama"
+  base_url: "http://localhost:11434"
+
+  # Model to use. Recommendations by hardware:
+  #   RPi 5 (8GB):      llama3.2:3b  or  phi3.5:mini
+  #   RPi 4 (4GB):      phi3:mini    or  tinyllama
+  #   RPi 3 / old phone: tinyllama
+  #   Mac Mini M-series: llama3.1:8b  or  mistral:7b
+  model: "llama3.2:3b"
+
+  # System prompt injected for all family interactions
+  system_prompt: |
+    You are FamClaw, a helpful family AI assistant. You are friendly,
+    patient, and age-appropriate in all your responses. You respect
+    privacy and never share personal information. You follow the
+    family's rules about what topics are appropriate.
+
+  # Context window & generation limits
+  max_context_tokens: 4096
+  max_response_tokens: 512
+  temperature: 0.7
+
+# ── Family profiles ───────────────────────────────────────────────────────────
+users:
+  - name: "parent"
+    display_name: "Parent"
+    role: "parent"
+    pin: "${PARENT_PIN:-1234}"   # PIN for parent dashboard
+    color: "#6366f1"
+
+  - name: "emma"
+    display_name: "Emma"
+    role: "child"
+    age_group: "age_8_12"
+    color: "#f59e0b"
+    # Optional: per-user model override (e.g. simpler model for young children)
+    # model: "tinyllama"
+
+  - name: "lucas"
+    display_name: "Lucas"
+    role: "child"
+    age_group: "under_8"
+    color: "#10b981"
+
+  - name: "sofia"
+    display_name: "Sofia"
+    role: "child"
+    age_group: "age_13_17"
+    color: "#ec4899"
+
+# ── Policy engine (OPA) ───────────────────────────────────────────────────────
+policies:
+  dir: "./policies/family"
+  data_dir: "./policies/data"
+
+# ── Approval workflow ─────────────────────────────────────────────────────────
+approval:
+  expiry_hours: 24
+
+# ── Skill manager ─────────────────────────────────────────────────────────────
+skills:
+  dir: "./skills"
+  # Run seccheck before installing any skill
+  auto_seccheck: true
+  # Reject skills that fail seccheck (set false to warn-only)
+  block_on_fail: true
+  # OpenClaw skill compatibility — import SKILL.md format
+  openclaw_compat: true
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+notifications:
+  email:
+    enabled: false
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    from: "${EMAIL_FROM}"
+    password: "${EMAIL_PASSWORD}"
+    to: ["${PARENT_EMAIL}"]
+
+  slack:
+    enabled: false
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+
+  discord:
+    enabled: false
+    webhook_url: "${DISCORD_WEBHOOK_URL}"
+
+  sms:
+    enabled: false
+    twilio_account_sid: "${TWILIO_ACCOUNT_SID}"
+    twilio_auth_token: "${TWILIO_AUTH_TOKEN}"
+    from_number: "${TWILIO_FROM_NUMBER}"
+    to_numbers: ["${PARENT_PHONE}"]
+
+  # Push to a ntfy.sh topic (self-hosted or cloud) — great for local-only setups
+  ntfy:
+    enabled: false
+    url: "http://localhost:2586"   # self-hosted ntfy server
+    topic: "${NTFY_TOPIC:-famclaw-alerts}"
+    token: "${NTFY_TOKEN}"
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+storage:
+  # SQLite database path
+  db_path: "./data/famclaw.db"
+
+# ── SecCheck ──────────────────────────────────────────────────────────────────
+seccheck:
+  # Sandbox preference: "docker" | "sandbox-exec" | "auto"
+  sandbox: "auto"
+  # Timeout for full scan
+  timeout: "5m"
+  # osv.dev API base (can be self-hosted)
+  osv_api: "https://api.osv.dev/v1"

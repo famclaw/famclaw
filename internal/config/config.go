@@ -1,0 +1,221 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+type Config struct {
+	Server        ServerConfig        `yaml:"server"`
+	LLM           LLMConfig           `yaml:"llm"`
+	Users         []UserConfig        `yaml:"users"`
+	Policies      PoliciesConfig      `yaml:"policies"`
+	Approval      ApprovalConfig      `yaml:"approval"`
+	Skills        SkillsConfig        `yaml:"skills"`
+	Notifications NotificationsConfig `yaml:"notifications"`
+	Storage       StorageConfig       `yaml:"storage"`
+	SecCheck      SecCheckConfig      `yaml:"seccheck"`
+}
+
+type ServerConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Secret   string `yaml:"secret"`
+	MDNSName string `yaml:"mdns_name"`
+}
+
+func (s ServerConfig) Addr() string {
+	return fmt.Sprintf("%s:%d", s.Host, s.Port)
+}
+
+func (s ServerConfig) BaseURL() string {
+	host := s.MDNSName + ".local"
+	if s.Port != 80 {
+		return fmt.Sprintf("http://%s:%d", host, s.Port)
+	}
+	return "http://" + host
+}
+
+type LLMConfig struct {
+	Provider          string  `yaml:"provider"`
+	BaseURL           string  `yaml:"base_url"`
+	Model             string  `yaml:"model"`
+	SystemPrompt      string  `yaml:"system_prompt"`
+	MaxContextTokens  int     `yaml:"max_context_tokens"`
+	MaxResponseTokens int     `yaml:"max_response_tokens"`
+	Temperature       float64 `yaml:"temperature"`
+}
+
+type UserConfig struct {
+	Name        string `yaml:"name"`
+	DisplayName string `yaml:"display_name"`
+	Role        string `yaml:"role"`   // parent | child
+	AgeGroup    string `yaml:"age_group"` // under_8 | age_8_12 | age_13_17
+	PIN         string `yaml:"pin"`
+	Color       string `yaml:"color"`
+	Model       string `yaml:"model"` // optional per-user model override
+}
+
+type PoliciesConfig struct {
+	Dir     string `yaml:"dir"`
+	DataDir string `yaml:"data_dir"`
+}
+
+type ApprovalConfig struct {
+	ExpiryHours int `yaml:"expiry_hours"`
+}
+
+type SkillsConfig struct {
+	Dir            string `yaml:"dir"`
+	AutoSecCheck   bool   `yaml:"auto_seccheck"`
+	BlockOnFail    bool   `yaml:"block_on_fail"`
+	OpenClawCompat bool   `yaml:"openclaw_compat"`
+}
+
+type StorageConfig struct {
+	DBPath string `yaml:"db_path"`
+}
+
+type SecCheckConfig struct {
+	Sandbox string `yaml:"sandbox"`
+	Timeout string `yaml:"timeout"`
+	OSVAPI  string `yaml:"osv_api"`
+}
+
+type NotificationsConfig struct {
+	Email   EmailConfig   `yaml:"email"`
+	Slack   SlackConfig   `yaml:"slack"`
+	Discord DiscordConfig `yaml:"discord"`
+	SMS     SMSConfig     `yaml:"sms"`
+	Ntfy    NtfyConfig    `yaml:"ntfy"`
+}
+
+type EmailConfig struct {
+	Enabled  bool     `yaml:"enabled"`
+	SMTPHost string   `yaml:"smtp_host"`
+	SMTPPort int      `yaml:"smtp_port"`
+	From     string   `yaml:"from"`
+	Password string   `yaml:"password"`
+	To       []string `yaml:"to"`
+}
+
+type SlackConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	WebhookURL string `yaml:"webhook_url"`
+}
+
+type DiscordConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	WebhookURL string `yaml:"webhook_url"`
+}
+
+type SMSConfig struct {
+	Enabled    bool     `yaml:"enabled"`
+	AccountSID string   `yaml:"twilio_account_sid"`
+	AuthToken  string   `yaml:"twilio_auth_token"`
+	FromNumber string   `yaml:"from_number"`
+	ToNumbers  []string `yaml:"to_numbers"`
+}
+
+// NtfyConfig is for ntfy.sh — ideal for fully-local push notifications.
+type NtfyConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	URL     string `yaml:"url"`
+	Topic   string `yaml:"topic"`
+	Token   string `yaml:"token"`
+}
+
+// Load reads and parses the config file, expanding environment variables.
+func Load(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config %q: %w", path, err)
+	}
+	expanded := os.ExpandEnv(string(raw))
+
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	applyDefaults(&cfg)
+	return &cfg, nil
+}
+
+func applyDefaults(c *Config) {
+	if c.Server.Host == "" {
+		c.Server.Host = "0.0.0.0"
+	}
+	if c.Server.Port == 0 {
+		c.Server.Port = 8080
+	}
+	if c.Server.MDNSName == "" {
+		c.Server.MDNSName = "famclaw"
+	}
+	if c.LLM.Provider == "" {
+		c.LLM.Provider = "ollama"
+	}
+	if c.LLM.BaseURL == "" {
+		c.LLM.BaseURL = "http://localhost:11434"
+	}
+	if c.LLM.Model == "" {
+		c.LLM.Model = "tinyllama" // safest default for constrained hardware
+	}
+	if c.LLM.MaxContextTokens == 0 {
+		c.LLM.MaxContextTokens = 4096
+	}
+	if c.LLM.MaxResponseTokens == 0 {
+		c.LLM.MaxResponseTokens = 512
+	}
+	if c.LLM.Temperature == 0 {
+		c.LLM.Temperature = 0.7
+	}
+	if c.Policies.Dir == "" {
+		c.Policies.Dir = "./policies/family"
+	}
+	if c.Policies.DataDir == "" {
+		c.Policies.DataDir = "./policies/data"
+	}
+	if c.Approval.ExpiryHours == 0 {
+		c.Approval.ExpiryHours = 24
+	}
+	if c.Skills.Dir == "" {
+		c.Skills.Dir = "./skills"
+	}
+	if c.Storage.DBPath == "" {
+		c.Storage.DBPath = "./data/famclaw.db"
+	}
+	if c.SecCheck.Sandbox == "" {
+		c.SecCheck.Sandbox = "auto"
+	}
+	if c.SecCheck.Timeout == "" {
+		c.SecCheck.Timeout = "5m"
+	}
+	if c.SecCheck.OSVAPI == "" {
+		c.SecCheck.OSVAPI = "https://api.osv.dev/v1"
+	}
+	if c.Notifications.Email.SMTPPort == 0 {
+		c.Notifications.Email.SMTPPort = 587
+	}
+	if c.Notifications.Ntfy.URL == "" {
+		c.Notifications.Ntfy.URL = "http://localhost:2586"
+	}
+}
+
+func (c *Config) GetUser(name string) *UserConfig {
+	for i := range c.Users {
+		if strings.EqualFold(c.Users[i].Name, name) {
+			return &c.Users[i]
+		}
+	}
+	return nil
+}
+
+func (c *Config) ModelFor(user *UserConfig) string {
+	if user != nil && user.Model != "" {
+		return user.Model
+	}
+	return c.LLM.Model
+}

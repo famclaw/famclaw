@@ -1,0 +1,160 @@
+// Package llm provides a client for local LLM inference via Ollama.
+// Ollama runs on RPi 4/5, Mac, and Linux. For older hardware use tinyllama.
+package llm
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+)
+
+// Message is a conversation turn.
+type Message struct {
+	Role    string `json:"role"`    // system | user | assistant
+	Content string `json:"content"`
+}
+
+// Client talks to an Ollama-compatible local LLM server.
+type Client struct {
+	baseURL string
+	model   string
+	http    *http.Client
+}
+
+// NewClient creates a new LLM client.
+func NewClient(baseURL, model string) *Client {
+	return &Client{
+		baseURL: baseURL,
+		model:   model,
+		http: &http.Client{
+			Timeout: 5 * time.Minute, // LLMs can be slow on RPi
+		},
+	}
+}
+
+// ollamaRequest is the Ollama /api/chat request body.
+type ollamaRequest struct {
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	Stream   bool      `json:"stream"`
+	Options  ollamaOptions `json:"options,omitempty"`
+}
+
+type ollamaOptions struct {
+	Temperature float64 `json:"temperature,omitempty"`
+	NumPredict  int     `json:"num_predict,omitempty"`
+}
+
+type ollamaChunk struct {
+	Message Message `json:"message"`
+	Done    bool    `json:"done"`
+}
+
+// Chat sends a conversation to the LLM and streams the response token by token.
+// The token callback is called for each streamed token; the full response is also returned.
+func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, maxTokens int, onToken func(string)) (string, error) {
+	req := ollamaRequest{
+		Model:    c.model,
+		Messages: messages,
+		Stream:   true,
+		Options: ollamaOptions{
+			Temperature: temp,
+			NumPredict:  maxTokens,
+		},
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		c.baseURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("ollama request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("ollama %d: %s", resp.StatusCode, string(b))
+	}
+
+	var full string
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		var chunk ollamaChunk
+		if err := json.Unmarshal(scanner.Bytes(), &chunk); err != nil {
+			continue
+		}
+		token := chunk.Message.Content
+		full += token
+		if onToken != nil && token != "" {
+			onToken(token)
+		}
+		if chunk.Done {
+			break
+		}
+	}
+
+	return full, scanner.Err()
+}
+
+// ChatSync sends a conversation and returns the full response (non-streaming).
+func (c *Client) ChatSync(ctx context.Context, messages []Message, temp float64, maxTokens int) (string, error) {
+	return c.Chat(ctx, messages, temp, maxTokens, nil)
+}
+
+// Ping checks if the Ollama server is reachable and the model is available.
+func (c *Client) Ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/tags", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("ollama not reachable at %s: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil // server is up, just can't parse response
+	}
+
+	for _, m := range result.Models {
+		if m.Name == c.model || m.Name == c.model+":latest" {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q not found in ollama — run: ollama pull %s", c.model, c.model)
+}
+
+// HardwareRecommendation returns a model recommendation based on available RAM.
+func HardwareRecommendation(ramMB int) string {
+	switch {
+	case ramMB >= 8192:
+		return "llama3.1:8b"
+	case ramMB >= 4096:
+		return "llama3.2:3b"
+	case ramMB >= 2048:
+		return "phi3:mini"
+	default:
+		return "tinyllama"
+	}
+}

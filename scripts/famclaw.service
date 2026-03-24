@@ -1,0 +1,29 @@
+[Unit]
+Description=FamClaw — Family AI Assistant
+Documentation=https://github.com/famclaw/famclaw
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=famclaw
+Group=famclaw
+WorkingDirectory=/opt/famclaw
+EnvironmentFile=-/opt/famclaw/.env
+ExecStart=/usr/local/bin/famclaw --config /opt/famclaw/config.yaml
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=famclaw
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/famclaw/data /opt/famclaw/skills
+PrivateTmp=true
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target
