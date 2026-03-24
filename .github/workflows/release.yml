@@ -75,7 +75,7 @@ jobs:
           xz -9 famclaw-${{ matrix.name }}
 
       - name: Generate SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@v0.23.1
         with:
           path: .
           format: cyclonedx-json

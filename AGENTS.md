@@ -357,7 +357,7 @@ Raspberry Pi OS Lite (64-bit for rpi4/5, 32-bit for rpi3)
 **Release pipeline additions:**
 - `actions/attest-build-provenance` — SLSA Build L3 provenance for every binary
 - `anchore/sbom-action` — generate CycloneDX SBOM attached to GitHub Release
-- `sigstore/cosign-installer` + `cosign sign-blob` — keyless signing of release binaries
+- `sigstore/cosign-installer` + `cosign sign-blob` — keyless signing of release binaries (planned, not yet implemented)
 
 **Rules:**
 - Security checks MUST NOT break the build on first run — use warn mode initially, then enforce
