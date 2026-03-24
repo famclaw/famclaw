@@ -135,7 +135,7 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 
 ## Status
 
-🚧 **Active development — Waves 1, 2 & 3 complete.**
+🚧 **Active development — Waves 1–4 complete.**
 
 | Component | Status | Tests |
 |-----------|--------|-------|
@@ -157,6 +157,7 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 | `internal/config` | Built | YAML + env expansion |
 | `internal/mdns` | Built | LAN discovery (famclaw.local) |
 | `policies/` | Built | OPA Rego policies + topics.json taxonomy |
+| `integration_test.go` | Built | 28 pass — full message flow, cross-gateway policy, panic-LLM proof |
 
 See [AGENTS.md](./AGENTS.md) for the full build plan.
 
