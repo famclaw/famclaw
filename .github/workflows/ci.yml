@@ -42,22 +42,27 @@ jobs:
 
       - name: Coverage check (>80% on critical packages)
         run: |
+          go tool cover -func=coverage.out > coverage.txt
+          fail=0
           for pkg in internal/policy internal/classifier internal/identity; do
-            cov=$(go tool cover -func=coverage.out | grep "^github.com/famclaw/famclaw/${pkg}/" | grep total: | awk '{print $3+0}')
-            if [ -z "$cov" ]; then cov=0; fi
-            if (( $(echo "$cov < 80" | bc -l) )); then
-              echo "FAIL: ${pkg} coverage ${cov}% < 80%"
-              exit 1
+            # Average coverage across all functions in the package
+            avg=$(grep "github.com/famclaw/famclaw/${pkg}/" coverage.txt \
+              | awk '{sum += $3+0; n++} END {if(n>0) printf "%.1f", sum/n; else print "0"}')
+            echo "${pkg}: ${avg}%"
+            if (( $(echo "$avg < 80" | bc -l) )); then
+              echo "FAIL: ${pkg} coverage ${avg}% < 80%"
+              fail=1
             fi
-            echo "OK: ${pkg} coverage ${cov}%"
           done
-          # Router: check Handle function specifically (>80%), not helper functions
-          handle_cov=$(go tool cover -func=coverage.out | grep 'internal/gateway/router.go.*Handle' | head -1 | awk '{print $3+0}')
-          if (( $(echo "$handle_cov < 80" | bc -l) )); then
+          # Router.Handle specifically
+          handle_cov=$(grep 'internal/gateway/router.go.*Handle[^r]' coverage.txt | head -1 | awk '{print $3+0}')
+          echo "router.Handle: ${handle_cov}%"
+          if (( $(echo "${handle_cov:-0} < 80" | bc -l) )); then
             echo "FAIL: router.Handle coverage ${handle_cov}% < 80%"
-            exit 1
+            fail=1
           fi
-          echo "OK: router.Handle coverage ${handle_cov}%"
+          [ "$fail" -eq 0 ] || exit 1
+          echo "All coverage gates passed"
 
   cross-compile:
     name: Cross-compile
