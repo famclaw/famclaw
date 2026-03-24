@@ -82,7 +82,7 @@ jobs:
           output-file: dist/famclaw-${{ matrix.name }}.sbom.json
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/famclaw-${{ matrix.name }}.xz
 
