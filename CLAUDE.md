@@ -173,3 +173,10 @@ config.yaml, Makefile, go.mod, README.md
 
 ## What needs to be built — in order
 See AGENTS.md for the multi-agent build plan.
+
+## README rule
+After every wave completes, update README.md:
+- Update the Status section to reflect what is now built
+- Update the project structure to show new files
+- Keep it accurate — no aspirational features, only what exists
+
