@@ -104,14 +104,14 @@ install-launchd: install
 
 ## build-seccheck: Build seccheck binary for all targets
 build-seccheck:
-	@mkdir -p skills-repo/seccheck/bin
+	@mkdir -p $(BUILD_DIR)/seccheck
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o skills-repo/seccheck/bin/seccheck-linux-arm64 ./skills-repo/seccheck/bin/
+		go build $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-arm64 ./skills-repo/seccheck/bin/
 	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o skills-repo/seccheck/bin/seccheck-linux-armv7 ./skills-repo/seccheck/bin/
+		go build $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-armv7 ./skills-repo/seccheck/bin/
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o skills-repo/seccheck/bin/seccheck-linux-amd64 ./skills-repo/seccheck/bin/
-	@echo "✅ seccheck binaries: skills-repo/seccheck/bin/"
+		go build $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-amd64 ./skills-repo/seccheck/bin/
+	@echo "✅ seccheck binaries: $(BUILD_DIR)/seccheck/"
 
 ## clean: Remove build artifacts
 clean:

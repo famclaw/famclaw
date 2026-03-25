@@ -80,11 +80,11 @@ To run in the background:
 nohup famclaw --config ~/famclaw/config.yaml > ~/famclaw/famclaw.log 2>&1 &
 ```
 
-To auto-start on Termux boot, add to `~/.bashrc`:
+To auto-start on device boot, install [Termux:Boot](https://f-droid.org/packages/com.termux.boot/) from F-Droid. The install script creates `~/.termux/boot/famclaw.sh` automatically.
 
+If Termux:Boot is not available, you can start manually each time you open Termux:
 ```bash
-# Start FamClaw if not already running
-pgrep -x famclaw > /dev/null || famclaw --config ~/famclaw/config.yaml &
+famclaw-start
 ```
 
 ---
@@ -121,12 +121,17 @@ ifconfig wlan0 | grep inet
 ## Updating
 
 ```bash
-# Download latest binary
-wget "https://github.com/famclaw/famclaw/releases/latest/download/famclaw-android-arm64"
-chmod +x famclaw-android-arm64
-mv famclaw-android-arm64 "$PREFIX/bin/famclaw"
+# Detect architecture and download matching binary
+ARCH=$(uname -m)
+case "$ARCH" in
+    aarch64) BIN="famclaw-android-arm64" ;;
+    armv7l)  BIN="famclaw-android-armv7" ;;
+esac
+
+curl -fsSL "https://github.com/famclaw/famclaw/releases/latest/download/$BIN" -o "$PREFIX/bin/famclaw"
+chmod +x "$PREFIX/bin/famclaw"
 
 # Restart
 pkill famclaw
-famclaw --config ~/famclaw/config.yaml &
+famclaw-start &
 ```

@@ -4,31 +4,29 @@ Skills extend FamClaw with new tools and capabilities. They're shared across Fam
 
 ## Installing a skill
 
+> **Note:** The CLI skill management commands are planned. Currently, skills are installed manually by placing the SKILL.md in the skills directory.
+
+### Manual installation
+
+```bash
+# Download the skill
+git clone https://github.com/famclaw/skills /tmp/famclaw-skills
+
+# Copy to skills directory
+cp -r /tmp/famclaw-skills/seccheck ~/.famclaw/skills/seccheck
+
+# Restart FamClaw
+sudo systemctl restart famclaw
+```
+
+### Planned CLI (not yet implemented)
+
 ```bash
 famclaw skill install famclaw/seccheck
-```
-
-This downloads the skill from the [famclaw/skills](https://github.com/famclaw/skills) registry, runs a security check, and installs it locally.
-
-## Listing installed skills
-
-```bash
 famclaw skill list
-```
-
-Or from the web dashboard: Parent Dashboard → Skills.
-
-## Removing a skill
-
-```bash
 famclaw skill remove seccheck
-```
-
-## Enabling / Disabling
-
-```bash
-famclaw skill disable seccheck    # stops loading without removing
-famclaw skill enable seccheck     # re-enables
+famclaw skill disable seccheck
+famclaw skill enable seccheck
 ```
 
 ---

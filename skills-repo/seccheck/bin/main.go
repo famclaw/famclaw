@@ -1,7 +1,5 @@
 // Command seccheck is a CLI wrapper around the FamClaw security scanner.
-// It scans a skill or MCP repository for security issues and prints a report.
-//
-// Usage: seccheck <repo-url-or-path>
+// Exit codes: 0=PASS/WARN, 1=FAIL, 2=usage error, 3=runtime error
 package main
 
 import (
@@ -25,14 +23,19 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	scanner := seccheck.New(seccheck.Options{Verbose: true})
+	scanner := seccheck.New(seccheck.Options{
+		Verbose: true,
+		Sandbox: "auto",
+		Timeout: 5 * time.Minute,
+		OSVAPI:  "https://api.osv.dev/v1",
+	})
 	report, err := scanner.Scan(ctx, target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "seccheck: %v\n", err)
-		os.Exit(1)
+		os.Exit(3)
 	}
 
-	// Print human-readable summary to stderr
+	// Human-readable summary to stderr
 	fmt.Fprintf(os.Stderr, "\nSecCheck Report: %s\n", target)
 	fmt.Fprintf(os.Stderr, "Score: %d/100 — %s\n\n", report.Score, report.Verdict)
 
@@ -44,12 +47,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\n%s\n", report.Summary)
 	}
 
-	// Print JSON to stdout (for MCP tool integration)
+	// JSON to stdout (for MCP tool integration)
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.Encode(report)
 
-	if report.Verdict == "FAIL" {
+	if report.Verdict == seccheck.VerdictFail {
 		os.Exit(1)
 	}
 }

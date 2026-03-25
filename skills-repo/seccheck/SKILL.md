@@ -26,7 +26,7 @@ Security scanner for skills and MCP tool repositories. Run it before installing 
 
 When the user asks to check a skill or scan a repository:
 
-```
+```bash
 seccheck <repo-url-or-path>
 ```
 

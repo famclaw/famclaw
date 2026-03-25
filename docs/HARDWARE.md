@@ -73,7 +73,7 @@ Recommendations:
 ## Network
 
 - **First boot:** Downloads Ollama + LLM model (600MB–5GB). Use ethernet.
-- **After setup:** FamClaw works fully offline. No internet required.
+- **After setup:** FamClaw's policy engine and web UI work offline. LLM calls require network access to the configured endpoint (local LAN or cloud).
 - **mDNS:** FamClaw advertises as `famclaw.local` on your LAN.
 
 ---

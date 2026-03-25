@@ -67,9 +67,9 @@ Same as Telegram — each family member sends a message in the Discord server. T
 
 ## WhatsApp
 
-WhatsApp uses the whatsmeow library (pure Go, no Chromium). On first run, it displays a QR code for pairing.
+> **Status:** WhatsApp gateway is a **placeholder** — the whatsmeow integration is not yet implemented. The config and code structure are ready, but the QR pairing flow and message handling are not functional yet.
 
-### 1. Add to config
+Once implemented, WhatsApp will use whatsmeow (pure Go, no Chromium):
 
 ```yaml
 gateways:
@@ -77,21 +77,6 @@ gateways:
     enabled: true
     db_path: "/opt/famclaw/whatsapp.db"
 ```
-
-### 2. Pair via QR code
-
-On first start, FamClaw prints a QR code to the terminal:
-```bash
-sudo journalctl -u famclaw -f
-```
-
-Scan this QR code with WhatsApp on the parent's phone:
-1. Open WhatsApp → Settings → Linked Devices → Link a Device
-2. Scan the QR code from the terminal
-
-### 3. Status
-
-WhatsApp gateway is currently a **placeholder** — full whatsmeow integration is planned.
 
 ---
 

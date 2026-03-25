@@ -24,9 +24,13 @@ sudo mv seccheck-linux-arm64 /usr/local/bin/seccheck
 
 # Linux ARMv7 (RPi 3)
 curl -LO https://github.com/famclaw/skills/releases/latest/download/seccheck-linux-armv7
+chmod +x seccheck-linux-armv7
+sudo mv seccheck-linux-armv7 /usr/local/bin/seccheck
 
 # Linux AMD64
 curl -LO https://github.com/famclaw/skills/releases/latest/download/seccheck-linux-amd64
+chmod +x seccheck-linux-amd64
+sudo mv seccheck-linux-amd64 /usr/local/bin/seccheck
 ```
 
 ### As a skill
