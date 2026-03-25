@@ -69,7 +69,12 @@ func (p *Pool) StartAll(ctx context.Context) error {
 			toolAliases[tool.Name] = mc
 		}
 	}
+	// Add tool-name aliases, but never overwrite a server entry
 	for toolName, mc := range toolAliases {
+		if _, isServer := p.clients[toolName]; isServer {
+			log.Printf("[mcp-pool] tool %q shadows server name — skipping alias", toolName)
+			continue
+		}
 		p.clients[toolName] = mc
 	}
 	return nil
