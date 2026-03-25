@@ -82,7 +82,7 @@ func main() {
 	log.Printf("Notifications: configured")
 
 	// Web server
-	srv := web.NewServer(cfg, db, evaluator, clf, notifier)
+	srv := web.NewServer(cfg, *cfgPath, db, evaluator, clf, notifier)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),

@@ -31,6 +31,7 @@ var staticFiles embed.FS
 // Server is the FamClaw web server.
 type Server struct {
 	cfg        *config.Config
+	cfgPath    string // path to config.yaml for settings API
 	db         *store.DB
 	evaluator  *policy.Evaluator
 	clf        *classifier.Classifier
@@ -46,10 +47,11 @@ type wsMessage struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-func NewServer(cfg *config.Config, db *store.DB, evaluator *policy.Evaluator,
+func NewServer(cfg *config.Config, cfgPath string, db *store.DB, evaluator *policy.Evaluator,
 	clf *classifier.Classifier, notifier *notify.MultiNotifier) *Server {
 	return &Server{
 		cfg:       cfg,
+		cfgPath:   cfgPath,
 		db:        db,
 		evaluator: evaluator,
 		clf:       clf,
@@ -82,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals/decide", s.handleDecide)
 	mux.HandleFunc("/api/skills", s.handleSkills)
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/settings", s.handleSettings)      // GET/POST config settings
 	mux.HandleFunc("/api/stream", s.handleStream)          // SSE for dashboard live updates
 
 	// ── Parent decision links (from email/SMS) ────────────────────────────────
@@ -336,9 +339,10 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]any{
-		"status":  "ok",
-		"version": "1.0.0",
-		"time":    time.Now().UTC(),
+		"status":      "ok",
+		"version":     "1.0.0",
+		"time":        time.Now().UTC(),
+		"needs_setup": s.NeedsSetup(),
 	})
 }
 

@@ -152,7 +152,7 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 | `internal/agent` | Built | Conversation loop with streaming |
 | `internal/llm` | Built | Ollama-compatible streaming client |
 | `internal/store` | Built | Pure-Go SQLite (modernc), no CGO |
-| `internal/web` | Built | HTTP + WebSocket + embedded UI |
+| `internal/web` | Built | HTTP + WebSocket + embedded UI + Settings API |
 | `internal/seccheck` | Built | Security scanner for skills/repos |
 | `internal/config` | Built | YAML + env expansion |
 | `internal/mdns` | Built | LAN discovery (famclaw.local) |
