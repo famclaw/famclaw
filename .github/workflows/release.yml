@@ -86,11 +86,23 @@ jobs:
         with:
           subject-path: dist/famclaw-${{ matrix.name }}.xz
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign binary (keyless via Sigstore)
+        run: |
+          cosign sign-blob --yes \
+            --output-signature dist/famclaw-${{ matrix.name }}.xz.sig \
+            --output-certificate dist/famclaw-${{ matrix.name }}.xz.pem \
+            dist/famclaw-${{ matrix.name }}.xz
+
       - uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.name }}
           path: |
             dist/famclaw-${{ matrix.name }}.xz
+            dist/famclaw-${{ matrix.name }}.xz.sig
+            dist/famclaw-${{ matrix.name }}.xz.pem
             dist/famclaw-${{ matrix.name }}.sbom.json
 
   build-sd-images:
@@ -201,6 +213,11 @@ jobs:
           ```bash
           sha256sum -c famclaw-rpi4-arm64.img.xz.sha256
           ```
+
+          ### Verify signatures (cosign)
+          ```bash
+          cosign verify-blob --certificate famclaw-linux-arm64.xz.pem --signature famclaw-linux-arm64.xz.sig famclaw-linux-arm64.xz
+          ```
           EOF
 
       - name: Create GitHub Release
@@ -211,6 +228,8 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
           files: |
             dist/*.xz
+            dist/*.sig
+            dist/*.pem
             dist/*.sha256
             dist/*.sbom.json
             scripts/install-rpi.sh
