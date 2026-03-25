@@ -155,7 +155,7 @@ var secretRules = []struct{ name, sev string; re *regexp.Regexp }{
 	{"Slack Token", SevCritical, regexp.MustCompile(`xox[baprs]-[0-9A-Za-z\-]{10,48}`)},
 	{"Stripe Key", SevCritical, regexp.MustCompile(`(?:r|s)k_(?:live|test)_[0-9a-zA-Z]{24,}`)},
 	{"Private Key", SevCritical, regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY`)},
-	{"Discord Webhook", SevHigh, regexp.MustCompile(`/api/webhooks/[0-9]{15,20}/[A-Za-z0-9_\-]{60,}`)},
+	{"Discord Webhook", SevHigh, regexp.MustCompile(`\b/api/webhooks/[0-9]{15,20}/[A-Za-z0-9_\-]{60,}\b`)},
 	{"Hardcoded Password", SevHigh, regexp.MustCompile(`(?i)(?:password|passwd|pwd)\s*[:=]\s*['"][^'"]{6,}['"]`)},
 	{"Hardcoded Secret", SevHigh, regexp.MustCompile(`(?i)(?:secret|api_key|apikey|auth_token)\s*[:=]\s*['"][^'"]{8,}['"]`)},
 	{"DB Connection String", SevHigh, regexp.MustCompile(`(?i)(?:postgres|mysql|mongodb|redis)://[^:@\s]+:[^@\s]+@`)},
