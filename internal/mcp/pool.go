@@ -18,6 +18,7 @@ type Pool struct {
 }
 
 type managedClient struct {
+	mu         sync.Mutex // guards client, restartCnt
 	client     *Client
 	name       string
 	cfg        config.MCPServerConfig
@@ -91,6 +92,9 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
 
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
 	// Lazy start: if server failed at boot or hasn't started yet
 	if mc.client.inner == nil {
 		if err := mc.client.Start(ctx); err != nil {
@@ -115,7 +119,7 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 		}
 		result, err = mc.client.CallTool(ctx, name, args)
 		if err == nil {
-			mc.restartCnt = 0 // reset on successful retry
+			mc.restartCnt = 0
 		}
 		return result, err
 	}
