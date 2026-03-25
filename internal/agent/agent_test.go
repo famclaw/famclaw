@@ -1,0 +1,184 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/famclaw/famclaw/internal/classifier"
+	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/llm"
+	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/store"
+)
+
+func projectRoot(t *testing.T) string {
+	t.Helper()
+	dir, _ := os.Getwd()
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("cannot find project root")
+		}
+		dir = parent
+	}
+}
+
+func setupAgent(t *testing.T, serverURL string) *Agent {
+	t.Helper()
+	root := projectRoot(t)
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ev, err := policy.NewEvaluator(
+		filepath.Join(root, "policies", "family"),
+		filepath.Join(root, "policies", "data"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			BaseURL:           serverURL,
+			Model:             "test",
+			Temperature:       0.7,
+			MaxResponseTokens: 100,
+		},
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent"},
+		},
+	}
+
+	user := &cfg.Users[0]
+	client := llm.NewClient(serverURL, "test", "")
+	clf := classifier.New()
+
+	return NewAgent(user, cfg, client, ev, clf, db)
+}
+
+func mockLLMServer(t *testing.T, responses []map[string]any) *httptest.Server {
+	t.Helper()
+	callIdx := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "test"}}})
+			return
+		}
+		if callIdx >= len(responses) {
+			callIdx = len(responses) - 1
+		}
+		resp := responses[callIdx]
+		callIdx++
+		json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+func TestAgentChatNoToolCalls(t *testing.T) {
+	server := mockLLMServer(t, []map[string]any{
+		{"message": map[string]any{"role": "assistant", "content": "Hello!"}, "done": true},
+	})
+	defer server.Close()
+
+	agent := setupAgent(t, server.URL)
+
+	resp, err := agent.Chat(context.Background(), "hi", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Content != "Hello!" {
+		t.Errorf("content = %q, want Hello!", resp.Content)
+	}
+	if resp.PolicyAction != "allow" {
+		t.Errorf("action = %q, want allow", resp.PolicyAction)
+	}
+}
+
+func TestAgentChatPoolNil(t *testing.T) {
+	// Even with tool_calls in response, if pool is nil, they're ignored
+	server := mockLLMServer(t, []map[string]any{
+		{
+			"message": map[string]any{
+				"role": "assistant", "content": "Let me check...",
+				"tool_calls": []map[string]any{
+					{"function": map[string]any{"name": "echo", "arguments": map[string]any{"text": "hi"}}},
+				},
+			},
+			"done": true,
+		},
+	})
+	defer server.Close()
+
+	agent := setupAgent(t, server.URL)
+	// pool is nil — tool calls should be skipped
+
+	resp, err := agent.Chat(context.Background(), "hello", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Content != "Let me check..." {
+		t.Errorf("content = %q", resp.Content)
+	}
+}
+
+func TestAgentSetPool(t *testing.T) {
+	agent := &Agent{}
+	if agent.pool != nil {
+		t.Error("pool should be nil by default")
+	}
+	agent.SetPool(nil)
+	if agent.pool != nil {
+		t.Error("SetPool(nil) should keep pool nil")
+	}
+}
+
+func TestAgentChatMessageTypes(t *testing.T) {
+	// Test that LLM tool call types serialize correctly
+	tc := llm.ToolCall{
+		Function: llm.ToolCallFunction{
+			Name:      "test_tool",
+			Arguments: map[string]any{"key": "value"},
+		},
+	}
+	data, err := json.Marshal(tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decoded llm.ToolCall
+	json.Unmarshal(data, &decoded)
+	if decoded.Function.Name != "test_tool" {
+		t.Errorf("name = %q", decoded.Function.Name)
+	}
+}
+
+func TestAgentChatMessageWithToolCalls(t *testing.T) {
+	msg := llm.Message{
+		Role:    "assistant",
+		Content: "Calling tool...",
+		ToolCalls: []llm.ToolCall{
+			{Function: llm.ToolCallFunction{Name: "echo", Arguments: map[string]any{"text": "hi"}}},
+		},
+	}
+	data, _ := json.Marshal(msg)
+	var decoded llm.Message
+	json.Unmarshal(data, &decoded)
+
+	if len(decoded.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(decoded.ToolCalls))
+	}
+	if decoded.ToolCalls[0].Function.Name != "echo" {
+		t.Errorf("tool name = %q", decoded.ToolCalls[0].Function.Name)
+	}
+}
