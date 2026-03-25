@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net/smtp"
 	"strings"
+	"html/template"
 
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/store"
@@ -58,7 +59,7 @@ func (e *EmailNotifier) send(subject, body string) error {
 }
 
 func formatApprovalHTML(a *store.Approval, approveURL, denyURL string) string {
-	esc := func(s string) string { return strings.ReplaceAll(s, "<", "&lt;") }
+	esc := func(s string) string { return template.HTMLEscapeString(s) }
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
 <body style="font-family:system-ui;max-width:480px;margin:0 auto;padding:20px">
