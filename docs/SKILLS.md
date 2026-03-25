@@ -123,13 +123,51 @@ Skills that fail the security check are not installed.
 
 ## MCP integration
 
-Skills can also be MCP (Model Context Protocol) tool servers. FamClaw spawns them as child processes and communicates via JSON-RPC over stdio.
+Skills can also be MCP (Model Context Protocol) tool servers. FamClaw connects to them and the AI can call tools during conversations:
 
-The AI can call MCP tools during a conversation:
 1. User asks a question
 2. AI decides to use a tool
-3. FamClaw calls the MCP server
+3. FamClaw calls the MCP server (local or remote)
 4. Tool result is fed back to the AI
 5. AI responds with the final answer
 
 Maximum 10 tool call iterations per conversation turn.
+
+### MCP transport types
+
+Configure MCP servers in `config.yaml` under `skills.mcp_servers`:
+
+**Stdio (local process)** — for devices that can run tool binaries (Mac, beefy RPi):
+
+```yaml
+skills:
+  mcp_servers:
+    seccheck:
+      transport: stdio
+      command: seccheck
+      args: ["--json"]
+```
+
+**HTTP (remote server)** — for constrained devices (Android, RPi-as-gateway) connecting to tools on LAN:
+
+```yaml
+skills:
+  mcp_servers:
+    remote-tools:
+      transport: http
+      url: "http://192.168.1.10:3001/mcp"
+      headers:
+        Authorization: "Bearer ${MCP_TOKEN}"
+```
+
+**SSE (legacy)** — for older MCP servers using Server-Sent Events:
+
+```yaml
+skills:
+  mcp_servers:
+    legacy:
+      transport: sse
+      url: "http://192.168.1.10:3002/sse"
+```
+
+Servers are enabled by default. Add `disabled: true` to skip without removing.

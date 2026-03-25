@@ -148,7 +148,7 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 | `internal/gateway/discord` | Built | Discord via discordgo |
 | `internal/gateway/whatsapp` | Placeholder | Needs whatsmeow QR pairing flow |
 | `internal/skillbridge` | Built | 18 pass — SKILL.md parser, registry, AgentSkills XML loader |
-| `internal/mcp` | Built | 4 pass — JSON-RPC 2.0 client, pool with lazy start + auto-restart |
+| `internal/mcp` | Built | 20 pass — multi-transport (stdio/HTTP/SSE), pool with config-driven registration |
 | `internal/agent` | Built | Conversation loop with streaming |
 | `internal/llm` | Built | Ollama-compatible streaming client |
 | `internal/store` | Built | Pure-Go SQLite (modernc), no CGO |
