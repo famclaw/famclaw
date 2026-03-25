@@ -67,7 +67,7 @@ func main() {
 	clf := classifier.New()
 
 	// LLM health check
-	llmClient := llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.Model)
+	llmClient := llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.Model, cfg.LLM.APIKey)
 	ctx5s, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := llmClient.Ping(ctx5s); err != nil {
 		log.Printf("⚠️  LLM not ready: %v", err)
