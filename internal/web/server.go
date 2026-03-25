@@ -22,6 +22,7 @@ import (
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/notify"
+	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -36,6 +37,7 @@ type Server struct {
 	evaluator  *policy.Evaluator
 	clf        *classifier.Classifier
 	notifier   *notify.MultiNotifier
+	skills     []*skillbridge.Skill // injected into agent system prompt
 	upgrader   websocket.Upgrader
 	clients    map[*websocket.Conn]string // conn → userName
 	clientsMu  sync.RWMutex
@@ -48,7 +50,7 @@ type wsMessage struct {
 }
 
 func NewServer(cfg *config.Config, cfgPath string, db *store.DB, evaluator *policy.Evaluator,
-	clf *classifier.Classifier, notifier *notify.MultiNotifier) *Server {
+	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill) *Server {
 	return &Server{
 		cfg:       cfg,
 		cfgPath:   cfgPath,
@@ -56,6 +58,7 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, evaluator *poli
 		evaluator: evaluator,
 		clf:       clf,
 		notifier:  notifier,
+		skills:    skills,
 		clients:   make(map[*websocket.Conn]string),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
@@ -128,6 +131,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	llmClient := llm.NewClient(s.cfg.LLM.BaseURL, s.cfg.ModelFor(userCfg), s.cfg.LLM.APIKey)
 	a := agent.NewAgent(userCfg, s.cfg, llmClient, s.evaluator, s.clf, s.db)
+	a.SetSkills(s.skills)
 
 	for {
 		var msg wsMessage

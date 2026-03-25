@@ -113,12 +113,17 @@ func main() {
 
 	// Skills loaded for prompt injection (independent of MCP)
 	reg := skillbridge.NewRegistry(cfg.Skills.Dir)
+	var enabledSkills []*skillbridge.Skill
 	if skills, err := reg.List(); err == nil {
 		for _, sk := range skills {
 			if reg.IsEnabled(sk.Name) {
+				enabledSkills = append(enabledSkills, sk)
 				log.Printf("Skill: %s v%s", sk.Name, sk.Version)
 			}
 		}
+	}
+	if len(enabledSkills) > 0 {
+		log.Printf("Skills: %d loaded for prompt injection", len(enabledSkills))
 	}
 
 	// Chat function for gateway router
@@ -126,6 +131,7 @@ func main() {
 		client := llm.NewClient(cfg.LLM.BaseURL, cfg.ModelFor(user), cfg.LLM.APIKey)
 		a := agent.NewAgent(user, cfg, client, evaluator, clf, db)
 		a.SetPool(mcpPool)
+		a.SetSkills(enabledSkills)
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {
 			return "", err
@@ -159,7 +165,7 @@ func main() {
 	}
 
 	// Web server
-	srv := web.NewServer(cfg, *cfgPath, db, evaluator, clf, notifier)
+	srv := web.NewServer(cfg, *cfgPath, db, evaluator, clf, notifier, enabledSkills)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),
