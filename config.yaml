@@ -14,16 +14,17 @@ server:
 
 # ── LLM backend ───────────────────────────────────────────────────────────────
 llm:
-  # Provider: "ollama" (recommended — fully local)
-  provider: "ollama"
-  base_url: "http://localhost:11434"
-
-  # Model to use. Recommendations by hardware:
-  #   RPi 5 (8GB):      llama3.2:3b  or  phi3.5:mini
-  #   RPi 4 (4GB):      phi3:mini    or  tinyllama
-  #   RPi 3 / old phone: tinyllama
-  #   Mac Mini M-series: llama3.1:8b  or  mistral:7b
-  model: "llama3.2:3b"
+  # FamClaw is a gateway — the LLM runs elsewhere.
+  # Set base_url to your LLM endpoint, or configure via the web UI on first boot.
+  #
+  # Examples:
+  #   Ollama on LAN:    http://192.168.1.10:11434
+  #   OpenAI:           https://api.openai.com/v1
+  #   Anthropic:        https://api.anthropic.com/v1
+  #   Local Ollama:     http://localhost:11434
+  base_url: ""
+  model: ""
+  # api_key: ""  # required for cloud providers, omit for Ollama
 
   # System prompt injected for all family interactions
   system_prompt: |

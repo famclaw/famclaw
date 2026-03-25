@@ -35,9 +35,8 @@ sha256sum -c famclaw-rpi4-arm64.img.xz.sha256
 2. Click **Choose OS** → **Use custom** → select the `.img.xz` file
 3. Click **Choose Storage** → select your SD card
 4. Click the **⚙️ gear icon** to set:
-   - Hostname: `famclaw`
-   - Enable SSH (optional, for advanced users)
-   - WiFi credentials (if not using ethernet)
+   - **Hostname:** `famclaw`
+   - **WiFi:** enter your network name and password
 5. Click **Write**
 
 **Alternative: command line**
@@ -53,18 +52,8 @@ Replace `/dev/sdX` with your SD card device (`lsblk` to find it).
 ## Step 3 — First boot
 
 1. Insert the SD card into your Pi
-2. Connect ethernet (recommended for first boot)
-3. Power on
-4. Wait 1–2 minutes — first boot:
-   - Generates a secret key
-   - Prompts for your LLM endpoint (if terminal attached)
-   - Starts FamClaw
-
-You can watch progress via serial console or by SSHing in:
-```bash
-ssh pi@famclaw.local
-sudo journalctl -u famclaw-firstboot -f
-```
+2. Power on
+3. Wait 1–2 minutes — FamClaw starts automatically
 
 ---
 
@@ -93,33 +82,18 @@ hostname -I
 
 ---
 
-## Default credentials
+## Step 5 — Configure your LLM
 
-| | Value |
-|---|---|
-| SSH user | `pi` |
-| SSH password | `raspberry` (change this!) |
-| Web UI | No login required on LAN |
-| Parent dashboard | No PIN yet (coming in v2) |
+The web UI shows a setup wizard on first visit. Enter your LLM endpoint:
 
----
-
-## LLM backend
-
-FamClaw is a **gateway** — it does not run the LLM locally. You need a separate LLM backend:
-
-| Backend | Example URL |
-|---------|-------------|
-| Ollama on Mac Mini / another Pi | `http://192.168.1.10:11434` |
+| Backend | URL |
+|---------|-----|
+| Ollama on LAN | `http://192.168.1.10:11434` |
 | OpenAI | `https://api.openai.com/v1` |
 | Anthropic | `https://api.anthropic.com/v1` |
 | OpenRouter | `https://openrouter.ai/api/v1` |
 
-The first boot script prompts you for the endpoint URL. To change later:
-```bash
-nano /opt/famclaw/config.yaml   # edit llm.base_url and llm.model
-sudo systemctl restart famclaw
-```
+Add your family members, set a parent PIN, and you're done.
 
 ---
 
