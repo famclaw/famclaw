@@ -19,6 +19,14 @@ func sanitizeHeader(s string) string {
 	return s
 }
 
+// sanitizeBody strips CR/LF to ensure untrusted content cannot escape the
+// intended body context when concatenated with headers.
+func sanitizeBody(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", "")
+	return s
+}
+
 // EmailNotifier sends notifications via SMTP email.
 type EmailNotifier struct {
 	cfg config.EmailConfig
@@ -49,8 +57,9 @@ func (e *EmailNotifier) send(subject, body string) error {
 		safeSubject := mime.QEncoding.Encode("utf-8", sanitizeHeader(subject))
 		safeFrom := sanitizeHeader(e.cfg.From)
 		safeTo := sanitizeHeader(to)
+		safeBody := sanitizeBody(body)
 		msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s",
-			safeFrom, safeTo, safeSubject, body)
+			safeFrom, safeTo, safeSubject, safeBody)
 		if err := smtp.SendMail(addr, auth, e.cfg.From, []string{to}, []byte(msg)); err != nil {
 			return fmt.Errorf("sending email to %s: %w", to, err)
 		}
