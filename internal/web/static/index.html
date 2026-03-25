@@ -151,6 +151,39 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
 #pin-cancel{background:var(--c-bg);color:var(--c-text)}
 #pin-ok{background:var(--c-primary);color:#fff}
 
+/* ── Settings screen ──────────────────────────────────────────────────────── */
+#settings-screen{flex:1;display:none;flex-direction:column;overflow:hidden}
+#settings-screen .d-scroll{flex:1;overflow-y:auto;padding:20px}
+.s-welcome{text-align:center;padding:24px 0 16px;margin-bottom:8px}
+.s-welcome h2{font-size:22px;margin-bottom:4px}
+.s-welcome p{color:var(--c-muted);font-size:14px}
+.s-field{margin-bottom:14px}
+.s-field label{display:block;font-size:13px;font-weight:600;color:var(--c-muted);
+  margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em}
+.s-field input,.s-field select{width:100%;padding:10px 12px;border:1.5px solid var(--c-border);
+  border-radius:8px;font-size:14px;font-family:inherit;outline:none;background:var(--c-bg)}
+.s-field input:focus,.s-field select:focus{border-color:var(--c-primary)}
+.s-row{display:flex;gap:10px;align-items:flex-end}
+.s-row .s-field{flex:1}
+.s-user-item{display:flex;align-items:center;gap:10px;padding:12px;
+  border-bottom:1px solid var(--c-bg)}
+.s-user-item:last-child{border-bottom:none}
+.s-user-item .s-user-info{flex:1;font-size:14px}
+.s-user-item .s-user-name{font-weight:600}
+.s-user-item .s-user-meta{color:var(--c-muted);font-size:12px}
+.s-rm-btn{background:none;border:none;color:var(--c-danger);cursor:pointer;
+  font-size:18px;padding:4px 8px}
+.s-add-btn{padding:10px;text-align:center;color:var(--c-primary);
+  cursor:pointer;font-weight:600;font-size:14px}
+.s-add-btn:hover{background:var(--c-bg)}
+.s-toggle{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.s-toggle input[type=checkbox]{width:18px;height:18px;accent-color:var(--c-primary)}
+.s-toggle label{font-weight:600;font-size:14px}
+.s-save{width:100%;padding:14px;border:none;border-radius:var(--radius);
+  background:var(--c-primary);color:#fff;font-size:16px;font-weight:700;
+  cursor:pointer;margin-top:16px}
+.s-save:hover{background:var(--c-primary-dark)}
+
 /* ── Toast ─────────────────────────────────────────────────────────────────── */
 #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(100px);
   background:#1e293b;color:#fff;padding:10px 20px;border-radius:99px;
@@ -211,6 +244,69 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
           <div class="empty-state">Loading…</div>
         </div>
       </div>
+      <div class="d-section">
+        <button class="s-save" style="background:var(--c-muted)" onclick="openSettings(false)">⚙️ Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings screen -->
+  <div id="settings-screen">
+    <div class="d-scroll">
+      <div id="setup-welcome" class="s-welcome" style="display:none">
+        <h2>Welcome to FamClaw</h2>
+        <p>Configure your AI backend to get started.</p>
+      </div>
+
+      <div class="d-section">
+        <div class="d-title">🤖 LLM Backend</div>
+        <div class="d-card" style="padding:16px">
+          <div class="s-field">
+            <label>Base URL</label>
+            <input id="s-llm-url" placeholder="http://192.168.1.10:11434 or https://api.openai.com/v1">
+          </div>
+          <div class="s-row">
+            <div class="s-field">
+              <label>Model</label>
+              <input id="s-llm-model" placeholder="llama3.2:3b">
+            </div>
+            <div class="s-field">
+              <label>API Key (optional)</label>
+              <input id="s-llm-key" type="password" placeholder="Leave empty for Ollama">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-section">
+        <div class="d-title">👨‍👩‍👧‍👦 Family Members</div>
+        <div class="d-card">
+          <div id="s-user-list"></div>
+          <div class="s-add-btn" onclick="settingsAddUser()">+ Add family member</div>
+        </div>
+      </div>
+
+      <div class="d-section">
+        <div class="d-title">💬 Gateways</div>
+        <div class="d-card" style="padding:16px">
+          <div class="s-toggle">
+            <input type="checkbox" id="s-gw-tg">
+            <label for="s-gw-tg">Telegram</label>
+          </div>
+          <div class="s-field" id="s-gw-tg-field" style="display:none">
+            <input id="s-gw-tg-token" placeholder="Telegram bot token">
+          </div>
+          <div class="s-toggle">
+            <input type="checkbox" id="s-gw-dc">
+            <label for="s-gw-dc">Discord</label>
+          </div>
+          <div class="s-field" id="s-gw-dc-field" style="display:none">
+            <input id="s-gw-dc-token" placeholder="Discord bot token">
+          </div>
+        </div>
+      </div>
+
+      <button class="s-save" onclick="saveSettings()">Save Settings</button>
     </div>
   </div>
 </div>
@@ -243,6 +339,11 @@ const state = {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 async function boot() {
+  const health = await apiFetch('/api/health');
+  if (health && health.needs_setup) {
+    openSettings(true);
+    return;
+  }
   const users = await apiFetch('/api/users');
   state.users = users || [];
   renderUserGrid();
@@ -533,6 +634,13 @@ function setupEventListeners() {
   };
 
   document.getElementById('mode-btn').onclick = () => {
+    if (state.mode === 'settings') {
+      state.mode = 'chat';
+      hide('settings-screen');
+      show('user-screen');
+      document.getElementById('mode-btn').textContent = 'Dashboard';
+      return;
+    }
     if (state.mode === 'dashboard') {
       state.mode = 'chat';
       show('user-screen');
@@ -616,6 +724,142 @@ function formatTime(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' ' +
          d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
+}
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+let settingsUsers = [];
+
+function openSettings(isFirstBoot) {
+  state.mode = 'settings';
+  hide('user-screen'); hide('chat-screen'); hide('dashboard-screen');
+  show('settings-screen');
+  document.getElementById('mode-btn').textContent = isFirstBoot ? '' : '← Back';
+  document.getElementById('setup-welcome').style.display = isFirstBoot ? 'block' : 'none';
+
+  document.getElementById('s-gw-tg').onchange = function() {
+    document.getElementById('s-gw-tg-field').style.display = this.checked ? 'block' : 'none';
+  };
+  document.getElementById('s-gw-dc').onchange = function() {
+    document.getElementById('s-gw-dc-field').style.display = this.checked ? 'block' : 'none';
+  };
+
+  loadSettings();
+}
+
+async function loadSettings() {
+  const data = await apiFetch('/api/settings');
+  if (!data) return;
+
+  document.getElementById('s-llm-url').value = data.llm.base_url || '';
+  document.getElementById('s-llm-model').value = data.llm.model || '';
+  document.getElementById('s-llm-key').value = '';
+  if (data.llm.api_key && data.llm.api_key !== '') {
+    document.getElementById('s-llm-key').placeholder = 'Key set (leave empty to keep)';
+  }
+
+  settingsUsers = (data.users || []).map(u => ({...u}));
+  renderSettingsUsers();
+
+  document.getElementById('s-gw-tg').checked = data.gateways?.telegram?.enabled || false;
+  document.getElementById('s-gw-tg-field').style.display = data.gateways?.telegram?.enabled ? 'block' : 'none';
+  document.getElementById('s-gw-dc').checked = data.gateways?.discord?.enabled || false;
+  document.getElementById('s-gw-dc-field').style.display = data.gateways?.discord?.enabled ? 'block' : 'none';
+}
+
+function renderSettingsUsers() {
+  const list = document.getElementById('s-user-list');
+  list.textContent = '';
+  settingsUsers.forEach((u, i) => {
+    const item = el('div', {class: 's-user-item'});
+    const info = el('div', {class: 's-user-info'});
+    const nameDiv = el('div', {class: 's-user-name'});
+    nameDiv.textContent = (u.role === 'parent' ? '👑 ' : '👤 ') + (u.display_name || u.name);
+    const metaDiv = el('div', {class: 's-user-meta'});
+    metaDiv.textContent = u.role + (u.role === 'child' ? ' (' + ageLabel(u.age_group) + ')' : '');
+    info.appendChild(nameDiv);
+    info.appendChild(metaDiv);
+    const rmBtn = el('button', {class: 's-rm-btn'});
+    rmBtn.textContent = '×';
+    rmBtn.onclick = () => settingsRemoveUser(i);
+    item.appendChild(info);
+    item.appendChild(rmBtn);
+    list.appendChild(item);
+  });
+}
+
+function settingsAddUser() {
+  const name = prompt('Name:');
+  if (!name) return;
+  const role = prompt('Role (parent/child):', 'child');
+  if (role !== 'parent' && role !== 'child') return;
+
+  const user = { name: name.toLowerCase().replace(/\s+/g,'-'), display_name: name, role };
+  if (role === 'child') {
+    const age = prompt('Age group (under_8 / age_8_12 / age_13_17):', 'age_8_12');
+    user.age_group = age;
+  }
+  if (role === 'parent') {
+    const pin = prompt('PIN (4+ digits):');
+    if (pin) user.pin = pin;
+  }
+  settingsUsers.push(user);
+  renderSettingsUsers();
+}
+
+function settingsRemoveUser(index) {
+  const u = settingsUsers[index];
+  if (u.role === 'parent' && settingsUsers.filter(x => x.role === 'parent').length <= 1) {
+    showToast('Cannot remove the last parent');
+    return;
+  }
+  settingsUsers.splice(index, 1);
+  renderSettingsUsers();
+}
+
+async function saveSettings() {
+  const url = document.getElementById('s-llm-url').value.trim();
+  const model = document.getElementById('s-llm-model').value.trim();
+
+  if (!url) { showToast('LLM Base URL is required'); return; }
+  if (!settingsUsers.some(u => u.role === 'parent')) {
+    showToast('At least one parent is required'); return;
+  }
+
+  const body = {
+    llm: { base_url: url, model: model },
+    users: settingsUsers,
+    gateways: {
+      telegram: {
+        enabled: document.getElementById('s-gw-tg').checked,
+        token: document.getElementById('s-gw-tg-token').value.trim(),
+      },
+      discord: {
+        enabled: document.getElementById('s-gw-dc').checked,
+        token: document.getElementById('s-gw-dc-token').value.trim(),
+      },
+      whatsapp: { enabled: false },
+    },
+  };
+
+  const apiKey = document.getElementById('s-llm-key').value.trim();
+  if (apiKey) body.llm.api_key = apiKey;
+
+  const pin = state.parentPIN || prompt('Parent PIN to save:');
+  if (!pin) return;
+  state.parentPIN = pin;
+
+  const result = await apiFetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Parent-PIN': pin },
+    body: JSON.stringify(body),
+  });
+
+  if (result && result.status === 'saved') {
+    showToast('Settings saved');
+    setTimeout(() => location.reload(), 500);
+  } else {
+    showToast('Failed to save — check PIN');
+  }
 }
 
 let toastTimer;
