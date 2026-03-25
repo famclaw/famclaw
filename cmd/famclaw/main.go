@@ -12,13 +12,21 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/agent"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/gateway"
+	"github.com/famclaw/famclaw/internal/gateway/discord"
+	"github.com/famclaw/famclaw/internal/gateway/telegram"
+	"github.com/famclaw/famclaw/internal/gateway/whatsapp"
+	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/llm"
+	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/mdns"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/seccheck"
+	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/web"
 )
@@ -87,6 +95,59 @@ func main() {
 	notifier := notify.NewMultiNotifier(cfg.Notifications, cfg.Server.Secret)
 	log.Printf("Notifications: configured")
 
+	// Identity store
+	identStore := identity.NewStore(db)
+	log.Printf("Identity: ready")
+
+	// MCP skill pool
+	mcpPool := mcp.NewPool()
+	reg := skillbridge.NewRegistry(cfg.Skills.Dir)
+	if skills, err := reg.List(); err == nil {
+		for _, sk := range skills {
+			if reg.IsEnabled(sk.Name) {
+				log.Printf("Skill: %s v%s", sk.Name, sk.Version)
+			}
+		}
+	}
+	defer mcpPool.StopAll()
+
+	// Chat function for gateway router
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+		client := llm.NewClient(cfg.LLM.BaseURL, cfg.ModelFor(user), cfg.LLM.APIKey)
+		a := agent.NewAgent(user, cfg, client, evaluator, clf, db)
+		a.SetPool(mcpPool)
+		resp, err := a.Chat(ctx, text, nil)
+		if err != nil {
+			return "", err
+		}
+		return resp.Content, nil
+	}
+
+	// Gateway router
+	router := gateway.NewRouter(cfg, identStore, clf, evaluator, db, notifier, chatFn)
+
+	// Gateway bots
+	var gateways []gateway.Gateway
+	if cfg.Gateways.Telegram.Enabled && cfg.Gateways.Telegram.Token != "" {
+		gateways = append(gateways, telegram.New(cfg.Gateways.Telegram.Token))
+		log.Printf("Gateway: Telegram enabled")
+	}
+	if cfg.Gateways.Discord.Enabled && cfg.Gateways.Discord.Token != "" {
+		gateways = append(gateways, discord.New(cfg.Gateways.Discord.Token))
+		log.Printf("Gateway: Discord enabled")
+	}
+	if cfg.Gateways.WhatsApp.Enabled {
+		gateways = append(gateways, whatsapp.New(cfg.Gateways.WhatsApp.DBPath))
+		log.Printf("Gateway: WhatsApp enabled (placeholder)")
+	}
+
+	gwCtx, gwCancel := context.WithCancel(context.Background())
+	defer gwCancel()
+	if len(gateways) > 0 {
+		gateway.StartAll(gwCtx, gateways, router.Handle)
+		log.Printf("Gateways: %d started", len(gateways))
+	}
+
 	// Web server
 	srv := web.NewServer(cfg, *cfgPath, db, evaluator, clf, notifier)
 	httpSrv := &http.Server{
@@ -115,6 +176,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down…")
+	gwCancel() // stop gateway bots
 
 	ctx, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel2()
