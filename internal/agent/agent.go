@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/llm"
+	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
 )
@@ -33,7 +35,13 @@ type Agent struct {
 	evaluator  *policy.Evaluator
 	classifier *classifier.Classifier
 	db         *store.DB
+	pool       *mcp.Pool // nil-safe — tool calls skipped if nil
 	convID     string
+}
+
+// SetPool attaches an MCP tool pool to the agent.
+func (a *Agent) SetPool(p *mcp.Pool) {
+	a.pool = p
 }
 
 // NewAgent creates an Agent for the given user.
@@ -110,6 +118,14 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		return nil, fmt.Errorf("LLM error: %w", err)
 	}
 
+	// ── 6b. Tool call loop (MCP) ─────────────────────────────────────────────
+	if a.pool != nil {
+		response, err = a.toolCallLoop(ctx, client, messages, response, cat)
+		if err != nil {
+			return nil, fmt.Errorf("tool call error: %w", err)
+		}
+	}
+
 	// ── 7. Save assistant response ───────────────────────────────────────────
 	_ = a.db.SaveMessage(a.convID, a.user.Name, "assistant", response, string(cat), "allow")
 
@@ -179,6 +195,65 @@ func ageContextPrompt(user *config.UserConfig) string {
 	default:
 		return ""
 	}
+}
+
+// toolCallLoop executes MCP tool calls from LLM responses, up to MaxToolCallIterations.
+func (a *Agent) toolCallLoop(ctx context.Context, client *llm.Client, messages []llm.Message, initialResponse string, cat classifier.Category) (string, error) {
+	// Get the full message with tool calls (non-streaming)
+	msg, err := client.ChatMessage(ctx, messages, a.cfg.LLM.Temperature, a.cfg.LLM.MaxResponseTokens)
+	if err != nil || msg == nil || len(msg.ToolCalls) == 0 {
+		return initialResponse, nil // no tool calls, return original
+	}
+
+	for i := 0; i < mcp.MaxToolCallIterations; i++ {
+		if len(msg.ToolCalls) == 0 {
+			break
+		}
+
+		// Append assistant message with tool calls
+		messages = append(messages, *msg)
+
+		// Execute each tool call
+		for _, tc := range msg.ToolCalls {
+			log.Printf("[agent][%s] tool_call: %s(%v)", a.user.Name, tc.Function.Name, tc.Function.Arguments)
+
+			if !a.pool.HasTool(tc.Function.Name) {
+				messages = append(messages, llm.Message{
+					Role:    "tool",
+					Content: fmt.Sprintf("Error: unknown tool %q", tc.Function.Name),
+				})
+				continue
+			}
+
+			result, err := a.pool.CallTool(ctx, tc.Function.Name, tc.Function.Arguments)
+			if err != nil {
+				messages = append(messages, llm.Message{
+					Role:    "tool",
+					Content: fmt.Sprintf("Error calling %s: %v", tc.Function.Name, err),
+				})
+				continue
+			}
+
+			// Extract text from MCP result
+			var toolText string
+			if result != nil && len(result.Content) > 0 {
+				resultJSON, _ := json.Marshal(result.Content)
+				toolText = string(resultJSON)
+			}
+			messages = append(messages, llm.Message{
+				Role:    "tool",
+				Content: toolText,
+			})
+		}
+
+		// Call LLM again with tool results
+		msg, err = client.ChatMessage(ctx, messages, a.cfg.LLM.Temperature, a.cfg.LLM.MaxResponseTokens)
+		if err != nil {
+			return "", fmt.Errorf("LLM error in tool loop iteration %d: %w", i+1, err)
+		}
+	}
+
+	return msg.Content, nil
 }
 
 // ApprovalID generates a deterministic approval ID for user+category+day.

@@ -15,8 +15,20 @@ import (
 
 // Message is a conversation turn.
 type Message struct {
-	Role    string `json:"role"`    // system | user | assistant
-	Content string `json:"content"`
+	Role      string     `json:"role"`                // system | user | assistant | tool
+	Content   string     `json:"content"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"` // present when LLM requests tool use
+}
+
+// ToolCall represents a tool invocation requested by the LLM.
+type ToolCall struct {
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolCallFunction holds the tool name and arguments.
+type ToolCallFunction struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
 }
 
 // Client talks to an Ollama-compatible local LLM server.
@@ -56,8 +68,12 @@ type ollamaOptions struct {
 }
 
 type ollamaChunk struct {
-	Message Message `json:"message"`
-	Done    bool    `json:"done"`
+	Message struct {
+		Role      string     `json:"role"`
+		Content   string     `json:"content"`
+		ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	} `json:"message"`
+	Done bool `json:"done"`
 }
 
 // Chat sends a conversation to the LLM and streams the response token by token.
@@ -117,6 +133,56 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 	}
 
 	return full, scanner.Err()
+}
+
+// ChatMessage sends a conversation and returns the full response Message including tool calls.
+// Uses non-streaming mode to get the complete message with tool_calls in a single response.
+func (c *Client) ChatMessage(ctx context.Context, messages []Message, temp float64, maxTokens int) (*Message, error) {
+	return c.chatFull(ctx, messages, temp, maxTokens)
+}
+
+// chatFull does a non-streaming chat call and returns the full Message with tool calls.
+func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64, maxTokens int) (*Message, error) {
+	req := ollamaRequest{
+		Model:    c.model,
+		Messages: messages,
+		Stream:   false,
+		Options:  ollamaOptions{Temperature: temp, NumPredict: maxTokens},
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		c.baseURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("ollama request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ollama %d: %s", resp.StatusCode, string(b))
+	}
+
+	var result struct {
+		Message Message `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("parsing response: %w", err)
+	}
+	return &result.Message, nil
 }
 
 // ChatSync sends a conversation and returns the full response (non-streaming).
