@@ -185,7 +185,7 @@ jobs:
         run: |
           results='${{ toJSON(needs) }}'
           echo "$results"
-          if echo "$results" | grep -q '"result":"failure"\|"result":"cancelled"'; then
+          if echo "$results" | jq -e 'to_entries | map(.value.result) | any(. == "failure" or . == "cancelled")' > /dev/null; then
             echo "One or more jobs failed or were cancelled."
             exit 1
           fi
