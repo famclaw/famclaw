@@ -8,6 +8,8 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/famclaw/famclaw/internal/config"
 )
 
 func newMockServer() *server.MCPServer {
@@ -36,6 +38,7 @@ func newMockServer() *server.MCPServer {
 	return s
 }
 
+// newTestClient creates a Client backed by an in-process mock MCP server.
 func newTestClient(t *testing.T) *Client {
 	t.Helper()
 
@@ -62,15 +65,80 @@ func newTestClient(t *testing.T) *Client {
 	}
 
 	return &Client{
-		cmd:   "mock",
-		inner: inner,
-		tools: toolsResult.Tools,
+		name:          "mock",
+		transportType: "inprocess",
+		inner:         inner,
+		tools:         toolsResult.Tools,
 	}
 }
 
+// ── Transport constructor tests ──────────────────────────────────────────────
+
+func TestNewTransportClient_Stdio(t *testing.T) {
+	cfg := config.MCPServerConfig{Transport: "stdio", Command: "echo"}
+	c := NewTransportClient("test", cfg)
+	if c.transportType != "stdio" {
+		t.Errorf("transport = %q, want stdio", c.transportType)
+	}
+}
+
+func TestNewTransportClient_HTTP(t *testing.T) {
+	cfg := config.MCPServerConfig{Transport: "http", URL: "http://localhost:9999/mcp"}
+	c := NewTransportClient("test", cfg)
+	if c.transportType != "http" {
+		t.Errorf("transport = %q, want http", c.transportType)
+	}
+}
+
+func TestNewTransportClient_SSE(t *testing.T) {
+	cfg := config.MCPServerConfig{Transport: "sse", URL: "http://localhost:9999/sse"}
+	c := NewTransportClient("test", cfg)
+	if c.transportType != "sse" {
+		t.Errorf("transport = %q, want sse", c.transportType)
+	}
+}
+
+func TestNewTransportClient_DefaultStdio(t *testing.T) {
+	cfg := config.MCPServerConfig{Command: "some-cmd"}
+	c := NewTransportClient("test", cfg)
+	if c.transportType != "stdio" {
+		t.Errorf("empty transport with command should default to stdio, got %q", c.transportType)
+	}
+}
+
+func TestNewTransportClient_DefaultHTTP(t *testing.T) {
+	cfg := config.MCPServerConfig{URL: "http://example.com/mcp"}
+	c := NewTransportClient("test", cfg)
+	if c.transportType != "http" {
+		t.Errorf("empty transport with url should default to http, got %q", c.transportType)
+	}
+}
+
+func TestNewTransportClient_UnknownTransportFails(t *testing.T) {
+	cfg := config.MCPServerConfig{Transport: "grpc", URL: "localhost:50051"}
+	c := NewTransportClient("test", cfg)
+	err := c.Start(context.Background())
+	if err == nil {
+		t.Error("expected error for unknown transport")
+	}
+}
+
+func TestNewTransportClient_StdioFailsBadBinary(t *testing.T) {
+	cfg := config.MCPServerConfig{Transport: "stdio", Command: "nonexistent-binary-xyz"}
+	c := NewTransportClient("test", cfg)
+	err := c.Start(context.Background())
+	if err == nil {
+		t.Error("expected error for bad binary")
+	}
+	if c.inner != nil {
+		t.Error("inner should be nil after failed start")
+	}
+}
+
+// ── InProcess client tests (transport-agnostic behavior) ─────────────────────
+
 func TestClientToolsList(t *testing.T) {
 	c := newTestClient(t)
-
 	tools := c.Tools()
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(tools))
@@ -89,12 +157,10 @@ func TestClientToolsList(t *testing.T) {
 
 func TestClientCallToolEcho(t *testing.T) {
 	c := newTestClient(t)
-
 	result, err := c.CallTool(context.Background(), "echo", map[string]any{"text": "hello"})
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
-
 	if text, ok := mcp.AsTextContent(result.Content[0]); ok {
 		if text.Text != "hello" {
 			t.Errorf("echo = %q, want hello", text.Text)
@@ -106,12 +172,10 @@ func TestClientCallToolEcho(t *testing.T) {
 
 func TestClientCallToolAdd(t *testing.T) {
 	c := newTestClient(t)
-
 	result, err := c.CallTool(context.Background(), "add", map[string]any{"a": float64(3), "b": float64(4)})
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
-
 	if text, ok := mcp.AsTextContent(result.Content[0]); ok {
 		if text.Text != "7" {
 			t.Errorf("add = %q, want 7", text.Text)
@@ -120,6 +184,19 @@ func TestClientCallToolAdd(t *testing.T) {
 		t.Error("expected TextContent")
 	}
 }
+
+func TestClientStopAndReconnect(t *testing.T) {
+	c := newTestClient(t)
+	if len(c.Tools()) == 0 {
+		t.Fatal("expected tools")
+	}
+	c.Stop()
+	if c.inner != nil {
+		t.Error("inner should be nil after Stop")
+	}
+}
+
+// ── Pool tests ───────────────────────────────────────────────────────────────
 
 func TestPoolHasTool(t *testing.T) {
 	pool := NewPool()
@@ -155,47 +232,46 @@ func TestPoolListToolsEmpty(t *testing.T) {
 	}
 }
 
-// TestClientLifecycle exercises the real Client Start/Stop/reconnect path.
-func TestClientLifecycle(t *testing.T) {
-	c := NewClient("nonexistent-binary-that-should-fail")
+// ── Config validation tests ──────────────────────────────────────────────────
 
-	// Start should fail with a bad binary
-	err := c.Start(context.Background())
-	if err == nil {
-		t.Fatal("expected error starting with bad binary")
+func TestValidateMCPServer(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     config.MCPServerConfig
+		wantErr bool
+	}{
+		{"valid stdio", config.MCPServerConfig{Transport: "stdio", Command: "echo"}, false},
+		{"valid http", config.MCPServerConfig{Transport: "http", URL: "http://localhost/mcp"}, false},
+		{"valid sse", config.MCPServerConfig{Transport: "sse", URL: "http://localhost/sse"}, false},
+		{"infer stdio", config.MCPServerConfig{Command: "echo"}, false},
+		{"infer http", config.MCPServerConfig{URL: "http://localhost/mcp"}, false},
+		{"stdio missing command", config.MCPServerConfig{Transport: "stdio"}, true},
+		{"http missing url", config.MCPServerConfig{Transport: "http"}, true},
+		{"unknown transport", config.MCPServerConfig{Transport: "grpc"}, true},
+		{"empty config", config.MCPServerConfig{}, true},
 	}
 
-	// inner should still be nil after failed start
-	if c.inner != nil {
-		t.Error("inner should be nil after failed start")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := config.ValidateMCPServer("test", tt.cfg)
+			if tt.wantErr && err == nil {
+				t.Error("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
-
-	// Tools should be empty
-	if len(c.Tools()) != 0 {
-		t.Error("tools should be empty after failed start")
-	}
-
-	// Stop should not panic on never-started client
-	c.Stop()
 }
 
-// TestClientStopAndReconnect verifies Stop nils inner to allow reconnect.
-func TestClientStopAndReconnect(t *testing.T) {
-	c := newTestClient(t)
-
-	// Should have tools
-	if len(c.Tools()) == 0 {
-		t.Fatal("expected tools")
+func TestPoolRegisterFromConfig(t *testing.T) {
+	pool := NewPool()
+	servers := map[string]config.MCPServerConfig{
+		"enabled":  {Transport: "stdio", Command: "echo"},
+		"disabled": {Transport: "stdio", Command: "nope", Disabled: true},
 	}
-
-	// Stop
-	c.Stop()
-
-	// inner should be nil after stop
-	if c.inner != nil {
-		t.Error("inner should be nil after Stop")
-	}
-	if !c.closed {
-		t.Error("closed should be true after Stop")
+	pool.RegisterFromConfig(servers)
+	if len(pool.clients) != 1 {
+		t.Errorf("expected 1 client (disabled skipped), got %d", len(pool.clients))
 	}
 }

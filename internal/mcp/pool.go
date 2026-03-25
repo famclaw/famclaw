@@ -7,18 +7,20 @@ import (
 	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/famclaw/famclaw/internal/config"
 )
 
-// Pool manages multiple MCP clients (one per skill), with lazy start and auto-restart.
+// Pool manages multiple MCP clients (one per server), with lazy start and auto-restart.
 type Pool struct {
-	clients map[string]*managedClient // tool name → client
+	clients map[string]*managedClient // server name + tool name → client
 	mu      sync.RWMutex
 }
 
 type managedClient struct {
 	client     *Client
-	cmd        string
-	args       []string
+	name       string
+	cfg        config.MCPServerConfig
 	restartCnt int
 }
 
@@ -29,41 +31,52 @@ func NewPool() *Pool {
 	}
 }
 
-// Register adds an MCP server to the pool.
-func (p *Pool) Register(cmd string, args ...string) {
+// RegisterFromConfig registers MCP servers from config.
+// Disabled servers and invalid configs are skipped with a log message.
+func (p *Pool) RegisterFromConfig(servers map[string]config.MCPServerConfig) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	mc := &managedClient{
-		client: NewClient(cmd, args...),
-		cmd:    cmd,
-		args:   args,
+	for name, cfg := range servers {
+		if cfg.Disabled {
+			continue
+		}
+		if err := config.ValidateMCPServer(name, cfg); err != nil {
+			log.Printf("[mcp-pool] skip %s: %v", name, err)
+			continue
+		}
+		p.clients[name] = &managedClient{
+			client: NewTransportClient(name, cfg),
+			name:   name,
+			cfg:    cfg,
+		}
 	}
-	p.clients[cmd] = mc
 }
 
-// StartAll starts all registered MCP servers and maps their tools.
+// StartAll starts all registered MCP servers and maps their tools by name.
+// Failed servers are kept in the map for later retry — not removed.
 func (p *Pool) StartAll(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	newClients := make(map[string]*managedClient)
-	for key, mc := range p.clients {
+	toolAliases := make(map[string]*managedClient)
+	for name, mc := range p.clients {
 		if err := mc.client.Start(ctx); err != nil {
-			log.Printf("[mcp-pool] failed to start %s: %v", key, err)
+			log.Printf("[mcp-pool] failed to start %s: %v", name, err)
 			continue
 		}
 		for _, tool := range mc.client.Tools() {
-			newClients[tool.Name] = mc
+			toolAliases[tool.Name] = mc
 		}
-		newClients[key] = mc
 	}
-	p.clients = newClients
+	for toolName, mc := range toolAliases {
+		p.clients[toolName] = mc
+	}
 	return nil
 }
 
 // CallTool calls a tool by name, lazily starting the server if needed.
-// Restarts crashed servers once automatically.
+// Restarts failed servers once. Resets restart count on success.
 func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {
 	p.mu.RLock()
 	mc, ok := p.clients[name]
@@ -74,18 +87,23 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 	}
 
 	result, err := mc.client.CallTool(ctx, name, args)
-	if err != nil && mc.restartCnt < 1 {
-		log.Printf("[mcp-pool] tool %q failed, restarting: %v", name, err)
+	if err == nil {
+		mc.restartCnt = 0
+		return result, nil
+	}
+
+	if mc.restartCnt < 1 {
+		log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
 		mc.restartCnt++
 		mc.client.Stop()
-		mc.client = NewClient(mc.cmd, mc.args...)
+		mc.client = NewTransportClient(mc.name, mc.cfg)
 		if startErr := mc.client.Start(ctx); startErr != nil {
-			return nil, fmt.Errorf("restarting MCP server for %q: %w", name, startErr)
+			return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
 		}
 		return mc.client.CallTool(ctx, name, args)
 	}
 
-	return result, err
+	return nil, err
 }
 
 // HasTool returns true if the pool has a handler for the given tool.
@@ -114,7 +132,7 @@ func (p *Pool) ListTools() []string {
 	return names
 }
 
-// StopAll terminates all MCP server processes.
+// StopAll terminates all MCP server connections.
 func (p *Pool) StopAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

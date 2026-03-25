@@ -99,8 +99,19 @@ func main() {
 	identStore := identity.NewStore(db)
 	log.Printf("Identity: ready")
 
-	// MCP skill pool
+	// MCP tool server pool (stdio, HTTP, SSE transports)
 	mcpPool := mcp.NewPool()
+	if len(cfg.Skills.MCPServers) > 0 {
+		mcpPool.RegisterFromConfig(cfg.Skills.MCPServers)
+		if err := mcpPool.StartAll(context.Background()); err != nil {
+			log.Printf("MCP pool: %v", err)
+		}
+		tools := mcpPool.ListTools()
+		log.Printf("MCP: %d servers configured, %d tools available", len(cfg.Skills.MCPServers), len(tools))
+	}
+	defer mcpPool.StopAll()
+
+	// Skills loaded for prompt injection (independent of MCP)
 	reg := skillbridge.NewRegistry(cfg.Skills.Dir)
 	if skills, err := reg.List(); err == nil {
 		for _, sk := range skills {
@@ -109,7 +120,6 @@ func main() {
 			}
 		}
 	}
-	defer mcpPool.StopAll()
 
 	// Chat function for gateway router
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
