@@ -23,14 +23,19 @@ type Message struct {
 type Client struct {
 	baseURL string
 	model   string
+	apiKey  string
 	http    *http.Client
 }
 
 // NewClient creates a new LLM client.
-func NewClient(baseURL, model string) *Client {
+// When apiKey is non-empty, an Authorization: Bearer header is sent.
+// When apiKey is empty, no Authorization header is sent (Ollama doesn't need it,
+// and some proxies reject unexpected headers).
+func NewClient(baseURL, model, apiKey string) *Client {
 	return &Client{
 		baseURL: baseURL,
 		model:   model,
+		apiKey:  apiKey,
 		http: &http.Client{
 			Timeout: 5 * time.Minute, // LLMs can be slow on RPi
 		},
@@ -79,6 +84,9 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 		return "", err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -121,6 +129,9 @@ func (c *Client) Ping(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/tags", nil)
 	if err != nil {
 		return err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

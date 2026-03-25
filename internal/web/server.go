@@ -126,7 +126,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[ws] %s connected", userCfg.DisplayName)
 
-	llmClient := llm.NewClient(s.cfg.LLM.BaseURL, s.cfg.ModelFor(userCfg))
+	llmClient := llm.NewClient(s.cfg.LLM.BaseURL, s.cfg.ModelFor(userCfg), s.cfg.LLM.APIKey)
 	a := agent.NewAgent(userCfg, s.cfg, llmClient, s.evaluator, s.clf, s.db)
 
 	for {

@@ -103,7 +103,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 
 	// ── 6. Stream LLM response ────────────────────────────────────────────────
 	model := a.cfg.ModelFor(a.user)
-	client := llm.NewClient(a.cfg.LLM.BaseURL, model)
+	client := llm.NewClient(a.cfg.LLM.BaseURL, model, a.cfg.LLM.APIKey)
 
 	response, err := client.Chat(ctx, messages, a.cfg.LLM.Temperature, a.cfg.LLM.MaxResponseTokens, onToken)
 	if err != nil {
