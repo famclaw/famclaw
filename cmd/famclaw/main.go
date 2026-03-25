@@ -28,6 +28,12 @@ var Version = "dev"
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
+	// Dispatch subcommands before flag parsing
+	if len(os.Args) >= 2 && os.Args[1] == "skill" {
+		runSkillCommand(os.Args[2:])
+		return
+	}
+
 	cfgPath  := flag.String("config", "config.yaml", "Config file path")
 	seccheckURL := flag.String("seccheck", "", "Run seccheck on a git URL and exit")
 	showVersion := flag.Bool("version", false, "Print version and exit")
