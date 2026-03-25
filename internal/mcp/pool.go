@@ -86,12 +86,20 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
 
+	// Lazy start: if server failed at boot or hasn't started yet
+	if mc.client.inner == nil {
+		if err := mc.client.Start(ctx); err != nil {
+			return nil, fmt.Errorf("starting MCP server %q for tool %q: %w", mc.name, name, err)
+		}
+	}
+
 	result, err := mc.client.CallTool(ctx, name, args)
 	if err == nil {
 		mc.restartCnt = 0
 		return result, nil
 	}
 
+	// Auto-restart once on failure
 	if mc.restartCnt < 1 {
 		log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
 		mc.restartCnt++
@@ -100,7 +108,11 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 		if startErr := mc.client.Start(ctx); startErr != nil {
 			return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
 		}
-		return mc.client.CallTool(ctx, name, args)
+		result, err = mc.client.CallTool(ctx, name, args)
+		if err == nil {
+			mc.restartCnt = 0 // reset on successful retry
+		}
+		return result, err
 	}
 
 	return nil, err

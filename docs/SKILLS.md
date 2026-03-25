@@ -140,31 +140,34 @@ Configure MCP servers in `config.yaml` under `skills.mcp_servers`:
 **Stdio (local process)** — for devices that can run tool binaries (Mac, beefy RPi):
 
 ```yaml
-mcp_servers:
-  seccheck:
-    transport: stdio
-    command: seccheck
-    args: ["--json"]
+skills:
+  mcp_servers:
+    seccheck:
+      transport: stdio
+      command: seccheck
+      args: ["--json"]
 ```
 
 **HTTP (remote server)** — for constrained devices (Android, RPi-as-gateway) connecting to tools on LAN:
 
 ```yaml
-mcp_servers:
-  remote-tools:
-    transport: http
-    url: "http://192.168.1.10:3001/mcp"
-    headers:
-      Authorization: "Bearer ${MCP_TOKEN}"
+skills:
+  mcp_servers:
+    remote-tools:
+      transport: http
+      url: "http://192.168.1.10:3001/mcp"
+      headers:
+        Authorization: "Bearer ${MCP_TOKEN}"
 ```
 
 **SSE (legacy)** — for older MCP servers using Server-Sent Events:
 
 ```yaml
-mcp_servers:
-  legacy:
-    transport: sse
-    url: "http://192.168.1.10:3002/sse"
+skills:
+  mcp_servers:
+    legacy:
+      transport: sse
+      url: "http://192.168.1.10:3002/sse"
 ```
 
 Servers are enabled by default. Add `disabled: true` to skip without removing.

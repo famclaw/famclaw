@@ -185,7 +185,7 @@ func TestClientCallToolAdd(t *testing.T) {
 	}
 }
 
-func TestClientStopAndReconnect(t *testing.T) {
+func TestClientStopNilsInner(t *testing.T) {
 	c := newTestClient(t)
 	if len(c.Tools()) == 0 {
 		t.Fatal("expected tools")
@@ -193,6 +193,9 @@ func TestClientStopAndReconnect(t *testing.T) {
 	c.Stop()
 	if c.inner != nil {
 		t.Error("inner should be nil after Stop")
+	}
+	if !c.closed {
+		t.Error("closed should be true after Stop")
 	}
 }
 

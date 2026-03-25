@@ -202,6 +202,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	applyDefaults(&cfg)
+
+	// Validate MCP server configs at load time
+	for name, mcpCfg := range cfg.Skills.MCPServers {
+		if mcpCfg.Disabled {
+			continue
+		}
+		if err := ValidateMCPServer(name, mcpCfg); err != nil {
+			return nil, err
+		}
+	}
+
 	return &cfg, nil
 }
 
