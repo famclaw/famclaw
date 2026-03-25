@@ -83,5 +83,5 @@ func formatApprovalHTML(a *store.Approval, approveURL, denyURL string) string {
 <a href="%s" style="background:#ef4444;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none">Deny</a>
 </div>
 <p style="color:#6b7280;font-size:13px">This link expires in 24 hours.</p>
-</body></html>`, esc(a.UserDisplay), esc(a.AgeGroup), esc(a.Category), esc(a.QueryText), esc(a.AgeGroup), approveURL, denyURL)
+</body></html>`, esc(a.UserDisplay), esc(a.AgeGroup), esc(a.Category), esc(a.QueryText), esc(a.AgeGroup), esc(approveURL), esc(denyURL))
 }
