@@ -1,26 +1,31 @@
 package web
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/famclaw/famclaw/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
+// cfgMu guards concurrent access to s.cfg during settings reads/writes.
+var cfgMu sync.RWMutex
+
 // settingsView is the JSON shape for GET/POST /api/settings.
 type settingsView struct {
-	LLM      llmSettingsView      `json:"llm"`
-	Users    []userSettingsView   `json:"users"`
-	Gateways gatewaySettingsView  `json:"gateways"`
+	LLM      llmSettingsView     `json:"llm"`
+	Users    []userSettingsView  `json:"users"`
+	Gateways gatewaySettingsView `json:"gateways"`
 }
 
 type llmSettingsView struct {
-	BaseURL  string `json:"base_url"`
-	Model    string `json:"model"`
-	APIKey   string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url"`
+	Model   string `json:"model"`
+	APIKey  string `json:"api_key,omitempty"`
 }
 
 type userSettingsView struct {
@@ -48,7 +53,6 @@ type gatewaySettingsView struct {
 }
 
 // handleSettings handles GET (read config) and POST (update config).
-// Requires parent PIN for writes.
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
@@ -61,18 +65,19 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
+	cfgMu.RLock()
+	defer cfgMu.RUnlock()
+
 	view := settingsView{
 		LLM: llmSettingsView{
 			BaseURL: s.cfg.LLM.BaseURL,
 			Model:   s.cfg.LLM.Model,
-			// Don't expose API key in GET — return masked
 		},
-		Gateways: gatewaySettingsView{},
 	}
 
-	// Mask API key
-	if s.cfg.LLM.BaseURL != "" && s.cfg.LLM.BaseURL != "http://localhost:11434" {
-		view.LLM.APIKey = "••••••••" // masked
+	// Mask API key — never expose in GET
+	if s.cfg.LLM.APIKey != "" {
+		view.LLM.APIKey = "••••••••"
 	}
 
 	for _, u := range s.cfg.Users {
@@ -93,9 +98,9 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
-	// Require parent PIN
+	// Require parent PIN — constant-time comparison
 	pin := r.Header.Get("X-Parent-PIN")
-	if !s.verifyParentPIN(pin) {
+	if !s.verifyParentPINConstantTime(pin) {
 		jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
 		return
 	}
@@ -106,17 +111,29 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update in-memory config
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+
+	// LLM config
 	if update.LLM.BaseURL != "" {
 		s.cfg.LLM.BaseURL = update.LLM.BaseURL
 	}
 	if update.LLM.Model != "" {
 		s.cfg.LLM.Model = update.LLM.Model
 	}
+	// Only update API key if client sends a non-masked value
+	if update.LLM.APIKey != "" && update.LLM.APIKey != "••••••••" {
+		s.cfg.LLM.APIKey = update.LLM.APIKey
+	}
 
+	// Users — validate at least one parent remains
 	if len(update.Users) > 0 {
+		hasParent := false
 		var users []config.UserConfig
 		for _, u := range update.Users {
+			if u.Role == "parent" {
+				hasParent = true
+			}
 			users = append(users, config.UserConfig{
 				Name:        u.Name,
 				DisplayName: u.DisplayName,
@@ -126,9 +143,14 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				Color:       u.Color,
 			})
 		}
+		if !hasParent {
+			jsonErr(w, fmt.Errorf("at least one parent user is required"), http.StatusBadRequest)
+			return
+		}
 		s.cfg.Users = users
 	}
 
+	// Gateways
 	s.cfg.Gateways.Telegram.Enabled = update.Gateways.Telegram.Enabled
 	if update.Gateways.Telegram.Token != "" {
 		s.cfg.Gateways.Telegram.Token = update.Gateways.Telegram.Token
@@ -161,7 +183,21 @@ func (s *Server) writeConfig() error {
 	return nil
 }
 
+// verifyParentPINConstantTime checks the PIN using constant-time comparison.
+func (s *Server) verifyParentPINConstantTime(pin string) bool {
+	for _, u := range s.cfg.Users {
+		if u.Role == "parent" && u.PIN != "" {
+			if subtle.ConstantTimeCompare([]byte(pin), []byte(u.PIN)) == 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // NeedsSetup returns true if the LLM endpoint is not configured.
 func (s *Server) NeedsSetup() bool {
+	cfgMu.RLock()
+	defer cfgMu.RUnlock()
 	return s.cfg.LLM.BaseURL == ""
 }

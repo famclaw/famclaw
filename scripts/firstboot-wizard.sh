@@ -24,7 +24,7 @@ while true; do
 done
 
 USERS_YAML="  - name: \"$(echo "$PARENT_NAME" | tr '[:upper:]' '[:lower:]')\"
-    display_name: \"$PARENT_NAME\"
+    display_name: $(printf '%s' "$PARENT_NAME" | sed 's/"/\\"/g; s/:/\\:/g')
     role: \"parent\"
     pin: \"$PARENT_PIN\"
     color: \"#6366f1\""

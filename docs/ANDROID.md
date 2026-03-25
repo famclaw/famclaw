@@ -93,7 +93,7 @@ famclaw-start
 
 From any device on the same network:
 
-```
+```text
 http://<phone-ip>:8080
 ```
 
