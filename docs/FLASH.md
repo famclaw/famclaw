@@ -55,9 +55,9 @@ Replace `/dev/sdX` with your SD card device (`lsblk` to find it).
 1. Insert the SD card into your Pi
 2. Connect ethernet (recommended for first boot)
 3. Power on
-4. Wait 2–5 minutes — first boot:
-   - Installs Ollama
-   - Downloads the AI model (this takes a while depending on your internet speed)
+4. Wait 1–2 minutes — first boot:
+   - Generates a secret key
+   - Prompts for your LLM endpoint (if terminal attached)
    - Starts FamClaw
 
 You can watch progress via serial console or by SSHing in:
@@ -104,22 +104,20 @@ hostname -I
 
 ---
 
-## Model recommendations by Pi model
+## LLM backend
 
-| Hardware | RAM | Model | Download size |
-|---|---|---|---|
-| Pi 5 (8GB) | 8GB | `llama3.1:8b` | ~5GB |
-| Pi 5 (4GB) / Pi 4 (4GB+) | 4GB+ | `llama3.2:3b` | ~2GB |
-| Pi 4 (2GB) / Pi 3 | 2GB | `phi3:mini` | ~2GB |
-| Pi 3 (1GB) | 1GB | `tinyllama` | ~600MB |
+FamClaw is a **gateway** — it does not run the LLM locally. You need a separate LLM backend:
 
-The first boot script selects automatically based on your Pi's RAM.
+| Backend | Example URL |
+|---------|-------------|
+| Ollama on Mac Mini / another Pi | `http://192.168.1.10:11434` |
+| OpenAI | `https://api.openai.com/v1` |
+| Anthropic | `https://api.anthropic.com/v1` |
+| OpenRouter | `https://openrouter.ai/api/v1` |
 
-To change the model later:
+The first boot script prompts you for the endpoint URL. To change later:
 ```bash
-# On the Pi:
-ollama pull llama3.2:3b
-# Edit /opt/famclaw/config.yaml → llm.model
+nano /opt/famclaw/config.yaml   # edit llm.base_url and llm.model
 sudo systemctl restart famclaw
 ```
 
@@ -132,13 +130,9 @@ sudo systemctl restart famclaw
 - Try the IP address directly
 - On Windows, install [Bonjour](https://support.apple.com/kb/DL999)
 
-**First boot taking too long:**
-- Model download can take 10–30 min on slow connections
-- Check progress: `ssh pi@famclaw.local "sudo journalctl -u famclaw-firstboot -f"`
-
 **FamClaw not starting:**
 - Check logs: `sudo journalctl -u famclaw -f`
-- Verify Ollama is running: `systemctl status ollama`
+- Verify LLM endpoint is reachable from the Pi
 
 **Out of disk space:**
 - Use a larger SD card (32GB+)

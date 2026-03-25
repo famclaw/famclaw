@@ -65,6 +65,7 @@ type LLMConfig struct {
 	Provider          string  `yaml:"provider"`
 	BaseURL           string  `yaml:"base_url"`
 	Model             string  `yaml:"model"`
+	APIKey            string  `yaml:"api_key,omitempty"`
 	SystemPrompt      string  `yaml:"system_prompt"`
 	MaxContextTokens  int     `yaml:"max_context_tokens"`
 	MaxResponseTokens int     `yaml:"max_response_tokens"`

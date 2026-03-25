@@ -135,7 +135,7 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 
 ## Status
 
-🚧 **Active development — Waves 1–4 complete.**
+🚧 **Active development — Waves 1–5 complete.**
 
 | Component | Status | Tests |
 |-----------|--------|-------|
@@ -152,12 +152,17 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 | `internal/agent` | Built | Conversation loop with streaming |
 | `internal/llm` | Built | Ollama-compatible streaming client |
 | `internal/store` | Built | Pure-Go SQLite (modernc), no CGO |
-| `internal/web` | Built | HTTP + WebSocket + embedded UI |
+| `internal/web` | Built | HTTP + WebSocket + embedded UI + Settings API |
 | `internal/seccheck` | Built | Security scanner for skills/repos |
 | `internal/config` | Built | YAML + env expansion |
 | `internal/mdns` | Built | LAN discovery (famclaw.local) |
 | `policies/` | Built | OPA Rego policies + topics.json taxonomy |
 | `integration_test.go` | Built | 28 pass — full message flow, cross-gateway policy, panic-LLM proof |
+| `skills-repo/seccheck` | Built | SKILL.md + CLI wrapper + Makefile target |
+| `scripts/build-image.sh` | Built | Flashable SD card image builder |
+| `scripts/firstboot.sh` | Built | First-boot setup: FS expand, Ollama, model pull |
+| `scripts/firstboot-wizard.sh` | Built | Interactive family + gateway config wizard |
+| `docs/` | Built | FLASH, GATEWAYS, PERSONAS, SKILLS, HARDWARE, ANDROID |
 
 See [AGENTS.md](./AGENTS.md) for the full build plan.
 

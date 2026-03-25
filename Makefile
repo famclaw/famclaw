@@ -102,6 +102,17 @@ install-launchd: install
 	launchctl load ~/Library/LaunchAgents/com.famclaw.plist
 	@echo "✅ launchd service running. Logs: tail -f ~/Library/Logs/famclaw.log"
 
+## build-seccheck: Build seccheck binary for all targets
+build-seccheck:
+	@mkdir -p $(BUILD_DIR)/seccheck
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+		go build $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-arm64 ./skills-repo/seccheck/bin/
+	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 \
+		go build $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-armv7 ./skills-repo/seccheck/bin/
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+		go build $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-amd64 ./skills-repo/seccheck/bin/
+	@echo "✅ seccheck binaries: $(BUILD_DIR)/seccheck/"
+
 ## clean: Remove build artifacts
 clean:
 	rm -rf $(BUILD_DIR)

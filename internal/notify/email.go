@@ -3,12 +3,20 @@ package notify
 import (
 	"context"
 	"fmt"
+	"mime"
 	"net/smtp"
 	"strings"
 
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/store"
 )
+
+// sanitizeHeader strips CR/LF to prevent email header injection.
+func sanitizeHeader(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", "")
+	return s
+}
 
 // EmailNotifier sends notifications via SMTP email.
 type EmailNotifier struct {
@@ -37,8 +45,11 @@ func (e *EmailNotifier) send(subject, body string) error {
 	auth := smtp.PlainAuth("", e.cfg.From, e.cfg.Password, e.cfg.SMTPHost)
 
 	for _, to := range e.cfg.To {
+		safeSubject := mime.QEncoding.Encode("utf-8", sanitizeHeader(subject))
+		safeFrom := sanitizeHeader(e.cfg.From)
+		safeTo := sanitizeHeader(to)
 		msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s",
-			e.cfg.From, to, subject, body)
+			safeFrom, safeTo, safeSubject, body)
 		if err := smtp.SendMail(addr, auth, e.cfg.From, []string{to}, []byte(msg)); err != nil {
 			return fmt.Errorf("sending email to %s: %w", to, err)
 		}
