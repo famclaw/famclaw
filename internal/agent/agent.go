@@ -16,6 +16,7 @@ import (
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -35,14 +36,16 @@ type Agent struct {
 	evaluator  *policy.Evaluator
 	classifier *classifier.Classifier
 	db         *store.DB
-	pool       *mcp.Pool // nil-safe — tool calls skipped if nil
+	pool       *mcp.Pool              // nil-safe — tool calls skipped if nil
+	skills     []*skillbridge.Skill   // injected into system prompt
 	convID     string
 }
 
 // SetPool attaches an MCP tool pool to the agent.
-func (a *Agent) SetPool(p *mcp.Pool) {
-	a.pool = p
-}
+func (a *Agent) SetPool(p *mcp.Pool) { a.pool = p }
+
+// SetSkills sets the skills to inject into the system prompt.
+func (a *Agent) SetSkills(skills []*skillbridge.Skill) { a.skills = skills }
 
 // NewAgent creates an Agent for the given user.
 func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client,
@@ -148,6 +151,15 @@ func (a *Agent) buildMessages(history []*store.Message, currentMessage string) [
 	} else {
 		systemPrompt += "\n\n" + ageContextPrompt(a.user)
 	}
+
+	// Inject skill descriptions into system prompt
+	if len(a.skills) > 0 {
+		skillPrompt := skillbridge.LoadForPrompt(a.skills)
+		if skillPrompt != "" {
+			systemPrompt += "\n\n" + skillPrompt
+		}
+	}
+
 	msgs = append(msgs, llm.Message{Role: "system", Content: systemPrompt})
 
 	// History (only allowed messages — don't include blocked turns)
