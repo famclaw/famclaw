@@ -19,11 +19,11 @@ func sanitizeHeader(s string) string {
 	return s
 }
 
-// sanitizeBody strips CR/LF to ensure untrusted content cannot escape the
-// intended body context when concatenated with headers.
-func sanitizeBody(s string) string {
+// sanitizeInput strips CR/LF from user-controlled values to prevent
+// injection without collapsing the HTML template's legitimate newlines.
+func sanitizeInput(s string) string {
 	s = strings.ReplaceAll(s, "\r", "")
-	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\n", " ")
 	return s
 }
 
@@ -57,9 +57,8 @@ func (e *EmailNotifier) send(subject, body string) error {
 		safeSubject := mime.QEncoding.Encode("utf-8", sanitizeHeader(subject))
 		safeFrom := sanitizeHeader(e.cfg.From)
 		safeTo := sanitizeHeader(to)
-		safeBody := sanitizeBody(body)
 		msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s",
-			safeFrom, safeTo, safeSubject, safeBody)
+			safeFrom, safeTo, safeSubject, body)
 		if err := smtp.SendMail(addr, auth, e.cfg.From, []string{to}, []byte(msg)); err != nil {
 			return fmt.Errorf("sending email to %s: %w", to, err)
 		}
@@ -68,7 +67,7 @@ func (e *EmailNotifier) send(subject, body string) error {
 }
 
 func formatApprovalHTML(a *store.Approval, approveURL, denyURL string) string {
-	esc := func(s string) string { return template.HTMLEscapeString(s) }
+	esc := func(s string) string { return template.HTMLEscapeString(sanitizeInput(s)) }
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
 <body style="font-family:system-ui;max-width:480px;margin:0 auto;padding:20px">
@@ -84,5 +83,5 @@ func formatApprovalHTML(a *store.Approval, approveURL, denyURL string) string {
 <a href="%s" style="background:#ef4444;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none">Deny</a>
 </div>
 <p style="color:#6b7280;font-size:13px">This link expires in 24 hours.</p>
-</body></html>`, esc(a.UserDisplay), esc(a.AgeGroup), esc(a.Category), esc(a.QueryText), esc(a.AgeGroup), approveURL, denyURL)
+</body></html>`, esc(a.UserDisplay), esc(a.AgeGroup), esc(a.Category), esc(a.QueryText), esc(a.AgeGroup), esc(approveURL), esc(denyURL))
 }
