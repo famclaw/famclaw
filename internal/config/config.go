@@ -92,10 +92,11 @@ type ApprovalConfig struct {
 }
 
 type SkillsConfig struct {
-	Dir            string `yaml:"dir"`
-	AutoSecCheck   bool   `yaml:"auto_seccheck"`
-	BlockOnFail    bool   `yaml:"block_on_fail"`
-	OpenClawCompat bool   `yaml:"openclaw_compat"`
+	Dir            string                     `yaml:"dir"`
+	AutoSecCheck   bool                       `yaml:"auto_seccheck"`
+	BlockOnFail    bool                       `yaml:"block_on_fail"`
+	OpenClawCompat bool                       `yaml:"openclaw_compat"`
+	MCPServers     map[string]MCPServerConfig `yaml:"mcp_servers,omitempty"`
 }
 
 type StorageConfig struct {
@@ -149,6 +150,43 @@ type NtfyConfig struct {
 	URL     string `yaml:"url"`
 	Topic   string `yaml:"topic"`
 	Token   string `yaml:"token"`
+}
+
+// MCPServerConfig defines a single MCP tool server's transport and connection details.
+type MCPServerConfig struct {
+	Transport string            `yaml:"transport"`          // stdio | http | sse
+	Command   string            `yaml:"command,omitempty"`  // stdio only
+	Args      []string          `yaml:"args,omitempty"`     // stdio only
+	URL       string            `yaml:"url,omitempty"`      // http/sse only
+	Headers   map[string]string `yaml:"headers,omitempty"`  // http/sse only
+	Disabled  bool              `yaml:"disabled,omitempty"` // false = enabled (default)
+}
+
+// ValidateMCPServer checks that an MCP server config has the required fields for its transport.
+func ValidateMCPServer(name string, cfg MCPServerConfig) error {
+	transport := cfg.Transport
+	if transport == "" {
+		if cfg.Command != "" {
+			transport = "stdio"
+		} else if cfg.URL != "" {
+			transport = "http"
+		} else {
+			return fmt.Errorf("MCP server %q: transport, command, or url required", name)
+		}
+	}
+	switch transport {
+	case "stdio":
+		if cfg.Command == "" {
+			return fmt.Errorf("MCP server %q: stdio transport requires command", name)
+		}
+	case "http", "sse":
+		if cfg.URL == "" {
+			return fmt.Errorf("MCP server %q: %s transport requires url", name, transport)
+		}
+	default:
+		return fmt.Errorf("MCP server %q: unknown transport %q (use stdio, http, or sse)", name, transport)
+	}
+	return nil
 }
 
 // Load reads and parses the config file, expanding environment variables.
