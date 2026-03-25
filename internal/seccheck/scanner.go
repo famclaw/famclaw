@@ -155,7 +155,7 @@ var secretRules = []struct{ name, sev string; re *regexp.Regexp }{
 	{"Slack Token", SevCritical, regexp.MustCompile(`xox[baprs]-[0-9A-Za-z\-]{10,48}`)},
 	{"Stripe Key", SevCritical, regexp.MustCompile(`(?:r|s)k_(?:live|test)_[0-9a-zA-Z]{24,}`)},
 	{"Private Key", SevCritical, regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY`)},
-	{"Discord Webhook", SevHigh, regexp.MustCompile(`\bhttps://discord(?:app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_\-]+\b`)},
+	{"Discord Webhook", SevHigh, regexp.MustCompile(`discord(?:app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_\-]+`)}, //nolint:gocritic // secret scanner: intentionally unanchored to find secrets anywhere in file content
 	{"Hardcoded Password", SevHigh, regexp.MustCompile(`(?i)(?:password|passwd|pwd)\s*[:=]\s*['"][^'"]{6,}['"]`)},
 	{"Hardcoded Secret", SevHigh, regexp.MustCompile(`(?i)(?:secret|api_key|apikey|auth_token)\s*[:=]\s*['"][^'"]{8,}['"]`)},
 	{"DB Connection String", SevHigh, regexp.MustCompile(`(?i)(?:postgres|mysql|mongodb|redis)://[^:@\s]+:[^@\s]+@`)},
