@@ -2,6 +2,9 @@
 # FamClaw installer for Android via Termux
 # Install Termux from F-Droid first: https://f-droid.org/packages/com.termux/
 # Then run: curl -fsSL https://raw.githubusercontent.com/famclaw/famclaw/main/scripts/install-termux.sh | bash
+#
+# FamClaw is a GATEWAY — it does NOT run an LLM locally.
+# NEVER install Ollama on Android.
 set -euo pipefail
 
 ARCH=$(uname -m)
@@ -20,31 +23,11 @@ echo "════════════════════════�
 
 # Termux packages
 pkg update -y
-pkg install -y curl git termux-api
-
-# Check available RAM
-RAM_MB=$(free -m | awk '/Mem:/ {print $2}')
-echo "→ Available RAM: ${RAM_MB}MB"
-
-# Install Ollama (Termux version)
-if ! command -v ollama &>/dev/null; then
-  echo "→ Installing Ollama…"
-  curl -fsSL https://ollama.com/install.sh | sh
-fi
-
-# Choose model
-if   [ "$RAM_MB" -ge 6000 ]; then MODEL="phi3:mini"
-elif [ "$RAM_MB" -ge 3000 ]; then MODEL="tinyllama"
-else
-  echo "⚠️  Low RAM detected. Using tinyllama (smallest available model)."
-  MODEL="tinyllama"
-fi
-
-echo "→ Pulling model: $MODEL (this may take a while on mobile…)"
-ollama pull "$MODEL"
+pkg install -y curl git
 
 # Create directory
 mkdir -p "$FAMCLAW_DIR"/{data,skills,policies/family,policies/data}
+mkdir -p "$HOME/bin"
 
 # Download binary
 RELEASE_BASE="https://github.com/famclaw/famclaw/releases/latest/download"
@@ -52,8 +35,42 @@ echo "→ Downloading $BINARY…"
 curl -fsSL "$RELEASE_BASE/$BINARY" -o "$HOME/bin/famclaw"
 chmod +x "$HOME/bin/famclaw"
 
-# Default config
-SECRET=$(head -c 24 /dev/random | base64 | tr -d '/+=' | head -c 24)
+# ── Configure LLM endpoint ───────────────────────────────────────────────────
+echo ""
+echo "FamClaw needs an LLM backend. Where is it running?"
+echo ""
+echo "  1) Another device on LAN running Ollama"
+echo "  2) Cloud API (OpenAI, Anthropic, OpenRouter)"
+echo ""
+read -rp "Choose (1-2): " LLM_CHOICE
+
+case "$LLM_CHOICE" in
+  1)
+    read -rp "Ollama URL (e.g. http://192.168.1.10:11434): " LLM_URL
+    LLM_URL="${LLM_URL:-http://192.168.1.10:11434}"
+    read -rp "Model name (e.g. llama3.2:3b): " LLM_MODEL
+    LLM_MODEL="${LLM_MODEL:-llama3.2:3b}"
+    API_KEY=""
+    ;;
+  2)
+    read -rp "API base URL (e.g. https://api.openai.com/v1): " LLM_URL
+    LLM_URL="${LLM_URL:-https://api.openai.com/v1}"
+    read -rp "Model name (e.g. gpt-4o-mini): " LLM_MODEL
+    LLM_MODEL="${LLM_MODEL:-gpt-4o-mini}"
+    read -rsp "API key: " API_KEY
+    echo ""
+    ;;
+  *)
+    LLM_URL="http://192.168.1.10:11434"
+    LLM_MODEL="llama3.2:3b"
+    API_KEY=""
+    echo "Using defaults — edit config later"
+    ;;
+esac
+
+# Generate config
+SECRET=$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24)
+
 cat > "$FAMCLAW_DIR/config.yaml" << YAML
 server:
   host: "0.0.0.0"
@@ -62,9 +79,15 @@ server:
   mdns_name: "famclaw"
 
 llm:
-  provider: "ollama"
-  base_url: "http://localhost:11434"
-  model: "$MODEL"
+  base_url: "$LLM_URL"
+  model: "$LLM_MODEL"
+YAML
+
+if [ -n "$API_KEY" ]; then
+  echo "  api_key: \"$API_KEY\"" >> "$FAMCLAW_DIR/config.yaml"
+fi
+
+cat >> "$FAMCLAW_DIR/config.yaml" << YAML
 
 users:
   - name: "parent"
@@ -89,10 +112,6 @@ YAML
 # Create start script
 cat > "$HOME/bin/famclaw-start" << 'SCRIPT'
 #!/usr/bin/env bash
-# Start Ollama then FamClaw
-pkill ollama 2>/dev/null; sleep 1
-ollama serve &
-sleep 3
 cd ~/famclaw && famclaw --config config.yaml
 SCRIPT
 chmod +x "$HOME/bin/famclaw-start"
@@ -116,6 +135,8 @@ echo ""
 echo "  Then open on any device:"
 echo "  http://$IP:8080"
 echo ""
-echo "  ⚠️  Default parent PIN is 1234"
-echo "      Change in ~/famclaw/config.yaml"
+echo "  ⚠  Default parent PIN is 1234"
+echo "     Change in ~/famclaw/config.yaml"
+echo ""
+echo "  LLM: $LLM_MODEL @ $LLM_URL"
 echo "════════════════════════════════════════════"
