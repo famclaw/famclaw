@@ -129,13 +129,13 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		s.cfg.LLM.APIKey = update.LLM.APIKey
 	}
 
-	// Users — validate at least one parent remains
+	// Users — validate at least one parent with PIN remains
 	if len(update.Users) > 0 {
-		hasParent := false
+		hasParentWithPIN := false
 		var users []config.UserConfig
 		for _, u := range update.Users {
-			if u.Role == "parent" {
-				hasParent = true
+			if u.Role == "parent" && u.PIN != "" {
+				hasParentWithPIN = true
 			}
 			users = append(users, config.UserConfig{
 				Name:        u.Name,
@@ -146,8 +146,8 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				Color:       u.Color,
 			})
 		}
-		if !hasParent {
-			jsonErr(w, fmt.Errorf("at least one parent user is required"), http.StatusBadRequest)
+		if !hasParentWithPIN {
+			jsonErr(w, fmt.Errorf("at least one parent user with a PIN is required"), http.StatusBadRequest)
 			return
 		}
 		s.cfg.Users = users
