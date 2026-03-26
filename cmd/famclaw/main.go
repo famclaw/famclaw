@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -42,10 +43,12 @@ func main() {
 		return
 	}
 
-	cfgPath  := flag.String("config", "config.yaml", "Config file path")
+	cfgPathFlag := flag.String("config", "", "Config file path (auto-detected if not set)")
 	seccheckURL := flag.String("seccheck", "", "Run seccheck on a git URL and exit")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	cfgPath := resolveConfigPath(*cfgPathFlag)
 
 	if *showVersion {
 		fmt.Printf("famclaw %s (%s/%s)\n", Version, runtime.GOOS, runtime.GOARCH)
@@ -62,7 +65,7 @@ func main() {
 	banner()
 
 	// Config
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := config.Load(cfgPath)
 	must(err, "config")
 	log.Printf("Config: %d users, model=%s, addr=%s", len(cfg.Users), cfg.LLM.Model, cfg.Server.Addr())
 
@@ -165,7 +168,7 @@ func main() {
 	}
 
 	// Web server
-	srv := web.NewServer(cfg, *cfgPath, db, evaluator, clf, notifier, enabledSkills)
+	srv := web.NewServer(cfg, cfgPath, db, evaluator, clf, notifier, enabledSkills)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),
@@ -276,6 +279,67 @@ func printStartGuide(cfg *config.Config) {
   Then open http://<IP>:%d on any device.
 ────────────────────────────────────────────────────────
 `, cfg.Server.MDNSName, cfg.Server.Port, cfg.Server.Port, cfg.Server.Port)
+}
+
+// resolveConfigPath finds the config file. Search order:
+//  1. Explicit --config flag
+//  2. ./config.yaml (current directory)
+//  3. ~/.famclaw/config.yaml
+//  4. /opt/famclaw/config.yaml
+//
+// If none found, creates ~/.famclaw/config.yaml with minimal defaults.
+func resolveConfigPath(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+
+	candidates := []string{
+		"config.yaml",
+	}
+
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".famclaw", "config.yaml"))
+	}
+	candidates = append(candidates, "/opt/famclaw/config.yaml")
+
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	// None found — create minimal config in ~/.famclaw/
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "config.yaml"
+	}
+	dir := filepath.Join(home, ".famclaw")
+	os.MkdirAll(dir, 0755)
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	minimal := `# FamClaw configuration — edit or configure via web UI
+server:
+  host: "0.0.0.0"
+  port: 8080
+  secret: "please-change-this-secret"
+  mdns_name: "famclaw"
+
+llm:
+  base_url: ""
+  model: ""
+
+users: []
+
+storage:
+  db_path: "` + filepath.Join(dir, "data", "famclaw.db") + `"
+
+policies:
+  dir: "./policies/family"
+  data_dir: "./policies/data"
+`
+	os.WriteFile(cfgPath, []byte(minimal), 0600)
+	log.Printf("Created config: %s", cfgPath)
+	return cfgPath
 }
 
 func must(err error, context string) {
