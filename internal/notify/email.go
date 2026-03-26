@@ -45,7 +45,7 @@ func (e *EmailNotifier) Notify(ctx context.Context, a *store.Approval, approveUR
 
 func (e *EmailNotifier) NotifyDecision(ctx context.Context, a *store.Approval) error {
 	subject := fmt.Sprintf("FamClaw: Request from %s %s", a.UserDisplay, a.Status)
-	body := formatDecisionMessage(a)
+	body := formatDecisionHTML(a)
 	return e.send(subject, body)
 }
 
@@ -84,4 +84,16 @@ func formatApprovalHTML(a *store.Approval, approveURL, denyURL string) string {
 </div>
 <p style="color:#6b7280;font-size:13px">This link expires in 24 hours.</p>
 </body></html>`, esc(a.UserDisplay), esc(a.AgeGroup), esc(a.Category), esc(a.QueryText), esc(a.AgeGroup), esc(approveURL), esc(denyURL))
+}
+
+func formatDecisionHTML(a *store.Approval) string {
+	esc := func(s string) string { return template.HTMLEscapeString(sanitizeInput(s)) }
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family:system-ui;max-width:480px;margin:0 auto;padding:20px">
+<h2>FamClaw Decision</h2>
+<p>FamClaw: %s's request about %q has been %s by %s.</p>
+</body></html>`,
+		esc(a.UserDisplay), esc(a.Category), esc(a.Status), esc(a.DecidedBy),
+	)
 }
