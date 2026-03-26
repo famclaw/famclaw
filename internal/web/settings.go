@@ -98,11 +98,14 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
-	// Require parent PIN — constant-time comparison
-	pin := r.Header.Get("X-Parent-PIN")
-	if !s.verifyParentPINConstantTime(pin) {
-		jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
-		return
+	// On first boot (no users configured), skip PIN check so the wizard can
+	// create the first parent user. After that, PIN is always required.
+	if !s.isFirstBoot() {
+		pin := r.Header.Get("X-Parent-PIN")
+		if !s.verifyParentPINConstantTime(pin) {
+			jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
+			return
+		}
 	}
 
 	var update settingsView
@@ -126,13 +129,13 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		s.cfg.LLM.APIKey = update.LLM.APIKey
 	}
 
-	// Users — validate at least one parent remains
+	// Users — validate at least one parent with PIN remains
 	if len(update.Users) > 0 {
-		hasParent := false
+		hasParentWithPIN := false
 		var users []config.UserConfig
 		for _, u := range update.Users {
-			if u.Role == "parent" {
-				hasParent = true
+			if u.Role == "parent" && u.PIN != "" {
+				hasParentWithPIN = true
 			}
 			users = append(users, config.UserConfig{
 				Name:        u.Name,
@@ -143,8 +146,8 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				Color:       u.Color,
 			})
 		}
-		if !hasParent {
-			jsonErr(w, fmt.Errorf("at least one parent user is required"), http.StatusBadRequest)
+		if !hasParentWithPIN {
+			jsonErr(w, fmt.Errorf("at least one parent user with a PIN is required"), http.StatusBadRequest)
 			return
 		}
 		s.cfg.Users = users
@@ -195,9 +198,22 @@ func (s *Server) verifyParentPINConstantTime(pin string) bool {
 	return false
 }
 
-// NeedsSetup returns true if the LLM endpoint is not configured.
+// NeedsSetup returns true if the LLM is not fully configured.
 func (s *Server) NeedsSetup() bool {
 	cfgMu.RLock()
 	defer cfgMu.RUnlock()
-	return s.cfg.LLM.BaseURL == ""
+	return s.cfg.LLM.BaseURL == "" || s.cfg.LLM.Model == ""
+}
+
+// isFirstBoot returns true if no parent users are configured yet.
+// Used to skip PIN check during initial setup wizard.
+func (s *Server) isFirstBoot() bool {
+	cfgMu.RLock()
+	defer cfgMu.RUnlock()
+	for _, u := range s.cfg.Users {
+		if u.Role == "parent" && u.PIN != "" {
+			return false
+		}
+	}
+	return true
 }

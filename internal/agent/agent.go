@@ -113,7 +113,13 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	messages := a.buildMessages(history, userMessage)
 
 	// ── 6. Stream LLM response ────────────────────────────────────────────────
+	if a.cfg.LLM.BaseURL == "" {
+		return nil, fmt.Errorf("LLM not configured — open the web UI to set up your AI backend")
+	}
 	model := a.cfg.ModelFor(a.user)
+	if model == "" {
+		return nil, fmt.Errorf("LLM model not configured — open the web UI settings")
+	}
 	client := llm.NewClient(a.cfg.LLM.BaseURL, model, a.cfg.LLM.APIKey)
 
 	response, err := client.Chat(ctx, messages, a.cfg.LLM.Temperature, a.cfg.LLM.MaxResponseTokens, onToken)

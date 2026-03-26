@@ -226,15 +226,8 @@ func applyDefaults(c *Config) {
 	if c.Server.MDNSName == "" {
 		c.Server.MDNSName = "famclaw"
 	}
-	if c.LLM.Provider == "" {
-		c.LLM.Provider = "ollama"
-	}
-	if c.LLM.BaseURL == "" {
-		c.LLM.BaseURL = "http://localhost:11434"
-	}
-	if c.LLM.Model == "" {
-		c.LLM.Model = "tinyllama" // safest default for constrained hardware
-	}
+	// No defaults for LLM BaseURL/Model — empty triggers the first-boot wizard.
+	// User configures via web UI or config.yaml.
 	if c.LLM.MaxContextTokens == 0 {
 		c.LLM.MaxContextTokens = 4096
 	}
