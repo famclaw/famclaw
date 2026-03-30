@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -301,18 +302,21 @@ func (c *Config) ModelFor(user *UserConfig) string {
 
 // LLMClientFor resolves the LLM endpoint for a user.
 // Priority: user.LLMProfile → cfg.LLM.Default → legacy cfg.LLM.BaseURL/Model.
+// Logs a warning if a named profile is not found.
 func (c *Config) LLMClientFor(user *UserConfig) (baseURL, model, apiKey string) {
 	// Try user's profile override
 	if user != nil && user.LLMProfile != "" {
 		if p, ok := c.LLM.Profiles[user.LLMProfile]; ok {
 			return p.BaseURL, p.Model, p.APIKey
 		}
+		log.Printf("[config] warning: user %q references unknown LLM profile %q, falling back", user.Name, user.LLMProfile)
 	}
 	// Try default profile
 	if c.LLM.Default != "" {
 		if p, ok := c.LLM.Profiles[c.LLM.Default]; ok {
 			return p.BaseURL, p.Model, p.APIKey
 		}
+		log.Printf("[config] warning: default LLM profile %q not found, using legacy config", c.LLM.Default)
 	}
 	// Fall back to legacy single-endpoint config
 	return c.LLM.BaseURL, c.ModelFor(user), c.LLM.APIKey
