@@ -61,11 +61,24 @@ func (s ServerConfig) BaseURL() string {
 	return "http://" + host
 }
 
+// LLMProfile is a named LLM endpoint configuration.
+type LLMProfile struct {
+	Label   string `yaml:"label"`
+	BaseURL string `yaml:"base_url"`
+	Model   string `yaml:"model"`
+	APIKey  string `yaml:"api_key,omitempty"`
+}
+
 type LLMConfig struct {
+	// Legacy single-endpoint fields (backward compatible)
 	Provider          string  `yaml:"provider"`
 	BaseURL           string  `yaml:"base_url"`
 	Model             string  `yaml:"model"`
 	APIKey            string  `yaml:"api_key,omitempty"`
+	// Named profiles (takes precedence when set)
+	Default           string                 `yaml:"default,omitempty"`
+	Profiles          map[string]LLMProfile  `yaml:"profiles,omitempty"`
+	// Common settings
 	SystemPrompt      string  `yaml:"system_prompt"`
 	MaxContextTokens  int     `yaml:"max_context_tokens"`
 	MaxResponseTokens int     `yaml:"max_response_tokens"`
@@ -79,7 +92,8 @@ type UserConfig struct {
 	AgeGroup    string `yaml:"age_group"` // under_8 | age_8_12 | age_13_17
 	PIN         string `yaml:"pin"`
 	Color       string `yaml:"color"`
-	Model       string `yaml:"model"` // optional per-user model override
+	Model      string `yaml:"model"`       // optional per-user model override (legacy)
+	LLMProfile string `yaml:"llm_profile,omitempty"` // named LLM profile override
 }
 
 type PoliciesConfig struct {
@@ -283,4 +297,23 @@ func (c *Config) ModelFor(user *UserConfig) string {
 		return user.Model
 	}
 	return c.LLM.Model
+}
+
+// LLMClientFor resolves the LLM endpoint for a user.
+// Priority: user.LLMProfile → cfg.LLM.Default → legacy cfg.LLM.BaseURL/Model.
+func (c *Config) LLMClientFor(user *UserConfig) (baseURL, model, apiKey string) {
+	// Try user's profile override
+	if user != nil && user.LLMProfile != "" {
+		if p, ok := c.LLM.Profiles[user.LLMProfile]; ok {
+			return p.BaseURL, p.Model, p.APIKey
+		}
+	}
+	// Try default profile
+	if c.LLM.Default != "" {
+		if p, ok := c.LLM.Profiles[c.LLM.Default]; ok {
+			return p.BaseURL, p.Model, p.APIKey
+		}
+	}
+	// Fall back to legacy single-endpoint config
+	return c.LLM.BaseURL, c.ModelFor(user), c.LLM.APIKey
 }
