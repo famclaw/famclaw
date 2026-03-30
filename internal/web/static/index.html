@@ -805,7 +805,11 @@ async function detectHardware() {
     localCard.style.opacity = '0.4';
     localCard.style.cursor = 'not-allowed';
     localCard.onclick = null;
-    desc.textContent = 'Not enough RAM (' + hwInfo.total_ram_mb + 'MB) — use remote instead';
+    if (hwInfo.os === 'android') {
+      desc.textContent = 'Local AI is not supported on Android — use remote instead';
+    } else {
+      desc.textContent = 'Not enough RAM (' + hwInfo.total_ram_mb + 'MB, need 4GB+) — use remote instead';
+    }
   }
 }
 
