@@ -255,10 +255,39 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
     <div class="d-scroll">
       <div id="setup-welcome" class="s-welcome" style="display:none">
         <h2>Welcome to FamClaw</h2>
-        <p>Configure your AI backend to get started.</p>
+        <p>Let's set up your family AI assistant.</p>
       </div>
 
-      <div class="d-section">
+      <!-- Hardware detection / local vs remote choice -->
+      <div id="setup-choice" class="d-section" style="display:none">
+        <div class="d-title">🤖 Where should the AI run?</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div class="d-card" id="choice-local" style="flex:1;min-width:200px;padding:16px;cursor:pointer;border:2px solid transparent" onclick="chooseLocal()">
+            <div style="font-size:24px;margin-bottom:8px">🏠</div>
+            <div style="font-weight:700;margin-bottom:4px">Run AI locally</div>
+            <div id="choice-local-desc" style="font-size:13px;color:var(--c-muted)">Detecting hardware...</div>
+          </div>
+          <div class="d-card" id="choice-remote" style="flex:1;min-width:200px;padding:16px;cursor:pointer;border:2px solid transparent" onclick="chooseRemote()">
+            <div style="font-size:24px;margin-bottom:8px">☁️</div>
+            <div style="font-weight:700;margin-bottom:4px">Connect to remote AI</div>
+            <div style="font-size:13px;color:var(--c-muted)">Use Ollama on LAN, OpenAI, Anthropic, etc.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Local setup progress -->
+      <div id="setup-local-progress" class="d-section" style="display:none">
+        <div class="d-title">🏠 Setting up local AI</div>
+        <div class="d-card" style="padding:16px">
+          <div id="setup-local-status" style="margin-bottom:12px">Preparing...</div>
+          <div style="background:var(--c-bg);border-radius:8px;overflow:hidden;height:8px">
+            <div id="setup-local-bar" style="height:100%;width:0%;background:var(--c-primary);transition:width 0.3s"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Remote config (shown when "Connect to remote AI" is chosen OR not capable) -->
+      <div id="setup-remote" class="d-section">
         <div class="d-title">🤖 LLM Backend</div>
         <div class="d-card" style="padding:16px">
           <div class="s-field">
@@ -729,12 +758,24 @@ function formatTime(iso) {
 // ── Settings ─────────────────────────────────────────────────────────────────
 let settingsUsers = [];
 
+let hwInfo = null;
+
 function openSettings(isFirstBoot) {
   state.mode = 'settings';
   hide('user-screen'); hide('chat-screen'); hide('dashboard-screen');
   show('settings-screen');
   document.getElementById('mode-btn').textContent = isFirstBoot ? '' : '← Back';
   document.getElementById('setup-welcome').style.display = isFirstBoot ? 'block' : 'none';
+
+  // Show/hide hardware choice on first boot
+  if (isFirstBoot) {
+    document.getElementById('setup-choice').style.display = 'block';
+    document.getElementById('setup-remote').style.display = 'none';
+    detectHardware();
+  } else {
+    document.getElementById('setup-choice').style.display = 'none';
+    document.getElementById('setup-remote').style.display = 'block';
+  }
 
   document.getElementById('s-gw-tg').onchange = function() {
     document.getElementById('s-gw-tg-field').style.display = this.checked ? 'block' : 'none';
@@ -744,6 +785,70 @@ function openSettings(isFirstBoot) {
   };
 
   loadSettings();
+}
+
+async function detectHardware() {
+  hwInfo = await apiFetch('/api/setup/detect');
+  if (!hwInfo) return;
+
+  const localCard = document.getElementById('choice-local');
+  const desc = document.getElementById('choice-local-desc');
+
+  if (hwInfo.can_run_local) {
+    desc.textContent = hwInfo.model
+      ? hwInfo.model + ' (' + hwInfo.total_ram_mb + 'MB) — ' + hwInfo.recommended_model
+      : hwInfo.total_ram_mb + 'MB RAM — ' + hwInfo.recommended_model;
+    if (hwInfo.ollama_found) {
+      desc.textContent += ' (Ollama installed)';
+    }
+  } else {
+    localCard.style.opacity = '0.4';
+    localCard.style.cursor = 'not-allowed';
+    localCard.onclick = null;
+    desc.textContent = 'Not enough RAM (' + hwInfo.total_ram_mb + 'MB) — use remote instead';
+  }
+}
+
+function chooseLocal() {
+  if (!hwInfo || !hwInfo.can_run_local) return;
+  document.getElementById('choice-local').style.borderColor = 'var(--c-primary)';
+  document.getElementById('choice-remote').style.borderColor = 'transparent';
+  document.getElementById('setup-remote').style.display = 'none';
+  document.getElementById('setup-local-progress').style.display = 'block';
+  installOllamaLocal();
+}
+
+function chooseRemote() {
+  document.getElementById('choice-remote').style.borderColor = 'var(--c-primary)';
+  document.getElementById('choice-local').style.borderColor = 'transparent';
+  document.getElementById('setup-remote').style.display = 'block';
+  document.getElementById('setup-local-progress').style.display = 'none';
+}
+
+async function installOllamaLocal() {
+  const status = document.getElementById('setup-local-status');
+  const bar = document.getElementById('setup-local-bar');
+
+  status.textContent = 'Installing Ollama...';
+  bar.style.width = '20%';
+
+  const result = await apiFetch('/api/setup/ollama', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: hwInfo.recommended_model}),
+  });
+
+  if (result && result.status === 'done') {
+    bar.style.width = '100%';
+    status.textContent = 'Ready! AI running locally with ' + hwInfo.recommended_model;
+    document.getElementById('s-llm-url').value = 'http://localhost:11434';
+    document.getElementById('s-llm-model').value = hwInfo.recommended_model;
+    showToast('Local AI ready!');
+  } else {
+    status.textContent = 'Setup failed — switch to remote instead';
+    bar.style.width = '0%';
+    chooseRemote();
+  }
 }
 
 async function loadSettings() {

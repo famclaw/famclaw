@@ -87,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals/decide", s.handleDecide)
 	mux.HandleFunc("/api/skills", s.handleSkills)
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/setup/detect", s.handleSetupDetect)
 	mux.HandleFunc("/api/settings", s.handleSettings)      // GET/POST config settings
 	mux.HandleFunc("/api/stream", s.handleStream)          // SSE for dashboard live updates
 
