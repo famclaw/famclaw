@@ -13,7 +13,7 @@ import (
 
 // HardwareInfo describes the current device's capabilities.
 type HardwareInfo struct {
-	OS               string `json:"os"`                // linux | darwin | android
+	OS               string `json:"os"`                // runtime.GOOS value (linux, darwin, windows, etc.) or "android"
 	Arch             string `json:"arch"`              // arm64 | arm | amd64
 	TotalRAMMB       int    `json:"total_ram_mb"`
 	Model            string `json:"model"`             // "Raspberry Pi 5 Model B" or "Mac14,3" or ""
@@ -32,10 +32,15 @@ func Detect() HardwareInfo {
 	info.TotalRAMMB = detectRAM()
 	info.Model = detectModel()
 	info.OllamaFound = ollamaInstalled()
-	info.CanRunLocal = info.TotalRAMMB >= 4096 && info.OS != "android"
+	info.CanRunLocal = CanRunLocal(info.TotalRAMMB, info.OS)
 	info.RecommendedModel = llm.HardwareRecommendation(info.TotalRAMMB)
 
 	return info
+}
+
+// CanRunLocal returns true if the device has enough RAM and isn't Android.
+func CanRunLocal(ramMB int, os string) bool {
+	return ramMB >= 4096 && os != "android"
 }
 
 func detectOS() string {
