@@ -180,7 +180,9 @@ func (s *Server) writeConfig() error {
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
-	if err := os.WriteFile(s.cfgPath, data, 0600); err != nil {
+	// Prepend warning — yaml.Marshal strips comments from original file
+	header := "# FamClaw configuration (managed by web UI)\n# Edit via http://famclaw.local:8080 settings, or edit this file and restart.\n\n"
+	if err := os.WriteFile(s.cfgPath, append([]byte(header), data...), 0600); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 	return nil
