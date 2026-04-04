@@ -5,7 +5,9 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -314,6 +316,19 @@ func (s *Server) handleDecideLink(w http.ResponseWriter, r *http.Request) {
 	id = tokenID
 	action = tokenAction
 
+	// Replay protection — each token can only be used once
+	tokenHash := sha256Hex(token)
+	isNew, markErr := s.db.MarkTokenUsed(tokenHash)
+	if markErr != nil {
+		http.Error(w, "Internal error processing approval", http.StatusInternalServerError)
+		log.Printf("[web] token replay check error: %v", markErr)
+		return
+	}
+	if !isNew {
+		http.Error(w, "This approval link has already been used.", http.StatusConflict)
+		return
+	}
+
 	status := "approved"
 	if action == "deny" {
 		status = "denied"
@@ -476,6 +491,11 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 func jsonOK(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v) //nolint:errcheck
+}
+
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
 }
 
 func jsonErr(w http.ResponseWriter, err error, code int) {
