@@ -298,17 +298,21 @@ func (s *Server) handleDecideLink(w http.ResponseWriter, r *http.Request) {
 	action := r.URL.Query().Get("action")
 	token := r.URL.Query().Get("token")
 
-	if id == "" || action == "" || token == "" {
+	if token == "" {
 		http.Error(w, "missing parameters", http.StatusBadRequest)
 		return
 	}
 
-	// Verify HMAC token
-	expected := notify.GenerateToken(id, action, s.cfg.Server.Secret)
-	if token != expected {
-		http.Error(w, "invalid token", http.StatusForbidden)
+	// Verify token — checks HMAC signature AND expiry from embedded timestamp
+	tokenID, tokenAction, err := notify.VerifyToken(token, s.cfg.Server.Secret, s.cfg.Approval.ExpiryHours)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Invalid or expired link: %v", err), http.StatusForbidden)
 		return
 	}
+
+	// Use values from token, not URL params (prevents tampering)
+	id = tokenID
+	action = tokenAction
 
 	status := "approved"
 	if action == "deny" {

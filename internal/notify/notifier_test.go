@@ -43,37 +43,13 @@ var testApproval = &store.Approval{
 }
 
 func TestGenerateToken(t *testing.T) {
-	tests := []struct {
-		name   string
-		id     string
-		action string
-		secret string
-	}{
-		{"basic approve", "req-1", "approve", "s3cret"},
-		{"basic deny", "req-1", "deny", "s3cret"},
-		{"empty id", "", "approve", "s3cret"},
-		{"empty secret", "req-1", "approve", ""},
-		{"long values", "a-very-long-request-id-12345", "approve", "a-very-long-secret-key-67890"},
+	token := GenerateToken("req-1", "approve", "secret-key-32chars-minimum-xxxxx")
+	if token == "" {
+		t.Error("token should not be empty")
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			token := GenerateToken(tt.id, tt.action, tt.secret)
-			if token == "" {
-				t.Error("token should not be empty")
-			}
-			if len(token) != 64 {
-				t.Errorf("token length = %d, want 64", len(token))
-			}
-		})
-	}
-}
-
-func TestGenerateTokenDeterministic(t *testing.T) {
-	t1 := GenerateToken("req-1", "approve", "secret")
-	t2 := GenerateToken("req-1", "approve", "secret")
-	if t1 != t2 {
-		t.Error("same inputs should produce same token")
+	// Token is base64 encoded — should be longer than the old 64-char hex
+	if len(token) < 40 {
+		t.Errorf("token too short: %d", len(token))
 	}
 }
 
@@ -85,45 +61,53 @@ func TestGenerateTokenDifferentActions(t *testing.T) {
 	}
 }
 
-func TestGenerateTokenDifferentSecrets(t *testing.T) {
-	t1 := GenerateToken("req-1", "approve", "secret1")
-	t2 := GenerateToken("req-1", "approve", "secret2")
-	if t1 == t2 {
-		t.Error("different secrets should produce different tokens")
-	}
-}
-
-func TestGenerateTokenDifferentIDs(t *testing.T) {
-	t1 := GenerateToken("req-1", "approve", "secret")
-	t2 := GenerateToken("req-2", "approve", "secret")
-	if t1 == t2 {
-		t.Error("different IDs should produce different tokens")
-	}
-}
-
-func TestVerifyToken(t *testing.T) {
+func TestVerifyTokenValid(t *testing.T) {
 	token := GenerateToken("req-1", "approve", "secret")
-
-	tests := []struct {
-		name   string
-		id     string
-		action string
-		secret string
-		valid  bool
-	}{
-		{"valid token", "req-1", "approve", "secret", true},
-		{"wrong action", "req-1", "deny", "secret", false},
-		{"wrong id", "req-2", "approve", "secret", false},
-		{"wrong secret", "req-1", "approve", "wrong", false},
+	id, action, err := VerifyToken(token, "secret", 24)
+	if err != nil {
+		t.Fatalf("VerifyToken error: %v", err)
 	}
+	if id != "req-1" {
+		t.Errorf("id = %q, want req-1", id)
+	}
+	if action != "approve" {
+		t.Errorf("action = %q, want approve", action)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := VerifyToken(tt.id, tt.action, token, tt.secret)
-			if got != tt.valid {
-				t.Errorf("VerifyToken() = %v, want %v", got, tt.valid)
-			}
-		})
+func TestVerifyTokenWrongSecret(t *testing.T) {
+	token := GenerateToken("req-1", "approve", "secret")
+	_, _, err := VerifyToken(token, "wrong-secret", 24)
+	if err == nil {
+		t.Error("expected error for wrong secret")
+	}
+}
+
+func TestVerifyTokenExpired(t *testing.T) {
+	// Generate token, then verify with 0 hours expiry — should be expired
+	token := GenerateToken("req-1", "approve", "secret")
+	// Use -1 expiry hours to simulate expired
+	_, _, err := VerifyToken(token, "secret", -1)
+	if err == nil {
+		t.Error("expected error for expired token")
+	}
+}
+
+func TestVerifyTokenBadEncoding(t *testing.T) {
+	_, _, err := VerifyToken("not-valid-base64!!!", "secret", 24)
+	if err == nil {
+		t.Error("expected error for bad encoding")
+	}
+}
+
+func TestVerifyTokenReturnsIDAndAction(t *testing.T) {
+	token := GenerateToken("approval-xyz", "deny", "my-secret")
+	id, action, err := VerifyToken(token, "my-secret", 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "approval-xyz" || action != "deny" {
+		t.Errorf("got id=%q action=%q", id, action)
 	}
 }
 
