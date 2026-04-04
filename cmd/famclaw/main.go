@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log"
@@ -64,6 +66,13 @@ func main() {
 	// Config
 	cfg, err := config.Load(*cfgPath)
 	must(err, "config")
+
+	// Generate secret if not set (first boot)
+	if cfg.Server.Secret == "" {
+		cfg.Server.Secret = generateSecret()
+		log.Printf("Generated new server secret (save to env: FAMCLAW_SECRET)")
+	}
+
 	log.Printf("Config: %d users, model=%s, addr=%s", len(cfg.Users), cfg.LLM.Model, cfg.Server.Addr())
 
 	// Database
@@ -278,6 +287,12 @@ func printStartGuide(cfg *config.Config) {
   Then open http://<IP>:%d on any device.
 ────────────────────────────────────────────────────────
 `, cfg.Server.MDNSName, cfg.Server.Port, cfg.Server.Port, cfg.Server.Port)
+}
+
+func generateSecret() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func must(err error, context string) {

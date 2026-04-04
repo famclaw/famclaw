@@ -8,7 +8,9 @@ server:
   host: "0.0.0.0"          # Bind all interfaces — access from any device on LAN
   port: 8080
   # Secret key for signing tokens — CHANGE THIS
-  secret: "${FAMCLAW_SECRET:-please-change-this-secret}"
+  # Secret key for signing tokens — REQUIRED. Set via env var or change here.
+  # FamClaw will refuse to start if this is empty.
+  secret: "${FAMCLAW_SECRET}"
   # Local domain for mDNS — access via http://famclaw.local on your network
   mdns_name: "famclaw"
 
@@ -42,7 +44,7 @@ users:
   - name: "parent"
     display_name: "Parent"
     role: "parent"
-    pin: "${PARENT_PIN:-1234}"   # PIN for parent dashboard
+    pin: "${PARENT_PIN}"   # Set via env var or web UI first-boot wizard
     color: "#6366f1"
 
   - name: "emma"
@@ -64,6 +66,17 @@ users:
     role: "child"
     age_group: "age_13_17"
     color: "#ec4899"
+
+# ── Messaging gateways ───────────────────────────────────────────────────────
+# gateways:
+#   telegram:
+#     enabled: true
+#     token: "${TELEGRAM_BOT_TOKEN}"
+#   discord:
+#     enabled: true
+#     token: "${DISCORD_BOT_TOKEN}"
+#   whatsapp:
+#     enabled: false  # placeholder — not yet implemented
 
 # ── Policy engine (OPA) ───────────────────────────────────────────────────────
 policies:
