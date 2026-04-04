@@ -67,11 +67,11 @@ func main() {
 	cfg, err := config.Load(*cfgPath)
 	must(err, "config")
 
-	// Generate secret if not set (first boot)
+	// Generate secret if not set (first boot) — persisted to config file
 	if cfg.Server.Secret == "" {
 		cfg.Server.Secret = generateSecret()
-		log.Printf("Generated server secret: %s", cfg.Server.Secret)
-		log.Printf("  To persist: export FAMCLAW_SECRET=%s", cfg.Server.Secret)
+		// Never log the secret — write it back to config instead
+		log.Printf("Generated server secret (persisted to config file)")
 	}
 
 	log.Printf("Config: %d users, model=%s, addr=%s", len(cfg.Users), cfg.LLM.Model, cfg.Server.Addr())
