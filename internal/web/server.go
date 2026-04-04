@@ -42,8 +42,9 @@ type Server struct {
 	clf        *classifier.Classifier
 	notifier   *notify.MultiNotifier
 	skills     []*skillbridge.Skill // injected into agent system prompt
-	pool       *mcp.Pool           // MCP tool pool for agent tool calls
-	upgrader   websocket.Upgrader
+	pool          *mcp.Pool           // MCP tool pool for agent tool calls
+	staticHandler http.Handler        // embedded static file server
+	upgrader      websocket.Upgrader
 	clients    map[*websocket.Conn]string // conn → userName
 	clientsMu  sync.RWMutex
 }
@@ -84,7 +85,9 @@ func (s *Server) Handler() http.Handler {
 	if err != nil {
 		log.Fatalf("static files: %v", err)
 	}
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	s.staticHandler = http.FileServer(http.FS(staticFS))
+	// Root: redirect to /setup if unconfigured, otherwise serve static files
+	mux.HandleFunc("/", s.handleRoot)
 
 	// ── API ───────────────────────────────────────────────────────────────────
 	mux.HandleFunc("/api/users", s.handleUsers)
