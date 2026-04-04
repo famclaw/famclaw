@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/classifier"
@@ -135,7 +136,15 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		}
 	}
 
-	// ── 7. Save assistant response ───────────────────────────────────────────
+	// ── 7. Output safety filter ─────────────────────────────────────────────
+	if a.user.Role != "parent" {
+		if blocked := filterOutput(response); blocked {
+			response = "I generated a response that might not be appropriate. Let me try a different approach — could you rephrase your question?"
+			log.Printf("[agent][%s] output filtered for safety", a.user.Name)
+		}
+	}
+
+	// ── 8. Save assistant response ───────────────────────────────────────────
 	_ = a.db.SaveMessage(a.convID, a.user.Name, "assistant", response, string(cat), "allow")
 
 	return &Response{
@@ -272,6 +281,27 @@ func (a *Agent) toolCallLoop(ctx context.Context, client *llm.Client, messages [
 	}
 
 	return msg.Content, nil
+}
+
+// outputBlockedPatterns are keywords that should never appear in LLM responses to children.
+// These catch cases where the input classifier allows a topic but the LLM generates
+// inappropriate content in its response.
+var outputBlockedPatterns = []string{
+	"suicide", "kill yourself", "self-harm", "cutting yourself",
+	"pornography", "sexual intercourse", "explicit content",
+	"racial slur", "ethnic cleansing", "white supremac",
+	"how to make a bomb", "how to steal", "how to hack",
+}
+
+// filterOutput returns true if the LLM response contains blocked content.
+func filterOutput(response string) bool {
+	lower := strings.ToLower(response)
+	for _, pattern := range outputBlockedPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // ApprovalID generates a deterministic approval ID for user+category+day.

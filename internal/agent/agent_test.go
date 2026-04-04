@@ -182,3 +182,38 @@ func TestAgentChatMessageWithToolCalls(t *testing.T) {
 		t.Errorf("tool name = %q", decoded.ToolCalls[0].Function.Name)
 	}
 }
+
+func TestFilterOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		text    string
+		blocked bool
+	}{
+		{"safe response", "The sun is a star at the center of our solar system.", false},
+		{"math help", "To solve 2x + 3 = 7, subtract 3 from both sides.", false},
+		{"contains suicide", "Here's how to commit suicide...", true},
+		{"contains porn", "Let me describe pornography...", true},
+		{"contains slur", "Here's a racial slur you can use...", true},
+		{"contains bomb", "Here's how to make a bomb...", true},
+		{"case insensitive", "SUICIDE is a serious topic.", true},
+		{"partial match", "The movie had explicit content warnings.", true},
+		{"safe mention of topic", "If you need help, call a crisis hotline.", false},
+		{"empty response", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterOutput(tt.text)
+			if got != tt.blocked {
+				t.Errorf("filterOutput(%q) = %v, want %v", tt.text[:min(50, len(tt.text))], got, tt.blocked)
+			}
+		})
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
