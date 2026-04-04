@@ -33,8 +33,8 @@ func NewPool() *Pool {
 }
 
 // RegisterFromConfig registers MCP servers from config.
-// Disabled servers and invalid configs are skipped with a log message.
-func (p *Pool) RegisterFromConfig(servers map[string]config.MCPServerConfig) {
+// Credentials are per-skill env vars injected at process spawn time.
+func (p *Pool) RegisterFromConfig(servers map[string]config.MCPServerConfig, credentials map[string]map[string]string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -46,8 +46,12 @@ func (p *Pool) RegisterFromConfig(servers map[string]config.MCPServerConfig) {
 			log.Printf("[mcp-pool] skip %s: %v", name, err)
 			continue
 		}
+		c := NewTransportClient(name, cfg)
+		if creds, ok := credentials[name]; ok {
+			c.env = creds
+		}
 		p.clients[name] = &managedClient{
-			client: NewTransportClient(name, cfg),
+			client: c,
 			name:   name,
 			cfg:    cfg,
 		}

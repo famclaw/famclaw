@@ -117,7 +117,7 @@ func main() {
 	// MCP tool server pool (stdio, HTTP, SSE transports)
 	mcpPool := mcp.NewPool()
 	if len(cfg.Skills.MCPServers) > 0 {
-		mcpPool.RegisterFromConfig(cfg.Skills.MCPServers)
+		mcpPool.RegisterFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
 		if err := mcpPool.StartAll(context.Background()); err != nil {
 			log.Printf("MCP pool: %v", err)
 		}

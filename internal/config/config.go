@@ -107,11 +107,12 @@ type ApprovalConfig struct {
 }
 
 type SkillsConfig struct {
-	Dir            string                     `yaml:"dir"`
-	AutoSecCheck   bool                       `yaml:"auto_seccheck"`
-	BlockOnFail    bool                       `yaml:"block_on_fail"`
-	OpenClawCompat bool                       `yaml:"openclaw_compat"`
-	MCPServers     map[string]MCPServerConfig `yaml:"mcp_servers,omitempty"`
+	Dir            string                          `yaml:"dir"`
+	AutoSecCheck   bool                            `yaml:"auto_seccheck"`
+	BlockOnFail    bool                            `yaml:"block_on_fail"`
+	OpenClawCompat bool                            `yaml:"openclaw_compat"`
+	MCPServers     map[string]MCPServerConfig      `yaml:"mcp_servers,omitempty"`
+	Credentials    map[string]map[string]string    `yaml:"credentials,omitempty"` // per-skill env vars
 }
 
 type StorageConfig struct {
