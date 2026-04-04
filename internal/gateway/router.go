@@ -21,6 +21,7 @@ import (
 type ChatFunc func(ctx context.Context, user *config.UserConfig, text string) (string, error)
 
 // Router routes inbound gateway messages through the policy pipeline.
+// Uses a SessionPool for per-user serial, cross-user concurrent processing.
 type Router struct {
 	cfg        *config.Config
 	identStore *identity.Store
@@ -29,6 +30,7 @@ type Router struct {
 	db         *store.DB
 	notifier   *notify.MultiNotifier
 	chatFn     ChatFunc
+	pool       *SessionPool
 }
 
 // NewRouter creates a Router with all required dependencies.
@@ -41,7 +43,7 @@ func NewRouter(
 	notifier *notify.MultiNotifier,
 	chatFn ChatFunc,
 ) *Router {
-	return &Router{
+	r := &Router{
 		cfg:        cfg,
 		identStore: identStore,
 		clf:        clf,
@@ -50,13 +52,15 @@ func NewRouter(
 		notifier:   notifier,
 		chatFn:     chatFn,
 	}
+	// Session pool dispatches heavy work (classify → policy → LLM) per-user
+	r.pool = NewSessionPool(r.process)
+	return r
 }
 
-// Handle processes an inbound message through the full pipeline:
-//
-//	identity.Resolve → classifier.Classify → policy.Evaluate → agent.Chat
+// Handle resolves identity (fast), then dispatches to the per-user session pool.
+// Returns immediately after identity resolution — heavy work runs per-user serially.
 func (r *Router) Handle(ctx context.Context, msg Message) Reply {
-	// ── Step 1: Identity resolve ─────────────────────────────────────────
+	// ── Step 1: Identity resolve (fast, in caller goroutine) ─────────────
 	user, err := r.identStore.Resolve(msg.Gateway, msg.ExternalID)
 	if err != nil {
 		log.Printf("[router] identity error: %v", err)
@@ -73,7 +77,24 @@ func (r *Router) Handle(ctx context.Context, msg Message) Reply {
 		return Reply{Text: identity.UnknownAccountMessage(), PolicyAction: "onboarding"}
 	}
 
-	// ── Step 2: Classify ─────────────────────────────────────────────────
+	// ── Step 2: Dispatch to per-user session (heavy work serialized per user)
+	return r.pool.Dispatch(ctx, user.Name, msg)
+}
+
+// process handles the heavy pipeline: classify → policy → LLM.
+// Called by the SessionPool — one at a time per user, concurrent across users.
+func (r *Router) process(ctx context.Context, msg Message) Reply {
+	// Re-resolve identity (needed for userCfg in this goroutine)
+	user, _ := r.identStore.Resolve(msg.Gateway, msg.ExternalID)
+	if user == nil {
+		return Reply{Text: identity.OnboardingMessage(), PolicyAction: "onboarding"}
+	}
+	userCfg := r.cfg.GetUser(user.Name)
+	if userCfg == nil {
+		return Reply{Text: identity.UnknownAccountMessage(), PolicyAction: "onboarding"}
+	}
+
+	// ── Classify ─────────────────────────────────────────────────────────
 	cat := r.clf.Classify(msg.Text)
 	log.Printf("[router] %s/%s user=%s cat=%s", msg.Gateway, msg.ExternalID, user.Name, cat)
 

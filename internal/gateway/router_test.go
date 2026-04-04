@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
@@ -368,5 +370,46 @@ func TestRouterPendingApproval(t *testing.T) {
 	})
 	if reply2.PolicyAction != "pending" {
 		t.Errorf("second request should be pending, got %q", reply2.PolicyAction)
+	}
+}
+
+// slowChat simulates a slow LLM — 200ms per response.
+func slowChat(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+	time.Sleep(200 * time.Millisecond)
+	return "slow: " + text, nil
+}
+
+// TestCrossUserConcurrency proves different users are processed in parallel.
+// If serial: ~400ms. If concurrent: ~200ms.
+func TestCrossUserConcurrency(t *testing.T) {
+	router, identStore := setupRouter(t, slowChat)
+
+	identStore.LinkAccount("parent", "telegram", "parent-123")
+	identStore.LinkAccount("emma", "telegram", "emma-123")
+
+	start := time.Now()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		router.Handle(context.Background(), Message{
+			Gateway: "telegram", ExternalID: "parent-123", Text: "hello from parent",
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		router.Handle(context.Background(), Message{
+			Gateway: "telegram", ExternalID: "emma-123", Text: "help with math",
+		})
+	}()
+
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	// If serial: ~400ms. If concurrent: ~200ms (+overhead).
+	if elapsed > 350*time.Millisecond {
+		t.Errorf("cross-user took %v — should be ~200ms (concurrent), not ~400ms (serial)", elapsed)
 	}
 }
