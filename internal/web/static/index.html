@@ -239,6 +239,13 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         </div>
       </div>
       <div class="d-section">
+        <div class="d-title">💬 Conversations</div>
+        <div class="d-card" id="conversations-list">
+          <div class="empty-state">Select a child to view conversations</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap" id="conv-user-buttons"></div>
+      </div>
+      <div class="d-section">
         <div class="d-title">🔌 Skills</div>
         <div class="d-card" id="skills-list">
           <div class="empty-state">Loading…</div>
@@ -548,6 +555,58 @@ async function loadDashboard() {
   renderApprovals(pending || []);
   renderActivity(all || []);
   renderSkills(skills || []);
+  renderConversationButtons();
+}
+
+function renderConversationButtons() {
+  const container = document.getElementById('conv-user-buttons');
+  container.textContent = '';
+  state.users.filter(u => u.role === 'child').forEach(u => {
+    const btn = el('button', {class: 'btn', style: 'background:' + (u.color || '#6366f1') + ';color:#fff'});
+    btn.textContent = u.display_name;
+    btn.onclick = () => loadConversations(u.name);
+    container.appendChild(btn);
+  });
+}
+
+async function loadConversations(userName) {
+  const list = document.getElementById('conversations-list');
+  list.textContent = '';
+  const loading = el('div', {class: 'empty-state'});
+  loading.textContent = 'Loading...';
+  list.appendChild(loading);
+
+  const msgs = await apiFetch('/api/conversations?user=' + userName + '&limit=30', {
+    headers: { 'X-Parent-PIN': state.parentPIN },
+  });
+
+  list.textContent = '';
+  if (!msgs || !msgs.length) {
+    const empty = el('div', {class: 'empty-state'});
+    empty.textContent = 'No conversations yet for ' + userName;
+    list.appendChild(empty);
+    return;
+  }
+
+  msgs.forEach(m => {
+    const item = el('div', {class: 'approval-item'});
+    const icon = el('div', {class: 'ap-avatar', style: 'background:' + (m.Role === 'user' ? '#6366f1' : '#22c55e') + ';font-size:14px'});
+    icon.textContent = m.Role === 'user' ? '👤' : '🤖';
+    const body = el('div', {class: 'ap-body'});
+    const content = el('div', {class: 'ap-query'});
+    content.textContent = m.Content.length > 120 ? m.Content.slice(0, 117) + '...' : m.Content;
+    const meta = el('div', {class: 'ap-meta'});
+    const badge = el('span', {class: 'ap-badge'});
+    badge.textContent = m.PolicyAction || 'allow';
+    meta.appendChild(badge);
+    const time = document.createTextNode(' ' + formatTime(m.CreatedAt));
+    meta.appendChild(time);
+    body.appendChild(content);
+    body.appendChild(meta);
+    item.appendChild(icon);
+    item.appendChild(body);
+    list.appendChild(item);
+  });
 }
 
 function renderApprovals(items) {

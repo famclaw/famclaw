@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals", s.handleApprovals)
 	mux.HandleFunc("/api/approvals/decide", s.handleDecide)
 	mux.HandleFunc("/api/skills", s.handleSkills)
+	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/setup/detect", s.handleSetupDetect)
 	mux.HandleFunc("/api/settings", s.handleSettings)      // GET/POST config settings
@@ -433,6 +435,38 @@ func (s *Server) verifyParentPIN(pin string) bool {
 		}
 	}
 	return false
+}
+
+// handleConversations returns recent messages for a user (parent dashboard).
+// Requires parent PIN.
+func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
+	pin := r.Header.Get("X-Parent-PIN")
+	if !s.verifyParentPIN(pin) {
+		jsonErr(w, fmt.Errorf("parent PIN required"), http.StatusForbidden)
+		return
+	}
+
+	userName := r.URL.Query().Get("user")
+	if userName == "" {
+		jsonErr(w, fmt.Errorf("missing ?user= parameter"), http.StatusBadRequest)
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50
+	if limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+
+	msgs, err := s.db.RecentMessagesByUser(userName, limit)
+	if err != nil {
+		jsonErr(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	jsonOK(w, msgs)
 }
 
 func jsonOK(w http.ResponseWriter, v any) {
