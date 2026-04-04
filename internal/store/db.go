@@ -121,6 +121,37 @@ func (d *DB) migrate() error {
 		used_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_used_tokens_used_at ON used_tokens(used_at);
+
+	CREATE TABLE IF NOT EXISTS installed_skills (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		name            TEXT NOT NULL UNIQUE,
+		repo_url        TEXT NOT NULL,
+		installed_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		installed_by    TEXT,
+		version         TEXT NOT NULL,
+		version_sha     TEXT NOT NULL,
+		tool_def_hash   TEXT,
+		hb_verdict      TEXT,
+		update_policy   TEXT NOT NULL DEFAULT 'ask',
+		last_checked    DATETIME,
+		update_available TEXT,
+		previous_version TEXT,
+		previous_sha    TEXT,
+		disabled        BOOLEAN DEFAULT FALSE,
+		forced_install  BOOLEAN DEFAULT FALSE
+	);
+
+	CREATE TABLE IF NOT EXISTS skill_update_checks (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		skill_name      TEXT NOT NULL,
+		checked_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		current_version TEXT NOT NULL,
+		found_version   TEXT,
+		verdict         TEXT,
+		tool_def_changed BOOLEAN DEFAULT FALSE,
+		installed       BOOLEAN DEFAULT FALSE,
+		notes           TEXT
+	);
 	`)
 	return err
 }
@@ -447,6 +478,96 @@ func (d *DB) IsTokenUsed(tokenHash string) bool {
 func (d *DB) CleanupOldTokens(olderThan time.Duration) error {
 	cutoff := time.Now().Add(-olderThan)
 	_, err := d.sql.Exec(`DELETE FROM used_tokens WHERE used_at < ?`, cutoff)
+	return err
+}
+
+// ── Installed Skills ──────────────────────────────────────────────────────────
+
+type InstalledSkill struct {
+	ID              int64
+	Name            string
+	RepoURL         string
+	InstalledAt     time.Time
+	InstalledBy     string
+	Version         string
+	VersionSHA      string
+	ToolDefHash     string
+	HBVerdict       string
+	UpdatePolicy    string // ask | auto | pin | disabled
+	LastChecked     time.Time
+	UpdateAvailable string
+	PreviousVersion string
+	PreviousSHA     string
+	Disabled        bool
+	ForcedInstall   bool
+}
+
+func (d *DB) UpsertInstalledSkill(s *InstalledSkill) error {
+	_, err := d.sql.Exec(`
+		INSERT INTO installed_skills (name, repo_url, installed_by, version, version_sha, tool_def_hash, hb_verdict, update_policy, forced_install)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			repo_url=excluded.repo_url, version=excluded.version, version_sha=excluded.version_sha,
+			tool_def_hash=excluded.tool_def_hash, hb_verdict=excluded.hb_verdict,
+			previous_version=installed_skills.version, previous_sha=installed_skills.version_sha`,
+		s.Name, s.RepoURL, s.InstalledBy, s.Version, s.VersionSHA, s.ToolDefHash, s.HBVerdict, s.UpdatePolicy, s.ForcedInstall)
+	return err
+}
+
+func (d *DB) GetInstalledSkill(name string) (*InstalledSkill, error) {
+	s := &InstalledSkill{}
+	err := d.sql.QueryRow(`
+		SELECT id, name, repo_url, installed_at, COALESCE(installed_by,''), version, version_sha,
+		       COALESCE(tool_def_hash,''), COALESCE(hb_verdict,''), update_policy,
+		       COALESCE(previous_version,''), COALESCE(previous_sha,''), disabled, forced_install
+		FROM installed_skills WHERE name = ?`, name).Scan(
+		&s.ID, &s.Name, &s.RepoURL, &s.InstalledAt, &s.InstalledBy, &s.Version, &s.VersionSHA,
+		&s.ToolDefHash, &s.HBVerdict, &s.UpdatePolicy,
+		&s.PreviousVersion, &s.PreviousSHA, &s.Disabled, &s.ForcedInstall)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return s, err
+}
+
+func (d *DB) ListInstalledSkills() ([]*InstalledSkill, error) {
+	rows, err := d.sql.Query(`
+		SELECT id, name, repo_url, installed_at, COALESCE(installed_by,''), version, version_sha,
+		       COALESCE(tool_def_hash,''), COALESCE(hb_verdict,''), update_policy,
+		       COALESCE(previous_version,''), COALESCE(previous_sha,''), disabled, forced_install
+		FROM installed_skills ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*InstalledSkill
+	for rows.Next() {
+		s := &InstalledSkill{}
+		if err := rows.Scan(&s.ID, &s.Name, &s.RepoURL, &s.InstalledAt, &s.InstalledBy,
+			&s.Version, &s.VersionSHA, &s.ToolDefHash, &s.HBVerdict, &s.UpdatePolicy,
+			&s.PreviousVersion, &s.PreviousSHA, &s.Disabled, &s.ForcedInstall); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) SetSkillUpdatePolicy(name, policy string) error {
+	_, err := d.sql.Exec(`UPDATE installed_skills SET update_policy = ? WHERE name = ?`, policy, name)
+	return err
+}
+
+func (d *DB) DisableInstalledSkill(name string) error {
+	_, err := d.sql.Exec(`UPDATE installed_skills SET disabled = TRUE WHERE name = ?`, name)
+	return err
+}
+
+func (d *DB) LogUpdateCheck(skillName, currentVersion, foundVersion, verdict, notes string, toolDefChanged bool) error {
+	_, err := d.sql.Exec(`
+		INSERT INTO skill_update_checks (skill_name, current_version, found_version, verdict, tool_def_changed, notes)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		skillName, currentVersion, foundVersion, verdict, toolDefChanged, notes)
 	return err
 }
 

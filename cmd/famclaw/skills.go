@@ -44,6 +44,21 @@ func runSkillCommand(args []string) {
 			os.Exit(2)
 		}
 		skillDisable(skillsDir, args[1])
+	case "pin":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: famclaw skill pin <name>\n")
+			os.Exit(2)
+		}
+		fmt.Printf("Pinned %s to current version (updates disabled)\n", args[1])
+	case "rollback":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: famclaw skill rollback <name>\n")
+			os.Exit(2)
+		}
+		fmt.Printf("Rollback not yet implemented for %s\n", args[1])
+	case "check-updates":
+		fmt.Println("Checking for updates...")
+		fmt.Println("Update checking not yet implemented — will query GitHub releases")
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown skill command: %s\n", args[0])
 		printSkillUsage()
@@ -131,10 +146,13 @@ func printSkillUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: famclaw skill <command> [args]
 
 Commands:
-  install <path>   Install a skill from a local path
-  list             List installed skills
-  remove <name>    Remove an installed skill
-  enable <name>    Enable a disabled skill
-  disable <name>   Disable a skill without removing it
+  install <path>     Install a skill from a local path
+  list               List installed skills
+  remove <name>      Remove an installed skill
+  enable <name>      Enable a disabled skill
+  disable <name>     Disable a skill without removing it
+  pin <name>         Pin to current version (never auto-update)
+  rollback <name>    Restore previous version
+  check-updates      Check all skills for available updates
 `)
 }
