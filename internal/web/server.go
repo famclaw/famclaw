@@ -21,6 +21,7 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/llm"
+	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
@@ -38,6 +39,7 @@ type Server struct {
 	clf        *classifier.Classifier
 	notifier   *notify.MultiNotifier
 	skills     []*skillbridge.Skill // injected into agent system prompt
+	pool       *mcp.Pool           // MCP tool pool for agent tool calls
 	upgrader   websocket.Upgrader
 	clients    map[*websocket.Conn]string // conn → userName
 	clientsMu  sync.RWMutex
@@ -50,7 +52,7 @@ type wsMessage struct {
 }
 
 func NewServer(cfg *config.Config, cfgPath string, db *store.DB, evaluator *policy.Evaluator,
-	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill) *Server {
+	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, pool *mcp.Pool) *Server {
 	return &Server{
 		cfg:       cfg,
 		cfgPath:   cfgPath,
@@ -58,6 +60,7 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, evaluator *poli
 		evaluator: evaluator,
 		clf:       clf,
 		notifier:  notifier,
+		pool:      pool,
 		skills:    skills,
 		clients:   make(map[*websocket.Conn]string),
 		upgrader: websocket.Upgrader{
@@ -130,9 +133,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[ws] %s connected", userCfg.DisplayName)
 
-	llmClient := llm.NewClient(s.cfg.LLM.BaseURL, s.cfg.ModelFor(userCfg), s.cfg.LLM.APIKey)
+	baseURL, model, apiKey := s.cfg.LLMClientFor(userCfg)
+	llmClient := llm.NewClient(baseURL, model, apiKey)
 	a := agent.NewAgent(userCfg, s.cfg, llmClient, s.evaluator, s.clf, s.db)
 	a.SetSkills(s.skills)
+	a.SetPool(s.pool)
 
 	for {
 		var msg wsMessage

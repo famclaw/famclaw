@@ -81,7 +81,8 @@ func main() {
 	clf := classifier.New()
 
 	// LLM health check
-	llmClient := llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.Model, cfg.LLM.APIKey)
+	hcBaseURL, hcModel, hcAPIKey := cfg.LLMClientFor(nil)
+	llmClient := llm.NewClient(hcBaseURL, hcModel, hcAPIKey)
 	ctx5s, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := llmClient.Ping(ctx5s); err != nil {
 		log.Printf("⚠️  LLM not ready: %v", err)
@@ -128,7 +129,8 @@ func main() {
 
 	// Chat function for gateway router
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
-		client := llm.NewClient(cfg.LLM.BaseURL, cfg.ModelFor(user), cfg.LLM.APIKey)
+		baseURL, model, apiKey := cfg.LLMClientFor(user)
+		client := llm.NewClient(baseURL, model, apiKey)
 		a := agent.NewAgent(user, cfg, client, evaluator, clf, db)
 		a.SetPool(mcpPool)
 		a.SetSkills(enabledSkills)
@@ -165,7 +167,7 @@ func main() {
 	}
 
 	// Web server
-	srv := web.NewServer(cfg, *cfgPath, db, evaluator, clf, notifier, enabledSkills)
+	srv := web.NewServer(cfg, *cfgPath, db, evaluator, clf, notifier, enabledSkills, mcpPool)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),
