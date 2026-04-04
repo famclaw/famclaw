@@ -142,9 +142,10 @@ func TestHardwareRecommendation(t *testing.T) {
 		ramMB int
 		want  string
 	}{
-		{8192, "llama3.1:8b"},
-		{4096, "llama3.2:3b"},
-		{2048, "phi3:mini"},
+		{16384, "gemma4:e4b"},
+		{8192, "gemma4:e2b"},
+		{4096, "qwen3:4b"},
+		{2048, "phi4-mini"},
 		{1024, "tinyllama"},
 		{512, "tinyllama"},
 	}

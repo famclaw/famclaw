@@ -4,14 +4,16 @@ FamClaw runs on Raspberry Pi and Mac Mini. This guide helps you choose the right
 
 ## Recommended hardware
 
-| Hardware | RAM | Best for | LLM Model | Response time |
-|----------|-----|----------|-----------|---------------|
-| **RPi 5 (8GB)** | 8GB | Best Pi experience | `llama3.1:8b` | ~3-5s |
-| **RPi 5 (4GB)** | 4GB | Great for most families | `llama3.2:3b` | ~2-4s |
-| **RPi 4 (4GB)** | 4GB | Good, widely available | `llama3.2:3b` | ~4-6s |
-| **RPi 4 (2GB)** | 2GB | Budget option | `phi3:mini` | ~5-8s |
-| **RPi 3B+** | 1GB | Minimal, slow | `tinyllama` | ~8-15s |
-| **Mac Mini M1+** | 8-16GB | Fastest home option | `llama3.1:8b` | ~1-2s |
+| Hardware | RAM | LLM Model | Notes |
+|----------|-----|-----------|-------|
+| **Mac Mini M1+ (16GB)** | 16GB | `gemma4:e4b` | Fastest home setup, native tool calling |
+| **RPi 5 (8GB)** | 8GB | `gemma4:e2b` | Best Pi experience, multimodal |
+| **RPi 5/4 (4GB)** | 4GB | `qwen3:4b` | Great efficiency, Apache 2.0 |
+| **RPi 4 (2GB)** | 2GB | `phi4-mini` | Edge-optimized |
+| **RPi 3B+** | 1GB | Use remote | Gateway only — point to LAN or cloud |
+| **Old Android** | Varies | Use remote | Gateway only — no local LLM |
+
+See [BACKENDS.md](./BACKENDS.md) for detailed model and inference engine comparisons.
 
 ## What you need
 

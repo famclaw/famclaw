@@ -223,14 +223,17 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 // HardwareRecommendation returns a model recommendation based on available RAM.
+// Prefers models with native tool calling (Gemma 4, Qwen3, Phi-4).
 func HardwareRecommendation(ramMB int) string {
 	switch {
+	case ramMB >= 16384:
+		return "gemma4:e4b"
 	case ramMB >= 8192:
-		return "llama3.1:8b"
+		return "gemma4:e2b"
 	case ramMB >= 4096:
-		return "llama3.2:3b"
+		return "qwen3:4b"
 	case ramMB >= 2048:
-		return "phi3:mini"
+		return "phi4-mini"
 	default:
 		return "tinyllama"
 	}
