@@ -165,14 +165,50 @@ func conversationID(userName string) string {
 }
 
 // StartAll starts all enabled gateway bots as goroutines.
-// A crash in one gateway never affects others.
+// Panics are recovered. Failed gateways restart with exponential backoff.
 func StartAll(ctx context.Context, gateways []Gateway, handler func(ctx context.Context, msg Message) Reply) {
 	for _, gw := range gateways {
-		go func(g Gateway) {
-			log.Printf("[gateway] starting %s", g.Name())
-			if err := g.Start(ctx, handler); err != nil {
-				log.Printf("[gateway] %s stopped: %v", g.Name(), err)
+		go runGateway(ctx, gw, handler)
+	}
+}
+
+func runGateway(ctx context.Context, gw Gateway, handler func(ctx context.Context, msg Message) Reply) {
+	backoff := time.Second
+	maxBackoff := 60 * time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[gateway] %s PANIC (recovered): %v", gw.Name(), r)
+				}
+			}()
+			log.Printf("[gateway] starting %s", gw.Name())
+			if err := gw.Start(ctx, handler); err != nil {
+				if ctx.Err() != nil {
+					return // context cancelled, normal shutdown
+				}
+				log.Printf("[gateway] %s stopped: %v — restarting in %v", gw.Name(), err, backoff)
 			}
-		}(gw)
+		}()
+
+		// Don't restart if context is done
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		// Exponential backoff: 1s → 2s → 4s → ... → 60s
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
 }
