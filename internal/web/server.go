@@ -440,6 +440,11 @@ func (s *Server) verifyParentPIN(pin string) bool {
 // handleConversations returns recent messages for a user (parent dashboard).
 // Requires parent PIN.
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
 	pin := r.Header.Get("X-Parent-PIN")
 	if !s.verifyParentPIN(pin) {
 		jsonErr(w, fmt.Errorf("parent PIN required"), http.StatusForbidden)

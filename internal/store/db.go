@@ -304,7 +304,7 @@ func (d *DB) RecentMessagesByUser(userName string, limit int) ([]*Message, error
 		FROM messages m
 		JOIN conversations c ON c.id = m.conversation_id
 		WHERE c.user_name = ?
-		ORDER BY m.created_at DESC LIMIT ?`, userName, limit)
+		ORDER BY m.created_at DESC, m.id DESC LIMIT ?`, userName, limit)
 	if err != nil {
 		return nil, err
 	}

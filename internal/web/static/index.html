@@ -576,12 +576,18 @@ async function loadConversations(userName) {
   loading.textContent = 'Loading...';
   list.appendChild(loading);
 
-  const msgs = await apiFetch('/api/conversations?user=' + userName + '&limit=30', {
+  const msgs = await apiFetch('/api/conversations?user=' + encodeURIComponent(userName) + '&limit=30', {
     headers: { 'X-Parent-PIN': state.parentPIN },
   });
 
   list.textContent = '';
-  if (!msgs || !msgs.length) {
+  if (msgs === null) {
+    const err = el('div', {class: 'empty-state'});
+    err.textContent = 'Failed to load — check PIN';
+    list.appendChild(err);
+    return;
+  }
+  if (!msgs.length) {
     const empty = el('div', {class: 'empty-state'});
     empty.textContent = 'No conversations yet for ' + userName;
     list.appendChild(empty);
