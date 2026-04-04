@@ -183,6 +183,7 @@ func runGateway(ctx context.Context, gw Gateway, handler func(ctx context.Contex
 		default:
 		}
 
+		startedAt := time.Now()
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -197,6 +198,11 @@ func runGateway(ctx context.Context, gw Gateway, handler func(ctx context.Contex
 				log.Printf("[gateway] %s stopped: %v — restarting in %v", gw.Name(), err, backoff)
 			}
 		}()
+
+		// Reset backoff if gateway ran successfully for > 5 minutes
+		if time.Since(startedAt) > 5*time.Minute {
+			backoff = time.Second
+		}
 
 		// Don't restart if context is done
 		select {
