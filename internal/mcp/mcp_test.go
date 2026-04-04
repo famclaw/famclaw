@@ -273,7 +273,7 @@ func TestPoolRegisterFromConfig(t *testing.T) {
 		"enabled":  {Transport: "stdio", Command: "echo"},
 		"disabled": {Transport: "stdio", Command: "nope", Disabled: true},
 	}
-	pool.RegisterFromConfig(servers)
+	pool.RegisterFromConfig(servers, nil)
 	if len(pool.clients) != 1 {
 		t.Errorf("expected 1 client (disabled skipped), got %d", len(pool.clients))
 	}

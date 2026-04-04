@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -20,6 +21,7 @@ type Client struct {
 	name          string
 	transportType string // stdio | http | sse | inprocess (test only)
 	cfg           config.MCPServerConfig
+	env           map[string]string // per-skill credential env vars
 	inner         client.MCPClient
 	tools         []mcp.Tool
 	closed        bool
@@ -57,7 +59,15 @@ func (c *Client) Start(ctx context.Context) error {
 
 	switch c.transportType {
 	case "stdio":
-		inner, err = client.NewStdioMCPClient(c.cfg.Command, nil, c.cfg.Args...)
+		// Inject per-skill credentials as env vars (never appear in LLM context)
+		var env []string
+		if len(c.env) > 0 {
+			env = os.Environ()
+			for k, v := range c.env {
+				env = append(env, fmt.Sprintf("%s=%s", k, v))
+			}
+		}
+		inner, err = client.NewStdioMCPClient(c.cfg.Command, env, c.cfg.Args...)
 	case "http":
 		var opts []transport.StreamableHTTPCOption
 		if len(c.cfg.Headers) > 0 {
