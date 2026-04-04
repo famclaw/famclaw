@@ -296,6 +296,32 @@ func (d *DB) GetConversationHistory(convID string, limit int) ([]*Message, error
 	return msgs, rows.Err()
 }
 
+// RecentMessagesByUser returns the most recent messages for a specific user across all conversations.
+func (d *DB) RecentMessagesByUser(userName string, limit int) ([]*Message, error) {
+	rows, err := d.sql.Query(`
+		SELECT m.id, m.conversation_id, m.role, m.content,
+		       COALESCE(m.category,''), COALESCE(m.policy_action,''), m.created_at
+		FROM messages m
+		JOIN conversations c ON c.id = m.conversation_id
+		WHERE c.user_name = ?
+		ORDER BY m.created_at DESC LIMIT ?`, userName, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []*Message
+	for rows.Next() {
+		m := &Message{}
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content,
+			&m.Category, &m.PolicyAction, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
 // ── Skills ────────────────────────────────────────────────────────────────────
 
 type Skill struct {
