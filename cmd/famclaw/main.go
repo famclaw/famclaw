@@ -70,7 +70,8 @@ func main() {
 	// Generate secret if not set (first boot)
 	if cfg.Server.Secret == "" {
 		cfg.Server.Secret = generateSecret()
-		log.Printf("Generated new server secret (save to env: FAMCLAW_SECRET)")
+		log.Printf("Generated server secret: %s", cfg.Server.Secret)
+		log.Printf("  To persist: export FAMCLAW_SECRET=%s", cfg.Server.Secret)
 	}
 
 	log.Printf("Config: %d users, model=%s, addr=%s", len(cfg.Users), cfg.LLM.Model, cfg.Server.Addr())
@@ -291,7 +292,9 @@ func printStartGuide(cfg *config.Config) {
 
 func generateSecret() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		log.Fatalf("FATAL: crypto/rand failed: %v", err)
+	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 

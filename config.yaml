@@ -7,9 +7,8 @@
 server:
   host: "0.0.0.0"          # Bind all interfaces — access from any device on LAN
   port: 8080
-  # Secret key for signing tokens — CHANGE THIS
-  # Secret key for signing tokens — REQUIRED. Set via env var or change here.
-  # FamClaw will refuse to start if this is empty.
+  # Secret key for signing tokens. Auto-generated on first boot if not set.
+  # To persist: export FAMCLAW_SECRET=<generated-value>
   secret: "${FAMCLAW_SECRET}"
   # Local domain for mDNS — access via http://famclaw.local on your network
   mdns_name: "famclaw"
