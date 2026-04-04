@@ -135,34 +135,34 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 
 ## Status
 
-🚧 **Active development — Waves 1–5 complete.**
+🚧 **Pre-beta — core complete, testing on real hardware next.**
 
-| Component | Status | Tests |
-|-----------|--------|-------|
-| `internal/classifier` | Built | 59 pass — keyword-based topic classification (22 categories) |
-| `internal/policy` | Built | 28 pass + 27 OPA Rego tests — age-based policy engine |
-| `internal/notify` | Built | 16 pass — email, Slack, Discord webhook, Twilio SMS, ntfy |
-| `internal/identity` | Built | 9 pass — gateway account → user mapping |
-| `internal/gateway` | Built | 12 pass — router with policy gate (panic-LLM proof) |
-| `internal/gateway/telegram` | Built | Long-poll Telegram Bot API |
-| `internal/gateway/discord` | Built | Discord via discordgo |
-| `internal/gateway/whatsapp` | Placeholder | Needs whatsmeow QR pairing flow |
-| `internal/skillbridge` | Built | 18 pass — SKILL.md parser, registry, AgentSkills XML loader |
-| `internal/mcp` | Built | 20 pass — multi-transport (stdio/HTTP/SSE), pool with config-driven registration |
-| `internal/agent` | Built | Conversation loop with streaming |
-| `internal/llm` | Built | Ollama-compatible streaming client |
-| `internal/store` | Built | Pure-Go SQLite (modernc), no CGO |
-| `internal/web` | Built | HTTP + WebSocket + embedded UI + Settings API |
-| `internal/seccheck` | Built | Security scanner for skills/repos |
-| `internal/config` | Built | YAML + env expansion |
-| `internal/mdns` | Built | LAN discovery (famclaw.local) |
-| `policies/` | Built | OPA Rego policies + topics.json taxonomy |
-| `integration_test.go` | Built | 28 pass — full message flow, cross-gateway policy, panic-LLM proof |
-| `skills-repo/seccheck` | Built | SKILL.md + CLI wrapper + Makefile target |
-| `scripts/build-image.sh` | Built | Flashable SD card image builder |
-| `scripts/firstboot.sh` | Built | First-boot setup: FS expand, Ollama, model pull |
-| `scripts/firstboot-wizard.sh` | Built | Interactive family + gateway config wizard |
-| `docs/` | Built | FLASH, GATEWAYS, PERSONAS, SKILLS, HARDWARE, ANDROID |
+### What works
+
+| Feature | Status |
+|---------|--------|
+| **Policy gate** | OPA rules block dangerous topics before LLM is called (28 integration tests) |
+| **Output safety** | Post-response filter catches inappropriate LLM output for children |
+| **Web UI** | Chat, parent dashboard, first-boot wizard, settings page |
+| **Parent dashboard** | Pending approvals, activity log, conversation history per child |
+| **Telegram bot** | Long-poll Bot API, fully wired |
+| **Discord bot** | via discordgo, fully wired |
+| **MCP tools** | Multi-transport (stdio/HTTP/SSE), tool call loop, auto-restart |
+| **LLM profiles** | Multiple named endpoints, per-user assignment |
+| **Hardware detection** | RAM, arch, Ollama presence, model recommendation |
+| **Skill CLI** | `famclaw skill install/list/remove/enable/disable` |
+| **Security** | CodeQL, govulncheck, SBOM, cosign signing, TruffleHog |
+
+### Recommended models
+
+| Hardware | Model | Why |
+|----------|-------|-----|
+| Mac Mini M1+ 16GB | `gemma4:e4b` | Native tool calling, multimodal |
+| RPi 5 8GB | `gemma4:e2b` | Fits in 3GB Q4, tool calling |
+| RPi 4 4GB | `qwen3:4b` | Best efficiency |
+| RPi 3 / Android | Use remote | Gateway only |
+
+See [docs/BACKENDS.md](docs/BACKENDS.md) for inference engine comparison.
 
 See [AGENTS.md](./AGENTS.md) for the full build plan.
 
