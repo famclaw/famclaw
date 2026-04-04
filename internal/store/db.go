@@ -115,6 +115,12 @@ func (d *DB) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
 	CREATE INDEX IF NOT EXISTS idx_approvals_user ON approvals(user_name);
 	CREATE INDEX IF NOT EXISTS idx_gateway_accounts_lookup ON gateway_accounts(gateway, external_id);
+
+	CREATE TABLE IF NOT EXISTS used_tokens (
+		token_hash TEXT PRIMARY KEY,
+		used_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_used_tokens_used_at ON used_tokens(used_at);
 	`)
 	return err
 }
@@ -414,6 +420,34 @@ func (d *DB) UnlinkGatewayAccount(gateway, externalID string) error {
 		return fmt.Errorf("unlinking gateway account: %w", err)
 	}
 	return nil
+}
+
+// ── Token Replay Protection ───────────────────────────────────────────────────
+
+// MarkTokenUsed records a token hash as used. Returns false if already used.
+func (d *DB) MarkTokenUsed(tokenHash string) (bool, error) {
+	_, err := d.sql.Exec(`INSERT OR IGNORE INTO used_tokens (token_hash) VALUES (?)`, tokenHash)
+	if err != nil {
+		return false, fmt.Errorf("marking token used: %w", err)
+	}
+	// Check if it was actually inserted (not already there)
+	var count int
+	d.sql.QueryRow(`SELECT COUNT(*) FROM used_tokens WHERE token_hash = ?`, tokenHash).Scan(&count)
+	return count == 1, nil
+}
+
+// IsTokenUsed checks if a token hash has been used before.
+func (d *DB) IsTokenUsed(tokenHash string) bool {
+	var count int
+	d.sql.QueryRow(`SELECT COUNT(*) FROM used_tokens WHERE token_hash = ?`, tokenHash).Scan(&count)
+	return count > 0
+}
+
+// CleanupOldTokens removes used token records older than the given duration.
+func (d *DB) CleanupOldTokens(olderThan time.Duration) error {
+	cutoff := time.Now().Add(-olderThan)
+	_, err := d.sql.Exec(`DELETE FROM used_tokens WHERE used_at < ?`, cutoff)
+	return err
 }
 
 // ── SecCheck Reports ──────────────────────────────────────────────────────────
