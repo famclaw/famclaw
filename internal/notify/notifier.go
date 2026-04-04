@@ -7,10 +7,14 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/store"
@@ -88,17 +92,49 @@ func (m *MultiNotifier) NotifyDecision(ctx context.Context, a *store.Approval) {
 	wg.Wait()
 }
 
-// GenerateToken creates an HMAC-SHA256 token for one-click approve/deny links.
+// GenerateToken creates a time-limited HMAC token for one-click approve/deny links.
+// Format: base64url(id:action:issuedUnix:hmac_hex)
+// Token expiry is verified in VerifyToken without a DB lookup.
 func GenerateToken(id, action, secret string) string {
+	issuedAt := time.Now().Unix()
+	payload := fmt.Sprintf("%s:%s:%d", id, action, issuedAt)
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(id + ":" + action))
-	return hex.EncodeToString(mac.Sum(nil))
+	mac.Write([]byte(payload))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	raw := fmt.Sprintf("%s:%s", payload, sig)
+	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
-// VerifyToken checks that a token matches the expected HMAC.
-func VerifyToken(id, action, token, secret string) bool {
-	expected := GenerateToken(id, action, secret)
-	return hmac.Equal([]byte(token), []byte(expected))
+// VerifyToken checks the HMAC signature and expiry of a token.
+// Expiry is checked from the timestamp embedded in the token — no DB lookup needed.
+// Returns the approval ID and action on success.
+func VerifyToken(token, secret string, expiryHours int) (id, action string, err error) {
+	decoded, err := base64.URLEncoding.DecodeString(token)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid token encoding")
+	}
+	parts := strings.SplitN(string(decoded), ":", 4)
+	if len(parts) != 4 {
+		return "", "", fmt.Errorf("invalid token format")
+	}
+	id, action, issuedStr, sigHex := parts[0], parts[1], parts[2], parts[3]
+
+	issuedUnix, err := strconv.ParseInt(issuedStr, 10, 64)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid token timestamp")
+	}
+	if time.Now().Unix() > issuedUnix+int64(expiryHours)*3600 {
+		return "", "", fmt.Errorf("token expired")
+	}
+
+	payload := fmt.Sprintf("%s:%s:%s", id, action, issuedStr)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(sigHex), []byte(expected)) {
+		return "", "", fmt.Errorf("invalid token signature")
+	}
+	return id, action, nil
 }
 
 func formatApprovalMessage(a *store.Approval, approveURL, denyURL string) string {

@@ -67,11 +67,15 @@ func main() {
 	cfg, err := config.Load(*cfgPath)
 	must(err, "config")
 
-	// Generate secret if not set (first boot) — persisted to config file
+	// Generate secret if not set (first boot)
 	if cfg.Server.Secret == "" {
 		cfg.Server.Secret = generateSecret()
-		// Never log the secret — write it back to config instead
 		log.Printf("Generated server secret (persisted to config file)")
+	}
+
+	// Validate config — fail fast with plain-language errors
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Configuration error:\n%v", err)
 	}
 
 	log.Printf("Config: %d users, model=%s, addr=%s", len(cfg.Users), cfg.LLM.Model, cfg.Server.Addr())

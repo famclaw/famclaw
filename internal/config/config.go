@@ -217,17 +217,6 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	applyDefaults(&cfg)
-
-	// Validate MCP server configs at load time
-	for name, mcpCfg := range cfg.Skills.MCPServers {
-		if mcpCfg.Disabled {
-			continue
-		}
-		if err := ValidateMCPServer(name, mcpCfg); err != nil {
-			return nil, err
-		}
-	}
-
 	return &cfg, nil
 }
 
@@ -282,6 +271,37 @@ func applyDefaults(c *Config) {
 	if c.Notifications.Ntfy.URL == "" {
 		c.Notifications.Ntfy.URL = "http://localhost:2586"
 	}
+}
+
+// Validate checks that critical config values are set and safe.
+// Called at startup — fails fast with plain-language errors.
+func (c *Config) Validate() error {
+	if len(c.Server.Secret) > 0 && len(c.Server.Secret) < 32 {
+		return fmt.Errorf(
+			"server secret is too short (%d chars, need 32+).\n"+
+				"Generate one: openssl rand -hex 32\n"+
+				"Then set: FAMCLAW_SECRET=<value>",
+			len(c.Server.Secret),
+		)
+	}
+	for _, u := range c.Users {
+		if u.Role == "parent" && u.PIN != "" && len(u.PIN) < 4 {
+			return fmt.Errorf(
+				"parent PIN for %q is too short (%d chars, need 4+).\n"+
+					"Set a longer PIN in config or via PARENT_PIN env var.",
+				u.Name, len(u.PIN),
+			)
+		}
+	}
+	for name, mcpCfg := range c.Skills.MCPServers {
+		if mcpCfg.Disabled {
+			continue
+		}
+		if err := ValidateMCPServer(name, mcpCfg); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Config) GetUser(name string) *UserConfig {
