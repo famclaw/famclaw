@@ -135,23 +135,26 @@ Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosq
 
 ## Status
 
-🚧 **Pre-beta — core complete, testing on real hardware next.**
+🚧 **v0.3.0-beta — agent core rewrite complete.**
 
 ### What works
 
 | Feature | Status |
 |---------|--------|
-| **Policy gate** | OPA rules block dangerous topics before LLM is called (28 integration tests) |
-| **Output safety** | Post-response filter catches inappropriate LLM output for children |
-| **Web UI** | Chat, parent dashboard, first-boot wizard, settings page |
-| **Parent dashboard** | Pending approvals, activity log, conversation history per child |
-| **Telegram bot** | Long-poll Bot API, fully wired |
-| **Discord bot** | via discordgo, fully wired |
-| **MCP tools** | Multi-transport (stdio/HTTP/SSE), tool call loop, auto-restart |
-| **LLM profiles** | Multiple named endpoints, per-user assignment |
-| **Hardware detection** | RAM, arch, Ollama presence, model recommendation |
-| **Skill CLI** | `famclaw skill install/list/remove/enable/disable` |
-| **Security** | CodeQL, govulncheck, SBOM, cosign signing, TruffleHog |
+| **Policy gate** | OPA rules for input, tool calls, and output (33 Rego tests) |
+| **Pipeline engine** | Composable stages: classify → policy → LLM → tools → output filter |
+| **Multi-backend LLM** | OpenAI-compatible: Ollama, llama.cpp, Groq, OpenAI, OpenRouter |
+| **Smart tool selection** | Token-budget-aware filtering, role+skill scoping |
+| **Context compression** | Tiered truncation keeping system prompt + pinned messages |
+| **Subagent dispatching** | Concurrent subagents with explicit LLM profile control |
+| **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
+| **llama.cpp sidecar** | Spawns llama-server, GGUF model catalog, TurboQuant support |
+| **Security scanning** | Honeybadger runtime stage, install-time + stale scan gates |
+| **Web UI** | Chat, parent dashboard, 5-step wizard with AI profiles |
+| **Telegram + Discord** | Fully wired gateway bots |
+| **MCP tools** | Multi-transport (stdio/HTTP/SSE), unified tool registry |
+| **LLM profiles** | Multiple named endpoints, per-user assignment via wizard |
+| **CI/CD** | CodeQL, govulncheck, SBOM, cosign signing, TruffleHog |
 
 ### Recommended models
 
