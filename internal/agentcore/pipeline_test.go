@@ -96,6 +96,18 @@ func TestPipelineCancelledContext(t *testing.T) {
 	}
 }
 
+func TestPipelineNilStage(t *testing.T) {
+	p := Pipeline{
+		func(_ context.Context, _ *Turn) error { return nil },
+		nil, // should be caught
+		func(_ context.Context, _ *Turn) error { t.Error("should not run"); return nil },
+	}
+	err := p.Run(context.Background(), &Turn{})
+	if err == nil {
+		t.Fatal("expected error for nil stage")
+	}
+}
+
 func TestPipelineEmpty(t *testing.T) {
 	p := Pipeline{}
 	err := p.Run(context.Background(), &Turn{})
@@ -132,7 +144,9 @@ func TestPipelinePrepend(t *testing.T) {
 	s3 := func(_ context.Context, _ *Turn) error { order = append(order, "s3"); return nil }
 
 	p := Pipeline{s2}.Prepend(s1).Append(s3)
-	p.Run(context.Background(), &Turn{})
+	if err := p.Run(context.Background(), &Turn{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 
 	if len(order) != 3 || order[0] != "s1" || order[1] != "s2" || order[2] != "s3" {
 		t.Errorf("wrong order: %v", order)
