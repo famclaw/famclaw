@@ -176,8 +176,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 
 			chatCtx, chatCancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer chatCancel()
 			resp, err := a.Chat(chatCtx, payload.Text, onToken)
-			chatCancel()
 			if err != nil {
 				errMsg := err.Error()
 				if chatCtx.Err() != nil {
