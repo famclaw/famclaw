@@ -21,10 +21,19 @@ type settingsView struct {
 	Gateways gatewaySettingsView `json:"gateways"`
 }
 
-type llmSettingsView struct {
+type llmProfileView struct {
+	Label   string `json:"label"`
 	BaseURL string `json:"base_url"`
 	Model   string `json:"model"`
 	APIKey  string `json:"api_key,omitempty"`
+}
+
+type llmSettingsView struct {
+	BaseURL  string                      `json:"base_url"`
+	Model    string                      `json:"model"`
+	APIKey   string                      `json:"api_key,omitempty"`
+	Default  *string                     `json:"default,omitempty"`
+	Profiles *map[string]llmProfileView  `json:"profiles,omitempty"`
 }
 
 type userSettingsView struct {
@@ -34,6 +43,7 @@ type userSettingsView struct {
 	AgeGroup    string `json:"age_group,omitempty"`
 	PIN         string `json:"pin,omitempty"`
 	Color       string `json:"color,omitempty"`
+	LLMProfile  string `json:"llm_profile,omitempty"`
 }
 
 type gatewaySettingsView struct {
@@ -67,16 +77,35 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
 
+	defCopy := s.cfg.LLM.Default
 	view := settingsView{
 		LLM: llmSettingsView{
 			BaseURL: s.cfg.LLM.BaseURL,
 			Model:   s.cfg.LLM.Model,
+			Default: &defCopy,
 		},
 	}
 
 	// Mask API key — never expose in GET
 	if s.cfg.LLM.APIKey != "" {
 		view.LLM.APIKey = "••••••••"
+	}
+
+	// Include named profiles
+	if len(s.cfg.LLM.Profiles) > 0 {
+		pm := make(map[string]llmProfileView, len(s.cfg.LLM.Profiles))
+		view.LLM.Profiles = &pm
+		for name, p := range s.cfg.LLM.Profiles {
+			pv := llmProfileView{
+				Label:   p.Label,
+				BaseURL: p.BaseURL,
+				Model:   p.Model,
+			}
+			if p.APIKey != "" {
+				pv.APIKey = "••••••••"
+			}
+			(*view.LLM.Profiles)[name] = pv
+		}
 	}
 
 	for _, u := range s.cfg.Users {
@@ -86,6 +115,7 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 			Role:        u.Role,
 			AgeGroup:    u.AgeGroup,
 			Color:       u.Color,
+			LLMProfile:  u.LLMProfile,
 		})
 	}
 
@@ -116,7 +146,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
 
-	// LLM config
+	// LLM config — legacy single endpoint
 	if update.LLM.BaseURL != "" {
 		s.cfg.LLM.BaseURL = update.LLM.BaseURL
 	}
@@ -126,6 +156,30 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	// Only update API key if client sends a non-masked value
 	if update.LLM.APIKey != "" && update.LLM.APIKey != "••••••••" {
 		s.cfg.LLM.APIKey = update.LLM.APIKey
+	}
+
+	// LLM profiles — pointer fields distinguish "omitted" from "explicit clear"
+	if update.LLM.Default != nil {
+		s.cfg.LLM.Default = *update.LLM.Default
+	}
+	if update.LLM.Profiles != nil {
+		profiles := *update.LLM.Profiles
+		newProfiles := make(map[string]config.LLMProfile, len(profiles))
+		for name, pv := range profiles {
+			p := config.LLMProfile{
+				Label:   pv.Label,
+				BaseURL: pv.BaseURL,
+				Model:   pv.Model,
+			}
+			// Only update API key if non-masked
+			if pv.APIKey != "" && pv.APIKey != "••••••••" {
+				p.APIKey = pv.APIKey
+			} else if existing, ok := s.cfg.LLM.Profiles[name]; ok {
+				p.APIKey = existing.APIKey
+			}
+			newProfiles[name] = p
+		}
+		s.cfg.LLM.Profiles = newProfiles
 	}
 
 	// Users — validate at least one parent with PIN remains
@@ -143,6 +197,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				AgeGroup:    u.AgeGroup,
 				PIN:         u.PIN,
 				Color:       u.Color,
+				LLMProfile:  u.LLMProfile,
 			})
 		}
 		if !hasParentWithPIN {
