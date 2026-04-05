@@ -694,6 +694,12 @@ function handleWSMessage(msg) {
       if (state.mode === 'dashboard') loadDashboard();
       updateApprovalBadge(msg.payload.pending_count);
       break;
+    case 'error':
+      hideTyping();
+      state.streamingMsg = null;
+      addMessage('assistant', msg.payload.error, 'block');
+      document.getElementById('send-btn').disabled = false;
+      break;
     case 'pong':
       break;
   }
