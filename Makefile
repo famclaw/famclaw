@@ -29,7 +29,7 @@ opa-test:
 	opa test ./policies -v
 
 ## cross: Build for all supported platforms
-cross: cross-rpi3 cross-rpi4 cross-rpi5 cross-android cross-mac-intel cross-mac-arm cross-linux64
+cross: cross-rpi3 cross-rpi4 cross-android cross-mac-intel cross-mac-arm cross-linux64
 
 ## cross-rpi3: Raspberry Pi 2/3/Zero (ARMv7)
 cross-rpi3:
@@ -80,6 +80,9 @@ install: build
 
 ## install-rpi: Deploy to RPi over SSH (set RPI_HOST env var)
 install-rpi: cross-rpi4
+ifndef RPI_HOST
+	$(error RPI_HOST is not set. Usage: RPI_HOST=pi@192.168.1.x make install-rpi)
+endif
 	ssh $(RPI_HOST) "sudo systemctl stop famclaw || true"
 	scp $(BUILD_DIR)/$(BINARY)-linux-arm64 $(RPI_HOST):/usr/local/bin/$(BINARY)
 	ssh $(RPI_HOST) "sudo systemctl start famclaw"
@@ -99,8 +102,10 @@ install-systemd: install
 install-launchd: install
 	cp scripts/com.famclaw.plist ~/Library/LaunchAgents/
 	sed -i '' "s|FAMCLAW_DIR|$(shell pwd)|g" ~/Library/LaunchAgents/com.famclaw.plist
+	sed -i '' "s|CURRENT_USER|$(shell whoami)|g" ~/Library/LaunchAgents/com.famclaw.plist
+	mkdir -p $(shell pwd)/logs
 	launchctl load ~/Library/LaunchAgents/com.famclaw.plist
-	@echo "✅ launchd service running. Logs: tail -f ~/Library/Logs/famclaw.log"
+	@echo "✅ launchd service running. Logs: tail -f $(shell pwd)/logs/famclaw.log"
 
 ## build-seccheck: Build seccheck binary for all targets
 build-seccheck:
