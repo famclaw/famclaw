@@ -1,6 +1,9 @@
 package agentcore
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Stage processes a turn. Returns error to abort the pipeline.
 // Stages read from and write to the Turn struct.
@@ -11,9 +14,12 @@ type Pipeline []Stage
 
 // Run executes each stage in order. Returns the first error encountered.
 func (p Pipeline) Run(ctx context.Context, turn *Turn) error {
-	for _, stage := range p {
+	for i, stage := range p {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if stage == nil {
+			return fmt.Errorf("pipeline stage %d is nil", i)
 		}
 		if err := stage(ctx, turn); err != nil {
 			return err
