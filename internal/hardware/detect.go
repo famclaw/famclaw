@@ -60,9 +60,25 @@ func detectRAM() int {
 		return detectRAMLinux()
 	case "darwin":
 		return detectRAMDarwin()
+	case "windows":
+		return detectRAMWindows()
 	default:
 		return 0
 	}
+}
+
+func detectRAMWindows() int {
+	// PowerShell is more reliable than wmic on modern Windows
+	out, err := exec.Command("powershell", "-NoProfile", "-Command",
+		"(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory").Output()
+	if err != nil {
+		return 0
+	}
+	bytes, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return int(bytes / 1024 / 1024)
 }
 
 func detectRAMLinux() int {

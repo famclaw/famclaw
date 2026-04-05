@@ -17,13 +17,20 @@ func (s *Server) handleSetupDetect(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, info)
 }
 
-// handleSetupRedirect redirects to /setup if the system needs configuration,
-// otherwise serves the normal app.
+// handleRoot serves the app. Redirects to /setup if unconfigured.
+// /setup serves index.html (wizard is triggered by JS based on needs_setup).
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	// Redirect root to /setup if unconfigured
 	if r.URL.Path == "/" && s.NeedsSetup() {
 		http.Redirect(w, r, "/setup", http.StatusTemporaryRedirect)
 		return
 	}
-	// Serve static files for all other paths
+	// /setup serves the same index.html — wizard is a JS-driven screen
+	if r.URL.Path == "/setup" {
+		r.URL.Path = "/"
+		s.staticHandler.ServeHTTP(w, r)
+		return
+	}
+	// Everything else: normal static files
 	s.staticHandler.ServeHTTP(w, r)
 }
