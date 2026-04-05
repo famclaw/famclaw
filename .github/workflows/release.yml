@@ -75,6 +75,7 @@ jobs:
           path: .
           format: cyclonedx-json
           output-file: dist/famclaw-${{ matrix.name }}.sbom.json
+          artifact-name: sbom-${{ matrix.name }}
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
