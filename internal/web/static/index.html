@@ -186,52 +186,89 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
 
 /* ── Wizard ────────────────────────────────────────────────────────────────── */
 #wizard-screen{flex:1;display:none;flex-direction:column;align-items:center;
-  justify-content:center;padding:24px;overflow-y:auto}
-.wiz-container{max-width:520px;width:100%}
-.wiz-step{display:none}
+  padding:24px;overflow-y:auto;background:linear-gradient(160deg,#fef9f0 0%,#f0f4ff 50%,#fef0f5 100%)}
+.wiz-container{max-width:480px;width:100%;margin:0 auto}
+.wiz-step{display:none;animation:wizFade .3s ease}
 .wiz-step.active{display:block}
-.wiz-hero{text-align:center;margin-bottom:32px}
-.wiz-hero h2{font-size:24px;margin-bottom:8px}
-.wiz-hero p{color:var(--c-muted);font-size:15px}
-.wiz-progress{display:flex;gap:6px;margin-bottom:24px}
-.wiz-dot{height:4px;flex:1;border-radius:2px;background:var(--c-border)}
-.wiz-dot.done{background:var(--c-primary)}
-.wiz-dot.current{background:var(--c-primary)}
-.wiz-card{background:var(--c-surface);border-radius:var(--radius);padding:20px;
-  cursor:pointer;border:2px solid var(--c-border);margin-bottom:12px;
-  transition:border-color .15s}
-.wiz-card:hover{border-color:var(--c-primary)}
-.wiz-card.selected{border-color:var(--c-primary);background:#f0f0ff}
-.wiz-card h3{font-size:16px;margin-bottom:4px}
-.wiz-card p{font-size:13px;color:var(--c-muted);margin:0}
-.wiz-card .wiz-icon{font-size:28px;margin-bottom:8px}
-.wiz-nav{display:flex;gap:10px;margin-top:24px}
-.wiz-nav button{flex:1;padding:14px;border:none;border-radius:var(--radius);
-  font-size:15px;font-weight:600;cursor:pointer}
-.wiz-next{background:var(--c-primary);color:#fff}
-.wiz-next:hover{background:var(--c-primary-dark)}
-.wiz-back{background:var(--c-bg);color:var(--c-text)}
-.wiz-member{display:flex;align-items:center;gap:10px;padding:12px;
-  background:var(--c-surface);border-radius:8px;margin-bottom:8px;
-  border:1px solid var(--c-border)}
-.wiz-member .name{flex:1;font-weight:600}
-.wiz-member .age{font-size:12px;color:var(--c-muted)}
-.wiz-add{padding:14px;text-align:center;border:2px dashed var(--c-border);
-  border-radius:8px;cursor:pointer;color:var(--c-primary);font-weight:600;margin-bottom:8px}
-.wiz-add:hover{border-color:var(--c-primary);background:#f8f8ff}
-.wiz-input{width:100%;padding:10px 12px;border:1.5px solid var(--c-border);
-  border-radius:8px;font-size:14px;font-family:inherit;outline:none;
-  background:var(--c-bg);margin-bottom:10px}
-.wiz-input:focus{border-color:var(--c-primary)}
-.wiz-label{font-size:12px;font-weight:600;color:var(--c-muted);
-  text-transform:uppercase;margin-bottom:4px;display:block}
-.wiz-status{padding:12px;border-radius:8px;margin-top:12px;font-size:14px}
-.wiz-status.ok{background:#dcfce7;color:#15803d}
-.wiz-status.err{background:#fee2e2;color:#991b1b}
-.wiz-complete{text-align:center;padding:40px 0}
-.wiz-complete .big-check{font-size:64px;margin-bottom:16px}
-.wiz-complete h2{font-size:22px;margin-bottom:8px}
-.wiz-complete p{color:var(--c-muted);font-size:15px;margin-bottom:24px}
+@keyframes wizFade{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.wiz-hero{text-align:center;margin-bottom:28px}
+.wiz-hero h2{font-size:26px;font-weight:800;letter-spacing:-.02em;margin-bottom:6px;
+  background:linear-gradient(135deg,#6366f1,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.wiz-hero p{color:#64748b;font-size:15px;line-height:1.5;max-width:380px;margin:0 auto}
+.wiz-progress{display:flex;gap:6px;margin-bottom:28px}
+.wiz-dot{height:5px;flex:1;border-radius:3px;background:#e2e8f0;transition:all .3s}
+.wiz-dot.done{background:#6366f1}
+.wiz-dot.current{background:linear-gradient(90deg,#6366f1,#a855f7)}
+.wiz-card{background:#fff;border-radius:16px;padding:20px;cursor:pointer;
+  border:2px solid #e2e8f0;margin-bottom:12px;transition:all .2s;
+  box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.wiz-card:hover{border-color:#a5b4fc;transform:translateY(-1px);box-shadow:0 4px 12px rgba(99,102,241,.1)}
+.wiz-card.selected{border-color:#6366f1;background:linear-gradient(135deg,#eef2ff,#f5f3ff);
+  box-shadow:0 0 0 3px rgba(99,102,241,.15)}
+.wiz-card h3{font-size:16px;font-weight:700;margin-bottom:4px}
+.wiz-card p{font-size:13px;color:#64748b;margin:0;line-height:1.4}
+.wiz-card .wiz-icon{font-size:32px;margin-bottom:8px}
+.wiz-nav{display:flex;gap:10px;margin-top:28px}
+.wiz-nav button{flex:1;padding:15px;border:none;border-radius:14px;
+  font-size:15px;font-weight:700;cursor:pointer;transition:all .15s}
+.wiz-next{background:linear-gradient(135deg,#6366f1,#7c3aed);color:#fff;
+  box-shadow:0 2px 8px rgba(99,102,241,.3)}
+.wiz-next:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(99,102,241,.4)}
+.wiz-back{background:#f1f5f9;color:#475569}
+.wiz-back:hover{background:#e2e8f0}
+/* Member cards */
+.wiz-member{display:flex;align-items:center;gap:12px;padding:14px 16px;
+  background:#fff;border-radius:14px;margin-bottom:10px;border:1px solid #e2e8f0;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);transition:all .15s}
+.wiz-member:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.wiz-member-avatar{width:42px;height:42px;border-radius:50%;display:flex;
+  align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;flex-shrink:0}
+.wiz-member .name{flex:1;font-weight:700;font-size:15px}
+.wiz-member .age{font-size:12px;color:#94a3b8;font-weight:500}
+.wiz-rm{background:none;border:none;color:#ef4444;cursor:pointer;font-size:20px;
+  padding:4px 8px;border-radius:8px;opacity:.5;transition:opacity .15s}
+.wiz-rm:hover{opacity:1;background:#fef2f2}
+/* Add member form */
+.wiz-add{padding:16px;text-align:center;border:2px dashed #cbd5e1;
+  border-radius:14px;cursor:pointer;color:#6366f1;font-weight:700;
+  font-size:15px;margin-bottom:10px;transition:all .15s}
+.wiz-add:hover{border-color:#6366f1;background:#f8f7ff}
+.wiz-form{background:#fff;border-radius:14px;padding:20px;margin-bottom:12px;
+  border:2px solid #6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.1)}
+.wiz-input{width:100%;padding:12px 14px;border:1.5px solid #e2e8f0;
+  border-radius:10px;font-size:15px;font-family:inherit;outline:none;
+  background:#f8fafc;margin-bottom:12px;transition:border-color .15s}
+.wiz-input:focus{border-color:#6366f1;background:#fff;box-shadow:0 0 0 3px rgba(99,102,241,.08)}
+.wiz-label{font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;
+  letter-spacing:.05em;margin-bottom:6px;display:block}
+/* Age selector pills */
+.wiz-ages{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.wiz-age-pill{padding:10px 16px;border:2px solid #e2e8f0;border-radius:12px;
+  cursor:pointer;font-size:13px;font-weight:600;transition:all .15s;
+  background:#fff;display:flex;align-items:center;gap:6px;flex:1;min-width:100px;
+  justify-content:center}
+.wiz-age-pill:hover{border-color:#a5b4fc}
+.wiz-age-pill.selected{border-color:#6366f1;background:linear-gradient(135deg,#eef2ff,#f5f3ff);color:#4f46e5}
+.wiz-age-pill .pill-emoji{font-size:18px}
+.wiz-pin-row{display:flex;gap:8px;align-items:center}
+.wiz-pin-row input{flex:1}
+.wiz-pin-row .pin-hint{font-size:11px;color:#94a3b8;white-space:nowrap}
+.wiz-form-actions{display:flex;gap:8px;margin-top:4px}
+.wiz-form-actions button{flex:1;padding:10px;border:none;border-radius:10px;
+  font-size:14px;font-weight:600;cursor:pointer}
+.wiz-form-save{background:#6366f1;color:#fff}
+.wiz-form-cancel{background:#f1f5f9;color:#64748b}
+/* Status */
+.wiz-status{padding:14px 16px;border-radius:12px;margin-top:12px;font-size:14px;font-weight:500}
+.wiz-status.ok{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
+.wiz-status.err{background:#fef2f2;color:#991b1b;border:1px solid #fecaca}
+/* Complete */
+.wiz-complete{text-align:center;padding:48px 0}
+.wiz-complete .big-check{font-size:72px;margin-bottom:20px;animation:wizBounce .5s ease}
+@keyframes wizBounce{0%{transform:scale(0)}50%{transform:scale(1.2)}100%{transform:scale(1)}}
+.wiz-complete h2{font-size:24px;font-weight:800;margin-bottom:8px;
+  background:linear-gradient(135deg,#6366f1,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.wiz-complete p{color:#64748b;font-size:15px;margin-bottom:28px}
 
 /* ── Toast ─────────────────────────────────────────────────────────────────── */
 #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(100px);
@@ -1229,10 +1266,7 @@ function openWizard() {
   show('wizard-screen');
   document.getElementById('mode-btn').style.display = 'none';
   wizState.step = 1;
-  // Add default parent (the person doing setup)
-  if (wizState.members.length === 0) {
-    wizState.members.push({name: '', display_name: '', role: 'parent', age_group: '', pin: ''});
-  }
+  // Start with empty list — user adds themselves
   wizRenderProgress();
   wizShowStep(1);
   wizDetectHardware();
@@ -1265,11 +1299,19 @@ function wizNext() {
   if (wizState.step === 2 && !wizState.members.some(m => m.role === 'parent' && m.pin)) {
     showToast('Add a parent with a PIN'); return;
   }
-  if (wizState.step === 4 && wizState.ai.type === '') {
-    showToast('Choose how to connect to an AI'); return;
-  }
-  if (wizState.step === 4 && wizState.ai.type === 'remote' && !wizState.ai.url) {
-    showToast('Enter the AI service address'); return;
+  if (wizState.step === 4) {
+    // Read form values before validation
+    if (wizState.ai.type === 'remote') {
+      wizState.ai.url = (document.getElementById('wiz-llm-url')?.value || '').trim();
+      wizState.ai.model = (document.getElementById('wiz-llm-model')?.value || '').trim();
+      wizState.ai.key = (document.getElementById('wiz-llm-key')?.value || '').trim();
+    }
+    if (wizState.ai.type === '') {
+      showToast('Choose how to connect to an AI'); return;
+    }
+    if (!wizState.ai.url) {
+      showToast('Enter the AI service address'); return;
+    }
   }
   wizShowStep(wizState.step + 1);
 }
@@ -1281,46 +1323,127 @@ function wizBack() { wizShowStep(wizState.step - 1); }
 function wizRenderMembers() {
   const container = document.getElementById('wiz-members');
   container.textContent = '';
+  const ageLabels = {under_8:'Under 8',age_8_12:'8–12',age_13_17:'13–17'};
+  const ageEmojis = {under_8:'👶',age_8_12:'🧒',age_13_17:'🧑',parent:'👑'};
   wizState.members.forEach((m, i) => {
     const div = el('div', {class: 'wiz-member'});
-    const icon = m.role === 'parent' ? '👑' : '👤';
-    const nameSpan = el('span', {class: 'name'});
-    nameSpan.textContent = icon + ' ' + (m.display_name || 'New member');
-    const ageSpan = el('span', {class: 'age'});
-    ageSpan.textContent = m.role === 'parent' ? 'Parent' : (m.age_group || 'child');
-    const rmBtn = el('button', {class: 's-rm-btn'});
+    const avatar = el('div', {class: 'wiz-member-avatar', style: 'background:' + (m.color || '#6366f1')});
+    avatar.textContent = (m.display_name || '?')[0].toUpperCase();
+    const info = el('div', {style: 'flex:1'});
+    const nameRow = el('div', {class: 'name'});
+    nameRow.textContent = (m.display_name || 'New member');
+    const ageRow = el('div', {class: 'age'});
+    const emoji = ageEmojis[m.role === 'parent' ? 'parent' : m.age_group] || '👤';
+    ageRow.textContent = emoji + ' ' + (m.role === 'parent' ? 'Parent' : (ageLabels[m.age_group] || 'Child'));
+    if (m.role === 'parent' && m.pin) {
+      const pinBadge = document.createTextNode(' · PIN set');
+      ageRow.appendChild(pinBadge);
+    }
+    info.appendChild(nameRow);
+    info.appendChild(ageRow);
+    const rmBtn = el('button', {class: 'wiz-rm'});
     rmBtn.textContent = '×';
-    rmBtn.onclick = () => { wizState.members.splice(i, 1); wizRenderMembers(); };
-    div.appendChild(nameSpan);
-    div.appendChild(ageSpan);
+    rmBtn.onclick = (e) => { e.stopPropagation(); wizState.members.splice(i, 1); wizRenderMembers(); };
+    div.appendChild(avatar);
+    div.appendChild(info);
     div.appendChild(rmBtn);
-    div.onclick = (e) => { if (e.target !== rmBtn) wizEditMember(i); };
     container.appendChild(div);
   });
 }
 
 function wizAddMember() {
-  const name = prompt('Name:');
-  if (!name) return;
-  const ageChoice = prompt('1) Young child (under 8)\n2) Child (8-12)\n3) Teen (13-17)\n4) Parent/Adult\n\nChoose 1-4:', '2');
-  const ages = {'1':'under_8','2':'age_8_12','3':'age_13_17','4':'parent'};
-  const ageGroup = ages[ageChoice] || 'age_8_12';
-  const role = ageChoice === '4' ? 'parent' : 'child';
-  const member = {name: name.toLowerCase().replace(/\s+/g,'-'), display_name: name, role, age_group: role === 'parent' ? '' : ageGroup, pin: ''};
-  if (role === 'parent') {
-    const pin = prompt('Set a PIN (4+ digits) to protect the parent dashboard:');
-    if (pin && pin.length >= 4) member.pin = pin;
-    else { showToast('PIN must be 4+ digits'); return; }
-  }
-  wizState.members.push(member);
-  wizRenderMembers();
+  // Show inline form instead of prompt()
+  const container = document.getElementById('wiz-members');
+  // Remove any existing form
+  const existing = document.getElementById('wiz-add-form');
+  if (existing) existing.remove();
+
+  const form = el('div', {class: 'wiz-form', id: 'wiz-add-form'});
+
+  const nameLabel = el('label', {class: 'wiz-label'});
+  nameLabel.textContent = 'Name';
+  const nameInput = el('input', {class: 'wiz-input', placeholder: 'e.g. Emma, Dad, Sofia', id: 'wiz-new-name'});
+
+  const ageLabel = el('label', {class: 'wiz-label'});
+  ageLabel.textContent = 'Who is this person?';
+  const ages = el('div', {class: 'wiz-ages'});
+  const ageOptions = [
+    {value: 'under_8', emoji: '👶', label: 'Under 8', role: 'child'},
+    {value: 'age_8_12', emoji: '🧒', label: '8–12', role: 'child'},
+    {value: 'age_13_17', emoji: '🧑', label: '13–17', role: 'child'},
+    {value: 'parent', emoji: '👑', label: 'Parent', role: 'parent'},
+  ];
+  let selectedAge = 'age_8_12';
+  ageOptions.forEach(opt => {
+    const pill = el('div', {class: 'wiz-age-pill' + (opt.value === selectedAge ? ' selected' : '')});
+    const emojiSpan = el('span', {class: 'pill-emoji'});
+    emojiSpan.textContent = opt.emoji;
+    pill.appendChild(emojiSpan);
+    const text = document.createTextNode(opt.label);
+    pill.appendChild(text);
+    pill.onclick = () => {
+      ages.querySelectorAll('.wiz-age-pill').forEach(p => p.classList.remove('selected'));
+      pill.classList.add('selected');
+      selectedAge = opt.value;
+      // Show/hide PIN field
+      const pinRow = document.getElementById('wiz-pin-row');
+      if (pinRow) pinRow.style.display = opt.role === 'parent' ? 'flex' : 'none';
+    };
+    ages.appendChild(pill);
+  });
+
+  // PIN field (hidden by default, shown for parent)
+  const pinRow = el('div', {class: 'wiz-pin-row', id: 'wiz-pin-row', style: 'display:none'});
+  const pinInput = el('input', {class: 'wiz-input', placeholder: '4+ digit PIN', type: 'password', id: 'wiz-new-pin', style: 'margin-bottom:0'});
+  const pinHint = el('span', {class: 'pin-hint'});
+  pinHint.textContent = 'Protects the dashboard';
+  pinRow.appendChild(pinInput);
+  pinRow.appendChild(pinHint);
+
+  // Buttons
+  const actions = el('div', {class: 'wiz-form-actions'});
+  const cancelBtn = el('button', {class: 'wiz-form-cancel'});
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => form.remove();
+  const saveBtn = el('button', {class: 'wiz-form-save'});
+  saveBtn.textContent = 'Add';
+  saveBtn.onclick = () => {
+    const name = document.getElementById('wiz-new-name').value.trim();
+    if (!name) { showToast('Enter a name'); return; }
+    const isParent = selectedAge === 'parent';
+    const pin = isParent ? document.getElementById('wiz-new-pin').value : '';
+    if (isParent && pin.length < 4) { showToast('Parent PIN must be 4+ digits'); return; }
+    const member = {
+      name: name.toLowerCase().replace(/\s+/g, '-'),
+      display_name: name,
+      role: isParent ? 'parent' : 'child',
+      age_group: isParent ? '' : selectedAge,
+      pin: pin,
+      color: ['#6366f1','#f59e0b','#10b981','#ec4899','#8b5cf6','#06b6d4'][wizState.members.length % 6],
+    };
+    wizState.members.push(member);
+    form.remove();
+    wizRenderMembers();
+  };
+  actions.appendChild(cancelBtn);
+  actions.appendChild(saveBtn);
+
+  form.appendChild(nameLabel);
+  form.appendChild(nameInput);
+  form.appendChild(ageLabel);
+  form.appendChild(ages);
+  form.appendChild(pinRow);
+  form.appendChild(actions);
+  container.appendChild(form);
+
+  nameInput.focus();
 }
 
 function wizEditMember(i) {
-  const m = wizState.members[i];
-  const name = prompt('Name:', m.display_name);
-  if (name) { m.display_name = name; m.name = name.toLowerCase().replace(/\s+/g,'-'); }
+  // For now, remove and re-add
+  wizState.members.splice(i, 1);
   wizRenderMembers();
+  wizAddMember();
 }
 
 // ── Step 3: Gateways ─────────────────────────────────────────────────────────
