@@ -29,11 +29,11 @@ type llmProfileView struct {
 }
 
 type llmSettingsView struct {
-	BaseURL  string                     `json:"base_url"`
-	Model    string                     `json:"model"`
-	APIKey   string                     `json:"api_key,omitempty"`
-	Default  string                     `json:"default,omitempty"`
-	Profiles map[string]llmProfileView  `json:"profiles,omitempty"`
+	BaseURL  string                      `json:"base_url"`
+	Model    string                      `json:"model"`
+	APIKey   string                      `json:"api_key,omitempty"`
+	Default  *string                     `json:"default,omitempty"`
+	Profiles *map[string]llmProfileView  `json:"profiles,omitempty"`
 }
 
 type userSettingsView struct {
@@ -77,11 +77,12 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
 
+	defCopy := s.cfg.LLM.Default
 	view := settingsView{
 		LLM: llmSettingsView{
 			BaseURL: s.cfg.LLM.BaseURL,
 			Model:   s.cfg.LLM.Model,
-			Default: s.cfg.LLM.Default,
+			Default: &defCopy,
 		},
 	}
 
@@ -92,7 +93,8 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 
 	// Include named profiles
 	if len(s.cfg.LLM.Profiles) > 0 {
-		view.LLM.Profiles = make(map[string]llmProfileView, len(s.cfg.LLM.Profiles))
+		pm := make(map[string]llmProfileView, len(s.cfg.LLM.Profiles))
+		view.LLM.Profiles = &pm
 		for name, p := range s.cfg.LLM.Profiles {
 			pv := llmProfileView{
 				Label:   p.Label,
@@ -102,7 +104,7 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 			if p.APIKey != "" {
 				pv.APIKey = "••••••••"
 			}
-			view.LLM.Profiles[name] = pv
+			(*view.LLM.Profiles)[name] = pv
 		}
 	}
 
@@ -156,15 +158,14 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		s.cfg.LLM.APIKey = update.LLM.APIKey
 	}
 
-	// LLM profiles
-	if update.LLM.Default != "" {
-		s.cfg.LLM.Default = update.LLM.Default
+	// LLM profiles — pointer fields distinguish "omitted" from "explicit clear"
+	if update.LLM.Default != nil {
+		s.cfg.LLM.Default = *update.LLM.Default
 	}
-	if len(update.LLM.Profiles) > 0 {
-		if s.cfg.LLM.Profiles == nil {
-			s.cfg.LLM.Profiles = make(map[string]config.LLMProfile)
-		}
-		for name, pv := range update.LLM.Profiles {
+	if update.LLM.Profiles != nil {
+		profiles := *update.LLM.Profiles
+		newProfiles := make(map[string]config.LLMProfile, len(profiles))
+		for name, pv := range profiles {
 			p := config.LLMProfile{
 				Label:   pv.Label,
 				BaseURL: pv.BaseURL,
@@ -176,14 +177,9 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			} else if existing, ok := s.cfg.LLM.Profiles[name]; ok {
 				p.APIKey = existing.APIKey
 			}
-			s.cfg.LLM.Profiles[name] = p
+			newProfiles[name] = p
 		}
-		// Remove profiles not in the update (full replacement)
-		for name := range s.cfg.LLM.Profiles {
-			if _, ok := update.LLM.Profiles[name]; !ok {
-				delete(s.cfg.LLM.Profiles, name)
-			}
-		}
+		s.cfg.LLM.Profiles = newProfiles
 	}
 
 	// Users — validate at least one parent with PIN remains

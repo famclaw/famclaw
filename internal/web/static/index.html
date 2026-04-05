@@ -556,7 +556,6 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
               <option value="groq">Groq (fast, free tier)</option>
               <option value="openai">OpenAI</option>
               <option value="openrouter">OpenRouter</option>
-              <option value="anthropic">Anthropic (Claude)</option>
               <option value="custom">Custom OpenAI-compatible</option>
             </select>
             <div id="wiz-prof-url-row">
@@ -1528,9 +1527,7 @@ const PROVIDERS = {
     models: ['gpt-4o-mini','gpt-4o','gpt-4.1-mini','gpt-4.1-nano','o4-mini'] },
   'openrouter':    { label: 'OpenRouter',      url: 'https://openrouter.ai/api/v1', icon: '🔀', needsKey: true,
     models: ['google/gemma-3-4b-it:free','meta-llama/llama-3.3-70b-instruct:free','qwen/qwen3-8b:free'] },
-  'anthropic':     { label: 'Anthropic',       url: 'https://api.anthropic.com/v1', icon: '🧠', needsKey: true,
-    models: ['claude-sonnet-4-5-20250514','claude-haiku-4-5-20251001'] },
-  'custom':        { label: 'Custom',          url: '', icon: '🔧', needsKey: false, models: [] },
+  'custom':        { label: 'Custom',          url: '', icon: '🔧', needsKey: false, showKey: true, models: [] },
 };
 
 let wizEditingProfile = -1; // -1 = new, >= 0 = editing index
@@ -1575,6 +1572,7 @@ function wizRenderProfiles() {
 }
 
 function wizShowProfileForm(prefill) {
+  if (!prefill) wizEditingProfile = -1;
   const form = document.getElementById('wiz-profile-form');
   form.style.display = 'block';
   document.getElementById('wiz-prof-label').value = prefill?.label || '';
@@ -1613,7 +1611,7 @@ function wizProviderChanged() {
       urlRow.style.display = 'block';
     }
     // Show/hide API key field
-    keyRow.style.display = prov.needsKey ? 'block' : 'none';
+    keyRow.style.display = (prov.needsKey || prov.showKey) ? 'block' : 'none';
     // Populate model dropdown
     if (prov.models.length > 0) {
       modelSelect.style.display = 'block';
@@ -1676,7 +1674,11 @@ function wizSaveProfile() {
   if (!model) { showToast('Choose or enter a model'); return; }
   if (prov && prov.needsKey && !key) { showToast(prov.label + ' requires an API key'); return; }
 
-  const profile = { label, provider, url: resolvedUrl, model, key, isDefault, tags };
+  // Preserve existing id on edit, generate new one for new profiles
+  const id = (wizEditingProfile >= 0 && wizState.profiles[wizEditingProfile]?.id)
+    ? wizState.profiles[wizEditingProfile].id
+    : 'prof-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+  const profile = { id, label, provider, url: resolvedUrl, model, key, isDefault, tags };
 
   if (isDefault) {
     wizState.profiles.forEach(p => p.isDefault = false);
@@ -1704,6 +1706,12 @@ function wizEditProfile(index) {
 }
 
 function wizRemoveProfile(index) {
+  if (wizEditingProfile === index) {
+    wizEditingProfile = -1;
+    document.getElementById('wiz-profile-form').style.display = 'none';
+  } else if (wizEditingProfile > index) {
+    wizEditingProfile -= 1;
+  }
   const wasDefault = wizState.profiles[index].isDefault;
   wizState.profiles.splice(index, 1);
   if (wasDefault && wizState.profiles.length > 0) {
@@ -1729,17 +1737,16 @@ async function wizFinish() {
     return;
   }
 
-  // Build profiles map for the API
+  // Build profiles map for the API — use stable id as key
   const defaultProfile = wizState.profiles.find(p => p.isDefault) || wizState.profiles[0];
   const profilesMap = {};
   wizState.profiles.forEach(p => {
-    const key = p.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     const pv = { label: p.label, base_url: p.url, model: p.model };
     if (p.key) pv.api_key = p.key;
-    profilesMap[key] = pv;
+    profilesMap[p.id] = pv;
   });
 
-  const defaultKey = defaultProfile.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const defaultKey = defaultProfile.id;
 
   // Build settings payload — use default profile for legacy base_url/model too
   const body = {
