@@ -1,17 +1,19 @@
 // Package agent implements the FamClaw conversation loop.
 // Each user gets an isolated conversation with policy enforcement at every turn.
+// Delegates to agentcore.Pipeline for the actual processing stages.
 package agent
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/llm"
@@ -37,8 +39,8 @@ type Agent struct {
 	evaluator  *policy.Evaluator
 	classifier *classifier.Classifier
 	db         *store.DB
-	pool       *mcp.Pool              // nil-safe — tool calls skipped if nil
-	skills     []*skillbridge.Skill   // injected into system prompt
+	pool       *mcp.Pool
+	skills     []*skillbridge.Skill
 	convID     string
 }
 
@@ -52,7 +54,6 @@ func (a *Agent) SetSkills(skills []*skillbridge.Skill) { a.skills = skills }
 func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client,
 	evaluator *policy.Evaluator, clf *classifier.Classifier, db *store.DB) *Agent {
 
-	// Conversation ID: scoped to user + day (new conversation each day)
 	day := time.Now().UTC().Format("2006-01-02")
 	h := sha256.Sum256([]byte(user.Name + ":" + day))
 	convID := hex.EncodeToString(h[:8])
@@ -69,89 +70,77 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client
 }
 
 // Chat processes a single user message and returns a Response.
-// onToken is called for each streamed LLM token (can be nil for non-streaming).
+// Delegates to agentcore.FamilyPipeline for the processing stages.
 func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(string)) (*Response, error) {
-	// ── 1. Classify query ─────────────────────────────────────────────────────
-	cat := a.classifier.Classify(userMessage)
+	// Save user message before processing
+	_ = a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, "", "")
 
-	// ── 2. Evaluate policy ────────────────────────────────────────────────────
-	requestID := ApprovalID(a.user.Name, string(cat))
-	approvals, _ := a.db.AllApprovalsForOPA()
-
-	decision, err := a.evaluator.Evaluate(ctx, policy.Input{
-		User: policy.UserInput{
-			Role:     a.user.Role,
-			AgeGroup: a.user.AgeGroup,
-			Name:     a.user.Name,
-		},
-		Query:     policy.QueryInput{Category: string(cat), Text: userMessage},
-		RequestID: requestID,
-		Approvals: approvals,
-	})
-	if err != nil {
-		log.Printf("[agent][%s] OPA error: %v", a.user.Name, err)
-		decision = policy.Decision{Action: "block", Reason: "Policy evaluation error"}
-	}
-
-	log.Printf("[agent][%s] cat=%s action=%s", a.user.Name, cat, decision.Action)
-
-	// ── 3. Save user message ─────────────────────────────────────────────────
-	_ = a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, string(cat), decision.Action)
-
-	// ── 4. Handle non-allow decisions without calling LLM ────────────────────
-	if decision.Action != "allow" {
-		msg := a.policyMessage(decision)
-		_ = a.db.SaveMessage(a.convID, a.user.Name, "assistant", msg, string(cat), decision.Action)
-		return &Response{Content: msg, PolicyAction: decision.Action, Category: string(cat)}, nil
-	}
-
-	// ── 5. Build conversation context ─────────────────────────────────────────
-	history, err := a.db.GetConversationHistory(a.convID, 20)
-	if err != nil {
-		history = nil
-	}
-
+	// Build conversation context
+	history, _ := a.db.GetConversationHistory(a.convID, 20)
 	messages := a.buildMessages(history, userMessage)
 
-	// ── 6. Stream LLM response ────────────────────────────────────────────────
-	baseURL, model, apiKey := a.cfg.LLMClientFor(a.user)
-	if baseURL == "" {
-		return nil, fmt.Errorf("LLM not configured — open the web UI to set up your AI backend")
+	// Build the pipeline turn
+	turn := &agentcore.Turn{
+		User:  a.user,
+		Input: userMessage,
 	}
-	if model == "" {
-		return nil, fmt.Errorf("LLM model not configured — open the web UI settings")
-	}
-	client := llm.NewClient(baseURL, model, apiKey)
 
-	response, err := client.Chat(ctx, messages, a.cfg.LLM.Temperature, a.cfg.LLM.MaxResponseTokens, onToken)
+	// Convert messages to agentcore format
+	for _, m := range messages {
+		turn.Messages = append(turn.Messages, agentcore.Message{
+			Role:    m.Role,
+			Content: m.Content,
+		})
+	}
+
+	// Resolve LLM profile
+	clientFactory := func(t *agentcore.Turn) *llm.Client {
+		baseURL, model, apiKey := a.cfg.LLMClientFor(t.User)
+		if baseURL == "" || model == "" {
+			return nil
+		}
+		return llm.NewClient(baseURL, model, apiKey)
+	}
+
+	// Assemble and run the pipeline
+	pipeline := agentcore.FamilyPipeline(agentcore.FamilyPipelineDeps{
+		Classifier:    a.classifier,
+		Evaluator:     a.evaluator,
+		DB:            a.db,
+		Pool:          a.pool,
+		ClientFactory: clientFactory,
+		Temperature:   a.cfg.LLM.Temperature,
+		MaxTokens:     a.cfg.LLM.MaxResponseTokens,
+		OnToken:       onToken,
+	})
+
+	err := pipeline.Run(ctx, turn)
+
+	// Handle policy blocks (not a real error — just a non-allow decision)
+	if errors.Is(err, agentcore.ErrPolicyBlock) {
+		log.Printf("[agent][%s] cat=%s action=%s", a.user.Name, turn.Category, turn.Policy.Action)
+		_ = a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), turn.Policy.Action)
+		return &Response{
+			Content:      turn.Output,
+			PolicyAction: turn.Policy.Action,
+			Category:     string(turn.Category),
+		}, nil
+	}
+
 	if err != nil {
-		return nil, fmt.Errorf("LLM error: %w", err)
+		return nil, err
 	}
 
-	// ── 6b. Tool call loop (MCP) ─────────────────────────────────────────────
-	if a.pool != nil {
-		response, err = a.toolCallLoop(ctx, client, messages, response, cat)
-		if err != nil {
-			return nil, fmt.Errorf("tool call error: %w", err)
-		}
-	}
+	log.Printf("[agent][%s] cat=%s action=allow", a.user.Name, turn.Category)
 
-	// ── 7. Output safety filter ─────────────────────────────────────────────
-	if a.user.Role != "parent" {
-		if blocked := filterOutput(response); blocked {
-			response = "I generated a response that might not be appropriate. Let me try a different approach — could you rephrase your question?"
-			log.Printf("[agent][%s] output filtered for safety", a.user.Name)
-		}
-	}
-
-	// ── 8. Save assistant response ───────────────────────────────────────────
-	_ = a.db.SaveMessage(a.convID, a.user.Name, "assistant", response, string(cat), "allow")
+	// Save assistant response
+	_ = a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), "allow")
 
 	return &Response{
-		Content:      response,
+		Content:      turn.Output,
 		PolicyAction: "allow",
-		Category:     string(cat),
-		Streamed:     onToken != nil,
+		Category:     string(turn.Category),
+		Streamed:     turn.Streamed,
 	}, nil
 }
 
@@ -159,7 +148,6 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 func (a *Agent) buildMessages(history []*store.Message, currentMessage string) []llm.Message {
 	var msgs []llm.Message
 
-	// System prompt
 	systemPrompt := a.cfg.LLM.SystemPrompt
 	if systemPrompt == "" {
 		systemPrompt = defaultSystemPrompt(a.user)
@@ -167,7 +155,6 @@ func (a *Agent) buildMessages(history []*store.Message, currentMessage string) [
 		systemPrompt += "\n\n" + ageContextPrompt(a.user)
 	}
 
-	// Inject skill descriptions into system prompt
 	if len(a.skills) > 0 {
 		skillPrompt := skillbridge.LoadForPrompt(a.skills)
 		if skillPrompt != "" {
@@ -177,33 +164,17 @@ func (a *Agent) buildMessages(history []*store.Message, currentMessage string) [
 
 	msgs = append(msgs, llm.Message{Role: "system", Content: systemPrompt})
 
-	// History (only allowed messages — don't include blocked turns)
 	for _, m := range history {
 		if m.PolicyAction == "allow" || m.PolicyAction == "" {
 			msgs = append(msgs, llm.Message{Role: m.Role, Content: m.Content})
 		}
 	}
 
-	// Current message (already in history, but we add it explicitly for clarity)
-	// Only add if not already the last message in history
 	if len(history) == 0 || history[len(history)-1].Role != "user" {
 		msgs = append(msgs, llm.Message{Role: "user", Content: currentMessage})
 	}
 
 	return msgs
-}
-
-func (a *Agent) policyMessage(d policy.Decision) string {
-	switch d.Action {
-	case "block":
-		return fmt.Sprintf("I'm sorry, I can't help with that topic. %s", d.Reason)
-	case "request_approval":
-		return "I've asked a parent to approve this topic for you. They'll get a notification — once they approve, just ask me again! 😊"
-	case "pending":
-		return "A parent has already been notified about this request. Once they approve, you can ask me! ⏳"
-	default:
-		return "I'm unable to answer that right now."
-	}
 }
 
 func defaultSystemPrompt(user *config.UserConfig) string {
@@ -216,7 +187,7 @@ func ageContextPrompt(user *config.UserConfig) string {
 	case "under_8":
 		return fmt.Sprintf("You are talking with %s, who is a young child (under 8). Use very simple words, short sentences, and be playful and encouraging. No scary or complex topics.", user.DisplayName)
 	case "age_8_12":
-		return fmt.Sprintf("You are talking with %s, who is %s years old (8-12). Be friendly and educational. Explain things clearly without being condescending.", user.DisplayName, "between 8 and 12")
+		return fmt.Sprintf("You are talking with %s, who is between 8 and 12 years old. Be friendly and educational. Explain things clearly without being condescending.", user.DisplayName)
 	case "age_13_17":
 		return fmt.Sprintf("You are talking with %s, a teenager. Be respectful and treat them as a capable young adult. You can discuss more complex topics but remain age-appropriate.", user.DisplayName)
 	default:
@@ -224,68 +195,7 @@ func ageContextPrompt(user *config.UserConfig) string {
 	}
 }
 
-// toolCallLoop executes MCP tool calls from LLM responses, up to MaxToolCallIterations.
-func (a *Agent) toolCallLoop(ctx context.Context, client *llm.Client, messages []llm.Message, initialResponse string, cat classifier.Category) (string, error) {
-	// Get the full message with tool calls (non-streaming)
-	msg, err := client.ChatMessage(ctx, messages, a.cfg.LLM.Temperature, a.cfg.LLM.MaxResponseTokens)
-	if err != nil || msg == nil || len(msg.ToolCalls) == 0 {
-		return initialResponse, nil // no tool calls, return original
-	}
-
-	for i := 0; i < mcp.MaxToolCallIterations; i++ {
-		if len(msg.ToolCalls) == 0 {
-			break
-		}
-
-		// Append assistant message with tool calls
-		messages = append(messages, *msg)
-
-		// Execute each tool call
-		for _, tc := range msg.ToolCalls {
-			log.Printf("[agent][%s] tool_call: %s(%v)", a.user.Name, tc.Function.Name, tc.Function.Arguments)
-
-			if !a.pool.HasTool(tc.Function.Name) {
-				messages = append(messages, llm.Message{
-					Role:    "tool",
-					Content: fmt.Sprintf("Error: unknown tool %q", tc.Function.Name),
-				})
-				continue
-			}
-
-			result, err := a.pool.CallTool(ctx, tc.Function.Name, tc.Function.Arguments)
-			if err != nil {
-				messages = append(messages, llm.Message{
-					Role:    "tool",
-					Content: fmt.Sprintf("Error calling %s: %v", tc.Function.Name, err),
-				})
-				continue
-			}
-
-			// Extract text from MCP result
-			var toolText string
-			if result != nil && len(result.Content) > 0 {
-				resultJSON, _ := json.Marshal(result.Content)
-				toolText = string(resultJSON)
-			}
-			messages = append(messages, llm.Message{
-				Role:    "tool",
-				Content: toolText,
-			})
-		}
-
-		// Call LLM again with tool results
-		msg, err = client.ChatMessage(ctx, messages, a.cfg.LLM.Temperature, a.cfg.LLM.MaxResponseTokens)
-		if err != nil {
-			return "", fmt.Errorf("LLM error in tool loop iteration %d: %w", i+1, err)
-		}
-	}
-
-	return msg.Content, nil
-}
-
-// outputBlockedPatterns are keywords that should never appear in LLM responses to children.
-// These catch cases where the input classifier allows a topic but the LLM generates
-// inappropriate content in its response.
+// outputBlockedPatterns kept for backward compatibility with existing tests.
 var outputBlockedPatterns = []string{
 	"suicide", "kill yourself", "self-harm", "cutting yourself",
 	"pornography", "sexual intercourse", "explicit content",
@@ -294,6 +204,7 @@ var outputBlockedPatterns = []string{
 }
 
 // filterOutput returns true if the LLM response contains blocked content.
+// Kept for backward compatibility with existing tests — the pipeline uses StageOutputFilter.
 func filterOutput(response string) bool {
 	lower := strings.ToLower(response)
 	for _, pattern := range outputBlockedPatterns {
