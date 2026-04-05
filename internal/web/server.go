@@ -175,10 +175,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				full.WriteString(token)
 			}
 
-			ctx := r.Context()
-			resp, err := a.Chat(ctx, payload.Text, onToken)
+			chatCtx, chatCancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer chatCancel()
+			resp, err := a.Chat(chatCtx, payload.Text, onToken)
 			if err != nil {
-				s.sendWS(conn, "error", map[string]string{"error": err.Error()})
+				errMsg := err.Error()
+				if chatCtx.Err() != nil {
+					errMsg = "The AI took too long to respond. Check that your AI service is running, or try a different one in Settings."
+				}
+				s.sendWS(conn, "error", map[string]string{"error": errMsg})
 				continue
 			}
 
