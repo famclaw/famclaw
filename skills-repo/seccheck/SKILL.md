@@ -3,6 +3,7 @@ name: seccheck
 description: Scan a skill or MCP git repository for security issues before installing. Checks for secrets, malicious network calls, CVEs, typosquatting, and runs in a sandbox.
 version: "1.0"
 author: famclaw
+license: AGPL-3.0-only
 tags: [security, skills, mcp]
 platforms: [linux, darwin]
 requires:
