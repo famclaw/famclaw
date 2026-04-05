@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -68,7 +69,7 @@ func setupAgent(t *testing.T, serverURL string) *Agent {
 	return NewAgent(user, cfg, client, ev, clf, db)
 }
 
-func mockLLMServer(t *testing.T, responses []map[string]any) *httptest.Server {
+func mockLLMServer(t *testing.T, messages []llm.Message) *httptest.Server {
 	t.Helper()
 	callIdx := 0
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,18 +77,45 @@ func mockLLMServer(t *testing.T, responses []map[string]any) *httptest.Server {
 			json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "test"}}})
 			return
 		}
-		if callIdx >= len(responses) {
-			callIdx = len(responses) - 1
+
+		var req struct {
+			Stream bool `json:"stream"`
 		}
-		resp := responses[callIdx]
+		json.NewDecoder(r.Body).Decode(&req)
+
+		if callIdx >= len(messages) {
+			callIdx = len(messages) - 1
+		}
+		msg := messages[callIdx]
 		callIdx++
-		json.NewEncoder(w).Encode(resp)
+
+		if req.Stream {
+			// SSE streaming response
+			w.Header().Set("Content-Type", "text/event-stream")
+			chunk := map[string]any{
+				"choices": []map[string]any{{
+					"delta": map[string]any{"content": msg.Content},
+				}},
+			}
+			data, _ := json.Marshal(chunk)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		} else {
+			// Non-streaming response
+			resp := map[string]any{
+				"choices": []map[string]any{{
+					"message":       msg,
+					"finish_reason": "stop",
+				}},
+			}
+			json.NewEncoder(w).Encode(resp)
+		}
 	}))
 }
 
 func TestAgentChatNoToolCalls(t *testing.T) {
-	server := mockLLMServer(t, []map[string]any{
-		{"message": map[string]any{"role": "assistant", "content": "Hello!"}, "done": true},
+	server := mockLLMServer(t, []llm.Message{
+		{Role: "assistant", Content: "Hello!"},
 	})
 	defer server.Close()
 
@@ -107,15 +135,12 @@ func TestAgentChatNoToolCalls(t *testing.T) {
 
 func TestAgentChatPoolNil(t *testing.T) {
 	// Even with tool_calls in response, if pool is nil, they're ignored
-	server := mockLLMServer(t, []map[string]any{
+	server := mockLLMServer(t, []llm.Message{
 		{
-			"message": map[string]any{
-				"role": "assistant", "content": "Let me check...",
-				"tool_calls": []map[string]any{
-					{"function": map[string]any{"name": "echo", "arguments": map[string]any{"text": "hi"}}},
-				},
+			Role: "assistant", Content: "Let me check...",
+			ToolCalls: []llm.ToolCall{
+				{Function: llm.ToolCallFunction{Name: "echo", Arguments: map[string]any{"text": "hi"}}},
 			},
-			"done": true,
 		},
 	})
 	defer server.Close()
