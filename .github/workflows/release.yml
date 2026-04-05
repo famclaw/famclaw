@@ -42,11 +42,6 @@ jobs:
             goarch: arm64
             name: android-arm64
             label: "Android arm64 (Termux)"
-          - goos: android
-            goarch: arm
-            goarm: 7
-            name: android-armv7
-            label: "Android armv7 (Termux)"
 
     steps:
       - uses: actions/checkout@v6
@@ -202,7 +197,6 @@ jobs:
           | `famclaw-darwin-arm64.xz` | Mac Apple Silicon |
           | `famclaw-darwin-amd64.xz` | Mac Intel |
           | `famclaw-android-arm64.xz` | Android via Termux (arm64) |
-          | `famclaw-android-armv7.xz` | Android via Termux (armv7) |
 
           ### Quick install (RPi / Linux)
           ```bash
