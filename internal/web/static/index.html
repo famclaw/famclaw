@@ -184,6 +184,55 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
   cursor:pointer;margin-top:16px}
 .s-save:hover{background:var(--c-primary-dark)}
 
+/* ── Wizard ────────────────────────────────────────────────────────────────── */
+#wizard-screen{flex:1;display:none;flex-direction:column;align-items:center;
+  justify-content:center;padding:24px;overflow-y:auto}
+.wiz-container{max-width:520px;width:100%}
+.wiz-step{display:none}
+.wiz-step.active{display:block}
+.wiz-hero{text-align:center;margin-bottom:32px}
+.wiz-hero h2{font-size:24px;margin-bottom:8px}
+.wiz-hero p{color:var(--c-muted);font-size:15px}
+.wiz-progress{display:flex;gap:6px;margin-bottom:24px}
+.wiz-dot{height:4px;flex:1;border-radius:2px;background:var(--c-border)}
+.wiz-dot.done{background:var(--c-primary)}
+.wiz-dot.current{background:var(--c-primary)}
+.wiz-card{background:var(--c-surface);border-radius:var(--radius);padding:20px;
+  cursor:pointer;border:2px solid var(--c-border);margin-bottom:12px;
+  transition:border-color .15s}
+.wiz-card:hover{border-color:var(--c-primary)}
+.wiz-card.selected{border-color:var(--c-primary);background:#f0f0ff}
+.wiz-card h3{font-size:16px;margin-bottom:4px}
+.wiz-card p{font-size:13px;color:var(--c-muted);margin:0}
+.wiz-card .wiz-icon{font-size:28px;margin-bottom:8px}
+.wiz-nav{display:flex;gap:10px;margin-top:24px}
+.wiz-nav button{flex:1;padding:14px;border:none;border-radius:var(--radius);
+  font-size:15px;font-weight:600;cursor:pointer}
+.wiz-next{background:var(--c-primary);color:#fff}
+.wiz-next:hover{background:var(--c-primary-dark)}
+.wiz-back{background:var(--c-bg);color:var(--c-text)}
+.wiz-member{display:flex;align-items:center;gap:10px;padding:12px;
+  background:var(--c-surface);border-radius:8px;margin-bottom:8px;
+  border:1px solid var(--c-border)}
+.wiz-member .name{flex:1;font-weight:600}
+.wiz-member .age{font-size:12px;color:var(--c-muted)}
+.wiz-add{padding:14px;text-align:center;border:2px dashed var(--c-border);
+  border-radius:8px;cursor:pointer;color:var(--c-primary);font-weight:600;margin-bottom:8px}
+.wiz-add:hover{border-color:var(--c-primary);background:#f8f8ff}
+.wiz-input{width:100%;padding:10px 12px;border:1.5px solid var(--c-border);
+  border-radius:8px;font-size:14px;font-family:inherit;outline:none;
+  background:var(--c-bg);margin-bottom:10px}
+.wiz-input:focus{border-color:var(--c-primary)}
+.wiz-label{font-size:12px;font-weight:600;color:var(--c-muted);
+  text-transform:uppercase;margin-bottom:4px;display:block}
+.wiz-status{padding:12px;border-radius:8px;margin-top:12px;font-size:14px}
+.wiz-status.ok{background:#dcfce7;color:#15803d}
+.wiz-status.err{background:#fee2e2;color:#991b1b}
+.wiz-complete{text-align:center;padding:40px 0}
+.wiz-complete .big-check{font-size:64px;margin-bottom:16px}
+.wiz-complete h2{font-size:22px;margin-bottom:8px}
+.wiz-complete p{color:var(--c-muted);font-size:15px;margin-bottom:24px}
+
 /* ── Toast ─────────────────────────────────────────────────────────────────── */
 #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(100px);
   background:#1e293b;color:#fff;padding:10px 20px;border-radius:99px;
@@ -345,6 +394,142 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
       <button class="s-save" onclick="saveSettings()">Save Settings</button>
     </div>
   </div>
+
+  <!-- 5-Step Setup Wizard -->
+  <div id="wizard-screen">
+    <div class="wiz-container">
+      <div class="wiz-progress" id="wiz-progress"></div>
+
+      <!-- Step 1: Welcome -->
+      <div class="wiz-step active" id="wiz-step-1">
+        <div class="wiz-hero">
+          <div style="font-size:48px;margin-bottom:16px">🛡️</div>
+          <h2>Welcome to FamClaw</h2>
+          <p>A private AI assistant for your family. It runs in your home, not in the cloud. Your conversations stay yours.</p>
+        </div>
+        <div class="wiz-nav">
+          <button class="wiz-next" onclick="wizNext()">Set up my family</button>
+        </div>
+      </div>
+
+      <!-- Step 2: Family -->
+      <div class="wiz-step" id="wiz-step-2">
+        <div class="wiz-hero">
+          <h2>Who's in your family?</h2>
+          <p>Add everyone who'll use FamClaw. You can change this later.</p>
+        </div>
+        <div id="wiz-members"></div>
+        <div class="wiz-add" onclick="wizAddMember()">+ Add a family member</div>
+        <div class="wiz-nav">
+          <button class="wiz-back" onclick="wizBack()">Back</button>
+          <button class="wiz-next" onclick="wizNext()">Next</button>
+        </div>
+      </div>
+
+      <!-- Step 3: Gateways -->
+      <div class="wiz-step" id="wiz-step-3">
+        <div class="wiz-hero">
+          <h2>How will your family chat?</h2>
+          <p>The web browser always works. Add messaging apps if you want.</p>
+        </div>
+        <div class="wiz-card selected" style="cursor:default;opacity:0.7">
+          <div class="wiz-icon">🌐</div>
+          <h3>Web browser</h3>
+          <p>Always available — no setup needed</p>
+        </div>
+        <div class="wiz-card" id="wiz-gw-telegram" onclick="wizToggleGW(this,'telegram')">
+          <div class="wiz-icon">✈️</div>
+          <h3>Telegram</h3>
+          <p>Chat through the Telegram app</p>
+        </div>
+        <div id="wiz-telegram-setup" style="display:none;padding:0 0 12px">
+          <label class="wiz-label">Your Telegram bot's secret code (from @BotFather)</label>
+          <input class="wiz-input" id="wiz-tg-token" placeholder="Paste the code BotFather gave you">
+        </div>
+        <div class="wiz-card" id="wiz-gw-discord" onclick="wizToggleGW(this,'discord')">
+          <div class="wiz-icon">🎮</div>
+          <h3>Discord</h3>
+          <p>Chat through your family Discord server</p>
+        </div>
+        <div id="wiz-discord-setup" style="display:none;padding:0 0 12px">
+          <label class="wiz-label">Your Discord bot's secret code</label>
+          <input class="wiz-input" id="wiz-dc-token" placeholder="Paste the token from Discord Developer Portal">
+        </div>
+        <div class="wiz-nav">
+          <button class="wiz-back" onclick="wizBack()">Back</button>
+          <button class="wiz-next" onclick="wizNext()">Next</button>
+        </div>
+      </div>
+
+      <!-- Step 4: AI Model -->
+      <div class="wiz-step" id="wiz-step-4">
+        <div class="wiz-hero">
+          <h2>Choose your AI</h2>
+          <p>FamClaw needs an AI model to power the assistant.</p>
+        </div>
+        <div id="wiz-hw-info" style="font-size:13px;color:var(--c-muted);margin-bottom:12px"></div>
+        <div class="wiz-card" id="wiz-ai-local" onclick="wizSelectAI('local')" style="display:none">
+          <div class="wiz-icon">🏠</div>
+          <h3>Run it yourself (free)</h3>
+          <p id="wiz-ai-local-desc">Private, runs on your hardware</p>
+        </div>
+        <div class="wiz-card" id="wiz-ai-remote" onclick="wizSelectAI('remote')">
+          <div class="wiz-icon">☁️</div>
+          <h3>Connect to an AI service</h3>
+          <p>Ollama on your network, OpenAI, Groq, or others</p>
+        </div>
+        <div id="wiz-ai-remote-form" style="display:none;padding:8px 0">
+          <label class="wiz-label">AI service address</label>
+          <input class="wiz-input" id="wiz-llm-url" placeholder="http://192.168.1.10:11434 or https://api.openai.com/v1">
+          <label class="wiz-label">Model name</label>
+          <input class="wiz-input" id="wiz-llm-model" placeholder="gemma4:e4b or gpt-4o-mini">
+          <label class="wiz-label">Secret code (only for paid services — leave empty for Ollama)</label>
+          <input class="wiz-input" id="wiz-llm-key" type="password" placeholder="Leave empty if using Ollama">
+        </div>
+        <div id="wiz-ai-status" class="wiz-status" style="display:none"></div>
+        <div class="wiz-nav">
+          <button class="wiz-back" onclick="wizBack()">Back</button>
+          <button class="wiz-next" onclick="wizNext()">Next</button>
+        </div>
+      </div>
+
+      <!-- Step 5: Notifications -->
+      <div class="wiz-step" id="wiz-step-5">
+        <div class="wiz-hero">
+          <h2>How should FamClaw reach you?</h2>
+          <p>When a child asks about something sensitive, FamClaw holds the response and asks you first.</p>
+        </div>
+        <div style="background:#f8fafc;border-radius:8px;padding:16px;margin-bottom:16px;font-size:14px;color:var(--c-muted)">
+          <strong>Example:</strong> Your child asks about something you want to review. FamClaw notifies you, and you approve or deny with one tap.
+        </div>
+        <div class="wiz-card" onclick="wizSelectNotify('dashboard')">
+          <div class="wiz-icon">📋</div>
+          <h3>Just the dashboard</h3>
+          <p>Check pending approvals when you open FamClaw. No push notifications.</p>
+        </div>
+        <div class="wiz-card" onclick="wizSelectNotify('skip')">
+          <div class="wiz-icon">⏭️</div>
+          <h3>Skip for now</h3>
+          <p>You can set up notifications later in Settings.</p>
+        </div>
+        <div class="wiz-nav">
+          <button class="wiz-back" onclick="wizBack()">Back</button>
+          <button class="wiz-next" onclick="wizFinish()">Finish setup</button>
+        </div>
+      </div>
+
+      <!-- Complete -->
+      <div class="wiz-step" id="wiz-step-done">
+        <div class="wiz-complete">
+          <div class="big-check">✅</div>
+          <h2>FamClaw is ready for your family</h2>
+          <p>Everyone can start chatting now.</p>
+          <div id="wiz-family-avatars" style="display:flex;gap:8px;justify-content:center;margin-bottom:24px"></div>
+          <button class="wiz-next" style="max-width:300px;margin:0 auto;display:block" onclick="location.reload()">Start chatting</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- PIN modal -->
@@ -377,7 +562,7 @@ const state = {
 async function boot() {
   const health = await apiFetch('/api/health');
   if (health && health.needs_setup) {
-    openSettings(true);
+    openWizard();
     return;
   }
   const users = await apiFetch('/api/users');
@@ -1027,6 +1212,222 @@ async function saveSettings() {
     setTimeout(() => location.reload(), 500);
   } else {
     showToast('Failed to save — check PIN');
+  }
+}
+
+// ── 5-Step Wizard ────────────────────────────────────────────────────────────
+const wizState = {
+  step: 1,
+  totalSteps: 5,
+  members: [],
+  gateways: {telegram: false, discord: false},
+  ai: {type: '', url: '', model: '', key: ''},
+};
+
+function openWizard() {
+  hide('user-screen'); hide('chat-screen'); hide('dashboard-screen'); hide('settings-screen');
+  show('wizard-screen');
+  document.getElementById('mode-btn').style.display = 'none';
+  wizState.step = 1;
+  // Add default parent (the person doing setup)
+  if (wizState.members.length === 0) {
+    wizState.members.push({name: '', display_name: '', role: 'parent', age_group: '', pin: ''});
+  }
+  wizRenderProgress();
+  wizShowStep(1);
+  wizDetectHardware();
+}
+
+function wizRenderProgress() {
+  const bar = document.getElementById('wiz-progress');
+  bar.textContent = '';
+  for (let i = 1; i <= wizState.totalSteps; i++) {
+    const dot = el('div', {class: 'wiz-dot' + (i < wizState.step ? ' done' : '') + (i === wizState.step ? ' current' : '')});
+    bar.appendChild(dot);
+  }
+}
+
+function wizShowStep(n) {
+  wizState.step = n;
+  wizRenderProgress();
+  for (let i = 1; i <= wizState.totalSteps; i++) {
+    const step = document.getElementById('wiz-step-' + i);
+    if (step) step.classList.toggle('active', i === n);
+  }
+  document.getElementById('wiz-step-done').classList.remove('active');
+  if (n === 2) wizRenderMembers();
+}
+
+function wizNext() {
+  if (wizState.step === 2 && wizState.members.length === 0) {
+    showToast('Add at least one family member'); return;
+  }
+  if (wizState.step === 2 && !wizState.members.some(m => m.role === 'parent' && m.pin)) {
+    showToast('Add a parent with a PIN'); return;
+  }
+  if (wizState.step === 4 && wizState.ai.type === '') {
+    showToast('Choose how to connect to an AI'); return;
+  }
+  if (wizState.step === 4 && wizState.ai.type === 'remote' && !wizState.ai.url) {
+    showToast('Enter the AI service address'); return;
+  }
+  wizShowStep(wizState.step + 1);
+}
+
+function wizBack() { wizShowStep(wizState.step - 1); }
+
+// ── Step 2: Family members ───────────────────────────────────────────────────
+
+function wizRenderMembers() {
+  const container = document.getElementById('wiz-members');
+  container.textContent = '';
+  wizState.members.forEach((m, i) => {
+    const div = el('div', {class: 'wiz-member'});
+    const icon = m.role === 'parent' ? '👑' : '👤';
+    const nameSpan = el('span', {class: 'name'});
+    nameSpan.textContent = icon + ' ' + (m.display_name || 'New member');
+    const ageSpan = el('span', {class: 'age'});
+    ageSpan.textContent = m.role === 'parent' ? 'Parent' : (m.age_group || 'child');
+    const rmBtn = el('button', {class: 's-rm-btn'});
+    rmBtn.textContent = '×';
+    rmBtn.onclick = () => { wizState.members.splice(i, 1); wizRenderMembers(); };
+    div.appendChild(nameSpan);
+    div.appendChild(ageSpan);
+    div.appendChild(rmBtn);
+    div.onclick = (e) => { if (e.target !== rmBtn) wizEditMember(i); };
+    container.appendChild(div);
+  });
+}
+
+function wizAddMember() {
+  const name = prompt('Name:');
+  if (!name) return;
+  const ageChoice = prompt('1) Young child (under 8)\n2) Child (8-12)\n3) Teen (13-17)\n4) Parent/Adult\n\nChoose 1-4:', '2');
+  const ages = {'1':'under_8','2':'age_8_12','3':'age_13_17','4':'parent'};
+  const ageGroup = ages[ageChoice] || 'age_8_12';
+  const role = ageChoice === '4' ? 'parent' : 'child';
+  const member = {name: name.toLowerCase().replace(/\s+/g,'-'), display_name: name, role, age_group: role === 'parent' ? '' : ageGroup, pin: ''};
+  if (role === 'parent') {
+    const pin = prompt('Set a PIN (4+ digits) to protect the parent dashboard:');
+    if (pin && pin.length >= 4) member.pin = pin;
+    else { showToast('PIN must be 4+ digits'); return; }
+  }
+  wizState.members.push(member);
+  wizRenderMembers();
+}
+
+function wizEditMember(i) {
+  const m = wizState.members[i];
+  const name = prompt('Name:', m.display_name);
+  if (name) { m.display_name = name; m.name = name.toLowerCase().replace(/\s+/g,'-'); }
+  wizRenderMembers();
+}
+
+// ── Step 3: Gateways ─────────────────────────────────────────────────────────
+
+function wizToggleGW(card, gw) {
+  wizState.gateways[gw] = !wizState.gateways[gw];
+  card.classList.toggle('selected', wizState.gateways[gw]);
+  const setup = document.getElementById('wiz-' + gw + '-setup');
+  if (setup) setup.style.display = wizState.gateways[gw] ? 'block' : 'none';
+}
+
+// ── Step 4: AI Model ─────────────────────────────────────────────────────────
+
+async function wizDetectHardware() {
+  const hw = await apiFetch('/api/setup/detect');
+  if (!hw) return;
+  const info = document.getElementById('wiz-hw-info');
+  if (hw.can_run_local) {
+    document.getElementById('wiz-ai-local').style.display = 'block';
+    document.getElementById('wiz-ai-local-desc').textContent =
+      'Detected: ' + (hw.model || hw.total_ram_mb + 'MB RAM') + ' — recommended: ' + hw.recommended_model;
+  } else {
+    info.textContent = hw.os === 'android'
+      ? 'Local AI is not available on Android. Connect to a remote service.'
+      : 'Your device has ' + hw.total_ram_mb + 'MB RAM (need 4GB+ for local AI).';
+  }
+}
+
+function wizSelectAI(type) {
+  wizState.ai.type = type;
+  document.getElementById('wiz-ai-local').classList.toggle('selected', type === 'local');
+  document.getElementById('wiz-ai-remote').classList.toggle('selected', type === 'remote');
+  document.getElementById('wiz-ai-remote-form').style.display = type === 'remote' ? 'block' : 'none';
+  if (type === 'local') {
+    wizState.ai.url = 'http://localhost:11434';
+    wizState.ai.model = document.getElementById('wiz-ai-local-desc').textContent.split('recommended: ')[1] || 'gemma4:e2b';
+  }
+}
+
+// ── Step 5: Notifications ────────────────────────────────────────────────────
+
+function wizSelectNotify(type) {
+  // For now, just note the choice — all notification setup is optional
+  document.querySelectorAll('#wiz-step-5 .wiz-card').forEach(c => c.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+}
+
+// ── Finish ───────────────────────────────────────────────────────────────────
+
+async function wizFinish() {
+  // Gather remote AI form values
+  if (wizState.ai.type === 'remote') {
+    wizState.ai.url = document.getElementById('wiz-llm-url').value.trim();
+    wizState.ai.model = document.getElementById('wiz-llm-model').value.trim();
+    wizState.ai.key = document.getElementById('wiz-llm-key').value.trim();
+  }
+
+  if (!wizState.ai.url) {
+    showToast('Please choose an AI provider first');
+    wizShowStep(4);
+    return;
+  }
+
+  // Build settings payload
+  const body = {
+    llm: {base_url: wizState.ai.url, model: wizState.ai.model},
+    users: wizState.members,
+    gateways: {
+      telegram: {enabled: wizState.gateways.telegram, token: document.getElementById('wiz-tg-token')?.value || ''},
+      discord: {enabled: wizState.gateways.discord, token: document.getElementById('wiz-dc-token')?.value || ''},
+      whatsapp: {enabled: false},
+    },
+  };
+  if (wizState.ai.key) body.llm.api_key = wizState.ai.key;
+
+  // Save — no PIN needed on first boot (isFirstBoot allows it)
+  const result = await apiFetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+
+  if (result && result.status === 'saved') {
+    // Show completion
+    for (let i = 1; i <= wizState.totalSteps; i++) {
+      const step = document.getElementById('wiz-step-' + i);
+      if (step) step.classList.remove('active');
+    }
+    document.getElementById('wiz-step-done').classList.add('active');
+
+    // Show family avatars
+    const avatars = document.getElementById('wiz-family-avatars');
+    avatars.textContent = '';
+    wizState.members.forEach(m => {
+      const av = el('div', {style: 'width:40px;height:40px;border-radius:50%;background:#6366f1;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px'});
+      av.textContent = (m.display_name || '?')[0].toUpperCase();
+      avatars.appendChild(av);
+    });
+
+    // Update progress to all done
+    const bar = document.getElementById('wiz-progress');
+    bar.textContent = '';
+    for (let i = 1; i <= wizState.totalSteps; i++) {
+      bar.appendChild(el('div', {class: 'wiz-dot done'}));
+    }
+  } else {
+    showToast('Failed to save — please try again');
   }
 }
 
