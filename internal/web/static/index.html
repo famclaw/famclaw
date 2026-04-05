@@ -270,6 +270,43 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
   background:linear-gradient(135deg,#6366f1,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .wiz-complete p{color:#64748b;font-size:15px;margin-bottom:28px}
 
+/* ── AI Profile cards ─────────────────────────────────────────────────────── */
+.wiz-profile{display:flex;align-items:center;gap:12px;padding:14px 16px;
+  background:#fff;border-radius:14px;margin-bottom:10px;border:2px solid #e2e8f0;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);transition:all .15s;cursor:pointer}
+.wiz-profile:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.wiz-profile.selected{border-color:#6366f1;background:linear-gradient(135deg,#eef2ff,#f5f3ff)}
+.wiz-profile-icon{width:42px;height:42px;border-radius:12px;display:flex;
+  align-items:center;justify-content:center;font-size:20px;flex-shrink:0;
+  background:linear-gradient(135deg,#eef2ff,#f5f3ff)}
+.wiz-profile-info{flex:1;min-width:0}
+.wiz-profile-label{font-weight:700;font-size:15px;display:flex;align-items:center;gap:6px}
+.wiz-profile-meta{font-size:12px;color:#94a3b8;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wiz-profile-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;
+  background:#dbeafe;color:#2563eb;text-transform:uppercase;letter-spacing:.03em}
+.wiz-profile-badge.default{background:linear-gradient(135deg,#6366f1,#7c3aed);color:#fff}
+.wiz-select{width:100%;padding:12px 14px;border:1.5px solid #e2e8f0;
+  border-radius:10px;font-size:15px;font-family:inherit;outline:none;
+  background:#f8fafc;margin-bottom:12px;transition:border-color .15s;
+  appearance:none;-webkit-appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' fill='none' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 14px center}
+.wiz-select:focus{border-color:#6366f1;background-color:#fff;box-shadow:0 0 0 3px rgba(99,102,241,.08)}
+.wiz-tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.wiz-tag{padding:6px 12px;border:1.5px solid #e2e8f0;border-radius:20px;
+  font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;background:#fff}
+.wiz-tag:hover{border-color:#a5b4fc}
+.wiz-tag.selected{border-color:#6366f1;background:#eef2ff;color:#4f46e5}
+.wiz-default-toggle{display:flex;align-items:center;gap:8px;padding:8px 0;margin-bottom:8px}
+.wiz-default-toggle input{width:16px;height:16px;accent-color:#6366f1}
+.wiz-default-toggle label{font-size:13px;font-weight:600;color:#64748b}
+.wiz-hw-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;
+  border-radius:8px;font-size:12px;font-weight:600;margin-bottom:16px}
+.wiz-hw-badge.good{background:#dcfce7;color:#15803d}
+.wiz-hw-badge.limited{background:#fef3c7;color:#92400e}
+.wiz-hw-badge.cloud{background:#dbeafe;color:#1e40af}
+
 /* ── Toast ─────────────────────────────────────────────────────────────────── */
 #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(100px);
   background:#1e293b;color:#fff;padding:10px 20px;border-radius:99px;
@@ -498,30 +535,60 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         </div>
       </div>
 
-      <!-- Step 4: AI Model -->
+      <!-- Step 4: AI Profiles -->
       <div class="wiz-step" id="wiz-step-4">
         <div class="wiz-hero">
-          <h2>Choose your AI</h2>
-          <p>FamClaw needs an AI model to power the assistant.</p>
+          <h2>Set up your AI</h2>
+          <p>Add one or more AI profiles. Each family member can use a different one.</p>
         </div>
-        <div id="wiz-hw-info" style="font-size:13px;color:var(--c-muted);margin-bottom:12px"></div>
-        <div class="wiz-card" id="wiz-ai-local" onclick="wizSelectAI('local')" style="display:none">
-          <div class="wiz-icon">🏠</div>
-          <h3>Run it yourself (free)</h3>
-          <p id="wiz-ai-local-desc">Private, runs on your hardware</p>
-        </div>
-        <div class="wiz-card" id="wiz-ai-remote" onclick="wizSelectAI('remote')">
-          <div class="wiz-icon">☁️</div>
-          <h3>Connect to an AI service</h3>
-          <p>Ollama on your network, OpenAI, Groq, or others</p>
-        </div>
-        <div id="wiz-ai-remote-form" style="display:none;padding:8px 0">
-          <label class="wiz-label">AI service address</label>
-          <input class="wiz-input" id="wiz-llm-url" placeholder="http://192.168.1.10:11434 or https://api.openai.com/v1">
-          <label class="wiz-label">Model name</label>
-          <input class="wiz-input" id="wiz-llm-model" placeholder="gemma4:e4b or gpt-4o-mini">
-          <label class="wiz-label">Secret code (only for paid services — leave empty for Ollama)</label>
-          <input class="wiz-input" id="wiz-llm-key" type="password" placeholder="Leave empty if using Ollama">
+        <div id="wiz-hw-badge"></div>
+        <div id="wiz-profiles-list"></div>
+        <div class="wiz-add" onclick="wizShowProfileForm()">+ Add AI profile</div>
+        <div id="wiz-profile-form" style="display:none">
+          <div class="wiz-form">
+            <label class="wiz-label">Profile name</label>
+            <input class="wiz-input" id="wiz-prof-label" placeholder="e.g. Family Chat, Homework Helper">
+            <label class="wiz-label">Provider</label>
+            <select class="wiz-select" id="wiz-prof-provider" onchange="wizProviderChanged()">
+              <option value="">Choose a provider…</option>
+              <option value="ollama-local">Ollama (this device)</option>
+              <option value="ollama-lan">Ollama (another device on your network)</option>
+              <option value="groq">Groq (fast, free tier)</option>
+              <option value="openai">OpenAI</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="custom">Custom OpenAI-compatible</option>
+            </select>
+            <div id="wiz-prof-url-row">
+              <label class="wiz-label">Service address</label>
+              <input class="wiz-input" id="wiz-prof-url" placeholder="http://localhost:11434">
+            </div>
+            <label class="wiz-label">Model</label>
+            <select class="wiz-select" id="wiz-prof-model-select" onchange="wizModelSelectChanged()" style="display:none">
+              <option value="">Choose a model…</option>
+            </select>
+            <input class="wiz-input" id="wiz-prof-model" placeholder="e.g. gemma4:e2b">
+            <div id="wiz-prof-key-row">
+              <label class="wiz-label">API key <span style="font-weight:400;color:#cbd5e1">(leave empty for Ollama)</span></label>
+              <input class="wiz-input" id="wiz-prof-key" type="password" placeholder="sk-…">
+            </div>
+            <label class="wiz-label">Best for</label>
+            <div class="wiz-tags" id="wiz-prof-tags">
+              <span class="wiz-tag" data-tag="chat" onclick="wizToggleTag(this)">💬 Chat</span>
+              <span class="wiz-tag" data-tag="homework" onclick="wizToggleTag(this)">📚 Homework</span>
+              <span class="wiz-tag" data-tag="research" onclick="wizToggleTag(this)">🔍 Research</span>
+              <span class="wiz-tag" data-tag="coding" onclick="wizToggleTag(this)">💻 Coding</span>
+              <span class="wiz-tag" data-tag="creative" onclick="wizToggleTag(this)">🎨 Creative</span>
+            </div>
+            <div class="wiz-default-toggle">
+              <input type="checkbox" id="wiz-prof-default" checked>
+              <label for="wiz-prof-default">Use as default profile</label>
+            </div>
+            <div class="wiz-form-actions">
+              <button class="wiz-form-cancel" onclick="wizCancelProfile()">Cancel</button>
+              <button class="wiz-form-save" onclick="wizSaveProfile()">Save profile</button>
+            </div>
+          </div>
         </div>
         <div id="wiz-ai-status" class="wiz-status" style="display:none"></div>
         <div class="wiz-nav">
@@ -1023,6 +1090,7 @@ function el(tag, attrs) {
 
 function show(id) { document.getElementById(id).style.display = 'flex'; }
 function hide(id) { document.getElementById(id).style.display = 'none'; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function setStatus(s) { document.getElementById('chat-status').textContent = s; }
 
 function ageLabel(g) {
@@ -1258,7 +1326,8 @@ const wizState = {
   totalSteps: 5,
   members: [],
   gateways: {telegram: false, discord: false},
-  ai: {type: '', url: '', model: '', key: ''},
+  profiles: [],
+  hw: null,
 };
 
 function openWizard() {
@@ -1300,17 +1369,8 @@ function wizNext() {
     showToast('Add a parent with a PIN'); return;
   }
   if (wizState.step === 4) {
-    // Read form values before validation
-    if (wizState.ai.type === 'remote') {
-      wizState.ai.url = (document.getElementById('wiz-llm-url')?.value || '').trim();
-      wizState.ai.model = (document.getElementById('wiz-llm-model')?.value || '').trim();
-      wizState.ai.key = (document.getElementById('wiz-llm-key')?.value || '').trim();
-    }
-    if (wizState.ai.type === '') {
-      showToast('Choose how to connect to an AI'); return;
-    }
-    if (!wizState.ai.url) {
-      showToast('Enter the AI service address'); return;
+    if (wizState.profiles.length === 0) {
+      showToast('Add at least one AI profile'); return;
     }
   }
   wizShowStep(wizState.step + 1);
@@ -1455,32 +1515,201 @@ function wizToggleGW(card, gw) {
   if (setup) setup.style.display = wizState.gateways[gw] ? 'block' : 'none';
 }
 
-// ── Step 4: AI Model ─────────────────────────────────────────────────────────
+// ── Step 4: AI Profiles ──────────────────────────────────────────────────────
+
+const PROVIDERS = {
+  'ollama-local':  { label: 'Ollama (local)',  url: 'http://localhost:11434', icon: '🏠', needsKey: false,
+    models: ['gemma4:e2b','gemma4:e4b','llama3.2:3b','llama3.1:8b','phi4-mini','qwen3:8b','mistral:7b'] },
+  'ollama-lan':    { label: 'Ollama (LAN)',    url: '', icon: '🌐', needsKey: false,
+    models: ['gemma4:e2b','gemma4:e4b','llama3.2:3b','llama3.1:8b','phi4-mini','qwen3:8b'] },
+  'groq':          { label: 'Groq',            url: 'https://api.groq.com/openai/v1', icon: '⚡', needsKey: true,
+    models: ['llama-3.3-70b-versatile','llama-3.1-8b-instant','gemma2-9b-it','mixtral-8x7b-32768'] },
+  'openai':        { label: 'OpenAI',          url: 'https://api.openai.com/v1', icon: '🤖', needsKey: true,
+    models: ['gpt-4o-mini','gpt-4o','gpt-4.1-mini','gpt-4.1-nano','o4-mini'] },
+  'openrouter':    { label: 'OpenRouter',      url: 'https://openrouter.ai/api/v1', icon: '🔀', needsKey: true,
+    models: ['google/gemma-3-4b-it:free','meta-llama/llama-3.3-70b-instruct:free','qwen/qwen3-8b:free'] },
+  'anthropic':     { label: 'Anthropic',       url: 'https://api.anthropic.com/v1', icon: '🧠', needsKey: true,
+    models: ['claude-sonnet-4-5-20250514','claude-haiku-4-5-20251001'] },
+  'custom':        { label: 'Custom',          url: '', icon: '🔧', needsKey: false, models: [] },
+};
+
+let wizEditingProfile = -1; // -1 = new, >= 0 = editing index
 
 async function wizDetectHardware() {
   const hw = await apiFetch('/api/setup/detect');
   if (!hw) return;
-  const info = document.getElementById('wiz-hw-info');
+  wizState.hw = hw;
+  const badge = document.getElementById('wiz-hw-badge');
   if (hw.can_run_local) {
-    document.getElementById('wiz-ai-local').style.display = 'block';
-    document.getElementById('wiz-ai-local-desc').textContent =
-      'Detected: ' + (hw.model || hw.total_ram_mb + 'MB RAM') + ' — recommended: ' + hw.recommended_model;
+    badge.className = 'wiz-hw-badge good';
+    badge.innerHTML = '🏠 ' + (hw.model || hw.total_ram_mb + 'MB RAM') + ' — local AI ready';
+  } else if (hw.os === 'android') {
+    badge.className = 'wiz-hw-badge cloud';
+    badge.innerHTML = '☁️ Android detected — use a cloud or LAN provider';
   } else {
-    info.textContent = hw.os === 'android'
-      ? 'Local AI is not available on Android. Connect to a remote service.'
-      : 'Your device has ' + hw.total_ram_mb + 'MB RAM (need 4GB+ for local AI).';
+    badge.className = 'wiz-hw-badge limited';
+    badge.innerHTML = '💡 ' + hw.total_ram_mb + 'MB RAM — cloud or LAN provider recommended';
   }
 }
 
-function wizSelectAI(type) {
-  wizState.ai.type = type;
-  document.getElementById('wiz-ai-local').classList.toggle('selected', type === 'local');
-  document.getElementById('wiz-ai-remote').classList.toggle('selected', type === 'remote');
-  document.getElementById('wiz-ai-remote-form').style.display = type === 'remote' ? 'block' : 'none';
-  if (type === 'local') {
-    wizState.ai.url = 'http://localhost:11434';
-    wizState.ai.model = document.getElementById('wiz-ai-local-desc').textContent.split('recommended: ')[1] || 'gemma4:e2b';
+function wizRenderProfiles() {
+  const container = document.getElementById('wiz-profiles-list');
+  container.textContent = '';
+  wizState.profiles.forEach((p, i) => {
+    const prov = PROVIDERS[p.provider] || {};
+    const div = document.createElement('div');
+    div.className = 'wiz-profile' + (p.isDefault ? ' selected' : '');
+    div.onclick = () => wizEditProfile(i);
+    div.innerHTML =
+      '<div class="wiz-profile-icon">' + (prov.icon || '🤖') + '</div>' +
+      '<div class="wiz-profile-info">' +
+        '<div class="wiz-profile-label">' + esc(p.label) +
+          (p.isDefault ? ' <span class="wiz-profile-badge default">Default</span>' : '') +
+          (p.tags.length ? ' <span class="wiz-profile-badge">' + p.tags[0] + '</span>' : '') +
+        '</div>' +
+        '<div class="wiz-profile-meta">' + esc((prov.label || p.provider) + ' · ' + p.model) + '</div>' +
+      '</div>' +
+      '<button class="wiz-rm" onclick="event.stopPropagation();wizRemoveProfile(' + i + ')" title="Remove">&times;</button>';
+    container.appendChild(div);
+  });
+}
+
+function wizShowProfileForm(prefill) {
+  const form = document.getElementById('wiz-profile-form');
+  form.style.display = 'block';
+  document.getElementById('wiz-prof-label').value = prefill?.label || '';
+  document.getElementById('wiz-prof-provider').value = prefill?.provider || '';
+  document.getElementById('wiz-prof-url').value = prefill?.url || '';
+  document.getElementById('wiz-prof-model').value = prefill?.model || '';
+  document.getElementById('wiz-prof-key').value = prefill?.key || '';
+  document.getElementById('wiz-prof-default').checked = prefill?.isDefault !== false;
+  // Reset tags
+  document.querySelectorAll('#wiz-prof-tags .wiz-tag').forEach(t => {
+    t.classList.toggle('selected', (prefill?.tags || []).includes(t.dataset.tag));
+  });
+  wizProviderChanged();
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function wizCancelProfile() {
+  document.getElementById('wiz-profile-form').style.display = 'none';
+  wizEditingProfile = -1;
+}
+
+function wizProviderChanged() {
+  const provider = document.getElementById('wiz-prof-provider').value;
+  const prov = PROVIDERS[provider];
+  const urlRow = document.getElementById('wiz-prof-url-row');
+  const keyRow = document.getElementById('wiz-prof-key-row');
+  const modelSelect = document.getElementById('wiz-prof-model-select');
+  const modelInput = document.getElementById('wiz-prof-model');
+
+  if (prov) {
+    // Auto-fill URL for known providers
+    if (prov.url) {
+      document.getElementById('wiz-prof-url').value = prov.url;
+      urlRow.style.display = provider === 'custom' || provider === 'ollama-lan' ? 'block' : 'none';
+    } else {
+      urlRow.style.display = 'block';
+    }
+    // Show/hide API key field
+    keyRow.style.display = prov.needsKey ? 'block' : 'none';
+    // Populate model dropdown
+    if (prov.models.length > 0) {
+      modelSelect.style.display = 'block';
+      modelInput.style.display = 'none';
+      modelSelect.innerHTML = '<option value="">Choose a model…</option>';
+      prov.models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m; opt.textContent = m;
+        modelSelect.appendChild(opt);
+      });
+      // Restore selected model if editing
+      const currentModel = modelInput.value;
+      if (currentModel && prov.models.includes(currentModel)) {
+        modelSelect.value = currentModel;
+      }
+    } else {
+      modelSelect.style.display = 'none';
+      modelInput.style.display = 'block';
+    }
+    // Auto-label if empty
+    const labelInput = document.getElementById('wiz-prof-label');
+    if (!labelInput.value) {
+      labelInput.value = prov.label;
+    }
+  } else {
+    urlRow.style.display = 'block';
+    keyRow.style.display = 'block';
+    modelSelect.style.display = 'none';
+    modelInput.style.display = 'block';
   }
+}
+
+function wizModelSelectChanged() {
+  const sel = document.getElementById('wiz-prof-model-select');
+  document.getElementById('wiz-prof-model').value = sel.value;
+}
+
+function wizToggleTag(el) {
+  el.classList.toggle('selected');
+}
+
+function wizSaveProfile() {
+  const label = document.getElementById('wiz-prof-label').value.trim();
+  const provider = document.getElementById('wiz-prof-provider').value;
+  const url = document.getElementById('wiz-prof-url').value.trim();
+  const modelSel = document.getElementById('wiz-prof-model-select');
+  const model = modelSel.style.display !== 'none' ? modelSel.value : document.getElementById('wiz-prof-model').value.trim();
+  const key = document.getElementById('wiz-prof-key').value.trim();
+  const isDefault = document.getElementById('wiz-prof-default').checked;
+  const tags = [];
+  document.querySelectorAll('#wiz-prof-tags .wiz-tag.selected').forEach(t => tags.push(t.dataset.tag));
+
+  if (!label) { showToast('Give this profile a name'); return; }
+  if (!provider) { showToast('Choose a provider'); return; }
+
+  // Resolve URL for known providers
+  const prov = PROVIDERS[provider];
+  const resolvedUrl = (prov && prov.url) ? prov.url : url;
+  if (!resolvedUrl) { showToast('Enter the service address'); return; }
+  if (!model) { showToast('Choose or enter a model'); return; }
+  if (prov && prov.needsKey && !key) { showToast(prov.label + ' requires an API key'); return; }
+
+  const profile = { label, provider, url: resolvedUrl, model, key, isDefault, tags };
+
+  if (isDefault) {
+    wizState.profiles.forEach(p => p.isDefault = false);
+  }
+
+  if (wizEditingProfile >= 0) {
+    wizState.profiles[wizEditingProfile] = profile;
+  } else {
+    wizState.profiles.push(profile);
+  }
+
+  // If first profile, auto-set as default
+  if (wizState.profiles.length === 1) {
+    wizState.profiles[0].isDefault = true;
+  }
+
+  wizEditingProfile = -1;
+  document.getElementById('wiz-profile-form').style.display = 'none';
+  wizRenderProfiles();
+}
+
+function wizEditProfile(index) {
+  wizEditingProfile = index;
+  wizShowProfileForm(wizState.profiles[index]);
+}
+
+function wizRemoveProfile(index) {
+  const wasDefault = wizState.profiles[index].isDefault;
+  wizState.profiles.splice(index, 1);
+  if (wasDefault && wizState.profiles.length > 0) {
+    wizState.profiles[0].isDefault = true;
+  }
+  wizRenderProfiles();
 }
 
 // ── Step 5: Notifications ────────────────────────────────────────────────────
@@ -1494,22 +1723,32 @@ function wizSelectNotify(type) {
 // ── Finish ───────────────────────────────────────────────────────────────────
 
 async function wizFinish() {
-  // Gather remote AI form values
-  if (wizState.ai.type === 'remote') {
-    wizState.ai.url = document.getElementById('wiz-llm-url').value.trim();
-    wizState.ai.model = document.getElementById('wiz-llm-model').value.trim();
-    wizState.ai.key = document.getElementById('wiz-llm-key').value.trim();
-  }
-
-  if (!wizState.ai.url) {
-    showToast('Please choose an AI provider first');
+  if (wizState.profiles.length === 0) {
+    showToast('Please add an AI profile first');
     wizShowStep(4);
     return;
   }
 
-  // Build settings payload
+  // Build profiles map for the API
+  const defaultProfile = wizState.profiles.find(p => p.isDefault) || wizState.profiles[0];
+  const profilesMap = {};
+  wizState.profiles.forEach(p => {
+    const key = p.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const pv = { label: p.label, base_url: p.url, model: p.model };
+    if (p.key) pv.api_key = p.key;
+    profilesMap[key] = pv;
+  });
+
+  const defaultKey = defaultProfile.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+  // Build settings payload — use default profile for legacy base_url/model too
   const body = {
-    llm: {base_url: wizState.ai.url, model: wizState.ai.model},
+    llm: {
+      base_url: defaultProfile.url,
+      model: defaultProfile.model,
+      default: defaultKey,
+      profiles: profilesMap,
+    },
     users: wizState.members,
     gateways: {
       telegram: {enabled: wizState.gateways.telegram, token: document.getElementById('wiz-tg-token')?.value || ''},
@@ -1517,7 +1756,7 @@ async function wizFinish() {
       whatsapp: {enabled: false},
     },
   };
-  if (wizState.ai.key) body.llm.api_key = wizState.ai.key;
+  if (defaultProfile.key) body.llm.api_key = defaultProfile.key;
 
   // Save — no PIN needed on first boot (isFirstBoot allows it)
   const result = await apiFetch('/api/settings', {
