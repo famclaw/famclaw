@@ -45,6 +45,7 @@ type Server struct {
 	pool          *mcp.Pool           // MCP tool pool for agent tool calls
 	staticHandler http.Handler        // embedded static file server
 	upgrader      websocket.Upgrader
+	cfgMu      sync.RWMutex               // guards cfg during settings reads/writes
 	clients    map[*websocket.Conn]string // conn → userName
 	clientsMu  sync.RWMutex
 }
