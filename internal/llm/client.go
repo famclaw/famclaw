@@ -91,13 +91,13 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 
 	body, err := json.Marshal(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("marshaling chat request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
 		c.baseURL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("creating chat request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {

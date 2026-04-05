@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"sync"
 
 	"github.com/famclaw/famclaw/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
-// cfgMu guards concurrent access to s.cfg during settings reads/writes.
-var cfgMu sync.RWMutex
+// Note: s.clientsMu on Server is used for WebSocket clients.
+// s.cfgMu (below, added to Server struct) guards config reads/writes.
 
 // settingsView is the JSON shape for GET/POST /api/settings.
 type settingsView struct {
@@ -65,8 +64,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
-	cfgMu.RLock()
-	defer cfgMu.RUnlock()
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
 
 	view := settingsView{
 		LLM: llmSettingsView{
@@ -114,8 +113,8 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfgMu.Lock()
-	defer cfgMu.Unlock()
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
 
 	// LLM config
 	if update.LLM.BaseURL != "" {
@@ -202,16 +201,16 @@ func (s *Server) verifyParentPINConstantTime(pin string) bool {
 
 // NeedsSetup returns true if the LLM is not fully configured.
 func (s *Server) NeedsSetup() bool {
-	cfgMu.RLock()
-	defer cfgMu.RUnlock()
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
 	return s.cfg.LLM.BaseURL == "" || s.cfg.LLM.Model == ""
 }
 
 // isFirstBoot returns true if no parent users are configured yet.
 // Used to skip PIN check during initial setup wizard.
 func (s *Server) isFirstBoot() bool {
-	cfgMu.RLock()
-	defer cfgMu.RUnlock()
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
 	for _, u := range s.cfg.Users {
 		if u.Role == "parent" && u.PIN != "" {
 			return false
