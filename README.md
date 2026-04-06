@@ -113,7 +113,7 @@ Default age groups: `under_8`, `age_8_12`, `age_13_17`, `parent`.
 
 ## Skills
 
-FamClaw uses the [AgentSkills](https://docs.openclaw.ai/tools/skills) spec — the same `SKILL.md` format used by OpenClaw and PicoClaw. Skills from [famclaw/skills](https://github.com/famclaw/skills) work in all three runtimes.
+FamClaw uses the [AgentSkills](https://docs.openclaw.ai/tools/skills) spec — the same `SKILL.md` format used by OpenClaw, PicoClaw, and NanoBot. Skills from [famclaw/skills](https://github.com/famclaw/skills) work in all four runtimes. [HoneyBadger](https://github.com/famclaw/honeybadger) scans every skill before installation.
 
 ```bash
 famclaw skill install seccheck
@@ -173,4 +173,4 @@ See [AGENTS.md](./AGENTS.md) for the full build plan.
 
 ## License
 
-[AGPL-3.0](./LICENSE) — free for personal and family use. Contact us for commercial licensing.
+[AGPL-3.0](./LICENSE)
