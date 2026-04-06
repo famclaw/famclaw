@@ -27,6 +27,7 @@ import (
 	"github.com/famclaw/famclaw/internal/mdns"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/inference"
 	"github.com/famclaw/famclaw/internal/seccheck"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
@@ -93,6 +94,32 @@ func main() {
 
 	// Query classifier
 	clf := classifier.New()
+
+	// Inference sidecar (optional — llama-server managed by FamClaw)
+	var sidecar *inference.Sidecar
+	if cfg.Inference.Backend == "llama-server" {
+		sidecar = inference.NewSidecar(inference.SidecarConfig{
+			BinaryPath: cfg.Inference.Binary,
+			ModelPath:  cfg.Inference.ModelPath,
+			Port:       cfg.Inference.Port,
+			GPULayers:  cfg.Inference.GPULayers,
+			ExtraArgs:  cfg.Inference.ExtraArgs,
+		})
+		if err := sidecar.Start(context.Background()); err != nil {
+			log.Fatalf("Failed to start llama-server: %v", err)
+		}
+		defer sidecar.Stop()
+		log.Printf("Inference: llama-server starting on port %d", cfg.Inference.Port)
+		if err := sidecar.WaitReady(context.Background(), 60*time.Second); err != nil {
+			log.Printf("⚠️  llama-server not ready: %v", err)
+		} else {
+			log.Printf("Inference: llama-server ready ✅")
+		}
+		// Override LLM base URL to point at the sidecar
+		if cfg.LLM.BaseURL == "" {
+			cfg.LLM.BaseURL = sidecar.BaseURL()
+		}
+	}
 
 	// LLM health check
 	hcBaseURL, hcModel, hcAPIKey := cfg.LLMClientFor(nil)
