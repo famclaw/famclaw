@@ -5,14 +5,14 @@ go 1.26.0
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/grandcat/zeroconf v1.0.0
-	github.com/open-policy-agent/opa v1.15.0
+	github.com/open-policy-agent/opa v1.15.1
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.48.0 // pure Go SQLite — no CGO, cross-compiles to arm/arm64
+	modernc.org/sqlite v1.48.1 // pure Go SQLite — no CGO, cross-compiles to arm/arm64
 )
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
-	github.com/mark3labs/mcp-go v0.46.0
+	github.com/mark3labs/mcp-go v0.47.0
 )
 
 require (
