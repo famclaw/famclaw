@@ -1,58 +1,37 @@
-// Command seccheck is a CLI wrapper around the FamClaw security scanner.
-// Exit codes: 0=PASS/WARN, 1=FAIL, 2=usage error, 3=runtime error
+// Command seccheck is deprecated — use honeybadger scan instead.
+// This binary is kept for backward compatibility with existing skill installations.
+// It delegates to the honeybadger binary if available, otherwise prints a deprecation notice.
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"time"
-
-	"github.com/famclaw/famclaw/internal/seccheck"
+	"os/exec"
 )
 
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: seccheck <repo-url-or-path>\n")
+		fmt.Fprintf(os.Stderr, "\nDeprecated: use 'honeybadger scan' instead.\n")
 		os.Exit(2)
 	}
 
-	target := os.Args[1]
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	scanner := seccheck.New(seccheck.Options{
-		Verbose: true,
-		Sandbox: "auto",
-		Timeout: 5 * time.Minute,
-		OSVAPI:  "https://api.osv.dev/v1",
-	})
-	report, err := scanner.Scan(ctx, target)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "seccheck: %v\n", err)
-		os.Exit(3)
+	// Try to delegate to honeybadger
+	hb, err := exec.LookPath("honeybadger")
+	if err == nil {
+		cmd := exec.Command(hb, append([]string{"scan"}, os.Args[1:]...)...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+			os.Exit(3)
+		}
+		return
 	}
 
-	// Human-readable summary to stderr
-	fmt.Fprintf(os.Stderr, "\nSecCheck Report: %s\n", target)
-	fmt.Fprintf(os.Stderr, "Score: %d/100 — %s\n\n", report.Score, report.Verdict)
-
-	for _, f := range report.Findings {
-		fmt.Fprintf(os.Stderr, "  [%s] %s\n", f.Severity, f.Description)
-	}
-
-	if report.Summary != "" {
-		fmt.Fprintf(os.Stderr, "\n%s\n", report.Summary)
-	}
-
-	// JSON to stdout (for MCP tool integration)
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	enc.Encode(report)
-
-	if report.Verdict == seccheck.VerdictFail {
-		os.Exit(1)
-	}
+	fmt.Fprintf(os.Stderr, "seccheck is deprecated. Install honeybadger:\n")
+	fmt.Fprintf(os.Stderr, "  go install github.com/famclaw/honeybadger/cmd/honeybadger@latest\n")
+	os.Exit(127) // POSIX: command not found
 }

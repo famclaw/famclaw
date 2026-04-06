@@ -20,7 +20,7 @@ type Config struct {
 	Skills        SkillsConfig        `yaml:"skills"`
 	Notifications NotificationsConfig `yaml:"notifications"`
 	Storage       StorageConfig       `yaml:"storage"`
-	SecCheck      SecCheckConfig      `yaml:"seccheck"`
+	SecCheck      SecCheckConfig      `yaml:"seccheck"` // deprecated — use honeybadger instead
 }
 
 // InferenceConfig controls local LLM inference via llama-server sidecar.
