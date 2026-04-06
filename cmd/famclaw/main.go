@@ -28,7 +28,6 @@ import (
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/inference"
-	"github.com/famclaw/famclaw/internal/seccheck"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/web"
@@ -46,7 +45,8 @@ func main() {
 	}
 
 	cfgPath  := flag.String("config", "config.yaml", "Config file path")
-	seccheckURL := flag.String("seccheck", "", "Run seccheck on a git URL and exit")
+	// seccheck CLI removed — use `honeybadger scan <url>` directly
+	_ = flag.String("seccheck", "", "Deprecated: use honeybadger scan instead")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -55,11 +55,7 @@ func main() {
 		return
 	}
 
-	// ── seccheck CLI mode ─────────────────────────────────────────────────────
-	if *seccheckURL != "" {
-		runSecCheck(*seccheckURL)
-		return
-	}
+	// seccheck CLI removed — honeybadger replaces it
 
 	// ── Normal server mode ────────────────────────────────────────────────────
 	banner()
@@ -245,52 +241,8 @@ func main() {
 	log.Println("Stopped.")
 }
 
-// runSecCheck runs seccheck on a URL and prints the report to stdout.
-func runSecCheck(repoURL string) {
-	log.Printf("Running seccheck on %s…", repoURL)
-	sc := seccheck.New(seccheck.Options{
-		Verbose: true,
-		Sandbox: "auto",
-		Timeout: 5 * time.Minute,
-		OSVAPI:  "https://api.osv.dev/v1",
-	})
-
-	report, err := sc.Scan(context.Background(), repoURL)
-	if err != nil {
-		log.Fatalf("seccheck failed: %v", err)
-	}
-
-	// Print summary
-	fmt.Printf("\n═══════════════════════════════════════════\n")
-	fmt.Printf("  FamClaw SecCheck Report\n")
-	fmt.Printf("  Repo:    %s\n", report.RepoURL)
-	fmt.Printf("  Commit:  %s\n", report.CommitSHA[:min(8, len(report.CommitSHA))])
-	fmt.Printf("  Score:   %d/100\n", report.Score)
-	fmt.Printf("  Verdict: %s\n", report.Verdict)
-	fmt.Printf("  Summary: %s\n", report.Summary)
-	fmt.Printf("  Files:   %d scanned\n", report.FilesScanned)
-	fmt.Printf("  Sandbox: %s\n", report.SandboxUsed)
-	fmt.Printf("═══════════════════════════════════════════\n\n")
-
-	if len(report.Findings) > 0 {
-		fmt.Printf("Findings (%d):\n\n", len(report.Findings))
-		for i, f := range report.Findings {
-			fmt.Printf("[%d] %s — %s\n", i+1, f.Severity, f.Title)
-			fmt.Printf("    Scanner: %s\n", f.Scanner)
-			if f.File != "" {
-				fmt.Printf("    File: %s", f.File)
-				if f.Line > 0 { fmt.Printf(":%d", f.Line) }
-				fmt.Println()
-			}
-			if f.Evidence != "" { fmt.Printf("    Evidence: %s\n", f.Evidence) }
-			fmt.Printf("    %s\n\n", f.Description)
-		}
-	}
-
-	if report.Verdict == seccheck.VerdictFail {
-		os.Exit(1)
-	}
-}
+// runSecCheck removed — honeybadger replaces seccheck.
+// Use: honeybadger scan <repo-url>
 
 func banner() {
 	fmt.Printf(`
