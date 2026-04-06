@@ -2,9 +2,12 @@ package skillbridge
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/famclaw/famclaw/internal/skilladapt"
 )
 
 // Registry manages installed skills on disk.
@@ -26,29 +29,40 @@ func (r *Registry) Install(nameOrPath string) (*Skill, error) {
 		return nil, fmt.Errorf("creating skills dir: %w", err)
 	}
 
-	// Check if it's a local path with SKILL.md
-	skillMDPath := nameOrPath
-	if !strings.HasSuffix(nameOrPath, "SKILL.md") {
-		skillMDPath = filepath.Join(nameOrPath, "SKILL.md")
+	// Try multi-format detection first (FamClaw, OpenClaw, Claude Code)
+	var skill *Skill
+	adaptSkill, adaptErr := skilladapt.DetectAndParse(nameOrPath)
+	if adaptErr == nil {
+		skill = adaptSkillToSkill(adaptSkill)
+	} else {
+		// Fallback to direct SKILL.md parsing
+		skillMDPath := nameOrPath
+		if !strings.HasSuffix(nameOrPath, "SKILL.md") {
+			skillMDPath = filepath.Join(nameOrPath, "SKILL.md")
+		}
+		var parseErr error
+		skill, parseErr = ParseSKILLMD(skillMDPath)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing skill: %w (multi-format: %w)", parseErr, adaptErr)
+		}
 	}
 
-	skill, err := ParseSKILLMD(skillMDPath)
-	if err != nil {
-		return nil, fmt.Errorf("parsing skill: %w", err)
-	}
-
-	// Copy SKILL.md to registry dir
+	// Copy skill file to registry dir
 	destDir := filepath.Join(r.dir, skill.Name)
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating skill dir: %w", err)
 	}
 
-	raw, err := os.ReadFile(skillMDPath)
+	srcPath := skill.Path
+	if srcPath == "" {
+		srcPath = filepath.Join(nameOrPath, "SKILL.md")
+	}
+	raw, err := os.ReadFile(srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading skill: %w", err)
 	}
 
-	destPath := filepath.Join(destDir, "SKILL.md")
+	destPath := filepath.Join(destDir, filepath.Base(srcPath))
 	if err := os.WriteFile(destPath, raw, 0644); err != nil {
 		return nil, fmt.Errorf("writing skill: %w", err)
 	}
@@ -72,10 +86,19 @@ func (r *Registry) List() ([]*Skill, error) {
 		if !e.IsDir() {
 			continue
 		}
-		skillMD := filepath.Join(r.dir, e.Name(), "SKILL.md")
+		dir := filepath.Join(r.dir, e.Name())
+		// Try multi-format detection first
+		adaptSkill, err := skilladapt.DetectAndParse(dir)
+		if err == nil {
+			skills = append(skills, adaptSkillToSkill(adaptSkill))
+			continue
+		}
+		// Fallback to SKILL.md
+		skillMD := filepath.Join(dir, "SKILL.md")
 		skill, err := ParseSKILLMD(skillMD)
 		if err != nil {
-			continue // skip broken skills
+			log.Printf("[skillbridge] skip %s: %v", e.Name(), err)
+			continue
 		}
 		skills = append(skills, skill)
 	}
@@ -108,6 +131,19 @@ func (r *Registry) Disable(name string) error {
 	}
 	disabledFile := filepath.Join(dir, ".disabled")
 	return os.WriteFile(disabledFile, []byte("disabled"), 0644)
+}
+
+// adaptSkillToSkill converts a skilladapt.Skill to a skillbridge.Skill.
+func adaptSkillToSkill(s *skilladapt.Skill) *Skill {
+	return &Skill{
+		Name:        s.Name,
+		Description: s.Description,
+		Version:     s.Version,
+		Author:      s.Author,
+		Tags:        s.Tags,
+		Body:        s.Body,
+		Path:        s.Path,
+	}
 }
 
 // IsEnabled returns true if the skill is not disabled.
