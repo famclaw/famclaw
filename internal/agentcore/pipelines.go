@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"github.com/famclaw/famclaw/internal/classifier"
+	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
@@ -17,22 +18,45 @@ type FamilyPipelineDeps struct {
 	ClientFactory func(turn *Turn) *llm.Client
 	Temperature   float64
 	MaxTokens     int
+	ContextWindow int // 0 = use default (4096)
 	OnToken       func(string)
+
+	// Security scanning (optional — skipped if nil or unavailable)
+	HoneybadgerClient *honeybadger.Client
+	SecurityEnabled   bool
+	RescanDays        int
+	LastScanFunc      func(skillName string) (interface{ Before(interface{}) bool }, bool)
 }
 
 // FamilyPipeline assembles the full family chat pipeline:
-// classify → policy_input → llm_call → tool_loop → output_filter
+// classify → policy_input → compress → [security_scan] → llm_call → [tool_loop] → policy_output
 func FamilyPipeline(deps FamilyPipelineDeps) Pipeline {
 	stages := Pipeline{
 		NewStageClassify(deps.Classifier),
 		NewStagePolicyInput(deps.Evaluator, deps.DB),
-		NewStageLLMCall(LLMCallDeps{
-			ClientFactory: deps.ClientFactory,
-			Temperature:   deps.Temperature,
-			MaxTokens:     deps.MaxTokens,
-			OnToken:       deps.OnToken,
-		}),
 	}
+
+	// Context compression — before LLM call to fit within window
+	if deps.ContextWindow > 0 {
+		stages = stages.Append(NewStageCompress(deps.ContextWindow))
+	}
+
+	// Security scan — before tool execution
+	if deps.SecurityEnabled && deps.HoneybadgerClient != nil {
+		stages = stages.Append(NewStageSecurityScan(SecurityScanDeps{
+			Client:  deps.HoneybadgerClient,
+			Enabled: true,
+			RescanDays: deps.RescanDays,
+		}))
+	}
+
+	// LLM call
+	stages = stages.Append(NewStageLLMCall(LLMCallDeps{
+		ClientFactory: deps.ClientFactory,
+		Temperature:   deps.Temperature,
+		MaxTokens:     deps.MaxTokens,
+		OnToken:       deps.OnToken,
+	}))
 
 	// Tool loop only if MCP pool is available
 	if deps.Pool != nil {
@@ -44,7 +68,8 @@ func FamilyPipeline(deps FamilyPipelineDeps) Pipeline {
 		}))
 	}
 
-	stages = stages.Append(NewStageOutputFilter())
+	// Output policy — age-aware filtering (replaces old hardcoded StageOutputFilter)
+	stages = stages.Append(NewStagePolicyOutput())
 
 	return stages
 }

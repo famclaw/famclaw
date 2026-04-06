@@ -111,6 +111,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		ClientFactory: clientFactory,
 		Temperature:   a.cfg.LLM.Temperature,
 		MaxTokens:     a.cfg.LLM.MaxResponseTokens,
+		ContextWindow: a.cfg.LLM.MaxContextTokens,
 		OnToken:       onToken,
 	})
 
