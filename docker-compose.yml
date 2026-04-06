@@ -1,0 +1,37 @@
+services:
+  famclaw:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+      - famclaw-data:/data
+    restart: unless-stopped
+
+  # Uncomment to run Ollama as a sidecar for local LLM inference.
+  # FamClaw will detect it automatically at http://ollama:11434.
+  #
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #   restart: unless-stopped
+
+  # Uncomment for self-hosted push notifications (no cloud, no app store).
+  # Set NTFY_TOPIC in config.yaml to receive parental approval alerts.
+  #
+  # ntfy:
+  #   image: binwiederhier/ntfy:latest
+  #   command: serve
+  #   ports:
+  #     - "2586:80"
+  #   volumes:
+  #     - ntfy-data:/var/lib/ntfy
+  #   restart: unless-stopped
+
+volumes:
+  famclaw-data:
+  # ollama-data:
+  # ntfy-data:
