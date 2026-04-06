@@ -1,0 +1,23 @@
+changelog:
+  exclude:
+    labels:
+      - dependencies
+      - skip-changelog
+    authors:
+      - dependabot
+      - coderabbitai
+  categories:
+    - title: "New Features"
+      labels:
+        - enhancement
+        - feature
+    - title: "Bug Fixes"
+      labels:
+        - bug
+        - fix
+    - title: "Security"
+      labels:
+        - security
+    - title: "Other Changes"
+      labels:
+        - "*"
