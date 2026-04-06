@@ -157,6 +157,46 @@ func (p *Pool) ListTools() []string {
 	return names
 }
 
+// ToolInfo describes an MCP tool with its schema for registration in the tool registry.
+type ToolInfo struct {
+	Name        string
+	Description string
+	InputSchema map[string]any
+	ServerName  string
+}
+
+// ListToolInfos returns tool metadata for all available tools.
+func (p *Pool) ListToolInfos() []ToolInfo {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	var infos []ToolInfo
+	for serverName, mc := range p.clients {
+		for _, tool := range mc.client.Tools() {
+			if seen[tool.Name] {
+				continue
+			}
+			seen[tool.Name] = true
+			schema := make(map[string]any)
+			if tool.InputSchema.Properties != nil {
+				schema["type"] = "object"
+				schema["properties"] = tool.InputSchema.Properties
+				if len(tool.InputSchema.Required) > 0 {
+					schema["required"] = tool.InputSchema.Required
+				}
+			}
+			infos = append(infos, ToolInfo{
+				Name:        tool.Name,
+				Description: tool.Description,
+				InputSchema: schema,
+				ServerName:  serverName,
+			})
+		}
+	}
+	return infos
+}
+
 // StopAll terminates all MCP server connections.
 func (p *Pool) StopAll() {
 	p.mu.Lock()
