@@ -149,6 +149,7 @@ jobs:
       - name: Compress image
         run: |
           cd dist
+          sudo chown $(id -u):$(id -g) ${{ matrix.image_name }}.img
           xz -9 --threads=0 ${{ matrix.image_name }}.img
           sha256sum ${{ matrix.image_name }}.img.xz > ${{ matrix.image_name }}.img.xz.sha256
 
