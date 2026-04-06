@@ -264,8 +264,9 @@ jobs:
         run: |
           version=$(dist/famclaw --version 2>&1 || true)
           echo "Binary version: $version"
-          echo "$version" | grep -q "${{ github.ref_name }}" || \
-            (echo "FAIL: version mismatch" && exit 1)
+          expected="${{ github.ref_name }}"
+          echo "$version" | grep -qF "${expected}" || \
+            (echo "FAIL: expected '${expected}' in: $version" && exit 1)
 
       - name: Install OPA
         run: |
