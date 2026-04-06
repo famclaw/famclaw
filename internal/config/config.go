@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Server        ServerConfig        `yaml:"server"`
 	LLM           LLMConfig           `yaml:"llm"`
+	Inference     InferenceConfig     `yaml:"inference"`
 	Users         []UserConfig        `yaml:"users"`
 	Gateways      GatewaysConfig      `yaml:"gateways"`
 	Policies      PoliciesConfig      `yaml:"policies"`
@@ -20,6 +21,16 @@ type Config struct {
 	Notifications NotificationsConfig `yaml:"notifications"`
 	Storage       StorageConfig       `yaml:"storage"`
 	SecCheck      SecCheckConfig      `yaml:"seccheck"`
+}
+
+// InferenceConfig controls local LLM inference via llama-server sidecar.
+type InferenceConfig struct {
+	Backend   string   `yaml:"backend"`    // "llama-server" | "ollama" | "external" (default: "external")
+	Binary    string   `yaml:"binary"`     // path to llama-server binary
+	ModelPath string   `yaml:"model_path"` // path to GGUF model file
+	Port      int      `yaml:"port"`       // sidecar port (default: 8081)
+	GPULayers int      `yaml:"gpu_layers"` // layers to offload to GPU
+	ExtraArgs []string `yaml:"extra_args"` // e.g. ["--cache-type-k", "q4_0"] for TurboQuant
 }
 
 type GatewaysConfig struct {
