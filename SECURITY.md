@@ -31,15 +31,47 @@ Instead:
 - **Initial assessment:** within 7 days
 - **Fix or mitigation:** within 30 days for critical issues
 
+## Verify a Release
+
+All release artifacts are signed and attested:
+
+```bash
+# Download checksums and sigstore bundle (replace TAG with the version you downloaded)
+TAG=v0.3.0-beta  # ← change this
+gh release download "$TAG" --pattern 'checksums*' --dir .
+
+# Verify cosign signature (Sigstore keyless)
+cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp='github\.com/famclaw/famclaw' \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  checksums.txt
+
+# Verify checksum of your binary
+sha256sum -c checksums.txt --ignore-missing
+
+# Verify GitHub build attestation
+gh attestation verify checksums.txt --repo famclaw/famclaw
+```
+
 ## Security Measures
 
-FamClaw implements the following security practices:
+### Release pipeline
+- **Cosign keyless signing** — checksums signed via Sigstore OIDC, logged to Rekor transparency log
+- **SBOM** — CycloneDX via syft for every binary
+- **Build provenance attestation** — GitHub-native, verifiable via `gh attestation verify`
+- **SHA256 checksums** — all artifacts covered
+- **Post-release smoke tests** — binary version, server startup, API integration, signature verification
 
-- **SLSA Build Provenance:** All release binaries include attestation (SLSA Build L3)
-- **SBOM:** Software Bill of Materials attached to every release (CycloneDX format)
-- **Dependency scanning:** Dependabot monitors Go modules and GitHub Actions for CVEs
-- **Static analysis:** CodeQL and gosec run on every PR
-- **Vulnerability checks:** `govulncheck` runs in CI and blocks merges on known CVEs
-- **Secret scanning:** TruffleHog scans PRs for leaked credentials via CodeRabbit
-- **Policy engine:** All user messages pass through OPA policy evaluation before reaching the LLM
-- **No CGO:** Single static binary, no C dependencies, reduced attack surface
+### CI pipeline
+- **govulncheck** — warns on known Go CVEs (warn-only until OPA's transitive deps are fixed)
+- **CodeQL** — semantic code analysis on every PR
+- **gosec** — static security analysis
+- **Dependency review** — blocks PRs with critical vulnerabilities
+- **TruffleHog** — secret scanning via CodeRabbit
+- **OpenSSF Scorecard** — supply chain security posture tracking
+
+### Runtime
+- **OPA policy engine** — all messages evaluated before reaching the LLM
+- **Honeybadger** — runtime security scanning of skills/MCP tools
+- **No CGO** — single static binary, no C dependencies, reduced attack surface
+- **All GitHub Actions pinned to SHA** — prevents supply chain attacks via tag manipulation
