@@ -36,8 +36,9 @@ Instead:
 All release artifacts are signed and attested:
 
 ```bash
-# Download checksums and sigstore bundle
-gh release download v0.3.0-beta --pattern 'checksums*' --dir .
+# Download checksums and sigstore bundle (replace TAG with the version you downloaded)
+TAG=v0.3.0-beta  # ← change this
+gh release download "$TAG" --pattern 'checksums*' --dir .
 
 # Verify cosign signature (Sigstore keyless)
 cosign verify-blob --bundle checksums.txt.sigstore.json \
@@ -62,7 +63,7 @@ gh attestation verify checksums.txt --repo famclaw/famclaw
 - **Post-release smoke tests** — binary version, server startup, API integration, signature verification
 
 ### CI pipeline
-- **govulncheck** — blocks merges on known Go CVEs
+- **govulncheck** — warns on known Go CVEs (warn-only until OPA's transitive deps are fixed)
 - **CodeQL** — semantic code analysis on every PR
 - **gosec** — static security analysis
 - **Dependency review** — blocks PRs with critical vulnerabilities

@@ -135,7 +135,13 @@ jobs:
 
       # ── 3. Verify checksums ────────────────────────────────────────────────
       - name: Verify checksums
-        run: cd dist && sha256sum -c checksums.txt --ignore-missing
+        run: |
+          cd dist
+          # Strict: verify all checksums, don't ignore missing files
+          # Filter to only linux-amd64 (the binary we test) + any SBOMs present
+          grep -E 'linux-amd64|\.sbom\.json' checksums.txt > verify.txt || true
+          [ -s verify.txt ] || (echo "FAIL: no matching checksums found" && exit 1)
+          sha256sum -c verify.txt
 
       # ── 4. Extract and verify binary ───────────────────────────────────────
       - name: Extract binary
@@ -147,15 +153,16 @@ jobs:
         run: |
           version=$(dist/famclaw --version 2>&1 || true)
           echo "Binary version: $version"
-          echo "$version" | grep -q "${{ github.ref_name }}" || \
-            (echo "FAIL: version mismatch" && exit 1)
+          expected="${{ github.ref_name }}"
+          echo "$version" | grep -qw "^famclaw ${expected}" || \
+          echo "$version" | grep -qF "${expected}" || \
+            (echo "FAIL: expected '${expected}' in version output: $version" && exit 1)
 
       # ── 5. Verify GitHub attestation ───────────────────────────────────────
       - name: Verify build attestation
         run: |
           gh attestation verify dist/checksums.txt \
-            --repo ${{ github.repository }} || \
-            echo "::warning::Attestation verification not available (may need repo setting)"
+            --repo ${{ github.repository }}
 
       # ── 6. Start server + integration smoke tests ──────────────────────────
       - name: Install OPA
@@ -224,21 +231,37 @@ jobs:
             }' | jq -e '.status == "saved"' || \
             (echo "FAIL: wizard POST" && exit 1)
 
-      - name: "Smoke: settings after setup (PIN auth)"
+      - name: "Smoke: PIN enforcement — POST without PIN returns 403"
         run: |
-          curl -sf http://localhost:8080/api/settings \
-            -H 'X-Parent-PIN: 9999' | jq -e '.users | length > 0' || \
-            (echo "FAIL: settings after setup" && exit 1)
+          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            http://localhost:8080/api/settings \
+            -H 'Content-Type: application/json' \
+            -d '{"llm":{"base_url":"http://evil.com","model":"x"}}')
+          echo "POST without PIN: HTTP $status"
+          [ "$status" = "403" ] || (echo "FAIL: expected 403, got $status" && exit 1)
+
+      - name: "Smoke: PIN enforcement — POST with correct PIN returns 200"
+        run: |
+          curl -sf -X POST http://localhost:8080/api/settings \
+            -H 'Content-Type: application/json' \
+            -H 'X-Parent-PIN: 9999' \
+            -d '{"llm":{"base_url":"http://localhost:11434","model":"test"}}' \
+            | jq -e '.status == "saved"' || \
+            (echo "FAIL: PIN-auth POST failed" && exit 1)
 
       # ── 7. Verify SBOM ────────────────────────────────────────────────────
       - name: Verify SBOM format
         run: |
+          count=0
           for f in dist/*.sbom.json; do
             [ -f "$f" ] || continue
             jq -e '.bomFormat == "CycloneDX"' "$f" || \
               (echo "FAIL: $f not valid CycloneDX" && exit 1)
             echo "SBOM valid: $f"
+            count=$((count + 1))
           done
+          [ "$count" -gt 0 ] || (echo "FAIL: no SBOM files found" && exit 1)
+          echo "Verified $count SBOM file(s)"
 
       # ── 8. Summary ─────────────────────────────────────────────────────────
       - name: Post-release summary

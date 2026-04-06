@@ -63,7 +63,7 @@ builds:
         goarch: amd64
 
 archives:
-  - format: tar.xz
+  - formats: [tar.xz]
     name_template: >-
       famclaw-{{ .Os }}-{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}
 
@@ -73,23 +73,20 @@ checksum:
 signs:
   - cmd: cosign
     artifacts: checksum
+    signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
-      - --yes
-      - --output-signature=${signature}
-      - --output-certificate=${certificate}
+      - --bundle=${signature}
       - ${artifact}
+      - --yes
 
 sboms:
   - artifacts: archive
     cmd: syft
     args:
-      - scan
-      - dir:.
-      - -o
-      - cyclonedx-json
-      - --file
-      - ${document}
+      - ${artifact}
+      - --output
+      - cyclonedx-json=${document}
 
 changelog:
   sort: asc
