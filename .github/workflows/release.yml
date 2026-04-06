@@ -153,10 +153,11 @@ jobs:
         run: |
           version=$(dist/famclaw --version 2>&1 || true)
           echo "Binary version: $version"
+          # GoReleaser strips 'v' prefix: tag v0.3.1 → binary reports 0.3.1
           expected="${{ github.ref_name }}"
-          echo "$version" | grep -qw "^famclaw ${expected}" || \
-          echo "$version" | grep -qF "${expected}" || \
-            (echo "FAIL: expected '${expected}' in version output: $version" && exit 1)
+          expected_no_v="${expected#v}"
+          echo "$version" | grep -qF "${expected_no_v}" || \
+            (echo "FAIL: expected '${expected_no_v}' in version output: $version" && exit 1)
 
       # ── 5. Verify GitHub attestation ───────────────────────────────────────
       - name: Verify build attestation
