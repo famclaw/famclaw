@@ -144,11 +144,19 @@ storage:
   # SQLite database path
   db_path: "./data/famclaw.db"
 
-# ── SecCheck ──────────────────────────────────────────────────────────────────
+# ── Security Scanning (HoneyBadger) ──────────────────────────────────────────
 seccheck:
-  # Sandbox preference: "docker" | "sandbox-exec" | "auto"
-  sandbox: "auto"
-  # Timeout for full scan
-  timeout: "5m"
-  # osv.dev API base (can be self-hosted)
-  osv_api: "https://api.osv.dev/v1"
+  # Master switch — when false, no scanning anywhere
+  enabled: true
+
+  # Install-time: scan skills before writing to disk
+  auto_seccheck: true     # scan on `famclaw skill install`
+  block_on_fail: true     # refuse install on FAIL verdict
+  paranoia: "family"      # minimal | family | strict | paranoid
+
+  # Runtime: async background scans (never blocks chat)
+  runtime_scan: true           # enable async background scans
+  rescan_interval: "168h"      # re-scan tools every 7 days
+  async_scan_timeout: "60s"    # per-scan timeout
+  quarantine_on_fail: true     # block tools after FAIL verdict
+  notify_on_quarantine: true   # send parent notification on quarantine

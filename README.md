@@ -121,15 +121,15 @@ famclaw skill install seccheck
 
 ---
 
-## SecCheck
+## Security scanning
 
-Before installing any skill, scan it:
+FamClaw uses [HoneyBadger](https://github.com/famclaw/honeybadger) to scan skills at two points:
 
-```bash
-famclaw --seccheck https://github.com/someone/some-skill
-```
+**Install time.** `famclaw skill install <path>` scans with HoneyBadger before writing anything to disk. FAIL verdicts block the install by default.
 
-Checks for hardcoded secrets, suspicious network calls, CVEs via osv.dev, typosquatting, and runs in a sandbox.
+**Runtime, asynchronously.** Tools used during a conversation are scanned in the background after the turn completes. If a scan fails, the tool is quarantined and filtered out of the next turn. This never adds latency — scanning runs in parallel with or after the response.
+
+All behavior is configurable in `config.yaml` under the `seccheck:` section.
 
 ---
 

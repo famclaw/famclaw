@@ -54,6 +54,35 @@ echo "→ Downloading famclaw ($BINARY)…"
 curl -fsSL "$RELEASE_BASE/$BINARY" -o /usr/local/bin/famclaw
 chmod +x /usr/local/bin/famclaw
 
+# Download HoneyBadger for security scanning
+HB_INSTALLED=0
+HB_RELEASE_BASE="https://github.com/famclaw/honeybadger/releases/latest/download"
+case "$ARCH" in
+  aarch64|arm64) HB_BINARY="honeybadger-linux-arm64" ;;
+  armv7l|armhf)  HB_BINARY="honeybadger-linux-armv7" ;;
+  x86_64|amd64)  HB_BINARY="honeybadger-linux-amd64" ;;
+  *)             HB_BINARY="" ;;
+esac
+
+if [ -n "$HB_BINARY" ]; then
+  echo "→ Downloading HoneyBadger ($HB_BINARY)…"
+  if curl -fsSL "$HB_RELEASE_BASE/$HB_BINARY" -o /usr/local/bin/honeybadger 2>/dev/null; then
+    chmod +x /usr/local/bin/honeybadger
+    HB_INSTALLED=1
+    echo "  HoneyBadger installed ✅"
+  else
+    echo ""
+    echo "================================================================"
+    echo "  WARNING: Could not download HoneyBadger."
+    echo "  Skill security scanning will be disabled."
+    echo "  Install manually:"
+    echo "    go install github.com/famclaw/honeybadger/cmd/honeybadger@latest"
+    echo "  Then set seccheck.auto_seccheck: true in config.yaml"
+    echo "================================================================"
+    echo ""
+  fi
+fi
+
 # Generate default config if not present
 if [ ! -f "$FAMCLAW_DIR/config.yaml" ]; then
   echo "→ Writing default config…"
@@ -91,7 +120,14 @@ storage:
   db_path: "./data/famclaw.db"
 
 seccheck:
-  sandbox: "auto"
+  enabled: $([ "$HB_INSTALLED" = "1" ] && echo "true" || echo "false")
+  auto_seccheck: $([ "$HB_INSTALLED" = "1" ] && echo "true" || echo "false")  # Auto-disabled: honeybadger not available during setup
+  block_on_fail: true
+  paranoia: "family"
+  runtime_scan: $([ "$HB_INSTALLED" = "1" ] && echo "true" || echo "false")
+  rescan_interval: "168h"
+  quarantine_on_fail: true
+  notify_on_quarantine: true
 YAML
   chown "$FAMCLAW_USER:$FAMCLAW_USER" "$FAMCLAW_DIR/config.yaml"
   chmod 640 "$FAMCLAW_DIR/config.yaml"
