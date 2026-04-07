@@ -41,6 +41,8 @@ type Agent struct {
 	db         *store.DB
 	pool       *mcp.Pool
 	skills     []*skillbridge.Skill
+	quarantine *skillbridge.Quarantine
+	scanner    skillbridge.Scanner
 	convID     string
 }
 
@@ -49,6 +51,12 @@ func (a *Agent) SetPool(p *mcp.Pool) { a.pool = p }
 
 // SetSkills sets the skills to inject into the system prompt.
 func (a *Agent) SetSkills(skills []*skillbridge.Skill) { a.skills = skills }
+
+// SetQuarantine attaches the quarantine store for runtime tool filtering.
+func (a *Agent) SetQuarantine(q *skillbridge.Quarantine) { a.quarantine = q }
+
+// SetScanner attaches the security scanner for async runtime scanning.
+func (a *Agent) SetScanner(s skillbridge.Scanner) { a.scanner = s }
 
 // NewAgent creates an Agent for the given user.
 func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client,
@@ -103,7 +111,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	}
 
 	// Assemble and run the pipeline
-	pipeline := agentcore.FamilyPipeline(agentcore.FamilyPipelineDeps{
+	deps := agentcore.FamilyPipelineDeps{
 		Classifier:    a.classifier,
 		Evaluator:     a.evaluator,
 		DB:            a.db,
@@ -113,7 +121,25 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		MaxTokens:     a.cfg.LLM.MaxResponseTokens,
 		ContextWindow: a.cfg.LLM.MaxContextTokens,
 		OnToken:       onToken,
-	})
+	}
+
+	// Wire runtime scanning if configured
+	if a.cfg.SecCheck.Enabled && a.cfg.SecCheck.RuntimeScan {
+		deps.Quarantine = a.quarantine
+		deps.Scanner = a.scanner
+		deps.RuntimeScan = true
+		deps.BlockOnFail = a.cfg.SecCheck.QuarantineOnFail
+		deps.NotifyOnBlock = a.cfg.SecCheck.NotifyOnQuarantine
+		deps.Paranoia = a.cfg.SecCheck.Paranoia
+		if d, err := time.ParseDuration(a.cfg.SecCheck.RescanInterval); err == nil {
+			deps.RescanInterval = d
+		}
+		if d, err := time.ParseDuration(a.cfg.SecCheck.AsyncScanTimeout); err == nil {
+			deps.ScanTimeout = d
+		}
+	}
+
+	pipeline := agentcore.FamilyPipeline(deps)
 
 	err := pipeline.Run(ctx, turn)
 

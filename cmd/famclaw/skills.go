@@ -181,6 +181,7 @@ func findConfigFile() string {
 			return p
 		}
 	}
+	fmt.Fprintf(os.Stderr, "note: no config.yaml found, using defaults (seccheck disabled)\n")
 	return ""
 }
 
