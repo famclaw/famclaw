@@ -36,6 +36,18 @@ echo "→ Downloading $BINARY…"
 curl -fsSL "$RELEASE_BASE/$BINARY" -o "$HOME/bin/famclaw"
 chmod +x "$HOME/bin/famclaw"
 
+# Try to install HoneyBadger
+HB_INSTALLED=0
+HB_URL="https://github.com/famclaw/honeybadger/releases/latest/download/honeybadger-android-arm64"
+echo "→ Downloading HoneyBadger…"
+if curl -fsSL "$HB_URL" -o "$HOME/bin/honeybadger" 2>/dev/null; then
+  chmod +x "$HOME/bin/honeybadger"
+  HB_INSTALLED=1
+  echo "  HoneyBadger installed ✅"
+else
+  echo "  HoneyBadger not available — skill scanning disabled"
+fi
+
 # Generate minimal config — LLM endpoint left empty for web UI setup
 SECRET=$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24)
 
