@@ -163,6 +163,7 @@ type ToolInfo struct {
 	Description string
 	InputSchema map[string]any
 	ServerName  string
+	ScanTarget  string // URL or binary path for security scanning
 }
 
 // ListToolInfos returns tool metadata for all available tools.
@@ -186,11 +187,17 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 					schema["required"] = tool.InputSchema.Required
 				}
 			}
+			// ScanTarget: use HTTP/SSE URL if available, else command path
+			scanTarget := mc.cfg.URL
+			if scanTarget == "" {
+				scanTarget = mc.cfg.Command
+			}
 			infos = append(infos, ToolInfo{
 				Name:        tool.Name,
 				Description: tool.Description,
 				InputSchema: schema,
 				ServerName:  serverName,
+				ScanTarget:  scanTarget,
 			})
 		}
 	}

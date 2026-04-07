@@ -9,6 +9,7 @@ type Tool struct {
 	InputSchema map[string]any // JSON Schema for parameters
 	Source      string         // "mcp", "builtin", "plugin"
 	ServerName  string         // which MCP server owns this tool (empty for builtins)
+	ScanTarget  string         // URL or path for security scanning (empty = skip)
 	Roles       []string       // allowed roles (empty = all roles)
 }
 

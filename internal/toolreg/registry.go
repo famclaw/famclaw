@@ -15,6 +15,7 @@ type Tool struct {
 	InputSchema map[string]any `json:"input_schema"` // JSON Schema for parameters
 	Source      string         `json:"source"`        // "mcp", "builtin", "plugin"
 	ServerName  string         `json:"server_name"`   // which MCP server owns this (empty for builtins)
+	ScanTarget  string         `json:"scan_target"`   // URL or path for security scanning (empty = skip)
 	Roles       []string       `json:"roles"`         // allowed roles (empty = all)
 }
 
