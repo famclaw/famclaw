@@ -6,7 +6,9 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /famclaw ./cmd/famclaw/
 
 FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /famclaw /famclaw
 COPY --from=builder /src/policies /policies
+USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/famclaw"]
