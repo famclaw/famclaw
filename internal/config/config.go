@@ -284,9 +284,9 @@ func applyDefaults(c *Config) {
 	if c.Storage.DBPath == "" {
 		c.Storage.DBPath = "./data/famclaw.db"
 	}
-	// SecCheck defaults
-	if !c.SecCheck.Enabled && c.SecCheck.AutoSecCheck {
-		c.SecCheck.Enabled = true // auto-enable if auto_seccheck is set
+	// SecCheck defaults — auto-enable master switch if any scanning feature is on
+	if !c.SecCheck.Enabled && (c.SecCheck.AutoSecCheck || c.SecCheck.RuntimeScan) {
+		c.SecCheck.Enabled = true
 	}
 	if c.SecCheck.Paranoia == "" {
 		c.SecCheck.Paranoia = "family"

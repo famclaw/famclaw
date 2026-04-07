@@ -27,6 +27,7 @@ import (
 	"github.com/famclaw/famclaw/internal/mdns"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/inference"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
@@ -149,6 +150,27 @@ func main() {
 	}
 	defer mcpPool.StopAll()
 
+	// HoneyBadger client + quarantine for runtime scanning
+	var hbScanner skillbridge.Scanner
+	var quarantine *skillbridge.Quarantine
+	if cfg.SecCheck.Enabled && cfg.SecCheck.RuntimeScan {
+		hb := honeybadger.New()
+		if hb.Available() {
+			hbScanner = hb
+			quarantine = skillbridge.NewQuarantine(db)
+			if err := quarantine.Load(context.Background()); err != nil {
+				log.Printf("⚠️  Failed to load quarantine: %v", err)
+			} else {
+				log.Printf("Security: quarantine loaded (%d blocked)", quarantine.Len())
+			}
+			log.Printf("Security: runtime scanning enabled (honeybadger available) ✅")
+		} else {
+			log.Printf("⚠️  Runtime scanning enabled in config but honeybadger binary not in PATH")
+			log.Printf("   Install: go install github.com/famclaw/honeybadger/cmd/honeybadger@latest")
+			log.Printf("   Or disable: seccheck.runtime_scan: false in config.yaml")
+		}
+	}
+
 	// Skills loaded for prompt injection (independent of MCP)
 	reg := skillbridge.NewRegistry(cfg.Skills.Dir, nil, skillbridge.InstallConfig{})
 	var enabledSkills []*skillbridge.Skill
@@ -171,6 +193,8 @@ func main() {
 		a := agent.NewAgent(user, cfg, client, evaluator, clf, db)
 		a.SetPool(mcpPool)
 		a.SetSkills(enabledSkills)
+		a.SetQuarantine(quarantine)
+		a.SetScanner(hbScanner)
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {
 			return "", err
