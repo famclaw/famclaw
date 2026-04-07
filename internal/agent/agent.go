@@ -133,9 +133,13 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		deps.Paranoia = a.cfg.SecCheck.Paranoia
 		if d, err := time.ParseDuration(a.cfg.SecCheck.RescanInterval); err == nil {
 			deps.RescanInterval = d
+		} else if a.cfg.SecCheck.RescanInterval != "" {
+			log.Printf("[agent] invalid seccheck.rescan_interval %q: %v (using default 7d)", a.cfg.SecCheck.RescanInterval, err)
 		}
 		if d, err := time.ParseDuration(a.cfg.SecCheck.AsyncScanTimeout); err == nil {
 			deps.ScanTimeout = d
+		} else if a.cfg.SecCheck.AsyncScanTimeout != "" {
+			log.Printf("[agent] invalid seccheck.async_scan_timeout %q: %v (using default 60s)", a.cfg.SecCheck.AsyncScanTimeout, err)
 		}
 	}
 
