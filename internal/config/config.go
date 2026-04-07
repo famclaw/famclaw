@@ -131,9 +131,25 @@ type StorageConfig struct {
 }
 
 type SecCheckConfig struct {
-	Sandbox string `yaml:"sandbox"`
-	Timeout string `yaml:"timeout"`
-	OSVAPI  string `yaml:"osv_api"`
+	// Master switch — when false, no scanning anywhere.
+	Enabled bool `yaml:"enabled"`
+
+	// Install-time scanning
+	AutoSecCheck bool   `yaml:"auto_seccheck"` // scan on `famclaw skill install`
+	BlockOnFail  bool   `yaml:"block_on_fail"` // refuse install on FAIL verdict
+	Paranoia     string `yaml:"paranoia"`      // minimal | family | strict | paranoid
+
+	// Runtime scanning (async quarantine pattern)
+	RuntimeScan        bool   `yaml:"runtime_scan"`         // enable async background scans
+	RescanInterval     string `yaml:"rescan_interval"`      // e.g. "168h" for weekly
+	AsyncScanTimeout   string `yaml:"async_scan_timeout"`   // per-scan timeout, e.g. "60s"
+	QuarantineOnFail   bool   `yaml:"quarantine_on_fail"`   // block tools after FAIL
+	NotifyOnQuarantine bool   `yaml:"notify_on_quarantine"` // send parent notification
+
+	// Legacy fields (kept for config compat)
+	Sandbox string `yaml:"sandbox,omitempty"`
+	Timeout string `yaml:"timeout,omitempty"`
+	OSVAPI  string `yaml:"osv_api,omitempty"`
 }
 
 type NotificationsConfig struct {
@@ -268,14 +284,18 @@ func applyDefaults(c *Config) {
 	if c.Storage.DBPath == "" {
 		c.Storage.DBPath = "./data/famclaw.db"
 	}
-	if c.SecCheck.Sandbox == "" {
-		c.SecCheck.Sandbox = "auto"
+	// SecCheck defaults
+	if !c.SecCheck.Enabled && c.SecCheck.AutoSecCheck {
+		c.SecCheck.Enabled = true // auto-enable if auto_seccheck is set
 	}
-	if c.SecCheck.Timeout == "" {
-		c.SecCheck.Timeout = "5m"
+	if c.SecCheck.Paranoia == "" {
+		c.SecCheck.Paranoia = "family"
 	}
-	if c.SecCheck.OSVAPI == "" {
-		c.SecCheck.OSVAPI = "https://api.osv.dev/v1"
+	if c.SecCheck.RescanInterval == "" {
+		c.SecCheck.RescanInterval = "168h"
+	}
+	if c.SecCheck.AsyncScanTimeout == "" {
+		c.SecCheck.AsyncScanTimeout = "60s"
 	}
 	if c.Notifications.Email.SMTPPort == 0 {
 		c.Notifications.Email.SMTPPort = 587

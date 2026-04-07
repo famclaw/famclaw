@@ -16,6 +16,7 @@ func (r *Registry) LoadFromMCPPool(pool *mcp.Pool) int {
 			InputSchema: info.InputSchema,
 			Source:      "mcp",
 			ServerName:  info.ServerName,
+			ScanTarget:  info.ScanTarget,
 		})
 		count++
 	}

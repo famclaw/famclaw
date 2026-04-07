@@ -152,8 +152,75 @@ func (d *DB) migrate() error {
 		installed       BOOLEAN DEFAULT FALSE,
 		notes           TEXT
 	);
+
+	CREATE TABLE IF NOT EXISTS quarantine (
+		scan_target  TEXT PRIMARY KEY,
+		tool_name    TEXT NOT NULL,
+		verdict      TEXT NOT NULL,
+		reasoning    TEXT,
+		key_finding  TEXT,
+		blocked_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
 	`)
 	return err
+}
+
+// ── Quarantine ───────────────────────────────────────────────────────────────
+
+// QuarantineEntry represents a blocked tool.
+type QuarantineEntry struct {
+	ScanTarget string
+	ToolName   string
+	Verdict    string
+	Reasoning  string
+	KeyFinding string
+	BlockedAt  time.Time
+}
+
+// ListQuarantine returns all quarantined entries.
+func (d *DB) ListQuarantine() ([]QuarantineEntry, error) {
+	rows, err := d.sql.Query(`SELECT scan_target, tool_name, verdict, reasoning, key_finding, blocked_at FROM quarantine`)
+	if err != nil {
+		return nil, fmt.Errorf("listing quarantine: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []QuarantineEntry
+	for rows.Next() {
+		var e QuarantineEntry
+		if err := rows.Scan(&e.ScanTarget, &e.ToolName, &e.Verdict, &e.Reasoning, &e.KeyFinding, &e.BlockedAt); err != nil {
+			return nil, fmt.Errorf("scanning quarantine row: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// UpsertQuarantine adds or updates a quarantine entry.
+func (d *DB) UpsertQuarantine(e QuarantineEntry) error {
+	_, err := d.sql.Exec(`
+		INSERT INTO quarantine (scan_target, tool_name, verdict, reasoning, key_finding, blocked_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(scan_target) DO UPDATE SET
+			tool_name = excluded.tool_name,
+			verdict = excluded.verdict,
+			reasoning = excluded.reasoning,
+			key_finding = excluded.key_finding,
+			blocked_at = excluded.blocked_at`,
+		e.ScanTarget, e.ToolName, e.Verdict, e.Reasoning, e.KeyFinding, e.BlockedAt)
+	if err != nil {
+		return fmt.Errorf("upserting quarantine: %w", err)
+	}
+	return nil
+}
+
+// DeleteQuarantine removes a quarantine entry.
+func (d *DB) DeleteQuarantine(scanTarget string) error {
+	_, err := d.sql.Exec(`DELETE FROM quarantine WHERE scan_target = ?`, scanTarget)
+	if err != nil {
+		return fmt.Errorf("deleting quarantine: %w", err)
+	}
+	return nil
 }
 
 // ── Approvals ─────────────────────────────────────────────────────────────────
