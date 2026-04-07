@@ -1,41 +1,57 @@
 package skillbridge
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/skilladapt"
 )
 
+// Scanner is the minimal interface Registry needs from HoneyBadger.
+type Scanner interface {
+	Available() bool
+	Scan(ctx context.Context, target string, opts honeybadger.ScanOptions) (*honeybadger.ScanResult, error)
+}
+
+// InstallConfig controls security scanning during skill installation.
+type InstallConfig struct {
+	Enabled      bool   // seccheck.enabled master switch
+	AutoSecCheck bool   // seccheck.auto_seccheck
+	BlockOnFail  bool   // seccheck.block_on_fail
+	Paranoia     string // seccheck.paranoia
+}
+
 // Registry manages installed skills on disk.
 type Registry struct {
-	dir string // skills directory (e.g. ~/.famclaw/skills/)
+	dir     string
+	scanner Scanner       // may be nil if scanning is disabled
+	cfg     InstallConfig
 }
 
 // NewRegistry creates a Registry rooted at the given directory.
-func NewRegistry(dir string) *Registry {
-	return &Registry{dir: dir}
+// scanner may be nil if seccheck is disabled.
+func NewRegistry(dir string, scanner Scanner, cfg InstallConfig) *Registry {
+	return &Registry{dir: dir, scanner: scanner, cfg: cfg}
 }
 
-// Install downloads and installs a skill from a repo URL.
-// If autoSecCheck is true, seccheck must pass before installation.
-// For now, Install works with local paths for testing.
-func (r *Registry) Install(nameOrPath string) (*Skill, error) {
+// Install parses, scans (if configured), and installs a skill.
+func (r *Registry) Install(ctx context.Context, nameOrPath string) (*Skill, error) {
 	// Ensure skills dir exists
 	if err := os.MkdirAll(r.dir, 0755); err != nil {
 		return nil, fmt.Errorf("creating skills dir: %w", err)
 	}
 
-	// Try multi-format detection first (FamClaw, OpenClaw, Claude Code)
+	// Parse the skill first to get name/metadata
 	var skill *Skill
 	adaptSkill, adaptErr := skilladapt.DetectAndParse(nameOrPath)
 	if adaptErr == nil {
 		skill = adaptSkillToSkill(adaptSkill)
 	} else {
-		// Fallback to direct SKILL.md parsing
 		skillMDPath := nameOrPath
 		if !strings.HasSuffix(nameOrPath, "SKILL.md") {
 			skillMDPath = filepath.Join(nameOrPath, "SKILL.md")
@@ -44,6 +60,35 @@ func (r *Registry) Install(nameOrPath string) (*Skill, error) {
 		skill, parseErr = ParseSKILLMD(skillMDPath)
 		if parseErr != nil {
 			return nil, fmt.Errorf("parsing skill: %w (multi-format: %w)", parseErr, adaptErr)
+		}
+	}
+
+	// Security scan before writing anything to disk
+	if r.cfg.Enabled && r.cfg.AutoSecCheck {
+		if r.scanner == nil || !r.scanner.Available() {
+			return nil, fmt.Errorf(
+				"honeybadger is required for skill installation but is not available\n" +
+					"install: go install github.com/famclaw/honeybadger/cmd/honeybadger@latest\n" +
+					"or disable in config.yaml: seccheck.auto_seccheck: false (not recommended)")
+		}
+
+		result, err := r.scanner.Scan(ctx, nameOrPath, honeybadger.ScanOptions{
+			Paranoia: r.cfg.Paranoia,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("security scan failed: %w", err)
+		}
+
+		switch result.Verdict {
+		case "FAIL":
+			if r.cfg.BlockOnFail {
+				return nil, fmt.Errorf(
+					"skill rejected by security scan: %s\nreasoning: %s\nkey finding: %s",
+					result.Verdict, result.Reasoning, result.KeyFinding)
+			}
+			log.Printf("[skillbridge] WARNING: %s FAILED scan but block_on_fail=false, installing anyway", nameOrPath)
+		case "WARN":
+			log.Printf("[skillbridge] WARNING: %s has security warnings: %s", nameOrPath, result.Reasoning)
 		}
 	}
 
@@ -87,13 +132,11 @@ func (r *Registry) List() ([]*Skill, error) {
 			continue
 		}
 		dir := filepath.Join(r.dir, e.Name())
-		// Try multi-format detection first
 		adaptSkill, err := skilladapt.DetectAndParse(dir)
 		if err == nil {
 			skills = append(skills, adaptSkillToSkill(adaptSkill))
 			continue
 		}
-		// Fallback to SKILL.md
 		skillMD := filepath.Join(dir, "SKILL.md")
 		skill, err := ParseSKILLMD(skillMD)
 		if err != nil {

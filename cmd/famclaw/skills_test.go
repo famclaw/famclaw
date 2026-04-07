@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,12 +26,15 @@ func setupSkillDir(t *testing.T) (registryDir string, srcDir string) {
 	return
 }
 
+func noScanReg(dir string) *skillbridge.Registry {
+	return skillbridge.NewRegistry(dir, nil, skillbridge.InstallConfig{})
+}
+
 func TestSkillInstallAndList(t *testing.T) {
 	regDir, srcDir := setupSkillDir(t)
-	reg := skillbridge.NewRegistry(regDir)
+	reg := noScanReg(regDir)
 
-	// Install
-	skill, err := reg.Install(srcDir)
+	skill, err := reg.Install(context.Background(), srcDir)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -38,7 +42,6 @@ func TestSkillInstallAndList(t *testing.T) {
 		t.Errorf("name = %q, want test-skill", skill.Name)
 	}
 
-	// List
 	skills, err := reg.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -52,7 +55,7 @@ func TestSkillInstallAndList(t *testing.T) {
 }
 
 func TestSkillListEmpty(t *testing.T) {
-	reg := skillbridge.NewRegistry(t.TempDir())
+	reg := noScanReg(t.TempDir())
 	skills, err := reg.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -64,9 +67,9 @@ func TestSkillListEmpty(t *testing.T) {
 
 func TestSkillInstallAndRemove(t *testing.T) {
 	regDir, srcDir := setupSkillDir(t)
-	reg := skillbridge.NewRegistry(regDir)
+	reg := noScanReg(regDir)
 
-	reg.Install(srcDir)
+	reg.Install(context.Background(), srcDir)
 	if err := reg.Remove("test-skill"); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
@@ -79,9 +82,9 @@ func TestSkillInstallAndRemove(t *testing.T) {
 
 func TestSkillEnableDisable(t *testing.T) {
 	regDir, srcDir := setupSkillDir(t)
-	reg := skillbridge.NewRegistry(regDir)
+	reg := noScanReg(regDir)
 
-	reg.Install(srcDir)
+	reg.Install(context.Background(), srcDir)
 
 	if !reg.IsEnabled("test-skill") {
 		t.Error("should be enabled by default")
@@ -104,7 +107,6 @@ func TestDefaultSkillsDir(t *testing.T) {
 		t.Error("defaultSkillsDir should not be empty")
 	}
 	if !filepath.IsAbs(dir) {
-		// May be relative if UserHomeDir fails
 		return
 	}
 	if filepath.Base(dir) != "skills" {
