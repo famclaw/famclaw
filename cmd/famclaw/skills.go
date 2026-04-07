@@ -1,13 +1,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"text/tabwriter"
 
+	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 )
+
+// noScanRegistry creates a registry with scanning disabled (for list/remove/enable/disable).
+func noScanRegistry(dir string) *skillbridge.Registry {
+	return skillbridge.NewRegistry(dir, nil, skillbridge.InstallConfig{})
+}
 
 func runSkillCommand(args []string) {
 	if len(args) == 0 {
@@ -67,8 +75,27 @@ func runSkillCommand(args []string) {
 }
 
 func skillInstall(dir, nameOrPath string) {
-	reg := skillbridge.NewRegistry(dir)
-	skill, err := reg.Install(nameOrPath)
+	// Try to load config for seccheck settings
+	cfgPath := findConfigFile()
+	installCfg := skillbridge.InstallConfig{}
+	if cfgPath != "" {
+		if cfg, err := config.Load(cfgPath); err == nil {
+			installCfg = skillbridge.InstallConfig{
+				Enabled:      cfg.SecCheck.Enabled,
+				AutoSecCheck: cfg.SecCheck.AutoSecCheck,
+				BlockOnFail:  cfg.SecCheck.BlockOnFail,
+				Paranoia:     cfg.SecCheck.Paranoia,
+			}
+		}
+	}
+
+	var scanner skillbridge.Scanner
+	if installCfg.Enabled && installCfg.AutoSecCheck {
+		scanner = honeybadger.New()
+	}
+
+	reg := skillbridge.NewRegistry(dir, scanner, installCfg)
+	skill, err := reg.Install(context.Background(), nameOrPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "install failed: %v\n", err)
 		os.Exit(1)
@@ -80,7 +107,7 @@ func skillInstall(dir, nameOrPath string) {
 }
 
 func skillList(dir string) {
-	reg := skillbridge.NewRegistry(dir)
+	reg := noScanRegistry(dir)
 	skills, err := reg.List()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list failed: %v\n", err)
@@ -108,7 +135,7 @@ func skillList(dir string) {
 }
 
 func skillRemove(dir, name string) {
-	reg := skillbridge.NewRegistry(dir)
+	reg := noScanRegistry(dir)
 	if err := reg.Remove(name); err != nil {
 		fmt.Fprintf(os.Stderr, "remove failed: %v\n", err)
 		os.Exit(1)
@@ -117,7 +144,7 @@ func skillRemove(dir, name string) {
 }
 
 func skillEnable(dir, name string) {
-	reg := skillbridge.NewRegistry(dir)
+	reg := noScanRegistry(dir)
 	if err := reg.Enable(name); err != nil {
 		fmt.Fprintf(os.Stderr, "enable failed: %v\n", err)
 		os.Exit(1)
@@ -126,7 +153,7 @@ func skillEnable(dir, name string) {
 }
 
 func skillDisable(dir, name string) {
-	reg := skillbridge.NewRegistry(dir)
+	reg := noScanRegistry(dir)
 	if err := reg.Disable(name); err != nil {
 		fmt.Fprintf(os.Stderr, "disable failed: %v\n", err)
 		os.Exit(1)
@@ -140,6 +167,21 @@ func defaultSkillsDir() string {
 		return "./skills"
 	}
 	return filepath.Join(home, ".famclaw", "skills")
+}
+
+// findConfigFile searches for config.yaml in standard locations.
+func findConfigFile() string {
+	candidates := []string{
+		"config.yaml",
+		filepath.Join(os.Getenv("HOME"), ".famclaw", "config.yaml"),
+		"/opt/famclaw/config.yaml",
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 func printSkillUsage() {

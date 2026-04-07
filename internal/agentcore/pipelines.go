@@ -1,11 +1,14 @@
 package agentcore
 
 import (
+	"time"
+
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -18,36 +21,40 @@ type FamilyPipelineDeps struct {
 	ClientFactory func(turn *Turn) *llm.Client
 	Temperature   float64
 	MaxTokens     int
-	ContextWindow int // 0 = use default (4096)
+	ContextWindow int
 	OnToken       func(string)
 
-	// Security scanning (optional — skipped if nil or unavailable)
-	HoneybadgerClient *honeybadger.Client
-	SecurityEnabled   bool
-	RescanDays        int
-	LastScanFunc      func(skillName string) (interface{ Before(interface{}) bool }, bool)
+	// Security scanning (async quarantine pattern)
+	Quarantine     *skillbridge.Quarantine
+	Scanner        skillbridge.Scanner
+	HBClient       *honeybadger.Client
+	RuntimeScan    bool
+	RescanInterval time.Duration
+	ScanTimeout    time.Duration
+	Paranoia       string
+	BlockOnFail    bool
+	NotifyOnBlock  bool
+	NotifyFunc     func(title, body string)
+	LastScanFunc   func(scanTarget string) (time.Time, bool)
+	SaveScanFunc   func(scanTarget string, result *honeybadger.ScanResult)
 }
 
 // FamilyPipeline assembles the full family chat pipeline:
-// classify → policy_input → compress → [security_scan] → llm_call → [tool_loop] → policy_output
+// classify → policy_input → compress → quarantine_filter → llm_call → [tool_loop] → policy_output → async_scan
 func FamilyPipeline(deps FamilyPipelineDeps) Pipeline {
 	stages := Pipeline{
 		NewStageClassify(deps.Classifier),
 		NewStagePolicyInput(deps.Evaluator, deps.DB),
 	}
 
-	// Context compression — before LLM call to fit within window
+	// Context compression before LLM call
 	if deps.ContextWindow > 0 {
 		stages = stages.Append(NewStageCompress(deps.ContextWindow))
 	}
 
-	// Security scan — before tool execution
-	if deps.SecurityEnabled && deps.HoneybadgerClient != nil {
-		stages = stages.Append(NewStageSecurityScan(SecurityScanDeps{
-			Client:  deps.HoneybadgerClient,
-			Enabled: true,
-			RescanDays: deps.RescanDays,
-		}))
+	// Quarantine filter — remove blocked tools before LLM sees them (microsecond map lookup)
+	if deps.Quarantine != nil {
+		stages = stages.Append(NewStageQuarantineFilter(deps.Quarantine))
 	}
 
 	// LLM call
@@ -58,7 +65,7 @@ func FamilyPipeline(deps FamilyPipelineDeps) Pipeline {
 		OnToken:       deps.OnToken,
 	}))
 
-	// Tool loop only if MCP pool is available
+	// Tool loop
 	if deps.Pool != nil {
 		stages = stages.Append(NewStageToolLoop(ToolLoopDeps{
 			Pool:          deps.Pool,
@@ -68,8 +75,25 @@ func FamilyPipeline(deps FamilyPipelineDeps) Pipeline {
 		}))
 	}
 
-	// Output policy — age-aware filtering (replaces old hardcoded StageOutputFilter)
+	// Output policy
 	stages = stages.Append(NewStagePolicyOutput())
+
+	// Async security scan — fires goroutines, returns immediately, never blocks the turn
+	if deps.RuntimeScan && deps.Scanner != nil {
+		stages = stages.Append(NewStageAsyncScan(AsyncScanDeps{
+			Scanner:        deps.Scanner,
+			Quarantine:     deps.Quarantine,
+			LastScanFunc:   deps.LastScanFunc,
+			SaveScanFunc:   deps.SaveScanFunc,
+			RescanInterval: deps.RescanInterval,
+			ScanTimeout:    deps.ScanTimeout,
+			Paranoia:       deps.Paranoia,
+			Enabled:        true,
+			BlockOnFail:    deps.BlockOnFail,
+			NotifyOnBlock:  deps.NotifyOnBlock,
+			NotifyFunc:     deps.NotifyFunc,
+		}))
+	}
 
 	return stages
 }

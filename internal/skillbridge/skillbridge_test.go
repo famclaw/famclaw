@@ -1,6 +1,7 @@
 package skillbridge
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,14 +211,14 @@ func TestLoadForPromptMultiple(t *testing.T) {
 
 func TestRegistryInstallListRemove(t *testing.T) {
 	registryDir := t.TempDir()
-	reg := NewRegistry(registryDir)
+	reg := NewRegistry(registryDir, nil, InstallConfig{})
 
 	// Create a skill source
 	srcDir := t.TempDir()
 	os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte(testSKILLMD), 0644)
 
 	// Install
-	skill, err := reg.Install(srcDir)
+	skill, err := reg.Install(context.Background(), srcDir)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestRegistryInstallListRemove(t *testing.T) {
 }
 
 func TestRegistryRemoveNonexistent(t *testing.T) {
-	reg := NewRegistry(t.TempDir())
+	reg := NewRegistry(t.TempDir(), nil, InstallConfig{})
 	err := reg.Remove("nonexistent")
 	if err == nil {
 		t.Error("expected error removing nonexistent skill")
@@ -257,12 +258,12 @@ func TestRegistryRemoveNonexistent(t *testing.T) {
 
 func TestRegistryEnableDisable(t *testing.T) {
 	registryDir := t.TempDir()
-	reg := NewRegistry(registryDir)
+	reg := NewRegistry(registryDir, nil, InstallConfig{})
 
 	// Create a skill source and install
 	srcDir := t.TempDir()
 	os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte(minimalSKILLMD), 0644)
-	reg.Install(srcDir)
+	reg.Install(context.Background(), srcDir)
 
 	// Initially enabled
 	if !reg.IsEnabled("minimal") {
@@ -287,7 +288,7 @@ func TestRegistryEnableDisable(t *testing.T) {
 }
 
 func TestRegistryDisableNonexistent(t *testing.T) {
-	reg := NewRegistry(t.TempDir())
+	reg := NewRegistry(t.TempDir(), nil, InstallConfig{})
 	err := reg.Disable("ghost")
 	if err == nil {
 		t.Error("expected error disabling nonexistent skill")
@@ -295,7 +296,7 @@ func TestRegistryDisableNonexistent(t *testing.T) {
 }
 
 func TestRegistryListEmptyDir(t *testing.T) {
-	reg := NewRegistry(t.TempDir())
+	reg := NewRegistry(t.TempDir(), nil, InstallConfig{})
 	skills, err := reg.List()
 	if err != nil {
 		t.Fatalf("List on empty dir: %v", err)
@@ -306,7 +307,7 @@ func TestRegistryListEmptyDir(t *testing.T) {
 }
 
 func TestRegistryListNonexistentDir(t *testing.T) {
-	reg := NewRegistry("/nonexistent/path")
+	reg := NewRegistry("/nonexistent/path", nil, InstallConfig{})
 	skills, err := reg.List()
 	if err != nil {
 		t.Fatalf("List on nonexistent dir should not error: %v", err)

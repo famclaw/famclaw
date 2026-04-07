@@ -150,7 +150,7 @@ func main() {
 	defer mcpPool.StopAll()
 
 	// Skills loaded for prompt injection (independent of MCP)
-	reg := skillbridge.NewRegistry(cfg.Skills.Dir)
+	reg := skillbridge.NewRegistry(cfg.Skills.Dir, nil, skillbridge.InstallConfig{})
 	var enabledSkills []*skillbridge.Skill
 	if skills, err := reg.List(); err == nil {
 		for _, sk := range skills {
