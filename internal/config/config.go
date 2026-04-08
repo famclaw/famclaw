@@ -75,10 +75,11 @@ func (s ServerConfig) BaseURL() string {
 
 // LLMProfile is a named LLM endpoint configuration.
 type LLMProfile struct {
-	Label   string `yaml:"label"`
-	BaseURL string `yaml:"base_url"`
-	Model   string `yaml:"model"`
-	APIKey  string `yaml:"api_key,omitempty"`
+	Label    string `yaml:"label"`
+	BaseURL  string `yaml:"base_url"`
+	Model    string `yaml:"model"`
+	APIKey   string `yaml:"api_key,omitempty"`
+	AuthType string `yaml:"auth_type,omitempty"` // "api_key" (default) | "oauth"
 }
 
 type LLMConfig struct {
