@@ -43,6 +43,8 @@ type Server struct {
 	notifier   *notify.MultiNotifier
 	skills     []*skillbridge.Skill // injected into agent system prompt
 	pool          *mcp.Pool           // MCP tool pool for agent tool calls
+	oauthStore    *llm.OAuthStore     // OAuth token store for subscription auth
+	oauthFlow     *llm.OAuthFlow      // active OAuth flow (nil when not in progress)
 	staticHandler http.Handler        // embedded static file server
 	upgrader      websocket.Upgrader
 	cfgMu      sync.RWMutex               // guards cfg during settings reads/writes
@@ -57,16 +59,17 @@ type wsMessage struct {
 }
 
 func NewServer(cfg *config.Config, cfgPath string, db *store.DB, evaluator *policy.Evaluator,
-	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, pool *mcp.Pool) *Server {
+	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, pool *mcp.Pool, oauthStore *llm.OAuthStore) *Server {
 	return &Server{
-		cfg:       cfg,
-		cfgPath:   cfgPath,
-		db:        db,
-		evaluator: evaluator,
-		clf:       clf,
-		notifier:  notifier,
-		pool:      pool,
-		skills:    skills,
+		cfg:        cfg,
+		cfgPath:    cfgPath,
+		db:         db,
+		evaluator:  evaluator,
+		clf:        clf,
+		notifier:   notifier,
+		pool:       pool,
+		oauthStore: oauthStore,
+		skills:     skills,
 		clients:   make(map[*websocket.Conn]string),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
@@ -101,6 +104,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/setup/detect", s.handleSetupDetect)
 	mux.HandleFunc("/api/settings", s.handleSettings)      // GET/POST config settings
 	mux.HandleFunc("/api/stream", s.handleStream)          // SSE for dashboard live updates
+	mux.HandleFunc("/api/oauth/anthropic/start", s.handleOAuthStart)
+	mux.HandleFunc("/api/oauth/anthropic/callback", s.handleOAuthCallback)
+	mux.HandleFunc("/api/oauth/anthropic/status", s.handleOAuthStatus)
 
 	// ── Parent decision links (from email/SMS) ────────────────────────────────
 	mux.HandleFunc("/decide", s.handleDecideLink)

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -171,6 +172,13 @@ func main() {
 		}
 	}
 
+	// OAuth token store for subscription-based auth (Anthropic Claude)
+	oauthStorePath := filepath.Join(filepath.Dir(*cfgPath), "oauth-tokens.json")
+	oauthStore := llm.NewOAuthStore(oauthStorePath, llm.DefaultTokenURL, llm.DefaultClientID)
+	if oauthStore.HasToken("anthropic") {
+		log.Printf("OAuth: Anthropic token loaded (auto-refresh enabled)")
+	}
+
 	// Skills loaded for prompt injection (independent of MCP)
 	reg := skillbridge.NewRegistry(cfg.Skills.Dir, nil, skillbridge.InstallConfig{})
 	var enabledSkills []*skillbridge.Skill
@@ -188,13 +196,19 @@ func main() {
 
 	// Chat function for gateway router
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
-		baseURL, model, apiKey := cfg.LLMClientFor(user)
-		client := llm.NewClient(baseURL, model, apiKey)
+		ep := cfg.LLMEndpointFor(user)
+		var client *llm.Client
+		if ep.AuthType == "oauth" {
+			client = llm.NewOAuthClient(ep.BaseURL, ep.Model, oauthStore, "anthropic")
+		} else {
+			client = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
+		}
 		a := agent.NewAgent(user, cfg, client, evaluator, clf, db)
 		a.SetPool(mcpPool)
 		a.SetSkills(enabledSkills)
 		a.SetQuarantine(quarantine)
 		a.SetScanner(hbScanner)
+		a.SetOAuthStore(oauthStore)
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {
 			return "", err
@@ -228,7 +242,7 @@ func main() {
 	}
 
 	// Web server
-	srv := web.NewServer(cfg, *cfgPath, db, evaluator, clf, notifier, enabledSkills, mcpPool)
+	srv := web.NewServer(cfg, *cfgPath, db, evaluator, clf, notifier, enabledSkills, mcpPool, oauthStore)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),

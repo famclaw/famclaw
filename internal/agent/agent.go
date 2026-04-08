@@ -43,6 +43,7 @@ type Agent struct {
 	skills     []*skillbridge.Skill
 	quarantine *skillbridge.Quarantine
 	scanner    skillbridge.Scanner
+	oauthStore *llm.OAuthStore
 	convID     string
 }
 
@@ -57,6 +58,9 @@ func (a *Agent) SetQuarantine(q *skillbridge.Quarantine) { a.quarantine = q }
 
 // SetScanner attaches the security scanner for async runtime scanning.
 func (a *Agent) SetScanner(s skillbridge.Scanner) { a.scanner = s }
+
+// SetOAuthStore attaches the OAuth token store for subscription-based auth.
+func (a *Agent) SetOAuthStore(s *llm.OAuthStore) { a.oauthStore = s }
 
 // NewAgent creates an Agent for the given user.
 func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client,
@@ -101,13 +105,16 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		})
 	}
 
-	// Resolve LLM profile
+	// Resolve LLM profile — supports both API key and OAuth auth
 	clientFactory := func(t *agentcore.Turn) *llm.Client {
-		baseURL, model, apiKey := a.cfg.LLMClientFor(t.User)
-		if baseURL == "" || model == "" {
+		ep := a.cfg.LLMEndpointFor(t.User)
+		if ep.BaseURL == "" || ep.Model == "" {
 			return nil
 		}
-		return llm.NewClient(baseURL, model, apiKey)
+		if ep.AuthType == "oauth" && a.oauthStore != nil {
+			return llm.NewOAuthClient(ep.BaseURL, ep.Model, a.oauthStore, "anthropic")
+		}
+		return llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 	}
 
 	// Assemble and run the pipeline
@@ -191,6 +198,12 @@ func (a *Agent) buildMessages(history []*store.Message, currentMessage string) [
 		if skillPrompt != "" {
 			systemPrompt += "\n\n" + skillPrompt
 		}
+	}
+
+	// Anthropic OAuth requires this prefix in the system prompt
+	ep := a.cfg.LLMEndpointFor(a.user)
+	if ep.AuthType == "oauth" {
+		systemPrompt = llm.ClaudeCodeSystemPrefix + "\n\n" + systemPrompt
 	}
 
 	msgs = append(msgs, llm.Message{Role: "system", Content: systemPrompt})
