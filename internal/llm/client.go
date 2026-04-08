@@ -49,13 +49,16 @@ type ToolDefFunc struct {
 
 // Client talks to an OpenAI-compatible LLM server.
 type Client struct {
-	baseURL string
-	model   string
-	apiKey  string
-	http    *http.Client
+	baseURL    string
+	model      string
+	apiKey     string
+	oauthStore *OAuthStore // nil = use apiKey
+	oauthName  string      // provider name for OAuth token lookup
+	betaHeader string      // anthropic-beta header (set for OAuth)
+	http       *http.Client
 }
 
-// NewClient creates a new LLM client.
+// NewClient creates a new LLM client with API key auth.
 // baseURL should be the API base (e.g. "http://localhost:11434" for Ollama,
 // "https://api.groq.com/openai/v1" for Groq).
 // When apiKey is non-empty, an Authorization: Bearer header is sent.
@@ -68,6 +71,37 @@ func NewClient(baseURL, model, apiKey string) *Client {
 			Timeout: 5 * time.Minute, // LLMs can be slow on RPi
 		},
 	}
+}
+
+// NewOAuthClient creates an LLM client that authenticates via OAuth tokens.
+func NewOAuthClient(baseURL, model string, store *OAuthStore, providerName string) *Client {
+	return &Client{
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		model:      model,
+		oauthStore: store,
+		oauthName:  providerName,
+		betaHeader: AnthropicBetaHeader,
+		http: &http.Client{
+			Timeout: 5 * time.Minute,
+		},
+	}
+}
+
+// setAuth sets the Authorization and beta headers on a request.
+func (c *Client) setAuth(ctx context.Context, req *http.Request) error {
+	if c.oauthStore != nil {
+		token, err := c.oauthStore.GetAccessToken(ctx, c.oauthName)
+		if err != nil {
+			return fmt.Errorf("oauth auth: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	if c.betaHeader != "" {
+		req.Header.Set("anthropic-beta", c.betaHeader)
+	}
+	return nil
 }
 
 // chatEndpoint returns the chat completions URL.
@@ -137,8 +171,8 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 		return "", fmt.Errorf("creating chat request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if err := c.setAuth(ctx, httpReq); err != nil {
+		return "", err
 	}
 
 	resp, err := c.http.Do(httpReq)
@@ -224,8 +258,8 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 		return nil, fmt.Errorf("creating chat request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if err := c.setAuth(ctx, httpReq); err != nil {
+		return nil, err
 	}
 
 	resp, err := c.http.Do(httpReq)
