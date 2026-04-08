@@ -28,6 +28,11 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.oauthStore == nil {
+		jsonErr(w, fmt.Errorf("OAuth is not configured — oauthStore is nil"), http.StatusServiceUnavailable)
+		return
+	}
+
 	flow := llm.NewOAuthFlow(llm.DefaultOAuthConfig())
 	state := &oauthState{
 		flow: flow,
