@@ -147,11 +147,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[ws] %s connected", userCfg.DisplayName)
 
-	baseURL, model, apiKey := s.cfg.LLMClientFor(userCfg)
-	llmClient := llm.NewClient(baseURL, model, apiKey)
+	ep := s.cfg.LLMEndpointFor(userCfg)
+	var llmClient *llm.Client
+	if ep.AuthType == "oauth" && s.oauthStore != nil {
+		llmClient = llm.NewOAuthClient(ep.BaseURL, ep.Model, s.oauthStore, "anthropic")
+	} else {
+		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
+	}
 	a := agent.NewAgent(userCfg, s.cfg, llmClient, s.evaluator, s.clf, s.db)
 	a.SetSkills(s.skills)
 	a.SetPool(s.pool)
+	a.SetOAuthStore(s.oauthStore)
 
 	for {
 		var msg wsMessage

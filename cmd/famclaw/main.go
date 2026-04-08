@@ -120,16 +120,19 @@ func main() {
 	}
 
 	// LLM health check
-	hcBaseURL, hcModel, hcAPIKey := cfg.LLMClientFor(nil)
-	llmClient := llm.NewClient(hcBaseURL, hcModel, hcAPIKey)
-	ctx5s, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := llmClient.Ping(ctx5s); err != nil {
-		log.Printf("⚠️  LLM not ready: %v", err)
-		log.Printf("   Run: ollama pull %s", cfg.LLM.Model)
-	} else {
-		log.Printf("LLM: %s @ %s ✅", cfg.LLM.Model, cfg.LLM.BaseURL)
+	// LLM health check (skipped for OAuth — tokens checked later)
+	hcEP := cfg.LLMEndpointFor(nil)
+	if hcEP.AuthType != "oauth" {
+		llmClient := llm.NewClient(hcEP.BaseURL, hcEP.Model, hcEP.APIKey)
+		ctx5s, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := llmClient.Ping(ctx5s); err != nil {
+			log.Printf("⚠️  LLM not ready: %v", err)
+			log.Printf("   Run: ollama pull %s", cfg.LLM.Model)
+		} else {
+			log.Printf("LLM: %s @ %s ✅", hcEP.Model, hcEP.BaseURL)
+		}
+		cancel()
 	}
-	cancel()
 
 	// Notifications
 	notifier := notify.NewMultiNotifier(cfg.Notifications, cfg.Server.Secret)
@@ -173,7 +176,8 @@ func main() {
 	}
 
 	// OAuth token store for subscription-based auth (Anthropic Claude)
-	oauthStorePath := filepath.Join(filepath.Dir(*cfgPath), "oauth-tokens.json")
+	home, _ := os.UserHomeDir()
+	oauthStorePath := filepath.Join(home, ".famclaw", "oauth-tokens.json")
 	oauthStore := llm.NewOAuthStore(oauthStorePath, llm.DefaultTokenURL, llm.DefaultClientID)
 	if oauthStore.HasToken("anthropic") {
 		log.Printf("OAuth: Anthropic token loaded (auto-refresh enabled)")
