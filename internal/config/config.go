@@ -356,21 +356,35 @@ func (c *Config) ModelFor(user *UserConfig) string {
 // LLMClientFor resolves the LLM endpoint for a user.
 // Priority: user.LLMProfile → cfg.LLM.Default → legacy cfg.LLM.BaseURL/Model.
 // Logs a warning if a named profile is not found.
+// LLMEndpoint holds resolved LLM connection details for a user.
+type LLMEndpoint struct {
+	BaseURL  string
+	Model    string
+	APIKey   string
+	AuthType string // "api_key" (default) | "oauth"
+}
+
 func (c *Config) LLMClientFor(user *UserConfig) (baseURL, model, apiKey string) {
+	ep := c.LLMEndpointFor(user)
+	return ep.BaseURL, ep.Model, ep.APIKey
+}
+
+// LLMEndpointFor resolves the full LLM endpoint for a user, including AuthType.
+func (c *Config) LLMEndpointFor(user *UserConfig) LLMEndpoint {
 	// Try user's profile override
 	if user != nil && user.LLMProfile != "" {
 		if p, ok := c.LLM.Profiles[user.LLMProfile]; ok {
-			return p.BaseURL, p.Model, p.APIKey
+			return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey, AuthType: p.AuthType}
 		}
 		log.Printf("[config] warning: user %q references unknown LLM profile %q, falling back", user.Name, user.LLMProfile)
 	}
 	// Try default profile
 	if c.LLM.Default != "" {
 		if p, ok := c.LLM.Profiles[c.LLM.Default]; ok {
-			return p.BaseURL, p.Model, p.APIKey
+			return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey, AuthType: p.AuthType}
 		}
 		log.Printf("[config] warning: default LLM profile %q not found, using legacy config", c.LLM.Default)
 	}
 	// Fall back to legacy single-endpoint config
-	return c.LLM.BaseURL, c.ModelFor(user), c.LLM.APIKey
+	return LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.ModelFor(user), APIKey: c.LLM.APIKey}
 }
