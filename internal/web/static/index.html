@@ -1393,6 +1393,11 @@ function wizShowStep(n) {
   }
   document.getElementById('wiz-step-done').classList.remove('active');
   if (n === 2) wizRenderMembers();
+  // Clean up OAuth polling when leaving step 4
+  if (wizState.step === 4 && n !== 4 && wizOAuthPoller) {
+    clearInterval(wizOAuthPoller);
+    wizOAuthPoller = null;
+  }
 }
 
 function wizNext() {
@@ -1844,7 +1849,7 @@ async function wizOAuthPoll() {
         label: 'Claude (OAuth)',
         provider: 'claude-oauth',
         url: 'https://api.anthropic.com/v1',
-        model: 'claude-sonnet-4-5',
+        model: 'claude-sonnet-4-6',
         key: '',
         isDefault: wizState.profiles.length === 0,
         tags: ['chat', 'research', 'creative', 'coding'],
