@@ -543,6 +543,12 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         </div>
         <div id="wiz-hw-badge"></div>
         <div id="wiz-profiles-list"></div>
+        <div class="wiz-card" id="wiz-oauth-card" role="button" tabindex="0" onclick="wizOAuthClicked()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();wizOAuthClicked()}" style="margin-bottom:16px;border:2px solid #a5b4fc;background:linear-gradient(135deg,#eef2ff,#f5f3ff);cursor:pointer">
+          <div style="font-size:24px;margin-bottom:6px">🔐</div>
+          <h3 style="margin:0 0 6px">Sign in with Claude <span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#fef3c7;color:#92400e;font-size:10px;font-weight:700;margin-left:6px;vertical-align:middle">EXPERIMENTAL</span></h3>
+          <p style="margin:0;font-size:13px;color:#64748b">Use your Claude Pro or Max subscription — no API key needed.</p>
+          <div id="wiz-oauth-status" style="display:none;margin-top:10px;font-size:13px;color:#64748b"></div>
+        </div>
         <div class="wiz-add" onclick="wizShowProfileForm()">+ Add AI profile</div>
         <div id="wiz-profile-form" style="display:none">
           <div class="wiz-form">
@@ -649,6 +655,29 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
 </div>
 
 <div id="toast"></div>
+
+<!-- OAuth warning modal -->
+<div id="wiz-oauth-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:1000;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;border-radius:16px;padding:24px;max-width:460px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.2)">
+    <h3 style="font-size:18px;font-weight:800;margin-bottom:12px">Experimental feature</h3>
+    <p style="font-size:14px;color:#475569;line-height:1.5;margin-bottom:10px">
+      This uses Claude Code's OAuth flow, which Anthropic provides for their own CLI.
+      FamClaw uses it because Anthropic has not released official third-party OAuth
+      for subscription access yet.
+    </p>
+    <p style="font-size:14px;color:#475569;line-height:1.5;margin-bottom:10px">
+      It may stop working if Anthropic changes their configuration. When the official
+      flow is released, FamClaw will switch automatically.
+    </p>
+    <p style="font-size:14px;color:#475569;line-height:1.5;margin-bottom:18px">
+      If you prefer a fully supported path, use an API key below instead.
+    </p>
+    <div style="display:flex;gap:10px">
+      <button class="wiz-back" onclick="wizOAuthCancel()">Cancel</button>
+      <button class="wiz-next" onclick="wizOAuthConfirm()">Continue to sign in</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -1364,6 +1393,11 @@ function wizShowStep(n) {
   }
   document.getElementById('wiz-step-done').classList.remove('active');
   if (n === 2) wizRenderMembers();
+  // Clean up OAuth polling when leaving step 4
+  if (wizState.step === 4 && n !== 4 && wizOAuthPoller) {
+    clearInterval(wizOAuthPoller);
+    wizOAuthPoller = null;
+  }
 }
 
 function wizNext() {
@@ -1707,6 +1741,11 @@ function wizSaveProfile() {
 }
 
 function wizEditProfile(index) {
+  // OAuth profiles are not editable via the generic form
+  if (wizState.profiles[index] && wizState.profiles[index].authType === 'oauth') {
+    showToast('OAuth profiles are managed via Sign in with Claude');
+    return;
+  }
   wizEditingProfile = index;
   wizShowProfileForm(wizState.profiles[index]);
 }
@@ -1724,6 +1763,119 @@ function wizRemoveProfile(index) {
     wizState.profiles[0].isDefault = true;
   }
   wizRenderProfiles();
+}
+
+// ── Step 4b: OAuth flow ─────────────────────────────────────────────────────
+
+let wizOAuthPoller = null;
+let wizOAuthPopup = null;
+let wizOAuthStartedAt = 0;
+
+function wizOAuthClicked() {
+  document.getElementById('wiz-oauth-modal').style.display = 'flex';
+}
+
+function wizOAuthCancel() {
+  document.getElementById('wiz-oauth-modal').style.display = 'none';
+}
+
+async function wizOAuthConfirm() {
+  document.getElementById('wiz-oauth-modal').style.display = 'none';
+  const statusEl = document.getElementById('wiz-oauth-status');
+  statusEl.style.display = 'block';
+  statusEl.textContent = 'Opening Claude sign-in window...';
+  statusEl.style.color = '#64748b';
+
+  // Open popup synchronously (before async fetch) to avoid popup blockers
+  wizOAuthPopup = window.open('about:blank', 'claude-oauth', 'width=520,height=720');
+  if (!wizOAuthPopup) {
+    statusEl.textContent = 'Popup blocked. Allow popups for this page and try again.';
+    statusEl.style.color = '#dc2626';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/oauth/anthropic/start', { method: 'POST' });
+    if (res.status === 503) {
+      wizOAuthPopup.close();
+      statusEl.textContent = 'OAuth is not configured on this FamClaw install.';
+      statusEl.style.color = '#dc2626';
+      return;
+    }
+    if (!res.ok) {
+      wizOAuthPopup.close();
+      statusEl.textContent = 'Failed to start sign-in (HTTP ' + res.status + '). Try again.';
+      statusEl.style.color = '#dc2626';
+      return;
+    }
+    const data = await res.json();
+    if (!data.auth_url) {
+      wizOAuthPopup.close();
+      statusEl.textContent = 'Backend did not return an auth URL.';
+      statusEl.style.color = '#dc2626';
+      return;
+    }
+
+    wizOAuthPopup.location.href = data.auth_url;
+
+    statusEl.textContent = 'Waiting for you to sign in with Claude...';
+    wizOAuthStartedAt = Date.now();
+    wizOAuthPoller = setInterval(wizOAuthPoll, 2000);
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = '#dc2626';
+  }
+}
+
+async function wizOAuthPoll() {
+  const statusEl = document.getElementById('wiz-oauth-status');
+  const elapsed = Date.now() - wizOAuthStartedAt;
+
+  if (elapsed > 5 * 60 * 1000) {
+    clearInterval(wizOAuthPoller);
+    wizOAuthPoller = null;
+    if (wizOAuthPopup && !wizOAuthPopup.closed) wizOAuthPopup.close();
+    statusEl.textContent = 'Sign-in timed out. Click the card to try again.';
+    statusEl.style.color = '#dc2626';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/oauth/anthropic/status');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.authenticated) {
+      clearInterval(wizOAuthPoller);
+      wizOAuthPoller = null;
+      if (wizOAuthPopup && !wizOAuthPopup.closed) wizOAuthPopup.close();
+
+      statusEl.textContent = '\u2713 Signed in with Claude. You can continue.';
+      statusEl.style.color = '#059669';
+      document.getElementById('wiz-oauth-card').classList.add('selected');
+
+      // Add OAuth profile to wizard state so wizNext validation passes
+      const existing = wizState.profiles.findIndex(p => p.provider === 'claude-oauth');
+      const oauthProfile = {
+        id: 'claude-oauth',
+        label: 'Claude (OAuth)',
+        provider: 'claude-oauth',
+        url: 'https://api.anthropic.com/v1',
+        model: 'claude-sonnet-4-6',
+        key: '',
+        isDefault: wizState.profiles.length === 0,
+        tags: ['chat', 'research', 'creative', 'coding'],
+        authType: 'oauth',
+      };
+      if (existing >= 0) {
+        wizState.profiles[existing] = oauthProfile;
+      } else {
+        wizState.profiles.push(oauthProfile);
+      }
+      wizRenderProfiles();
+    }
+  } catch (err) {
+    // Transient polling errors — keep polling until timeout
+  }
 }
 
 // ── Step 5: Notifications ────────────────────────────────────────────────────
@@ -1749,6 +1901,7 @@ async function wizFinish() {
   wizState.profiles.forEach(p => {
     const pv = { label: p.label, base_url: p.url, model: p.model };
     if (p.key) pv.api_key = p.key;
+    if (p.authType) pv.auth_type = p.authType;
     profilesMap[p.id] = pv;
   });
 
