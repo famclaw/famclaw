@@ -543,7 +543,7 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         </div>
         <div id="wiz-hw-badge"></div>
         <div id="wiz-profiles-list"></div>
-        <div class="wiz-card" id="wiz-oauth-card" onclick="wizOAuthClicked()" style="margin-bottom:16px;border:2px solid #a5b4fc;background:linear-gradient(135deg,#eef2ff,#f5f3ff);cursor:pointer">
+        <div class="wiz-card" id="wiz-oauth-card" role="button" tabindex="0" onclick="wizOAuthClicked()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();wizOAuthClicked()}" style="margin-bottom:16px;border:2px solid #a5b4fc;background:linear-gradient(135deg,#eef2ff,#f5f3ff);cursor:pointer">
           <div style="font-size:24px;margin-bottom:6px">🔐</div>
           <h3 style="margin:0 0 6px">Sign in with Claude <span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#fef3c7;color:#92400e;font-size:10px;font-weight:700;margin-left:6px;vertical-align:middle">EXPERIMENTAL</span></h3>
           <p style="margin:0;font-size:13px;color:#64748b">Use your Claude Pro or Max subscription — no API key needed.</p>
@@ -1741,6 +1741,11 @@ function wizSaveProfile() {
 }
 
 function wizEditProfile(index) {
+  // OAuth profiles are not editable via the generic form
+  if (wizState.profiles[index] && wizState.profiles[index].authType === 'oauth') {
+    showToast('OAuth profiles are managed via Sign in with Claude');
+    return;
+  }
   wizEditingProfile = index;
   wizShowProfileForm(wizState.profiles[index]);
 }
@@ -1781,31 +1786,37 @@ async function wizOAuthConfirm() {
   statusEl.textContent = 'Opening Claude sign-in window...';
   statusEl.style.color = '#64748b';
 
+  // Open popup synchronously (before async fetch) to avoid popup blockers
+  wizOAuthPopup = window.open('about:blank', 'claude-oauth', 'width=520,height=720');
+  if (!wizOAuthPopup) {
+    statusEl.textContent = 'Popup blocked. Allow popups for this page and try again.';
+    statusEl.style.color = '#dc2626';
+    return;
+  }
+
   try {
     const res = await fetch('/api/oauth/anthropic/start', { method: 'POST' });
     if (res.status === 503) {
+      wizOAuthPopup.close();
       statusEl.textContent = 'OAuth is not configured on this FamClaw install.';
       statusEl.style.color = '#dc2626';
       return;
     }
     if (!res.ok) {
+      wizOAuthPopup.close();
       statusEl.textContent = 'Failed to start sign-in (HTTP ' + res.status + '). Try again.';
       statusEl.style.color = '#dc2626';
       return;
     }
     const data = await res.json();
     if (!data.auth_url) {
+      wizOAuthPopup.close();
       statusEl.textContent = 'Backend did not return an auth URL.';
       statusEl.style.color = '#dc2626';
       return;
     }
 
-    wizOAuthPopup = window.open(data.auth_url, 'claude-oauth', 'width=520,height=720');
-    if (!wizOAuthPopup) {
-      statusEl.textContent = 'Popup blocked. Allow popups for this page and try again.';
-      statusEl.style.color = '#dc2626';
-      return;
-    }
+    wizOAuthPopup.location.href = data.auth_url;
 
     statusEl.textContent = 'Waiting for you to sign in with Claude...';
     wizOAuthStartedAt = Date.now();
