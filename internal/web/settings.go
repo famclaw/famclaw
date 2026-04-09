@@ -22,8 +22,9 @@ type settingsView struct {
 }
 
 type llmProfileView struct {
-	Label   string `json:"label"`
-	BaseURL string `json:"base_url"`
+	Label    string `json:"label"`
+	BaseURL  string `json:"base_url"`
+	AuthType string `json:"auth_type,omitempty"`
 	Model   string `json:"model"`
 	APIKey  string `json:"api_key,omitempty"`
 }
@@ -97,9 +98,10 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 		view.LLM.Profiles = &pm
 		for name, p := range s.cfg.LLM.Profiles {
 			pv := llmProfileView{
-				Label:   p.Label,
-				BaseURL: p.BaseURL,
-				Model:   p.Model,
+				Label:    p.Label,
+				BaseURL:  p.BaseURL,
+				Model:    p.Model,
+				AuthType: p.AuthType,
 			}
 			if p.APIKey != "" {
 				pv.APIKey = "••••••••"
@@ -167,9 +169,10 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		newProfiles := make(map[string]config.LLMProfile, len(profiles))
 		for name, pv := range profiles {
 			p := config.LLMProfile{
-				Label:   pv.Label,
-				BaseURL: pv.BaseURL,
-				Model:   pv.Model,
+				Label:    pv.Label,
+				BaseURL:  pv.BaseURL,
+				Model:    pv.Model,
+				AuthType: pv.AuthType,
 			}
 			// Only update API key if non-masked
 			if pv.APIKey != "" && pv.APIKey != "••••••••" {
