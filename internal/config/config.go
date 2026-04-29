@@ -109,6 +109,10 @@ type UserConfig struct {
 	LLMProfile string `yaml:"llm_profile,omitempty"` // named LLM profile override
 }
 
+// PoliciesConfig overrides the embedded OPA policies. Leave both
+// fields empty (the default) to use the built-in policies compiled
+// into the binary. Set Dir/DataDir to a filesystem path to load
+// custom policies from disk.
 type PoliciesConfig struct {
 	Dir     string `yaml:"dir"`
 	DataDir string `yaml:"data_dir"`
@@ -269,12 +273,6 @@ func applyDefaults(c *Config) {
 	}
 	if c.LLM.Temperature == 0 {
 		c.LLM.Temperature = 0.7
-	}
-	if c.Policies.Dir == "" {
-		c.Policies.Dir = "./policies/family"
-	}
-	if c.Policies.DataDir == "" {
-		c.Policies.DataDir = "./policies/data"
 	}
 	if c.Approval.ExpiryHours == 0 {
 		c.Approval.ExpiryHours = 24

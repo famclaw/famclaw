@@ -6,7 +6,6 @@ package famclaw_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -33,22 +32,6 @@ type testEnv struct {
 func setupIntegration(t *testing.T) *testEnv {
 	t.Helper()
 
-	// Find project root
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("cannot find project root")
-		}
-		dir = parent
-	}
-
 	// Database
 	tmpDir := t.TempDir()
 	db, err := store.Open(filepath.Join(tmpDir, "integration.db"))
@@ -57,11 +40,8 @@ func setupIntegration(t *testing.T) *testEnv {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// Policy evaluator
-	ev, err := policy.NewEvaluator(
-		filepath.Join(dir, "policies", "family"),
-		filepath.Join(dir, "policies", "data"),
-	)
+	// Policy evaluator — uses the policies embedded in the binary.
+	ev, err := policy.NewEvaluator("", "")
 	if err != nil {
 		t.Fatalf("NewEvaluator: %v", err)
 	}

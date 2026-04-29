@@ -110,10 +110,6 @@ $USERS_YAML
 
 $GW_YAML
 
-policies:
-  dir: "./policies/family"
-  data_dir: "./policies/data"
-
 storage:
   db_path: "./data/famclaw.db"
 YAML

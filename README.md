@@ -97,7 +97,7 @@ Each family member's gateway account maps to their profile. Emma's Telegram acco
 
 ## Policy system
 
-Policies are [OPA Rego](https://www.openpolicyagent.org/) files. Edit them, test them with `opa test`, or ask an LLM to write new rules in plain English.
+Policies are [OPA Rego](https://www.openpolicyagent.org/) files. The default rule set lives at `internal/policy/policies/` and is **embedded in the binary** via `go:embed` — a downloaded release runs without any external policy directory. To override with custom rules, set `policies.dir` (and `policies.data_dir`) in `config.yaml` to a directory of your own `.rego` and JSON files. Run `opa test internal/policy/policies/family/ internal/policy/policies/data/ -v` to test the built-in rules locally.
 
 Three tiers per age group:
 

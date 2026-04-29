@@ -88,7 +88,21 @@ func main() {
 	// OPA policy evaluator
 	evaluator, err := policy.NewEvaluator(cfg.Policies.Dir, cfg.Policies.DataDir)
 	must(err, "policy")
-	log.Printf("Policies: %s", cfg.Policies.Dir)
+	switch {
+	case cfg.Policies.Dir != "" && cfg.Policies.DataDir != "":
+		log.Printf("Policies: %s (custom override), data: %s", cfg.Policies.Dir, cfg.Policies.DataDir)
+	case cfg.Policies.Dir != "":
+		log.Printf("Policies: %s (custom override), data: embedded (built-in)", cfg.Policies.Dir)
+	case cfg.Policies.DataDir != "":
+		log.Printf("Policies: embedded (built-in), data: %s (custom override)", cfg.Policies.DataDir)
+	default:
+		log.Printf("Policies: embedded (built-in)")
+	}
+	if cfg.Policies.Dir != "" && hasOnlyBuiltinPolicyNames(cfg.Policies.Dir) {
+		log.Printf("WARN: policies.dir %q contains only files with the same names as the built-in "+
+			"policies. If you did not intend a custom override, remove the policies: block from "+
+			"config.yaml to use the embedded versions.", cfg.Policies.Dir)
+	}
 
 	// Query classifier
 	clf := classifier.New()
@@ -332,4 +346,35 @@ func must(err error, context string) {
 func min(a, b int) int {
 	if a < b { return a }
 	return b
+}
+
+// hasOnlyBuiltinPolicyNames reports whether dir contains exactly the
+// filenames of the built-in policies (and nothing else). This is a
+// filename-only heuristic — it does not compare file contents — so the
+// caller phrases its warning carefully ("same names as", not "mirrors").
+func hasOnlyBuiltinPolicyNames(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	regoFiles := make(map[string]bool)
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			return false
+		}
+		if filepath.Ext(name) == ".rego" {
+			regoFiles[name] = true
+		}
+	}
+	builtin := map[string]bool{"decision.rego": true, "tool_policy.rego": true}
+	if len(regoFiles) != len(builtin) {
+		return false
+	}
+	for name := range builtin {
+		if !regoFiles[name] {
+			return false
+		}
+	}
+	return true
 }

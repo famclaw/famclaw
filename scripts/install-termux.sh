@@ -27,7 +27,7 @@ pkg update -y
 pkg install -y curl
 
 # Create directory
-mkdir -p "$FAMCLAW_DIR"/{data,skills,policies/family,policies/data}
+mkdir -p "$FAMCLAW_DIR"/{data,skills}
 mkdir -p "$HOME/bin"
 
 # Download binary
@@ -71,10 +71,6 @@ users:
 
 storage:
   db_path: "$FAMCLAW_DIR/data/famclaw.db"
-
-policies:
-  dir: "$FAMCLAW_DIR/policies/family"
-  data_dir: "$FAMCLAW_DIR/policies/data"
 YAML
 
 # Create start script

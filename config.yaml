@@ -78,9 +78,12 @@ users:
 #     enabled: false  # placeholder — not yet implemented
 
 # ── Policy engine (OPA) ───────────────────────────────────────────────────────
-policies:
-  dir: "./policies/family"
-  data_dir: "./policies/data"
+# Default OPA policies are embedded in the binary. To override with custom
+# rules from disk, uncomment and point at a directory containing .rego files
+# and (optionally) JSON data files:
+# policies:
+#   dir: "/etc/famclaw/policies/family"
+#   data_dir: "/etc/famclaw/policies/data"
 
 # ── Approval workflow ─────────────────────────────────────────────────────────
 approval:

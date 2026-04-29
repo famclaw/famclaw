@@ -72,7 +72,7 @@ echo "→ Installing famclaw binary…"
 install -m 755 "$BINARY" "$MOUNT_ROOT/usr/local/bin/famclaw"
 
 # Create directory structure
-mkdir -p "$MOUNT_ROOT$FAMCLAW_DIR"/{data,skills,policies/family,policies/data}
+mkdir -p "$MOUNT_ROOT$FAMCLAW_DIR"/{data,skills}
 
 # Install default config
 cat > "$MOUNT_ROOT$FAMCLAW_DIR/config.yaml" << 'YAML'
@@ -96,10 +96,6 @@ users:
     display_name: "Parent"
     role: "parent"
     color: "#6366f1"
-
-policies:
-  dir: "/opt/famclaw/policies/family"
-  data_dir: "/opt/famclaw/policies/data"
 
 storage:
   db_path: "/opt/famclaw/data/famclaw.db"

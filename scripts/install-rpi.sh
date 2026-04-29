@@ -46,7 +46,7 @@ ollama pull "$MODEL"
 # Create user and directories
 echo "→ Creating famclaw user and directories…"
 id -u "$FAMCLAW_USER" &>/dev/null || useradd -r -s /bin/false "$FAMCLAW_USER"
-mkdir -p "$FAMCLAW_DIR"/{data,skills,policies/family,policies/data}
+mkdir -p "$FAMCLAW_DIR"/{data,skills}
 chown -R "$FAMCLAW_USER:$FAMCLAW_USER" "$FAMCLAW_DIR"
 
 # Download binary
@@ -111,10 +111,6 @@ users:
     role: "child"
     age_group: "age_8_12"
     color: "#f59e0b"
-
-policies:
-  dir: "./policies/family"
-  data_dir: "./policies/data"
 
 storage:
   db_path: "./data/famclaw.db"
