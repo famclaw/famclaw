@@ -70,9 +70,32 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				break
 			}
 
+			// Build allowlist from turn.Tools — only tools offered to the LLM
+			// can be called, even if the pool or handler would accept them.
+			turnAllowed := make(map[string]bool, len(turn.Tools))
+			for _, t := range turn.Tools {
+				turnAllowed[t.Name] = true
+			}
+
 			for _, tc := range pendingCalls {
 				log.Printf("[agentcore][%s] tool_call: %s", turn.User.Name, tc.Function.Name)
 				start := time.Now()
+
+				// Reject tools not in the turn's allowlist (prevents
+				// hallucinated/injected calls from bypassing role filtering).
+				if len(turnAllowed) > 0 && !turnAllowed[tc.Function.Name] {
+					llmMsgs = append(llmMsgs, llm.Message{
+						Role:    "tool",
+						Content: fmt.Sprintf("Error: tool %q not available", tc.Function.Name),
+					})
+					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
+						ToolName: tc.Function.Name,
+						Args:     tc.Function.Arguments,
+						Error:    fmt.Errorf("tool %q not in turn allowlist", tc.Function.Name),
+						Duration: time.Since(start),
+					})
+					continue
+				}
 
 				// Builtin tools (spawn_agent, etc.) route to the handler, not MCP pool
 				if strings.HasPrefix(tc.Function.Name, "builtin__") && deps.BuiltinHandler != nil {
