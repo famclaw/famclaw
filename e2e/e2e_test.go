@@ -67,12 +67,9 @@ llm:
   max_response_tokens: 512
   temperature: 0.7
 users: []
-policies:
-  dir: %s/policies/family
-  data_dir: %s/policies/data
 storage:
   db_path: %s
-`, root, root, dbPath)
+`, dbPath)
 	os.WriteFile(cfgPath, []byte(cfg), 0644)
 
 	// Start server

@@ -26,7 +26,7 @@ test:
 
 ## opa-test: Run OPA policy unit tests
 opa-test:
-	opa test ./policies -v
+	opa test internal/policy/policies/family/ internal/policy/policies/data/ -v
 
 ## cross: Build for all supported platforms
 cross: cross-rpi3 cross-rpi4 cross-android cross-mac-intel cross-mac-arm cross-linux64

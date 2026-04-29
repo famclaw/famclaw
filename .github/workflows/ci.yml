@@ -47,7 +47,7 @@ jobs:
           CGO_ENABLED: 0
 
       - name: OPA policy tests
-        run: opa test ./policies/family/ ./policies/data/ -v
+        run: opa test internal/policy/policies/family/ internal/policy/policies/data/ -v
 
       - name: Coverage check (>80% on critical packages)
         run: |

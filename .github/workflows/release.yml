@@ -166,12 +166,8 @@ jobs:
             --repo ${{ github.repository }}
 
       # ── 6. Start server + integration smoke tests ──────────────────────────
-      - name: Install OPA
-        run: |
-          curl -L -o /usr/local/bin/opa \
-            https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
-          chmod +x /usr/local/bin/opa
-
+      # Policies are embedded in the binary, so this smoke test does not
+      # need to install OPA or set policies.dir.
       - name: Start FamClaw server
         run: |
           cat > /tmp/test-config.yaml << 'TESTCFG'
@@ -182,9 +178,6 @@ jobs:
             base_url: ""
             model: ""
           users: []
-          policies:
-            dir: ./policies/family
-            data_dir: ./policies/data
           storage:
             db_path: /tmp/famclaw-test.db
           TESTCFG
