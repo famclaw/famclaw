@@ -27,7 +27,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Upgrade notes
 - If you have a `policies:` block in `/opt/famclaw/config.yaml` from
   an earlier install, remove it so the binary uses embedded policies:
-  ```
+  ```bash
   sudo sed -i '/^policies:/,/^$/d' /opt/famclaw/config.yaml
   ```
 - The famclaw service warns at startup if `policies.dir` is set to a

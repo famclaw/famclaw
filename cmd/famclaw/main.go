@@ -88,15 +88,20 @@ func main() {
 	// OPA policy evaluator
 	evaluator, err := policy.NewEvaluator(cfg.Policies.Dir, cfg.Policies.DataDir)
 	must(err, "policy")
-	if cfg.Policies.Dir != "" {
-		log.Printf("Policies: %s (custom override)", cfg.Policies.Dir)
-		if mirrorsBuiltinPolicies(cfg.Policies.Dir) {
-			log.Printf("WARN: policies.dir %q appears to mirror the built-in policies. "+
-				"Remove the policies: block from config.yaml to use the embedded versions.",
-				cfg.Policies.Dir)
-		}
-	} else {
+	switch {
+	case cfg.Policies.Dir != "" && cfg.Policies.DataDir != "":
+		log.Printf("Policies: %s (custom override), data: %s", cfg.Policies.Dir, cfg.Policies.DataDir)
+	case cfg.Policies.Dir != "":
+		log.Printf("Policies: %s (custom override), data: embedded (built-in)", cfg.Policies.Dir)
+	case cfg.Policies.DataDir != "":
+		log.Printf("Policies: embedded (built-in), data: %s (custom override)", cfg.Policies.DataDir)
+	default:
 		log.Printf("Policies: embedded (built-in)")
+	}
+	if cfg.Policies.Dir != "" && hasOnlyBuiltinPolicyNames(cfg.Policies.Dir) {
+		log.Printf("WARN: policies.dir %q contains only files with the same names as the built-in "+
+			"policies. If you did not intend a custom override, remove the policies: block from "+
+			"config.yaml to use the embedded versions.", cfg.Policies.Dir)
 	}
 
 	// Query classifier
@@ -343,10 +348,11 @@ func min(a, b int) int {
 	return b
 }
 
-// mirrorsBuiltinPolicies reports whether dir contains the built-in
-// policy filenames and nothing else — a hint that the user copied the
-// stock policies onto disk and can safely drop the policies: block.
-func mirrorsBuiltinPolicies(dir string) bool {
+// hasOnlyBuiltinPolicyNames reports whether dir contains exactly the
+// filenames of the built-in policies (and nothing else). This is a
+// filename-only heuristic — it does not compare file contents — so the
+// caller phrases its warning carefully ("same names as", not "mirrors").
+func hasOnlyBuiltinPolicyNames(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
