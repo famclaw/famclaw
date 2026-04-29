@@ -21,6 +21,7 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
+	"github.com/famclaw/famclaw/internal/subagent"
 )
 
 // Response is the result of a single agent turn.
@@ -39,12 +40,14 @@ type Agent struct {
 	evaluator  *policy.Evaluator
 	classifier *classifier.Classifier
 	db         *store.DB
-	pool       *mcp.Pool
-	skills     []*skillbridge.Skill
-	quarantine *skillbridge.Quarantine
-	scanner    skillbridge.Scanner
-	oauthStore *llm.OAuthStore
-	convID     string
+	pool         *mcp.Pool
+	skills       []*skillbridge.Skill
+	quarantine   *skillbridge.Quarantine
+	scanner      skillbridge.Scanner
+	oauthStore   *llm.OAuthStore
+	scheduler    *subagent.Scheduler
+	builtinTools []agentcore.Tool // tools to inject onto every Turn
+	convID       string
 }
 
 // SetPool attaches an MCP tool pool to the agent.
@@ -61,6 +64,12 @@ func (a *Agent) SetScanner(s skillbridge.Scanner) { a.scanner = s }
 
 // SetOAuthStore attaches the OAuth token store for subscription-based auth.
 func (a *Agent) SetOAuthStore(s *llm.OAuthStore) { a.oauthStore = s }
+
+// SetScheduler attaches the subagent scheduler for spawn_agent dispatching.
+func (a *Agent) SetScheduler(s *subagent.Scheduler) { a.scheduler = s }
+
+// SetBuiltinTools sets the builtin tool definitions to inject onto every Turn.
+func (a *Agent) SetBuiltinTools(tools []agentcore.Tool) { a.builtinTools = tools }
 
 // NewAgent creates an Agent for the given user.
 func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client,
@@ -117,6 +126,32 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		return llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 	}
 
+	// Populate available tools on the Turn
+	// MCP tools
+	if a.pool != nil {
+		for _, info := range a.pool.ListToolInfos() {
+			t := agentcore.Tool{
+				Name:        info.Name,
+				Description: info.Description,
+				InputSchema: info.InputSchema,
+				Source:      "mcp",
+				ServerName:  info.ServerName,
+				ScanTarget:  info.ScanTarget,
+			}
+			if t.AllowedForRole(a.user.Role) {
+				turn.Tools = append(turn.Tools, t)
+			}
+		}
+	}
+	// Builtin tools (spawn_agent, etc.) — only when scheduler is wired
+	if a.scheduler != nil {
+		for _, t := range a.builtinTools {
+			if t.AllowedForRole(a.user.Role) {
+				turn.Tools = append(turn.Tools, t)
+			}
+		}
+	}
+
 	// Assemble and run the pipeline
 	deps := agentcore.FamilyPipelineDeps{
 		Classifier:    a.classifier,
@@ -128,6 +163,11 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		MaxTokens:     a.cfg.LLM.MaxResponseTokens,
 		ContextWindow: a.cfg.LLM.MaxContextTokens,
 		OnToken:       onToken,
+	}
+
+	// Wire builtin tool handler (spawn_agent dispatching)
+	if a.scheduler != nil {
+		deps.BuiltinHandler = a.makeBuiltinHandler()
 	}
 
 	// Wire runtime scanning if configured
@@ -180,6 +220,71 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		Category:     string(turn.Category),
 		Streamed:     turn.Streamed,
 	}, nil
+}
+
+func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args map[string]any) (string, error) {
+	return func(ctx context.Context, name string, args map[string]any) (string, error) {
+		switch name {
+		case "builtin__spawn_agent":
+			return a.handleSpawnAgent(ctx, args)
+		default:
+			return "", fmt.Errorf("unknown builtin tool: %s", name)
+		}
+	}
+}
+
+func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (string, error) {
+	prompt, _ := args["prompt"].(string)
+	if prompt == "" {
+		return "", fmt.Errorf("spawn_agent requires a 'prompt' argument")
+	}
+
+	profile, _ := args["profile"].(string)
+	maxTurns := 10
+	if mt, ok := args["max_turns"].(float64); ok && mt > 0 {
+		maxTurns = int(mt)
+	}
+	if maxTurns > 20 {
+		maxTurns = 20 // hard cap to prevent runaway subagents
+	}
+
+	cfg := subagent.Config{
+		Prompt:     prompt,
+		LLMProfile: profile,
+		MaxTurns:   maxTurns,
+	}
+
+	execDeps := subagent.ExecutorDeps{
+		Pool:        a.pool,
+		Config:      a.cfg,
+		OAuthStore:  a.oauthStore,
+		Temperature: a.cfg.LLM.Temperature,
+		MaxTokens:   a.cfg.LLM.MaxResponseTokens,
+	}
+
+	// TODO: The scheduler uses a shared result channel. When multiple subagents
+	// complete concurrently, the parent may receive the wrong result. For v1 this
+	// is acceptable (one subagent at a time per parent turn). Future parallel
+	// fan-out needs per-request result channels.
+	agentID, err := a.scheduler.Submit(ctx, cfg, func(ctx context.Context, cfg subagent.Config) (string, error) {
+		return subagent.Execute(ctx, cfg, execDeps)
+	})
+	if err != nil {
+		return "", fmt.Errorf("spawning subagent: %w", err)
+	}
+
+	log.Printf("[agent][%s] spawned subagent %s on profile %q", a.user.Name, agentID, profile)
+
+	select {
+	case result := <-a.scheduler.Results():
+		if result.Error != nil {
+			return "", fmt.Errorf("subagent %s failed: %w", result.AgentID, result.Error)
+		}
+		log.Printf("[agent][%s] subagent %s completed (%d chars)", a.user.Name, result.AgentID, len(result.Output))
+		return result.Output, nil
+	case <-ctx.Done():
+		return "", fmt.Errorf("subagent timed out: %w", ctx.Err())
+	}
 }
 
 // buildMessages assembles the LLM message list from history + system prompt.
