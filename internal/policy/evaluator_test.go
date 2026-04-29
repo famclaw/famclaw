@@ -9,31 +9,48 @@ import (
 
 func setupEvaluator(t *testing.T) *Evaluator {
 	t.Helper()
+	ev, err := NewEvaluator("", "")
+	if err != nil {
+		t.Fatalf("NewEvaluator with embedded policies: %v", err)
+	}
+	return ev
+}
 
-	// Find project root by looking for go.mod
-	dir, err := os.Getwd()
+func TestNewEvaluator_Embedded(t *testing.T) {
+	ev, err := NewEvaluator("", "")
+	if err != nil {
+		t.Fatalf("embedded load: %v", err)
+	}
+	dec, err := ev.Evaluate(context.Background(),
+		makeInput("parent", "", "general", "req-embedded", nil))
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if dec.Action != "allow" {
+		t.Errorf("parent should be allowed, got %q (reason: %q)", dec.Action, dec.Reason)
+	}
+}
+
+func TestNewEvaluator_CustomDir(t *testing.T) {
+	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("could not find project root (go.mod)")
-		}
-		dir = parent
-	}
-
-	policyDir := filepath.Join(dir, "policies", "family")
-	dataDir := filepath.Join(dir, "policies", "data")
+	policyDir := filepath.Join(cwd, "policies", "family")
+	dataDir := filepath.Join(cwd, "policies", "data")
 
 	ev, err := NewEvaluator(policyDir, dataDir)
 	if err != nil {
-		t.Fatalf("NewEvaluator: %v", err)
+		t.Fatalf("filesystem load from %q: %v", policyDir, err)
 	}
-	return ev
+	dec, err := ev.Evaluate(context.Background(),
+		makeInput("child", "under_8", "self_harm", "req-customdir", nil))
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if dec.Action != "block" {
+		t.Errorf("child self_harm should be blocked, got %q (reason: %q)", dec.Action, dec.Reason)
+	}
 }
 
 func TestEvaluate(t *testing.T) {

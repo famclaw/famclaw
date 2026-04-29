@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -17,24 +16,8 @@ import (
 	"github.com/famclaw/famclaw/internal/store"
 )
 
-func projectRoot(t *testing.T) string {
-	t.Helper()
-	dir, _ := os.Getwd()
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("cannot find project root")
-		}
-		dir = parent
-	}
-}
-
 func setupAgent(t *testing.T, serverURL string) *Agent {
 	t.Helper()
-	root := projectRoot(t)
 
 	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -42,10 +25,8 @@ func setupAgent(t *testing.T, serverURL string) *Agent {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	ev, err := policy.NewEvaluator(
-		filepath.Join(root, "policies", "family"),
-		filepath.Join(root, "policies", "data"),
-	)
+	// Policies are embedded in the binary.
+	ev, err := policy.NewEvaluator("", "")
 	if err != nil {
 		t.Fatal(err)
 	}

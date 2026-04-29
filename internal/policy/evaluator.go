@@ -6,8 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"github.com/open-policy-agent/opa/ast"
@@ -23,60 +24,28 @@ type Evaluator struct {
 	store       storage.Store
 }
 
-// NewEvaluator loads Rego policies from policyDir and data from dataDir.
+// NewEvaluator builds an evaluator. When policyDir/dataDir are empty,
+// the built-in policies compiled into the binary are loaded; otherwise
+// they are read from the given filesystem paths.
 func NewEvaluator(policyDir, dataDir string) (*Evaluator, error) {
-	// Load all .rego files from policyDir
 	modules := make(map[string]string)
-	entries, err := os.ReadDir(policyDir)
-	if err != nil {
-		return nil, fmt.Errorf("reading policy dir %q: %w", policyDir, err)
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".rego") {
-			continue
-		}
-		if strings.HasSuffix(e.Name(), "_test.rego") {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(policyDir, e.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("reading policy file %q: %w", e.Name(), err)
-		}
-		modules[e.Name()] = string(raw)
-	}
-
-	if len(modules) == 0 {
-		return nil, fmt.Errorf("no .rego files found in %q", policyDir)
-	}
-
-	// Load data files
 	data := make(map[string]any)
-	if dataDir != "" {
-		dataEntries, err := os.ReadDir(dataDir)
-		if err != nil {
-			return nil, fmt.Errorf("reading data dir %q: %w", dataDir, err)
-		}
-		for _, e := range dataEntries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-				continue
-			}
-			raw, err := os.ReadFile(filepath.Join(dataDir, e.Name()))
-			if err != nil {
-				return nil, fmt.Errorf("reading data file %q: %w", e.Name(), err)
-			}
-			var d map[string]any
-			if err := json.Unmarshal(raw, &d); err != nil {
-				return nil, fmt.Errorf("parsing data file %q: %w", e.Name(), err)
-			}
-			for k, v := range d {
-				data[k] = v
-			}
-		}
+
+	policyFS, policyRoot := policySource(policyDir)
+	if err := loadModules(policyFS, policyRoot, modules); err != nil {
+		return nil, err
+	}
+	if len(modules) == 0 {
+		return nil, fmt.Errorf("no .rego files found")
+	}
+
+	dataFS, dataRoot := dataSource(dataDir)
+	if err := loadData(dataFS, dataRoot, data); err != nil {
+		return nil, err
 	}
 
 	store := inmem.NewFromObject(data)
 
-	// Parse and compile modules
 	parsedModules := make(map[string]*ast.Module)
 	for name, src := range modules {
 		mod, err := ast.ParseModuleWithOpts(name, src, ast.ParserOptions{ProcessAnnotation: true})
@@ -92,7 +61,6 @@ func NewEvaluator(policyDir, dataDir string) (*Evaluator, error) {
 		return nil, fmt.Errorf("compiling rego: %v", compiler.Errors)
 	}
 
-	// Prepare action query
 	actionQ, err := rego.New(
 		rego.Query("data.family.decision.action"),
 		rego.Compiler(compiler),
@@ -102,7 +70,6 @@ func NewEvaluator(policyDir, dataDir string) (*Evaluator, error) {
 		return nil, fmt.Errorf("preparing action query: %w", err)
 	}
 
-	// Prepare reason query
 	reasonQ, err := rego.New(
 		rego.Query("data.family.decision.reason"),
 		rego.Compiler(compiler),
@@ -115,6 +82,70 @@ func NewEvaluator(policyDir, dataDir string) (*Evaluator, error) {
 	return &Evaluator{actionQuery: actionQ, reasonQuery: reasonQ, store: store}, nil
 }
 
+// policySource returns the filesystem and root directory to load policy
+// modules from. An empty dir means "use embedded".
+func policySource(dir string) (fs.FS, string) {
+	if dir == "" {
+		return embeddedPolicies, "policies/family"
+	}
+	return os.DirFS(dir), "."
+}
+
+// dataSource returns the filesystem and root directory to load data
+// files from. An empty dir means "use embedded".
+func dataSource(dir string) (fs.FS, string) {
+	if dir == "" {
+		return embeddedData, "policies/data"
+	}
+	return os.DirFS(dir), "."
+}
+
+func loadModules(fsys fs.FS, dir string, modules map[string]string) error {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return fmt.Errorf("reading policy dir %q: %w", dir, err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".rego") || strings.HasSuffix(name, "_test.rego") {
+			continue
+		}
+		raw, err := fs.ReadFile(fsys, path.Join(dir, name))
+		if err != nil {
+			return fmt.Errorf("reading policy file %q: %w", name, err)
+		}
+		modules[name] = string(raw)
+	}
+	return nil
+}
+
+func loadData(fsys fs.FS, dir string, data map[string]any) error {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return fmt.Errorf("reading data dir %q: %w", dir, err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		raw, err := fs.ReadFile(fsys, path.Join(dir, name))
+		if err != nil {
+			return fmt.Errorf("reading data file %q: %w", name, err)
+		}
+		var d map[string]any
+		if err := json.Unmarshal(raw, &d); err != nil {
+			return fmt.Errorf("parsing data file %q: %w", name, err)
+		}
+		// Top-level keys merge into data; OPA rules see e.g.
+		// `data.categories[...]`, not `data.topics.categories[...]`.
+		for k, v := range d {
+			data[k] = v
+		}
+	}
+	return nil
+}
+
 // Evaluate runs the policy against the given input and returns a Decision.
 func (e *Evaluator) Evaluate(ctx context.Context, input Input) (Decision, error) {
 	inputMap, err := toMap(input)
@@ -122,7 +153,6 @@ func (e *Evaluator) Evaluate(ctx context.Context, input Input) (Decision, error)
 		return Decision{Action: "block", Reason: "Failed to marshal input"}, fmt.Errorf("marshaling input: %w", err)
 	}
 
-	// Evaluate action
 	actionResults, err := e.actionQuery.Eval(ctx, rego.EvalInput(inputMap))
 	if err != nil {
 		return Decision{Action: "block", Reason: "Policy evaluation error"}, fmt.Errorf("evaluating action: %w", err)
@@ -135,7 +165,6 @@ func (e *Evaluator) Evaluate(ctx context.Context, input Input) (Decision, error)
 		}
 	}
 
-	// Evaluate reason
 	reason := ""
 	reasonResults, err := e.reasonQuery.Eval(ctx, rego.EvalInput(inputMap))
 	if err == nil && len(reasonResults) > 0 && len(reasonResults[0].Expressions) > 0 {

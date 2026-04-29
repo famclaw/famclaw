@@ -88,7 +88,16 @@ func main() {
 	// OPA policy evaluator
 	evaluator, err := policy.NewEvaluator(cfg.Policies.Dir, cfg.Policies.DataDir)
 	must(err, "policy")
-	log.Printf("Policies: %s", cfg.Policies.Dir)
+	if cfg.Policies.Dir != "" {
+		log.Printf("Policies: %s (custom override)", cfg.Policies.Dir)
+		if mirrorsBuiltinPolicies(cfg.Policies.Dir) {
+			log.Printf("WARN: policies.dir %q appears to mirror the built-in policies. "+
+				"Remove the policies: block from config.yaml to use the embedded versions.",
+				cfg.Policies.Dir)
+		}
+	} else {
+		log.Printf("Policies: embedded (built-in)")
+	}
 
 	// Query classifier
 	clf := classifier.New()
@@ -332,4 +341,34 @@ func must(err error, context string) {
 func min(a, b int) int {
 	if a < b { return a }
 	return b
+}
+
+// mirrorsBuiltinPolicies reports whether dir contains the built-in
+// policy filenames and nothing else — a hint that the user copied the
+// stock policies onto disk and can safely drop the policies: block.
+func mirrorsBuiltinPolicies(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	regoFiles := make(map[string]bool)
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			return false
+		}
+		if filepath.Ext(name) == ".rego" {
+			regoFiles[name] = true
+		}
+	}
+	builtin := map[string]bool{"decision.rego": true, "tool_policy.rego": true}
+	if len(regoFiles) != len(builtin) {
+		return false
+	}
+	for name := range builtin {
+		if !regoFiles[name] {
+			return false
+		}
+	}
+	return true
 }

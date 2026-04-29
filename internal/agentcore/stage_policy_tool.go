@@ -16,9 +16,10 @@ type ToolPolicyEvaluator interface {
 }
 
 // NewStagePolicyToolCall returns a stage that checks tool calls against policy.
-// This is a placeholder — the actual OPA integration requires Rego rules in policies/.
-// For now, it applies a simple role-based check: under_8 cannot use tools with
-// "dangerous" in the name. Full OPA integration comes with the Rego rules.
+// This is a placeholder — the actual OPA integration requires Rego rules in
+// internal/policy/policies/. For now, it applies a simple role-based check:
+// under_8 cannot use tools with "dangerous" in the name. Full OPA integration
+// comes with the Rego rules.
 func NewStagePolicyToolCall() Stage {
 	return func(_ context.Context, turn *Turn) error {
 		// No tool calls to check
