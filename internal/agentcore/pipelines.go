@@ -1,6 +1,7 @@
 package agentcore
 
 import (
+	"context"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/classifier"
@@ -23,6 +24,9 @@ type FamilyPipelineDeps struct {
 	MaxTokens     int
 	ContextWindow int
 	OnToken       func(string)
+
+	// Builtin tool handler (spawn_agent, etc.)
+	BuiltinHandler func(ctx context.Context, name string, args map[string]any) (string, error)
 
 	// Security scanning (async quarantine pattern)
 	Quarantine     *skillbridge.Quarantine
@@ -66,12 +70,13 @@ func FamilyPipeline(deps FamilyPipelineDeps) Pipeline {
 	}))
 
 	// Tool loop
-	if deps.Pool != nil {
+	if deps.Pool != nil || deps.BuiltinHandler != nil {
 		stages = stages.Append(NewStageToolLoop(ToolLoopDeps{
-			Pool:          deps.Pool,
-			ClientFactory: deps.ClientFactory,
-			Temperature:   deps.Temperature,
-			MaxTokens:     deps.MaxTokens,
+			Pool:           deps.Pool,
+			ClientFactory:  deps.ClientFactory,
+			Temperature:    deps.Temperature,
+			MaxTokens:      deps.MaxTokens,
+			BuiltinHandler: deps.BuiltinHandler,
 		}))
 	}
 

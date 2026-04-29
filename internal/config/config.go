@@ -386,3 +386,16 @@ func (c *Config) LLMEndpointFor(user *UserConfig) LLMEndpoint {
 	// Fall back to legacy single-endpoint config
 	return LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.ModelFor(user), APIKey: c.LLM.APIKey}
 }
+
+// LLMEndpointForProfile resolves an LLM endpoint by profile name directly.
+// Used by subagents that specify a target LLM profile rather than a user.
+func (c *Config) LLMEndpointForProfile(profileName string) LLMEndpoint {
+	if profileName == "" {
+		return c.LLMEndpointFor(nil) // use default
+	}
+	if p, ok := c.LLM.Profiles[profileName]; ok {
+		return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey, AuthType: p.AuthType}
+	}
+	log.Printf("[config] warning: LLM profile %q not found", profileName)
+	return LLMEndpoint{}
+}

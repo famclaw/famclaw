@@ -30,8 +30,10 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/inference"
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
+	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/web"
 )
 
@@ -212,6 +214,13 @@ func main() {
 		log.Printf("Skills: %d loaded for prompt injection", len(enabledSkills))
 	}
 
+	// Subagent scheduler for spawn_agent dispatching (max 2 concurrent)
+	agentScheduler := subagent.NewScheduler(2)
+
+	// Builtin tools available to the LLM
+	builtinTools := []agentcore.Tool{subagent.SpawnAgentTool()}
+	log.Printf("Builtin tools: %d registered (spawn_agent)", len(builtinTools))
+
 	// Chat function for gateway router
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
 		ep := cfg.LLMEndpointFor(user)
@@ -227,6 +236,8 @@ func main() {
 		a.SetQuarantine(quarantine)
 		a.SetScanner(hbScanner)
 		a.SetOAuthStore(oauthStore)
+		a.SetScheduler(agentScheduler)
+		a.SetBuiltinTools(builtinTools)
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {
 			return "", err

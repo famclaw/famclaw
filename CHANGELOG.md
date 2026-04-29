@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Added
+- **Agent dispatch via `spawn_agent` builtin tool.** The parent LLM can
+  now delegate sub-tasks to a different LLM profile by calling
+  `spawn_agent(prompt, profile)`. The subagent runs on the specified
+  profile (e.g., Qwen3-14B on local Ollama), has access to MCP tools,
+  and returns its result to the parent conversation. Concurrency is
+  controlled by the subagent scheduler (default: 2 concurrent).
+- `LLMEndpointForProfile(name)` config helper for direct profile
+  resolution by name (used by subagent executor).
+- `BuiltinHandler` support in the agentcore tool loop — builtin tools
+  (prefixed `builtin__`) route to a handler function instead of the
+  MCP pool.
+
 ### Fixed
 - **OPA policies are now embedded in the binary.** Previous releases
   required a clone of the source repo for the `policies/` directory —
