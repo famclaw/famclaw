@@ -50,7 +50,7 @@ Agent 9 (SD image) runs after all code agents pass.
 **Rules:**
 - No external dependencies — pure Go, stdlib only
 - No LLM calls — keyword matching only, must be fast (<1ms per call)
-- Must cover every category in `policies/data/topics.json`
+- Must cover every category in `internal/policy/policies/data/topics.json`
 - Test must include edge cases: empty string, gibberish, mixed language hints
 
 **Done when:** `go test ./internal/classifier/... -v` passes, 0 failures
@@ -59,15 +59,17 @@ Agent 9 (SD image) runs after all code agents pass.
 
 ## Agent 2 — policy
 
-**Scope:** `internal/policy/`, `policies/`
+**Scope:** `internal/policy/`, `internal/policy/policies/`
 
 **Deliverables:**
 - `internal/policy/evaluator.go` — `NewEvaluator(policyDir, dataDir string)`, `Evaluate(ctx, Input) Decision`
+- `internal/policy/embed.go` — `go:embed` directives for default policies
 - `internal/policy/types.go` — `Input`, `UserInput`, `QueryInput`, `Decision` structs
 - `internal/policy/evaluator_test.go` — table-driven Go tests wrapping OPA
-- `policies/family/decision.rego` — main policy
-- `policies/family/decision_test.rego` — OPA unit tests (min 15 cases)
-- `policies/data/topics.json` — topic taxonomy
+- `internal/policy/policies/family/decision.rego` — main policy
+- `internal/policy/policies/family/decision_test.rego` — OPA unit tests (min 15 cases)
+- `internal/policy/policies/family/tool_policy.rego` — tool-access policy
+- `internal/policy/policies/data/topics.json` — topic taxonomy
 
 **Rules:**
 - OPA embedded — no external OPA process
@@ -76,7 +78,7 @@ Agent 9 (SD image) runs after all code agents pass.
 - Parent role always returns allow — test this
 - Unknown age_group defaults to most restrictive (under_8 rules)
 
-**Test gate 1:** `opa test ./policies/ -v` — all pass
+**Test gate 1:** `opa test internal/policy/policies/family/ internal/policy/policies/data/ -v` — all pass
 **Test gate 2:** `go test ./internal/policy/... -v` — all pass
 
 **Done when:** both test gates pass
@@ -411,7 +413,7 @@ agent-11-security &
 
 - [ ] `go build ./...` — clean, no errors
 - [ ] `go test ./...` — all pass
-- [ ] `opa test ./policies/` — all pass
+- [ ] `opa test internal/policy/policies/family/ internal/policy/policies/data/ -v` — all pass
 - [ ] `make cross` — all 6 targets compile cleanly (CGO_ENABLED=0)
 - [ ] `go vet ./...` — clean
 - [ ] Integration test: child message never reaches LLM when blocked

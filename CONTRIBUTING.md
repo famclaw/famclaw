@@ -23,7 +23,7 @@ make build
 go test ./...
 
 # OPA policy tests
-opa test ./policies/family/ ./policies/data/ -v
+opa test internal/policy/policies/family/ internal/policy/policies/data/ -v
 
 # Integration tests
 go test -tags integration ./... -v
@@ -57,9 +57,9 @@ These are enforced across the project (see [CLAUDE.md](./CLAUDE.md) for the full
 ## Where to contribute
 
 - **WhatsApp gateway** — currently a placeholder, needs whatsmeow QR pairing flow
-- **i18n** — translate topic taxonomy (`policies/data/topics.json`) and web UI
+- **i18n** — translate topic taxonomy (`internal/policy/policies/data/topics.json`) and web UI
 - **Docker** — Dockerfile and docker-compose improvements, multi-arch builds
-- **Topic taxonomy** — expand `policies/data/topics.json` with more categories
+- **Topic taxonomy** — expand `internal/policy/policies/data/topics.json` with more categories
 - **Home Assistant integration** — sensor for approval queue, automations
 - **Voice interface** — wake word + speech-to-text for hands-free family use
 - **Hardware guides** — test on specific boards (RPi Zero 2W, LicheeRV, etc.), document results

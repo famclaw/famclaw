@@ -51,13 +51,13 @@ famclaw/
 │   ├── mcp/              # MCP client — spawn/manage skill tool servers
 │   ├── notify/           # email, slack, discord, sms, ntfy notifications
 │   ├── policy/           # OPA evaluator — identical decision for all gateways
+│   │   └── policies/     # Embedded Rego policies (go:embed) + JSON data
+│   │       ├── family/   #   decision.rego, tool_policy.rego, *_test.rego
+│   │       └── data/     #   topics.json taxonomy
 │   ├── seccheck/         # security scanner for skills/MCP repos
 │   ├── skillbridge/      # SKILL.md parser + install from famclaw/skills
 │   ├── store/            # SQLite (modernc — pure Go, no CGO)
 │   └── web/              # HTTP + WebSocket server + embedded UI
-├── policies/
-│   ├── family/           # OPA Rego policies (decision.rego + tests)
-│   └── data/             # topics.json taxonomy
 ├── scripts/
 │   ├── install-rpi.sh
 │   ├── install-termux.sh
@@ -147,7 +147,7 @@ go.mau.fi/whatsmeow               latest   — WhatsApp (pure Go)
 
 ## Test requirements
 - Every package: `go test ./internal/PACKAGE/...`
-- Policy: `opa test ./policies/`
+- Policy: `opa test internal/policy/policies/family/ internal/policy/policies/data/ -v`
 - Integration: `go test ./... -tags integration`
 - Coverage target: >80% on policy, identity, classifier, gateway/router
 - CI blocks merge if tests fail or binary doesn't cross-compile to arm64
