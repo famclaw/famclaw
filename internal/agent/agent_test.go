@@ -3,17 +3,20 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
+	"github.com/famclaw/famclaw/internal/subagent"
 )
 
 func setupAgent(t *testing.T, serverURL string) *Agent {
@@ -212,6 +215,121 @@ func TestFilterOutput(t *testing.T) {
 			got := filterOutput(tt.text)
 			if got != tt.blocked {
 				t.Errorf("filterOutput(%q) = %v, want %v", tt.text[:min(50, len(tt.text))], got, tt.blocked)
+			}
+		})
+	}
+}
+
+// TestHandleSpawnAgent_Timeout asserts that handleSpawnAgent enforces the
+// timeout_seconds argument by wrapping ctx with WithTimeout and the resulting
+// error carries context.DeadlineExceeded.
+func TestHandleSpawnAgent_Timeout(t *testing.T) {
+	a := setupAgent(t, "http://unused")
+	a.scheduler = subagent.NewScheduler(2)
+
+	// timeout_seconds=1 must be the deadline that fires, NOT the 5s parent ctx.
+	// The elapsed-time assertion below distinguishes the two: if it took close
+	// to 5s, the parent fired and the handler stopped honoring timeout_seconds.
+	args := map[string]any{
+		"prompt":          "sleep forever",
+		"timeout_seconds": float64(1),
+	}
+	parentCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Fake LLM that blocks until its request ctx is canceled, so the only way
+	// the call returns is when handleSpawnAgent's WithTimeout(ctx, 1s) fires.
+	blocker := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-blocker:
+		case <-r.Context().Done():
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"x"}}]}`))
+	}))
+	defer server.Close()
+	defer close(blocker)
+
+	a.cfg.LLM.Profiles = map[string]config.LLMProfile{
+		"slow": {BaseURL: server.URL, Model: "test"},
+	}
+	args["profile"] = "slow"
+
+	start := time.Now()
+	_, err := a.handleSpawnAgent(parentCtx, args)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from timeout, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("timeout took %v — expected ~1s from timeout_seconds; parent ctx (5s) likely fired instead", elapsed)
+	}
+}
+
+// TestHandleSpawnAgent_TimeoutCap verifies the explicit timeout_seconds arg is
+// capped at subagentMaxTimeoutSec (1800s) and lower bounds default to 300s.
+func TestHandleSpawnAgent_TimeoutCap(t *testing.T) {
+	tests := []struct {
+		name       string
+		argValue   any
+		wantSecond int
+	}{
+		{"missing uses default", nil, subagentDefaultTimeoutSec},
+		{"zero uses default", float64(0), subagentDefaultTimeoutSec},
+		{"negative uses default", float64(-5), subagentDefaultTimeoutSec},
+		{"valid passes through", float64(60), 60},
+		{"sub-second uses default (was: int truncation to 0)", float64(0.5), subagentDefaultTimeoutSec},
+		{"just-under-1 uses default", float64(0.999), subagentDefaultTimeoutSec},
+		{"exactly 1 passes through", float64(1), 1},
+		{"fractional above 1 truncates to int", float64(60.7), 60},
+		{"over cap is clamped", float64(99999), subagentMaxTimeoutSec},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			args := map[string]any{}
+			if tc.argValue != nil {
+				args["timeout_seconds"] = tc.argValue
+			}
+
+			got := normalizeTimeoutSeconds(args)
+			if got != tc.wantSecond {
+				t.Errorf("timeout = %d, want %d", got, tc.wantSecond)
+			}
+		})
+	}
+}
+
+// TestParseStringList verifies JSON-decoded []any -> []string conversion.
+func TestParseStringList(t *testing.T) {
+	tests := []struct {
+		name string
+		in   any
+		want []string
+	}{
+		{"nil yields nil", nil, nil},
+		{"non-slice yields nil", "not-a-list", nil},
+		{"empty slice yields nil", []any{}, nil},
+		{"strings pass through", []any{"a", "b"}, []string{"a", "b"}},
+		{"non-string elements skipped", []any{"a", 42, "b", nil}, []string{"a", "b"}},
+		{"empty string skipped", []any{"", "x", ""}, []string{"x"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseStringList(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d (got=%v)", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
 			}
 		})
 	}

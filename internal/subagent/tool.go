@@ -28,7 +28,21 @@ func SpawnAgentTool() agentcore.Tool {
 				},
 				"max_turns": map[string]any{
 					"type":        "integer",
-					"description": "Maximum tool loop iterations (default 10)",
+					"description": "Maximum tool loop iterations (default 10, capped at 20)",
+				},
+				"timeout_seconds": map[string]any{
+					"type":        "integer",
+					"description": "Subagent execution timeout in seconds. Default 300s, capped at 1800s.",
+				},
+				"tools": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Allowlist of MCP tool names the subagent may call. Empty or missing means the subagent has NO MCP tools.",
+				},
+				"deny_tools": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Blocklist subtracted from the tools allowlist after expansion.",
 				},
 			},
 			"required": []string{"prompt"},

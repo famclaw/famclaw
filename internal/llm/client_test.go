@@ -406,6 +406,42 @@ func TestIsOllamaURL(t *testing.T) {
 	}
 }
 
+func TestMessage_ToolCallIDJSON(t *testing.T) {
+	tests := []struct {
+		name        string
+		msg         Message
+		wantContain string
+		wantOmit    bool
+	}{
+		{
+			name:        "tool message with id includes tool_call_id",
+			msg:         Message{Role: "tool", Content: "x", ToolCallID: "call_abc"},
+			wantContain: `"tool_call_id":"call_abc"`,
+		},
+		{
+			name:     "empty tool_call_id is omitted",
+			msg:      Message{Role: "user", Content: "hi"},
+			wantOmit: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := json.Marshal(tt.msg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			s := string(b)
+			if tt.wantContain != "" && !contains(s, tt.wantContain) {
+				t.Errorf("missing %q in %s", tt.wantContain, s)
+			}
+			if tt.wantOmit && contains(s, "tool_call_id") {
+				t.Errorf("expected tool_call_id to be omitted; got %s", s)
+			}
+		})
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
 }

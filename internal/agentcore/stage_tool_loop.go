@@ -85,8 +85,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				// hallucinated/injected calls from bypassing role filtering).
 				if len(turnAllowed) > 0 && !turnAllowed[tc.Function.Name] {
 					llmMsgs = append(llmMsgs, llm.Message{
-						Role:    "tool",
-						Content: fmt.Sprintf("Error: tool %q not available", tc.Function.Name),
+						Role:       "tool",
+						Content:    fmt.Sprintf("Error: tool %q not available", tc.Function.Name),
+						ToolCallID: tc.ID,
 					})
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName: tc.Function.Name,
@@ -103,8 +104,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					duration := time.Since(start)
 					if err != nil {
 						llmMsgs = append(llmMsgs, llm.Message{
-							Role:    "tool",
-							Content: fmt.Sprintf("Error: %v", err),
+							Role:       "tool",
+							Content:    fmt.Sprintf("Error: %v", err),
+							ToolCallID: tc.ID,
 						})
 						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 							ToolName: tc.Function.Name,
@@ -114,8 +116,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						})
 					} else {
 						llmMsgs = append(llmMsgs, llm.Message{
-							Role:    "tool",
-							Content: result,
+							Role:       "tool",
+							Content:    result,
+							ToolCallID: tc.ID,
 						})
 						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 							ToolName: tc.Function.Name,
@@ -129,8 +132,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 				if deps.Pool == nil || !deps.Pool.HasTool(tc.Function.Name) {
 					llmMsgs = append(llmMsgs, llm.Message{
-						Role:    "tool",
-						Content: fmt.Sprintf("Error: unknown tool %q", tc.Function.Name),
+						Role:       "tool",
+						Content:    fmt.Sprintf("Error: unknown tool %q", tc.Function.Name),
+						ToolCallID: tc.ID,
 					})
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName: tc.Function.Name,
@@ -167,8 +171,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				}
 
 				llmMsgs = append(llmMsgs, llm.Message{
-					Role:    "tool",
-					Content: toolText,
+					Role:       "tool",
+					Content:    toolText,
+					ToolCallID: tc.ID,
 				})
 			}
 
