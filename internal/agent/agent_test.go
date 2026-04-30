@@ -225,29 +225,20 @@ func TestFilterOutput(t *testing.T) {
 // error carries context.DeadlineExceeded.
 func TestHandleSpawnAgent_Timeout(t *testing.T) {
 	a := setupAgent(t, "http://unused")
-
-	// Stub scheduler that hands control to the executor; the executor sleeps
-	// past the timeout so subCtx fires DeadlineExceeded first.
 	a.scheduler = subagent.NewScheduler(2)
 
-	// Override the default subagent.Execute path by manually using the scheduler.
-	// We simulate the same flow that handleSpawnAgent uses, but with a stub
-	// executor that respects ctx cancellation.
-	// Call handleSpawnAgent with a tiny timeout.
+	// timeout_seconds=1 must be the deadline that fires, NOT the 5s parent ctx.
+	// The elapsed-time assertion below distinguishes the two: if it took close
+	// to 5s, the parent fired and the handler stopped honoring timeout_seconds.
 	args := map[string]any{
 		"prompt":          "sleep forever",
-		"timeout_seconds": float64(0), // 0 -> default 300, we want tiny — use a custom path below
+		"timeout_seconds": float64(1),
 	}
-	// To exercise the timeout path we instead build the call against a parent ctx
-	// already very close to expiring. handleSpawnAgent wraps with WithTimeout
-	// using subagentDefaultTimeoutSec, but child ctx inherits the parent deadline.
-	parentCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	parentCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// The subagent profile lookup will fail (no profile configured), but that
-	// only matters AFTER scheduler.Submit runs the executor goroutine. To
-	// genuinely exercise the timeout we install a profile and use a fake LLM
-	// that blocks until ctx is done.
+	// Fake LLM that blocks until its request ctx is canceled, so the only way
+	// the call returns is when handleSpawnAgent's WithTimeout(ctx, 1s) fires.
 	blocker := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -266,12 +257,18 @@ func TestHandleSpawnAgent_Timeout(t *testing.T) {
 	}
 	args["profile"] = "slow"
 
+	start := time.Now()
 	_, err := a.handleSpawnAgent(parentCtx, args)
+	elapsed := time.Since(start)
+
 	if err == nil {
 		t.Fatal("expected error from timeout, got nil")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected DeadlineExceeded, got %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("timeout took %v — expected ~1s from timeout_seconds; parent ctx (5s) likely fired instead", elapsed)
 	}
 }
 
