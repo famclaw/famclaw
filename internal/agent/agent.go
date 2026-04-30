@@ -254,13 +254,7 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 		maxTurns = 20 // hard cap to prevent runaway subagents
 	}
 
-	timeoutSec := subagentDefaultTimeoutSec
-	if ts, ok := args["timeout_seconds"].(float64); ok && ts > 0 {
-		timeoutSec = int(ts)
-	}
-	if timeoutSec > subagentMaxTimeoutSec {
-		timeoutSec = subagentMaxTimeoutSec
-	}
+	timeoutSec := normalizeTimeoutSeconds(args)
 
 	allowTools := parseStringList(args["tools"])
 	denyTools := parseStringList(args["deny_tools"])
@@ -303,6 +297,20 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	case <-subCtx.Done():
 		return "", fmt.Errorf("subagent timed out: %w", subCtx.Err())
 	}
+}
+
+// normalizeTimeoutSeconds extracts timeout_seconds from spawn_agent args,
+// applying the default for missing/zero/negative values and clamping to the
+// max. Exposed so tests can exercise the same logic handleSpawnAgent uses.
+func normalizeTimeoutSeconds(args map[string]any) int {
+	sec := subagentDefaultTimeoutSec
+	if ts, ok := args["timeout_seconds"].(float64); ok && ts > 0 {
+		sec = int(ts)
+	}
+	if sec > subagentMaxTimeoutSec {
+		sec = subagentMaxTimeoutSec
+	}
+	return sec
 }
 
 // parseStringList converts a JSON-decoded []any into []string. Non-string

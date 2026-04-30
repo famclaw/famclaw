@@ -297,17 +297,9 @@ func TestHandleSpawnAgent_TimeoutCap(t *testing.T) {
 				args["timeout_seconds"] = tc.argValue
 			}
 
-			// Apply the same parsing logic handleSpawnAgent uses.
-			timeoutSec := subagentDefaultTimeoutSec
-			if ts, ok := args["timeout_seconds"].(float64); ok && ts > 0 {
-				timeoutSec = int(ts)
-			}
-			if timeoutSec > subagentMaxTimeoutSec {
-				timeoutSec = subagentMaxTimeoutSec
-			}
-
-			if timeoutSec != tc.wantSecond {
-				t.Errorf("timeout = %d, want %d", timeoutSec, tc.wantSecond)
+			got := normalizeTimeoutSeconds(args)
+			if got != tc.wantSecond {
+				t.Errorf("timeout = %d, want %d", got, tc.wantSecond)
 			}
 		})
 	}
