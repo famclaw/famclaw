@@ -28,6 +28,10 @@ type Evaluator struct {
 // the built-in policies compiled into the binary are loaded; otherwise
 // they are read from the given filesystem paths.
 func NewEvaluator(policyDir, dataDir string) (*Evaluator, error) {
+	if (policyDir == "") != (dataDir == "") {
+		return nil, fmt.Errorf("policyDir and dataDir must both be set or both be empty (got policyDir=%q, dataDir=%q)", policyDir, dataDir)
+	}
+
 	modules := make(map[string]string)
 	data := make(map[string]any)
 
