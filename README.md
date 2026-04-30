@@ -121,6 +121,28 @@ famclaw skill install seccheck
 
 ---
 
+## Agent dispatch (`spawn_agent`)
+
+The parent LLM can delegate sub-tasks to a different LLM profile via a built-in tool. Use it to send research-style or compute-heavy work to a local model (e.g., Qwen3-14B on Ollama) while the parent stays on a fast/cloud model.
+
+```jsonc
+// Tool call from the parent LLM:
+{
+  "name": "builtin__spawn_agent",
+  "arguments": {
+    "prompt": "Summarize the key risks in the attached log",
+    "profile": "qwen3-local",          // optional: omit to use the default profile
+    "timeout_seconds": 120,             // default 300, capped at 1800
+    "tools": ["fs.read", "web.search"], // allowlist; omit for NO MCP tools (default-deny)
+    "deny_tools": ["fs.write"]          // subtracted from the allowlist
+  }
+}
+```
+
+Concurrency is bounded by the scheduler (`subagent.NewScheduler(2)` in `cmd/famclaw/main.go`). Each `spawn_agent` invocation gets a dedicated result channel — concurrent calls do not cross-deliver. The tool is parent-only (role-gated via `turn.Tools`) and has no MCP tool access unless the parent explicitly allowlists. Lives in `internal/subagent/`.
+
+---
+
 ## Security scanning
 
 FamClaw uses [HoneyBadger](https://github.com/famclaw/honeybadger) to scan skills at two points:
@@ -146,7 +168,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 | **Multi-backend LLM** | OpenAI-compatible: Ollama, llama.cpp, Groq, OpenAI, OpenRouter |
 | **Smart tool selection** | Token-budget-aware filtering, role+skill scoping |
 | **Context compression** | Tiered truncation keeping system prompt + pinned messages |
-| **Subagent dispatching** | Concurrent subagents with explicit LLM profile control |
+| **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
 | **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
 | **llama.cpp sidecar** | Spawns llama-server, GGUF model catalog, TurboQuant support |
 | **Security scanning** | Honeybadger runtime stage, install-time + stale scan gates |
