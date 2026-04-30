@@ -19,6 +19,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      # Keep in sync with the open-policy-agent/opa version pinned in go.mod.
+      OPA_VERSION: 1.15.2
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -27,11 +30,30 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Cache OPA binary
+        id: cache-opa
+        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf # v4.2.2
+        with:
+          path: /usr/local/bin/opa
+          key: opa-linux-amd64-${{ env.OPA_VERSION }}
+
       - name: Install OPA
+        if: steps.cache-opa.outputs.cache-hit != 'true'
         run: |
-          curl -L -o /usr/local/bin/opa \
-            https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
+          set -euo pipefail
+          # Pull from GitHub releases (not openpolicyagent.org/downloads/latest,
+          # which has flaked with multi-minute zero-byte stalls). Retry on
+          # transient network failures and bound the wall-clock so a single
+          # bad run can't hold the job for 5+ minutes.
+          curl --fail --location \
+               --retry 5 --retry-connrefused --retry-delay 5 \
+               --connect-timeout 15 --max-time 120 \
+               -o /usr/local/bin/opa \
+               "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/opa_linux_amd64_static"
           chmod +x /usr/local/bin/opa
+
+      - name: Verify OPA
+        run: opa version
 
       - name: Go mod tidy check
         run: |
