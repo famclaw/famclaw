@@ -299,18 +299,20 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	}
 }
 
-// normalizeTimeoutSeconds extracts timeout_seconds from spawn_agent args,
-// applying the default for missing/zero/negative values and clamping to the
-// max. Exposed so tests can exercise the same logic handleSpawnAgent uses.
+// normalizeTimeoutSeconds extracts timeout_seconds from spawn_agent args.
+// JSON numbers decode to float64 in Go, so we read it as a float and treat
+// missing, non-numeric, zero, negative, or sub-second values as "use the
+// default." This avoids fractional inputs (e.g. 0.5) silently truncating to
+// an int 0 and producing an immediate-deadline timeout.
 func normalizeTimeoutSeconds(args map[string]any) int {
-	sec := subagentDefaultTimeoutSec
-	if ts, ok := args["timeout_seconds"].(float64); ok && ts > 0 {
-		sec = int(ts)
+	ts, ok := args["timeout_seconds"].(float64)
+	if !ok || ts < 1 {
+		return subagentDefaultTimeoutSec
 	}
-	if sec > subagentMaxTimeoutSec {
-		sec = subagentMaxTimeoutSec
+	if ts > float64(subagentMaxTimeoutSec) {
+		return subagentMaxTimeoutSec
 	}
-	return sec
+	return int(ts)
 }
 
 // parseStringList converts a JSON-decoded []any into []string. Non-string

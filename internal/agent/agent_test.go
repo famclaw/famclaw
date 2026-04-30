@@ -287,6 +287,10 @@ func TestHandleSpawnAgent_TimeoutCap(t *testing.T) {
 		{"zero uses default", float64(0), subagentDefaultTimeoutSec},
 		{"negative uses default", float64(-5), subagentDefaultTimeoutSec},
 		{"valid passes through", float64(60), 60},
+		{"sub-second uses default (was: int truncation to 0)", float64(0.5), subagentDefaultTimeoutSec},
+		{"just-under-1 uses default", float64(0.999), subagentDefaultTimeoutSec},
+		{"exactly 1 passes through", float64(1), 1},
+		{"fractional above 1 truncates to int", float64(60.7), 60},
 		{"over cap is clamped", float64(99999), subagentMaxTimeoutSec},
 	}
 
