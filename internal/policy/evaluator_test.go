@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -50,6 +51,51 @@ func TestNewEvaluator_CustomDir(t *testing.T) {
 	}
 	if dec.Action != "block" {
 		t.Errorf("child self_harm should be blocked, got %q (reason: %q)", dec.Action, dec.Reason)
+	}
+}
+
+// TestNewEvaluator_HalfOverride verifies the guard against half-configured
+// policy bundles. Setting only one of policyDir/dataDir would silently mix
+// embedded and filesystem sources — the guard rejects this at construction.
+func TestNewEvaluator_HalfOverride(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	realPolicyDir := filepath.Join(cwd, "policies", "family")
+	realDataDir := filepath.Join(cwd, "policies", "data")
+
+	tests := []struct {
+		name      string
+		policyDir string
+		dataDir   string
+		wantErr   bool
+	}{
+		{"both empty uses embedded", "", "", false},
+		{"both set uses filesystem", realPolicyDir, realDataDir, false},
+		{"only policyDir set is rejected", realPolicyDir, "", true},
+		{"only dataDir set is rejected", "", realDataDir, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev, err := NewEvaluator(tt.policyDir, tt.dataDir)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for half-override, got nil (ev=%v)", ev)
+				}
+				msg := err.Error()
+				for _, want := range []string{"must both be set", "policyDir", "dataDir"} {
+					if !strings.Contains(msg, want) {
+						t.Errorf("error %q should mention %q", msg, want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 
