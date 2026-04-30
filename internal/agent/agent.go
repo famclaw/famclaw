@@ -233,6 +233,12 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 	}
 }
 
+// Subagent timeout defaults / caps (in seconds).
+const (
+	subagentDefaultTimeoutSec = 300  // 5 minutes
+	subagentMaxTimeoutSec     = 1800 // 30 minutes
+)
+
 func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (string, error) {
 	prompt, _ := args["prompt"].(string)
 	if prompt == "" {
@@ -248,10 +254,23 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 		maxTurns = 20 // hard cap to prevent runaway subagents
 	}
 
+	timeoutSec := subagentDefaultTimeoutSec
+	if ts, ok := args["timeout_seconds"].(float64); ok && ts > 0 {
+		timeoutSec = int(ts)
+	}
+	if timeoutSec > subagentMaxTimeoutSec {
+		timeoutSec = subagentMaxTimeoutSec
+	}
+
+	allowTools := parseStringList(args["tools"])
+	denyTools := parseStringList(args["deny_tools"])
+
 	cfg := subagent.Config{
 		Prompt:     prompt,
 		LLMProfile: profile,
 		MaxTurns:   maxTurns,
+		Tools:      allowTools,
+		DenyTools:  denyTools,
 	}
 
 	execDeps := subagent.ExecutorDeps{
@@ -262,29 +281,44 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 		MaxTokens:   a.cfg.LLM.MaxResponseTokens,
 	}
 
-	// TODO: The scheduler uses a shared result channel. When multiple subagents
-	// complete concurrently, the parent may receive the wrong result. For v1 this
-	// is acceptable (one subagent at a time per parent turn). Future parallel
-	// fan-out needs per-request result channels.
-	agentID, err := a.scheduler.Submit(ctx, cfg, func(ctx context.Context, cfg subagent.Config) (string, error) {
+	subCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	agentID, resultCh, err := a.scheduler.Submit(subCtx, cfg, func(ctx context.Context, cfg subagent.Config) (string, error) {
 		return subagent.Execute(ctx, cfg, execDeps)
 	})
 	if err != nil {
 		return "", fmt.Errorf("spawning subagent: %w", err)
 	}
 
-	log.Printf("[agent][%s] spawned subagent %s on profile %q", a.user.Name, agentID, profile)
+	log.Printf("[agent][%s] spawned subagent %s on profile %q (timeout=%ds)", a.user.Name, agentID, profile, timeoutSec)
 
 	select {
-	case result := <-a.scheduler.Results():
+	case result := <-resultCh:
 		if result.Error != nil {
 			return "", fmt.Errorf("subagent %s failed: %w", result.AgentID, result.Error)
 		}
 		log.Printf("[agent][%s] subagent %s completed (%d chars)", a.user.Name, result.AgentID, len(result.Output))
 		return result.Output, nil
-	case <-ctx.Done():
-		return "", fmt.Errorf("subagent timed out: %w", ctx.Err())
+	case <-subCtx.Done():
+		return "", fmt.Errorf("subagent timed out: %w", subCtx.Err())
 	}
+}
+
+// parseStringList converts a JSON-decoded []any into []string. Non-string
+// elements are skipped. Returns nil for nil/empty input or non-slice values.
+func parseStringList(v any) []string {
+	raw, ok := v.([]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if s, ok := item.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // buildMessages assembles the LLM message list from history + system prompt.

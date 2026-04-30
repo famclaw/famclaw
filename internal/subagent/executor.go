@@ -21,6 +21,57 @@ type ExecutorDeps struct {
 	MaxTokens   int
 }
 
+// filterTools applies the default-deny allowlist + denylist to MCP tool infos.
+// Empty allow yields zero tools and an empty allowedTools map (so the
+// subagent has NO MCP tools by default). Denied entries are subtracted after
+// the allowlist filter.
+func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map[string]bool) {
+	allowed := make(map[string]bool)
+	if len(allow) == 0 {
+		return nil, allowed
+	}
+	allowSet := make(map[string]bool, len(allow))
+	for _, a := range allow {
+		allowSet[a] = true
+	}
+	denied := make(map[string]bool, len(deny))
+	for _, d := range deny {
+		denied[d] = true
+	}
+	var tools []llm.ToolDef
+	for _, info := range infos {
+		if !allowSet[info.Name] {
+			continue
+		}
+		if denied[info.Name] {
+			continue
+		}
+		allowed[info.Name] = true
+		tools = append(tools, llm.ToolDef{
+			Type: "function",
+			Function: llm.ToolDefFunc{
+				Name:        info.Name,
+				Description: info.Description,
+				Parameters:  info.InputSchema,
+			},
+		})
+	}
+	return tools, allowed
+}
+
+// buildSystemPrompt assembles the subagent's system prompt. When the endpoint
+// uses OAuth (Anthropic), it prepends the ClaudeCodeSystemPrefix expected by
+// the API. Exported via lowercase so tests in the same package can exercise it.
+func buildSystemPrompt(prompt, authType string) string {
+	systemPrompt := "You are a focused task agent. Complete the following task and return your result.\n" +
+		"Be concise. Do not ask clarifying questions. Use available tools if they help.\n" +
+		"Task: " + prompt
+	if authType == "oauth" {
+		systemPrompt = llm.ClaudeCodeSystemPrefix + "\n\n" + systemPrompt
+	}
+	return systemPrompt
+}
+
 // Execute runs a subagent conversation and returns the final output.
 // It creates an LLM client for the specified profile, builds a system
 // prompt, runs a tool loop, and returns the result.
@@ -37,51 +88,22 @@ func Execute(ctx context.Context, cfg Config, deps ExecutorDeps) (string, error)
 		client = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 	}
 
-	systemPrompt := "You are a focused task agent. Complete the following task and return your result.\n" +
-		"Be concise. Do not ask clarifying questions. Use available tools if they help.\n" +
-		"Task: " + cfg.Prompt
+	systemPrompt := buildSystemPrompt(cfg.Prompt, ep.AuthType)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: cfg.Prompt},
 	}
 
-	// Build tool definitions from the MCP pool (filtered by deny/allow lists).
+	// Build tool definitions from the MCP pool. Default-deny: only tools
+	// explicitly listed in cfg.Tools are exposed to the subagent. DenyTools
+	// is subtracted from that allowlist. Empty cfg.Tools = no MCP tools.
 	// allowedTools also enforces at CallTool time — even if the LLM hallucinates
 	// a tool name not in the definitions, the executor won't call it.
 	var tools []llm.ToolDef
 	allowedTools := make(map[string]bool)
 	if deps.Pool != nil {
-		denied := make(map[string]bool, len(cfg.DenyTools))
-		for _, d := range cfg.DenyTools {
-			denied[d] = true
-		}
-		for _, info := range deps.Pool.ListToolInfos() {
-			if denied[info.Name] {
-				continue
-			}
-			if len(cfg.Tools) > 0 {
-				allowed := false
-				for _, a := range cfg.Tools {
-					if a == info.Name {
-						allowed = true
-						break
-					}
-				}
-				if !allowed {
-					continue
-				}
-			}
-			allowedTools[info.Name] = true
-			tools = append(tools, llm.ToolDef{
-				Type: "function",
-				Function: llm.ToolDefFunc{
-					Name:        info.Name,
-					Description: info.Description,
-					Parameters:  info.InputSchema,
-				},
-			})
-		}
+		tools, allowedTools = filterTools(deps.Pool.ListToolInfos(), cfg.Tools, cfg.DenyTools)
 	}
 
 	maxTurns := cfg.MaxTurns
@@ -125,8 +147,9 @@ func Execute(ctx context.Context, cfg Config, deps ExecutorDeps) (string, error)
 			// a tool not in the definitions, don't let it through.
 			if !allowedTools[tc.Function.Name] || deps.Pool == nil || !deps.Pool.HasTool(tc.Function.Name) {
 				messages = append(messages, llm.Message{
-					Role:    "tool",
-					Content: fmt.Sprintf("Error: unknown tool %q", tc.Function.Name),
+					Role:       "tool",
+					Content:    fmt.Sprintf("Error: unknown tool %q", tc.Function.Name),
+					ToolCallID: tc.ID,
 				})
 				continue
 			}
@@ -148,8 +171,9 @@ func Execute(ctx context.Context, cfg Config, deps ExecutorDeps) (string, error)
 			}
 
 			messages = append(messages, llm.Message{
-				Role:    "tool",
-				Content: toolText,
+				Role:       "tool",
+				Content:    toolText,
+				ToolCallID: tc.ID,
 			})
 		}
 	}

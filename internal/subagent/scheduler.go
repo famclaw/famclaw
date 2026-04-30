@@ -12,9 +12,8 @@ import (
 // Same-backend jobs are queued sequentially.
 type Scheduler struct {
 	maxConcurrent int
-	active        atomic.Int32
-	mu            sync.Mutex
-	results       chan Result
+	mu            sync.Mutex   // guards the check-and-increment in Submit
+	active        atomic.Int32 // read by Active(); written under mu in Submit
 }
 
 // NewScheduler creates a scheduler with the given concurrency limit.
@@ -24,38 +23,44 @@ func NewScheduler(maxConcurrent int) *Scheduler {
 	}
 	return &Scheduler{
 		maxConcurrent: maxConcurrent,
-		results:       make(chan Result, 100),
 	}
 }
 
 // Submit queues a subagent job for execution.
-// The executor function is called in a goroutine and should run the subagent pipeline.
-// Returns the agent ID for tracking.
-func (s *Scheduler) Submit(ctx context.Context, cfg Config, executor func(ctx context.Context, cfg Config) (string, error)) (string, error) {
+//
+// The executor function is called in a goroutine and runs the subagent
+// pipeline. The returned channel receives exactly one Result and is then
+// closed; each Submit call gets its own dedicated buffered channel so
+// concurrent submissions do not cross-deliver results.
+//
+// The check-and-increment of active is guarded by s.mu so the concurrency
+// limit is enforced atomically (no TOCTOU window).
+func (s *Scheduler) Submit(ctx context.Context, cfg Config, executor func(ctx context.Context, cfg Config) (string, error)) (string, <-chan Result, error) {
+	s.mu.Lock()
 	if int(s.active.Load()) >= s.maxConcurrent {
-		return "", fmt.Errorf("subagent queue full (%d/%d active)", s.active.Load(), s.maxConcurrent)
+		current := s.active.Load()
+		s.mu.Unlock()
+		return "", nil, fmt.Errorf("subagent queue full (%d/%d active)", current, s.maxConcurrent)
 	}
+	s.active.Add(1)
+	s.mu.Unlock()
 
 	agentID := generateID()
-	s.active.Add(1)
+	resultCh := make(chan Result, 1)
 
 	go func() {
 		defer s.active.Add(-1)
+		defer close(resultCh)
 
 		output, err := executor(ctx, cfg)
-		s.results <- Result{
+		resultCh <- Result{
 			AgentID: agentID,
 			Output:  output,
 			Error:   err,
 		}
 	}()
 
-	return agentID, nil
-}
-
-// Results returns the channel where completed subagent results are sent.
-func (s *Scheduler) Results() <-chan Result {
-	return s.results
+	return agentID, resultCh, nil
 }
 
 // Active returns the number of currently running subagents.

@@ -16,9 +16,10 @@ import (
 
 // Message is a conversation turn.
 type Message struct {
-	Role      string     `json:"role"`                // system | user | assistant | tool
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"` // present when LLM requests tool use
+	Role       string     `json:"role"` // system | user | assistant | tool
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // present when LLM requests tool use
+	ToolCallID string     `json:"tool_call_id,omitempty"` // required on role=tool replies (OpenAI)
 }
 
 // ToolCall represents a tool invocation requested by the LLM.

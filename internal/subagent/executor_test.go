@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/llm"
+	"github.com/famclaw/famclaw/internal/mcp"
 )
 
 // mockOpenAIResponse returns a handler that responds with the given content and tool calls.
@@ -115,6 +118,93 @@ func TestExecute_MaxTurnsExhausted(t *testing.T) {
 	// MaxTurns=3 means 3 loop iterations, each with one LLM call after tool errors
 	if callCount < cfg.MaxTurns {
 		t.Errorf("expected at least %d LLM calls, got %d", cfg.MaxTurns, callCount)
+	}
+}
+
+func TestBuildSystemPrompt_OAuthPrefix(t *testing.T) {
+	tests := []struct {
+		name       string
+		authType   string
+		wantPrefix string
+	}{
+		{"oauth prepends ClaudeCode prefix", "oauth", llm.ClaudeCodeSystemPrefix},
+		{"api_key uses task-agent intro", "api_key", "You are a focused task agent"},
+		{"empty auth uses task-agent intro", "", "You are a focused task agent"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildSystemPrompt("do a thing", tc.authType)
+			if !strings.HasPrefix(got, tc.wantPrefix) {
+				t.Errorf("prompt does not start with %q\ngot: %q", tc.wantPrefix, got)
+			}
+			if !strings.Contains(got, "do a thing") {
+				t.Errorf("prompt missing user task; got: %q", got)
+			}
+		})
+	}
+}
+
+func TestFilterTools_DefaultDeny(t *testing.T) {
+	infos := []mcp.ToolInfo{
+		{Name: "a", Description: "tool a"},
+		{Name: "b", Description: "tool b"},
+		{Name: "c", Description: "tool c"},
+	}
+
+	tests := []struct {
+		name     string
+		allow    []string
+		deny     []string
+		wantNum  int
+		wantHave []string
+	}{
+		{
+			name:    "empty allow yields zero tools",
+			allow:   nil,
+			wantNum: 0,
+		},
+		{
+			name:     "single allow yields one tool",
+			allow:    []string{"a"},
+			wantNum:  1,
+			wantHave: []string{"a"},
+		},
+		{
+			name:     "deny subtracts from allow",
+			allow:    []string{"a", "b"},
+			deny:     []string{"a"},
+			wantNum:  1,
+			wantHave: []string{"b"},
+		},
+		{
+			name:    "deny everything yields zero",
+			allow:   []string{"a", "b", "c"},
+			deny:    []string{"a", "b", "c"},
+			wantNum: 0,
+		},
+		{
+			name:    "allow unknown name yields zero",
+			allow:   []string{"nonexistent"},
+			wantNum: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tools, allowed := filterTools(infos, tc.allow, tc.deny)
+			if len(tools) != tc.wantNum {
+				t.Errorf("len(tools) = %d, want %d (tools=%v)", len(tools), tc.wantNum, tools)
+			}
+			if len(allowed) != tc.wantNum {
+				t.Errorf("len(allowed) = %d, want %d (allowed=%v)", len(allowed), tc.wantNum, allowed)
+			}
+			for _, name := range tc.wantHave {
+				if !allowed[name] {
+					t.Errorf("expected %q in allowed map, got %v", name, allowed)
+				}
+			}
+		})
 	}
 }
 
