@@ -150,11 +150,6 @@ type SecCheckConfig struct {
 	AsyncScanTimeout   string `yaml:"async_scan_timeout"`   // per-scan timeout, e.g. "60s"
 	QuarantineOnFail   bool   `yaml:"quarantine_on_fail"`   // block tools after FAIL
 	NotifyOnQuarantine bool   `yaml:"notify_on_quarantine"` // send parent notification
-
-	// Legacy fields (kept for config compat)
-	Sandbox string `yaml:"sandbox,omitempty"`
-	Timeout string `yaml:"timeout,omitempty"`
-	OSVAPI  string `yaml:"osv_api,omitempty"`
 }
 
 type NotificationsConfig struct {
@@ -351,9 +346,6 @@ func (c *Config) ModelFor(user *UserConfig) string {
 	return c.LLM.Model
 }
 
-// LLMClientFor resolves the LLM endpoint for a user.
-// Priority: user.LLMProfile → cfg.LLM.Default → legacy cfg.LLM.BaseURL/Model.
-// Logs a warning if a named profile is not found.
 // LLMEndpoint holds resolved LLM connection details for a user.
 type LLMEndpoint struct {
 	BaseURL  string
@@ -362,12 +354,8 @@ type LLMEndpoint struct {
 	AuthType string // "api_key" (default) | "oauth"
 }
 
-func (c *Config) LLMClientFor(user *UserConfig) (baseURL, model, apiKey string) {
-	ep := c.LLMEndpointFor(user)
-	return ep.BaseURL, ep.Model, ep.APIKey
-}
-
 // LLMEndpointFor resolves the full LLM endpoint for a user, including AuthType.
+// Priority: user.LLMProfile → cfg.LLM.Default → legacy cfg.LLM.BaseURL/Model.
 func (c *Config) LLMEndpointFor(user *UserConfig) LLMEndpoint {
 	// Try user's profile override
 	if user != nil && user.LLMProfile != "" {
