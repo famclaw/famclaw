@@ -5,44 +5,62 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+## v0.5.0 — 2026-05-01
+
 ### Added
 - **Agent dispatch via `spawn_agent` builtin tool.** The parent LLM can
-  now delegate sub-tasks to a different LLM profile by calling
+  delegate sub-tasks to a different LLM profile by calling
   `spawn_agent(prompt, profile)`. The subagent runs on the specified
-  profile (e.g., Qwen3-14B on local Ollama), has access to MCP tools,
-  and returns its result to the parent conversation. Concurrency is
-  controlled by the subagent scheduler (default: 2 concurrent).
+  profile (e.g., Qwen3-14B on local Ollama), has access to explicitly
+  allowed MCP tools, and returns its result to the parent conversation.
+  Concurrency controlled by the subagent scheduler (default: 2
+  concurrent). Configurable timeout via `timeout_seconds` (default 5
+  minutes). Parent-only role gate.
 - `LLMEndpointForProfile(name)` config helper for direct profile
-  resolution by name (used by subagent executor).
+  resolution by name.
 - `BuiltinHandler` support in the agentcore tool loop — builtin tools
   (prefixed `builtin__`) route to a handler function instead of the
   MCP pool.
+- README section documenting `spawn_agent` dispatch, JSON schema, and
+  subagent guarantees.
 
 ### Fixed
-- **OPA policies are now embedded in the binary.** Previous releases
-  required a clone of the source repo for the `policies/` directory —
-  the binary alone would crash at startup with
-  `policy: reading policy dir "./policies/family": no such file or directory`.
-  Default policies now load from `go:embed` and ship inside the binary,
-  so a downloaded release tarball runs standalone.
+- **OPA policies embedded in binary.** Previous releases crashed at
+  startup without a repo clone for the `policies/` directory. Policies
+  now ship inside the binary via `go:embed`. Custom overrides still
+  supported via `policies.dir` and `policies.data_dir` in config.yaml.
+- **Half-overridden policy bundles rejected.** Setting only
+  `policies.dir` without `policies.data_dir` (or vice versa) previously
+  mixed embedded and filesystem sources silently. Now fails fast with a
+  clear error.
+- **Scheduler concurrency race fixed.** `Submit()` previously checked
+  and acquired the concurrency slot without holding the lock (TOCTOU).
+- **Subagent results no longer cross-delivered.** Each `Submit()` now
+  returns a per-call result channel instead of a shared channel.
+- **Sub-second `timeout_seconds` handled correctly.** Values like 0.5
+  previously truncated to 0, creating an immediate-deadline subagent.
+- `tool_call_id` propagated on `llm.Message` for OpenAI-compatible API
+  compliance. Test coverage added for all four tool-reply branches.
 
 ### Changed
-- Production `.rego` files and `topics.json` moved from `policies/` (repo
-  root) to `internal/policy/policies/`. OPA test commands now run against
-  the new path (Makefile, CI workflow updated).
-- Shipped configs (install scripts, build-image, e2e test, release smoke
-  test, `config.yaml` example) no longer set `policies.dir` /
-  `policies.data_dir`. Embedded is the default; the fields remain
-  available in `config.yaml` for filesystem-based custom overrides.
-- Startup log line distinguishes `Policies: embedded (built-in)` from
+- Production `.rego` files and `topics.json` moved from `policies/`
+  (repo root) to `internal/policy/policies/`. OPA test commands updated.
+- Subagent tools default to deny — empty allowlist means no MCP tools.
+  Parent must explicitly grant tool access via `tools` parameter.
+- Startup log distinguishes `Policies: embedded (built-in)` from
   `Policies: <path> (custom override)`.
+- CI: OPA install pinned to v1.15.2 from GitHub Releases with SHA256
+  verification, retry/timeout, and binary caching.
 
 ### Upgrade notes
-- If you have a `policies:` block in `/opt/famclaw/config.yaml` from
-  an earlier install, remove it so the binary uses embedded policies:
+- If you have a `policies:` block in your config.yaml from an earlier
+  install, remove it so the binary uses embedded policies:
   ```bash
   sudo sed -i '/^policies:/,/^$/d' /opt/famclaw/config.yaml
   ```
-- The famclaw service warns at startup if `policies.dir` is set to a
-  directory whose contents mirror the built-in policies — drop the
-  block to silence the warning and use the embedded set.
+
+## v0.4.0 — 2026-04-07
+
+Initial release with runtime security scanning, install-time skill
+gating, OPA content filtering, Telegram/Discord/WhatsApp gateways,
+multi-format skill adapters, and inference sidecar.
