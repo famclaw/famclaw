@@ -1,8 +1,9 @@
 //go:build integration
 
-// Package famclaw_test contains integration tests that exercise the full message flow.
-// Run with: go test -tags integration ./... -v -timeout 120s
-package famclaw_test
+// Integration tests live alongside the e2e tests in package e2e but use a
+// disjoint build tag (`integration`). Run with:
+//   go test -tags integration ./... -v -timeout 120s
+package e2e
 
 import (
 	"context"

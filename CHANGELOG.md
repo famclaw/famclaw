@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Changed
+- **Agent constructor takes `AgentDeps` struct** instead of 7 individual
+  setter methods. Forgotten dependencies now surface at compile time
+  instead of as a runtime nil-pointer dereference.
+- `MaxToolCallIterations` constant moved to the top of `internal/mcp/pool.go`
+  with a godoc comment.
+- `integration_test.go` moved from the repo root into `e2e/` as
+  `package e2e` (kept `//go:build integration` tag — CI command unchanged).
+
+### Fixed
+- Database write errors (`SaveMessage`) are now logged instead of silently
+  swallowed. Disk-full and schema corruption surface in the logs instead
+  of being lost.
+
+### Removed
+- `min(a, b int)` shim — Go 1.21+ provides a builtin `min`.
+- `outputBlockedPatterns` and `filterOutput` dead code in `internal/agent`
+  (production filtering lives in `internal/agentcore/stage_output_filter.go`,
+  covered by `TestStageOutputFilterChild`).
+- `Config.LLMClientFor` — duplicate of `LLMEndpointFor` with no callers.
+- `SecCheckConfig.{Sandbox, Timeout, OSVAPI}` legacy fields — never read.
+
 ## v0.5.0 — 2026-05-01
 
 ### Added
