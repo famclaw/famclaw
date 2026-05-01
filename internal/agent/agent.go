@@ -96,7 +96,9 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client
 // Delegates to agentcore.FamilyPipeline for the processing stages.
 func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(string)) (*Response, error) {
 	// Save user message before processing
-	_ = a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, "", "")
+	if err := a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, "", ""); err != nil {
+		log.Printf("[agent][%s] save user message: %v", a.user.Name, err)
+	}
 
 	// Build conversation context
 	history, _ := a.db.GetConversationHistory(a.convID, 20)
@@ -199,7 +201,9 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// Handle policy blocks (not a real error — just a non-allow decision)
 	if errors.Is(err, agentcore.ErrPolicyBlock) {
 		log.Printf("[agent][%s] cat=%s action=%s", a.user.Name, turn.Category, turn.Policy.Action)
-		_ = a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), turn.Policy.Action)
+		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), turn.Policy.Action); err != nil {
+			log.Printf("[agent][%s] save policy-blocked response: %v", a.user.Name, err)
+		}
 		return &Response{
 			Content:      turn.Output,
 			PolicyAction: turn.Policy.Action,
@@ -214,7 +218,9 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	log.Printf("[agent][%s] cat=%s action=allow", a.user.Name, turn.Category)
 
 	// Save assistant response
-	_ = a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), "allow")
+	if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), "allow"); err != nil {
+		log.Printf("[agent][%s] save assistant response: %v", a.user.Name, err)
+	}
 
 	return &Response{
 		Content:      turn.Output,
