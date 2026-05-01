@@ -2,11 +2,15 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/policy"
 )
 
@@ -133,5 +137,144 @@ func TestToolsToLLMDefs(t *testing.T) {
 	}
 	if defs[0].Function.Name != "mcp__weather__forecast" {
 		t.Errorf("name = %q", defs[0].Function.Name)
+	}
+}
+
+// TestStageToolLoop_ToolCallIDPropagation asserts that every tool-reply
+// llm.Message the stage appends carries the originating ToolCall.ID. The
+// OpenAI Chat Completions spec (and strict-mode backends like vLLM and
+// gemini-openai-proxy) require tool_call_id on role:"tool" messages — without
+// it the second LLM round-trip 4xxes.
+//
+// We cover all four branches that synthesize a tool reply:
+//   1. Tool not in turn.Tools allowlist
+//   2. Builtin handler returns error
+//   3. Builtin handler returns success
+//   4. Unknown tool (passes allowlist but neither pool nor builtin route fires)
+func TestStageToolLoop_ToolCallIDPropagation(t *testing.T) {
+	type capturedReq struct {
+		Messages []llm.Message `json:"messages"`
+	}
+
+	cases := []struct {
+		name        string
+		turnTool    string
+		callName    string
+		callID      string
+		buildHandler func() func(ctx context.Context, name string, args map[string]any) (string, error)
+		wantContent string
+	}{
+		{
+			name:     "rejected by turn allowlist",
+			turnTool: "allowed",
+			callName: "not_allowed",
+			callID:   "call_rejected",
+			buildHandler: func() func(ctx context.Context, name string, args map[string]any) (string, error) {
+				// Stage requires either Pool or BuiltinHandler to be non-nil
+				// to run; supply a no-op handler that should never be called
+				// because the allowlist rejects first.
+				return func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("builtin should not have been invoked")
+				}
+			},
+			wantContent: `Error: tool "not_allowed" not available`,
+		},
+		{
+			name:     "builtin handler error",
+			turnTool: "builtin__failboat",
+			callName: "builtin__failboat",
+			callID:   "call_builtin_err",
+			buildHandler: func() func(ctx context.Context, name string, args map[string]any) (string, error) {
+				return func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("synthetic builtin failure")
+				}
+			},
+			wantContent: "Error: synthetic builtin failure",
+		},
+		{
+			name:     "builtin handler success",
+			turnTool: "builtin__okboat",
+			callName: "builtin__okboat",
+			callID:   "call_builtin_ok",
+			buildHandler: func() func(ctx context.Context, name string, args map[string]any) (string, error) {
+				return func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "ok", nil
+				}
+			},
+			wantContent: "ok",
+		},
+		{
+			name:     "unknown tool (no pool, no builtin prefix)",
+			turnTool: "ghost",
+			callName: "ghost",
+			callID:   "call_unknown",
+			buildHandler: func() func(ctx context.Context, name string, args map[string]any) (string, error) {
+				return func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("builtin should not have been invoked for non-builtin name")
+				}
+			},
+			wantContent: `Error: unknown tool "ghost"`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured capturedReq
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&captured)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"choices": []map[string]any{{
+						"message":       map[string]any{"role": "assistant", "content": "done"},
+						"finish_reason": "stop",
+					}},
+				})
+			}))
+			defer server.Close()
+
+			deps := ToolLoopDeps{
+				ClientFactory: func(*Turn) *llm.Client {
+					return llm.NewClient(server.URL, "test", "")
+				},
+				BuiltinHandler: tc.buildHandler(),
+				MaxIterations:  2,
+			}
+			stage := NewStageToolLoop(deps)
+
+			turn := &Turn{
+				User:  &config.UserConfig{Name: "tester"},
+				Tools: []Tool{{Name: tc.turnTool}},
+			}
+			turn.SetMeta("pending_tool_calls", []llm.ToolCall{{
+				ID:       tc.callID,
+				Function: llm.ToolCallFunction{Name: tc.callName, Arguments: map[string]any{}},
+			}})
+			turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "hi"}})
+
+			if err := stage(context.Background(), turn); err != nil {
+				t.Fatalf("stage: %v", err)
+			}
+
+			var toolReply *llm.Message
+			for i := range captured.Messages {
+				if captured.Messages[i].Role == "tool" {
+					toolReply = &captured.Messages[i]
+					break
+				}
+			}
+			if toolReply == nil {
+				t.Fatalf("no role:tool message reached the LLM; captured=%+v", captured.Messages)
+			}
+			if toolReply.ToolCallID != tc.callID {
+				t.Errorf("ToolCallID = %q, want %q", toolReply.ToolCallID, tc.callID)
+			}
+			if toolReply.Content != tc.wantContent {
+				t.Errorf("Content = %q, want %q", toolReply.Content, tc.wantContent)
+			}
+			// The recorded ToolResult on the turn should also reflect the call.
+			if len(turn.ToolCalls) != 1 || turn.ToolCalls[0].ToolName != tc.callName {
+				t.Errorf("turn.ToolCalls = %+v, want exactly one entry for %q", turn.ToolCalls, tc.callName)
+			}
+		})
 	}
 }
