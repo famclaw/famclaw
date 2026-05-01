@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
@@ -394,26 +393,6 @@ func ageContextPrompt(user *config.UserConfig) string {
 	default:
 		return ""
 	}
-}
-
-// outputBlockedPatterns kept for backward compatibility with existing tests.
-var outputBlockedPatterns = []string{
-	"suicide", "kill yourself", "self-harm", "cutting yourself",
-	"pornography", "sexual intercourse", "explicit content",
-	"racial slur", "ethnic cleansing", "white supremac",
-	"how to make a bomb", "how to steal", "how to hack",
-}
-
-// filterOutput returns true if the LLM response contains blocked content.
-// Kept for backward compatibility with existing tests — the pipeline uses StageOutputFilter.
-func filterOutput(response string) bool {
-	lower := strings.ToLower(response)
-	for _, pattern := range outputBlockedPatterns {
-		if strings.Contains(lower, pattern) {
-			return true
-		}
-	}
-	return false
 }
 
 // ApprovalID generates a deterministic approval ID for user+category+day.

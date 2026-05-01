@@ -355,11 +355,6 @@ func must(err error, context string) {
 	}
 }
 
-func min(a, b int) int {
-	if a < b { return a }
-	return b
-}
-
 // hasOnlyBuiltinPolicyNames reports whether dir contains exactly the
 // filenames of the built-in policies (and nothing else). This is a
 // filename-only heuristic — it does not compare file contents — so the
