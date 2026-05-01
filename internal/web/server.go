@@ -154,10 +154,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	} else {
 		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 	}
-	a := agent.NewAgent(userCfg, s.cfg, llmClient, s.evaluator, s.clf, s.db)
-	a.SetSkills(s.skills)
-	a.SetPool(s.pool)
-	a.SetOAuthStore(s.oauthStore)
+	a := agent.NewAgent(userCfg, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
+		Skills:     s.skills,
+		Pool:       s.pool,
+		OAuthStore: s.oauthStore,
+	})
 
 	for {
 		var msg wsMessage

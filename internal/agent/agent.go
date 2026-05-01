@@ -50,43 +50,45 @@ type Agent struct {
 	convID       string
 }
 
-// SetPool attaches an MCP tool pool to the agent.
-func (a *Agent) SetPool(p *mcp.Pool) { a.pool = p }
+// AgentDeps holds optional dependencies for an Agent. All fields are
+// safe to leave nil — the Agent degrades gracefully (no MCP tools,
+// no skills, no scanning, no subagents).
+type AgentDeps struct {
+	Pool         *mcp.Pool
+	Skills       []*skillbridge.Skill
+	Quarantine   *skillbridge.Quarantine
+	Scanner      skillbridge.Scanner
+	OAuthStore   *llm.OAuthStore
+	Scheduler    *subagent.Scheduler
+	BuiltinTools []agentcore.Tool
+}
 
-// SetSkills sets the skills to inject into the system prompt.
-func (a *Agent) SetSkills(skills []*skillbridge.Skill) { a.skills = skills }
-
-// SetQuarantine attaches the quarantine store for runtime tool filtering.
-func (a *Agent) SetQuarantine(q *skillbridge.Quarantine) { a.quarantine = q }
-
-// SetScanner attaches the security scanner for async runtime scanning.
-func (a *Agent) SetScanner(s skillbridge.Scanner) { a.scanner = s }
-
-// SetOAuthStore attaches the OAuth token store for subscription-based auth.
-func (a *Agent) SetOAuthStore(s *llm.OAuthStore) { a.oauthStore = s }
-
-// SetScheduler attaches the subagent scheduler for spawn_agent dispatching.
-func (a *Agent) SetScheduler(s *subagent.Scheduler) { a.scheduler = s }
-
-// SetBuiltinTools sets the builtin tool definitions to inject onto every Turn.
-func (a *Agent) SetBuiltinTools(tools []agentcore.Tool) { a.builtinTools = tools }
-
-// NewAgent creates an Agent for the given user.
+// NewAgent creates an Agent for the given user. Optional dependencies
+// (MCP pool, skills, scanner, scheduler, etc.) are passed in deps —
+// any field left as zero value disables that capability for this Agent.
 func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client,
-	evaluator *policy.Evaluator, clf *classifier.Classifier, db *store.DB) *Agent {
+	evaluator *policy.Evaluator, clf *classifier.Classifier, db *store.DB,
+	deps AgentDeps) *Agent {
 
 	day := time.Now().UTC().Format("2006-01-02")
 	h := sha256.Sum256([]byte(user.Name + ":" + day))
 	convID := hex.EncodeToString(h[:8])
 
 	return &Agent{
-		user:       user,
-		cfg:        cfg,
-		llmClient:  llmClient,
-		evaluator:  evaluator,
-		classifier: clf,
-		db:         db,
-		convID:     convID,
+		user:         user,
+		cfg:          cfg,
+		llmClient:    llmClient,
+		evaluator:    evaluator,
+		classifier:   clf,
+		db:           db,
+		pool:         deps.Pool,
+		skills:       deps.Skills,
+		quarantine:   deps.Quarantine,
+		scanner:      deps.Scanner,
+		oauthStore:   deps.OAuthStore,
+		scheduler:    deps.Scheduler,
+		builtinTools: deps.BuiltinTools,
+		convID:       convID,
 	}
 }
 

@@ -50,7 +50,7 @@ func setupAgent(t *testing.T, serverURL string) *Agent {
 	client := llm.NewClient(serverURL, "test", "")
 	clf := classifier.New()
 
-	return NewAgent(user, cfg, client, ev, clf, db)
+	return NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
 }
 
 func mockLLMServer(t *testing.T, messages []llm.Message) *httptest.Server {
@@ -138,17 +138,6 @@ func TestAgentChatPoolNil(t *testing.T) {
 	}
 	if resp.Content != "Let me check..." {
 		t.Errorf("content = %q", resp.Content)
-	}
-}
-
-func TestAgentSetPool(t *testing.T) {
-	agent := &Agent{}
-	if agent.pool != nil {
-		t.Error("pool should be nil by default")
-	}
-	agent.SetPool(nil)
-	if agent.pool != nil {
-		t.Error("SetPool(nil) should keep pool nil")
 	}
 }
 
