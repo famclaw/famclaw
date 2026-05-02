@@ -158,3 +158,59 @@ func TestCapabilitiesComponent_AlwaysOnBaseline(t *testing.T) {
 		t.Errorf("expected positive capability statement, got: %q", text)
 	}
 }
+
+func TestSkillsComponent(t *testing.T) {
+	if _, ok := skillsComponent(BuildContext{Skills: nil}); ok {
+		t.Error("expected excluded with no skills")
+	}
+	text, ok := skillsComponent(BuildContext{Skills: []string{"seccheck", "honeybadger"}})
+	if !ok {
+		t.Fatal("expected included")
+	}
+	for _, sub := range []string{"seccheck", "honeybadger"} {
+		if !strings.Contains(text, sub) {
+			t.Errorf("missing %q", sub)
+		}
+	}
+}
+
+func TestGatewayComponent(t *testing.T) {
+	cases := map[string]bool{
+		"telegram": true, "discord": true, "web": true, "": false, "irc": false,
+	}
+	for gw, want := range cases {
+		t.Run(gw, func(t *testing.T) {
+			_, ok := gatewayComponent(BuildContext{Gateway: gw})
+			if ok != want {
+				t.Errorf("gateway %q: ok=%v want %v", gw, ok, want)
+			}
+		})
+	}
+}
+
+func TestOutputComponent_AlwaysOn(t *testing.T) {
+	text, ok := outputComponent(BuildContext{})
+	if !ok {
+		t.Fatal("expected always included")
+	}
+	if !strings.Contains(text, "concise") && !strings.Contains(text, "short") {
+		t.Errorf("expected length guidance: %q", text)
+	}
+}
+
+func TestMemoryComponent_PlaceholderExcluded(t *testing.T) {
+	// Memory is not yet implemented — component should be excluded.
+	if _, ok := memoryComponent(BuildContext{}); ok {
+		t.Error("memory component should be excluded until memory feature lands")
+	}
+}
+
+func TestOAuthPrefixComponent(t *testing.T) {
+	if _, ok := oauthPrefixComponent(BuildContext{OAuth: false}); ok {
+		t.Error("oauth prefix should be excluded when OAuth=false")
+	}
+	text, ok := oauthPrefixComponent(BuildContext{OAuth: true})
+	if !ok || text == "" {
+		t.Fatal("expected included for OAuth=true")
+	}
+}

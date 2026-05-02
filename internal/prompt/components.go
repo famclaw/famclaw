@@ -3,6 +3,8 @@ package prompt
 import (
 	"fmt"
 	"strings"
+
+	"github.com/famclaw/famclaw/internal/llm"
 )
 
 // userComponent describes who the user is.
@@ -106,4 +108,50 @@ func capabilitiesComponent(c BuildContext) (string, bool) {
 				". Call them when relevant.")
 	}
 	return strings.Join(parts, " "), true
+}
+
+// skillsComponent — installed skills available as tools.
+func skillsComponent(c BuildContext) (string, bool) {
+	if len(c.Skills) == 0 {
+		return "", false
+	}
+	return "Skills loaded for this user: " + strings.Join(c.Skills, ", ") +
+		". Use the matching tool when one of these is the right answer.", true
+}
+
+// gatewayComponent — tells the model which channel the user is on.
+// Useful because output formatting differs (markdown on web, plain text
+// chunked on Telegram/Discord). Excluded for unknown gateways.
+func gatewayComponent(c BuildContext) (string, bool) {
+	switch c.Gateway {
+	case "telegram":
+		return "The user is on Telegram. Replies over ~4096 chars get auto-chunked at the gateway, but prefer concise answers anyway. Plain text or light markdown only.", true
+	case "discord":
+		return "The user is on Discord. Replies over ~2000 chars get auto-chunked at the gateway. Discord renders standard markdown.", true
+	case "web":
+		return "The user is on the FamClaw web dashboard. Full markdown is fine; long replies are OK.", true
+	default:
+		return "", false
+	}
+}
+
+// outputComponent — always-on length/tone guidance.
+func outputComponent(_ BuildContext) (string, bool) {
+	return "Keep replies concise unless the user asks for detail. " +
+		"Match the user's energy — short questions get short answers.", true
+}
+
+// memoryComponent — placeholder for the future memory/compaction feature.
+// Currently always excluded; flipped on by a later PR that adds the feature.
+func memoryComponent(_ BuildContext) (string, bool) {
+	return "", false
+}
+
+// oauthPrefixComponent — Anthropic-required prefix when using Sign in with Claude.
+// Must come FIRST in the component list so the joined system prompt starts with it.
+func oauthPrefixComponent(c BuildContext) (string, bool) {
+	if !c.OAuth {
+		return "", false
+	}
+	return llm.ClaudeCodeSystemPrefix, true
 }

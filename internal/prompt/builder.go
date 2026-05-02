@@ -29,14 +29,18 @@ type component func(BuildContext) (string, bool)
 // identity first (always), then progressively narrower context.
 func Build(ctx BuildContext) string {
 	components := []component{
+		oauthPrefixComponent, // first — Anthropic OAuth requirement
 		identityComponent,
 		userComponent,
 		familyComponent,
 		ageComponent,
 		capabilitiesComponent,
+		skillsComponent,
 		policyComponent,
 		approvalsComponent,
-		// remaining components added in later tasks
+		gatewayComponent,
+		outputComponent,
+		memoryComponent,
 	}
 	var parts []string
 	for _, c := range components {
