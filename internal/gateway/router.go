@@ -289,7 +289,21 @@ func (r *Router) handleUnknownAccount(msg Message) Reply {
 		return r.handleRegistrationReply(msg, pending)
 	}
 
-	unlinked := r.identStore.UnlinkedUsers(r.cfg, msg.Gateway)
+	// Exclude parent-role users from gateway-side registration. Parent
+	// accounts can only be linked through the dashboard (which is gated by
+	// the parent PIN). Without this filter, a stranger whose display name
+	// happens to match a parent's first name could take over the parent
+	// account via auto-link or numbered-list claim — which would grant
+	// settings access. Children can still be hijacked the same way, but
+	// the damage is bounded by child-role policy + no settings access.
+	allUnlinked := r.identStore.UnlinkedUsers(r.cfg, msg.Gateway)
+	unlinked := make([]config.UserConfig, 0, len(allUnlinked))
+	for _, u := range allUnlinked {
+		if u.Role == "parent" {
+			continue
+		}
+		unlinked = append(unlinked, u)
+	}
 
 	if msg.DisplayName != "" {
 		firstWord := strings.Split(msg.DisplayName, " ")[0]
@@ -350,11 +364,11 @@ func (r *Router) handleUnknownAccount(msg Message) Reply {
 
 // handleRegistrationReply parses a numbered-list reply and links the
 // chosen unlinked FamClaw user to the platform account.
+//
+// The pendingRegs entry is removed only after a valid choice — invalid
+// input keeps the entry so a single typo doesn't drop the user back into
+// the auto-link/numbered-list flow from scratch.
 func (r *Router) handleRegistrationReply(msg Message, pending *pendingRegistration) Reply {
-	r.pendingMu.Lock()
-	delete(r.pendingRegs, msg.Gateway+":"+msg.ExternalID)
-	r.pendingMu.Unlock()
-
 	text := strings.TrimSpace(msg.Text)
 	choice, err := strconv.Atoi(text)
 	if err != nil || choice < 1 || choice > len(pending.unlinked) {
@@ -370,6 +384,12 @@ func (r *Router) handleRegistrationReply(msg Message, pending *pendingRegistrati
 		log.Printf("[router] link error: %v", err)
 		return Reply{Text: "Something went wrong. Please try again.", PolicyAction: "onboarding"}
 	}
+
+	// Link succeeded — remove the pending entry so a stale entry can't
+	// shadow this user's now-linked identity on later messages.
+	r.pendingMu.Lock()
+	delete(r.pendingRegs, msg.Gateway+":"+msg.ExternalID)
+	r.pendingMu.Unlock()
 
 	log.Printf("[router] linked %s/%s → %s (user choice)",
 		msg.Gateway, msg.ExternalID, chosen.Name)

@@ -1,25 +1,18 @@
 package gateway
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // ChunkMessage splits text into chunks, each at most maxLen bytes long.
 // When maxLen <= 0 or len(text) <= maxLen, the input is returned unchanged
 // as a single-element slice. Otherwise the function prefers to split at the
 // last '\n' within the first maxLen bytes (the newline stays with the
-// preceding chunk); if there's no newline in that window, it hard-splits
-// at exactly maxLen bytes. Every returned element has length <= maxLen
-// when maxLen > 0.
-//
-// Drafted by qwen3:14b (think:false), reviewed and finalized by hand.
-//
-// Known limitation flagged by mcp__ollama__local_review:
-// the hard-split path (no newline in window) splits on byte boundaries.
-// If the byte at index maxLen-1 is the middle of a multi-byte UTF-8
-// rune (e.g., a 4-byte emoji), the chunk and the next chunk will each
-// contain an invalid UTF-8 sequence. Telegram/Discord render these as
-// replacement glyphs but do not error. Acceptable for v1; a rune-aware
-// version would need to walk back from maxLen using utf8.RuneStart to
-// find the last valid boundary.
+// preceding chunk); if there's no newline in that window, it walks back
+// from maxLen to the most recent UTF-8 rune boundary so that hard-splits
+// don't bisect a multi-byte rune. Every returned element has length
+// <= maxLen when maxLen > 0.
 func ChunkMessage(text string, maxLen int) []string {
 	if maxLen <= 0 {
 		return []string{text}
@@ -31,15 +24,30 @@ func ChunkMessage(text string, maxLen int) []string {
 	var result []string
 	remaining := text
 	for len(remaining) > maxLen {
-		// Last '\n' in the first maxLen bytes — newline stays with the chunk.
-		idx := strings.LastIndex(remaining[:maxLen], "\n")
-		if idx != -1 {
+		// Prefer last '\n' in the first maxLen bytes — newline stays with
+		// the chunk and the next chunk starts cleanly.
+		if idx := strings.LastIndex(remaining[:maxLen], "\n"); idx != -1 {
 			result = append(result, remaining[:idx+1])
 			remaining = remaining[idx+1:]
-		} else {
-			result = append(result, remaining[:maxLen])
-			remaining = remaining[maxLen:]
+			continue
 		}
+
+		// No newline. Walk back from maxLen to the last position where the
+		// next chunk can start on a UTF-8 rune boundary — i.e., where
+		// remaining[cut] is the first byte of a rune (not a continuation byte).
+		cut := maxLen
+		for cut > 0 && !utf8.RuneStart(remaining[cut]) {
+			cut--
+		}
+		if cut == 0 {
+			// Pathological: the entire window is mid-rune (only possible
+			// for invalid UTF-8 or maxLen < 4). Fall back to a byte split
+			// rather than infinite-looping; one chunk will have a broken
+			// rune, but the platform will render a replacement glyph.
+			cut = maxLen
+		}
+		result = append(result, remaining[:cut])
+		remaining = remaining[cut:]
 	}
 	result = append(result, remaining)
 	return result

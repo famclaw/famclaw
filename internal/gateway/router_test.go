@@ -461,10 +461,16 @@ func TestHandleUnknownAccount_NumberedListWhenNoMatch(t *testing.T) {
 	if reply.PolicyAction != "onboarding" {
 		t.Errorf("PolicyAction = %q, want onboarding", reply.PolicyAction)
 	}
-	for _, name := range []string{"Which family member", "Parent", "Emma", "Lucas", "Sofia"} {
+	// Parent role is deliberately excluded from gateway-side registration —
+	// only children appear (security: prevents stranger-with-matching-name
+	// takeover of parent accounts).
+	for _, name := range []string{"Which family member", "Emma", "Lucas", "Sofia"} {
 		if !strings.Contains(reply.Text, name) {
 			t.Errorf("reply missing %q; got: %s", name, reply.Text)
 		}
+	}
+	if strings.Contains(reply.Text, "Parent") {
+		t.Errorf("parent must not appear in gateway numbered list; got: %s", reply.Text)
 	}
 }
 
@@ -506,8 +512,8 @@ func TestHandleUnknownAccount_RejectsWhenAllLinked(t *testing.T) {
 
 // TestHandleRegistrationReply_ValidChoice runs the two-step flow:
 // first a non-matching DisplayName creates a pendingRegistration with
-// the numbered list, then a "1" reply links the first unlinked user
-// (parent in this fixture).
+// the numbered list (children only — parent is excluded for security),
+// then a "1" reply links the first unlinked CHILD (emma in this fixture).
 func TestHandleRegistrationReply_ValidChoice(t *testing.T) {
 	router, identStore := setupRouter(t, panicChat)
 
@@ -517,7 +523,7 @@ func TestHandleRegistrationReply_ValidChoice(t *testing.T) {
 		Text: "yo", DisplayName: "Anonymous",
 	})
 
-	// Step 2: pick option 1 (parent — first user in the cfg fixture)
+	// Step 2: pick option 1 (emma — first non-parent in fixture order).
 	reply := router.Handle(context.Background(), Message{
 		Gateway: "telegram", ExternalID: "tg-anon-1",
 		Text: "1", DisplayName: "Anonymous",
@@ -530,8 +536,8 @@ func TestHandleRegistrationReply_ValidChoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if user == nil || user.Name != "parent" {
-		t.Fatalf("expected parent linked, got %v", user)
+	if user == nil || user.Name != "emma" {
+		t.Fatalf("expected emma linked (parent excluded from gateway flow), got %v", user)
 	}
 }
 
@@ -548,8 +554,89 @@ func TestHandleRegistrationReply_InvalidInput(t *testing.T) {
 		Gateway: "telegram", ExternalID: "tg-anon-2",
 		Text: "foo", DisplayName: "Anonymous",
 	})
-	if !strings.Contains(reply.Text, "number between 1 and") {
-		t.Errorf("expected number-prompt help, got: %s", reply.Text)
+	// Three children unlinked (parent excluded from the list), so the
+	// help text quotes "between 1 and 3".
+	if !strings.Contains(reply.Text, "number between 1 and 3") {
+		t.Errorf("expected 'number between 1 and 3', got: %s", reply.Text)
+	}
+}
+
+// TestHandleRegistrationReply_TypoKeepsPending verifies the CodeRabbit
+// fix that an invalid reply does NOT delete the pendingRegistration —
+// the user gets the help text and can try again with the same list.
+func TestHandleRegistrationReply_TypoKeepsPending(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+
+	// Step 1: trigger numbered list
+	router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "tg-typo-1",
+		Text: "yo", DisplayName: "Anonymous",
+	})
+
+	// Step 2: type a non-number — should get help, NOT drop the pending entry
+	router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "tg-typo-1",
+		Text: "I'm Emma", DisplayName: "Anonymous",
+	})
+
+	// Pending entry must still exist so the next reply can pick from
+	// the same list rather than starting over.
+	router.pendingMu.Lock()
+	_, stillPending := router.pendingRegs["telegram:tg-typo-1"]
+	router.pendingMu.Unlock()
+	if !stillPending {
+		t.Fatal("expected pendingRegistration to survive an invalid reply")
+	}
+
+	// Step 3: now reply with a valid number — should succeed
+	router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "tg-typo-1",
+		Text: "1", DisplayName: "Anonymous",
+	})
+	user, err := identStore.Resolve("telegram", "tg-typo-1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if user == nil || user.Name != "emma" {
+		t.Fatalf("expected emma linked after valid retry, got %v", user)
+	}
+
+	// And the entry is now cleaned up (link succeeded).
+	router.pendingMu.Lock()
+	_, postLinkPending := router.pendingRegs["telegram:tg-typo-1"]
+	router.pendingMu.Unlock()
+	if postLinkPending {
+		t.Error("expected pendingRegistration to be deleted after successful link")
+	}
+}
+
+// TestHandleUnknownAccount_ParentNeverAutoLinked verifies the security fix
+// from CodeRabbit thread on router.go:315 / identity/store.go:74. A stranger
+// whose Telegram first name happens to equal the parent's family-side
+// DisplayName must NOT auto-link to the parent account — they should be
+// shown a list of children only (or rejected if no children remain).
+func TestHandleUnknownAccount_ParentNeverAutoLinked(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+
+	// Stranger with display name exactly matching the parent's DisplayName.
+	reply := router.Handle(context.Background(), Message{
+		Gateway:     "telegram",
+		ExternalID:  "tg-impostor-1",
+		Text:        "hi",
+		DisplayName: "Parent",
+	})
+	// Must NOT be linked to the parent user.
+	user, err := identStore.Resolve("telegram", "tg-impostor-1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if user != nil && user.Name == "parent" {
+		t.Fatalf("SECURITY: stranger with DisplayName='Parent' was auto-linked to parent account")
+	}
+	// Should fall through to the numbered list (children only) since
+	// "Parent" doesn't match any child's DisplayName.
+	if !strings.Contains(reply.Text, "Which family member") {
+		t.Errorf("expected numbered-list fallthrough, got: %s", reply.Text)
 	}
 }
 

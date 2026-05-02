@@ -23,13 +23,19 @@ func (s *Server) handleSetupDetect(w http.ResponseWriter, r *http.Request) {
 
 // handleTestTelegram verifies a Telegram bot token by calling the platform's
 // getMe endpoint. Returns {ok: true, username: "..."} on success or
-// {ok: false, error: "<reason>"} on failure. Always replies HTTP 200 — the
-// wizard treats `ok` as the rejection signal, not the HTTP status.
+// {ok: false, error: "<reason>"} on upstream failure. Always replies HTTP 200
+// for upstream errors so the wizard can use `ok` as the rejection signal.
 //
-// NOT behind the parent-PIN gate: the wizard reaches this on first boot
-// before any PIN exists. The endpoint only forwards to a fixed upstream
-// URL and returns ok/error, so the LAN-exposed surface is minimal.
+// PIN-gated after first boot. On true first boot (isFirstBoot), the wizard
+// reaches this before any parent exists, so the gate is open. After that, a
+// LAN attacker would need the parent PIN to probe arbitrary tokens.
 func (s *Server) handleTestTelegram(w http.ResponseWriter, r *http.Request) {
+	if !s.isFirstBoot() {
+		if !s.verifyParentPINConstantTime(r.Header.Get("X-Parent-PIN")) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 
 	var body struct {
@@ -85,8 +91,15 @@ func (s *Server) handleTestTelegram(w http.ResponseWriter, r *http.Request) {
 
 // handleTestDiscord verifies a Discord bot token by calling /users/@me.
 // The bot's user-id doubles as the application id used in the OAuth2
-// invite URL the wizard generates client-side.
+// invite URL the wizard generates client-side. PIN-gated after first
+// boot — see handleTestTelegram for the rationale.
 func (s *Server) handleTestDiscord(w http.ResponseWriter, r *http.Request) {
+	if !s.isFirstBoot() {
+		if !s.verifyParentPINConstantTime(r.Header.Get("X-Parent-PIN")) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 
 	var body struct {

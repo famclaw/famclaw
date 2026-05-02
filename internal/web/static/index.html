@@ -241,6 +241,15 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
 .wiz-input:focus{border-color:#6366f1;background:#fff;box-shadow:0 0 0 3px rgba(99,102,241,.08)}
 .wiz-label{font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;
   letter-spacing:.05em;margin-bottom:6px;display:block}
+/* Bot setup wizard test controls + status colors */
+.wiz-test-btn{padding:8px 14px;border:1.5px solid #6366f1;background:#eef2ff;color:#4f46e5;
+  border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s}
+.wiz-test-btn:hover{background:#e0e7ff}
+.wiz-btn{display:inline-block;padding:10px 16px;background:#6366f1;color:#fff;
+  border-radius:10px;font-size:14px;font-weight:600;text-decoration:none}
+.wiz-btn:hover{background:#4f46e5}
+.wiz-success{color:#059669;font-weight:600}
+.wiz-error{color:#dc2626;font-weight:600}
 /* Age selector pills */
 .wiz-ages{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .wiz-age-pill{padding:10px 16px;border:2px solid #e2e8f0;border-radius:12px;
@@ -1571,10 +1580,14 @@ async function wizTestTelegram() {
   const status = document.getElementById('wiz-tg-status');
   status.classList.remove('wiz-success', 'wiz-error');
   status.textContent = 'Testing…';
+  // After first boot, the endpoint requires a valid parent PIN. Pull
+  // it from wizState (set in step 2) so the test still works during
+  // wizard re-runs.
+  const pin = wizState.members.find(m => m.role === 'parent')?.pin || '';
   try {
     const resp = await fetch('/api/setup/test-telegram', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', 'X-Parent-PIN': pin},
       body: JSON.stringify({token}),
     });
     const data = await resp.json();
@@ -1599,11 +1612,15 @@ async function wizTestDiscord() {
   if (!token) return;
   const status = document.getElementById('wiz-dc-status');
   status.classList.remove('wiz-success', 'wiz-error');
+  // CodeRabbit thread #7: hide a previously-revealed invite block so
+  // editing the token to a new value can't leave a stale invite URL up.
+  document.getElementById('wiz-dc-invite').style.display = 'none';
   status.textContent = 'Testing…';
+  const pin = wizState.members.find(m => m.role === 'parent')?.pin || '';
   try {
     const resp = await fetch('/api/setup/test-discord', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', 'X-Parent-PIN': pin},
       body: JSON.stringify({token}),
     });
     const data = await resp.json();

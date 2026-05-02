@@ -3,6 +3,7 @@ package gateway
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestChunkMessage was drafted by qwen3:14b (think:false), reviewed and
@@ -25,6 +26,11 @@ func TestChunkMessage(t *testing.T) {
 		{"empty", "", 2000, 1},
 		{"maxLen zero", "hello", 0, 1},
 		{"maxLen negative", "hello", -5, 1},
+		// Rune-safe split (CodeRabbit thread): 8 emoji × 4 bytes = 32 bytes,
+		// maxLen=10 walks back to a rune boundary so each chunk holds 2 emoji
+		// (8 bytes). Without rune-safety, this would split a 4-byte emoji
+		// in half and produce invalid UTF-8.
+		{"emoji rune-safe", strings.Repeat("\U0001F600", 8), 10, 4},
 	}
 
 	for _, tt := range tests {
@@ -42,6 +48,17 @@ func TestChunkMessage(t *testing.T) {
 			}
 			if strings.Join(got, "") != tt.text {
 				t.Errorf("joined chunks != original text (lengths %d vs %d)", len(strings.Join(got, "")), len(tt.text))
+			}
+			// CodeRabbit thread #2: each chunk must be valid UTF-8 when
+			// the input is. We don't fabricate input that's already
+			// invalid, so any chunk that fails utf8.ValidString points to
+			// a mid-rune split.
+			if utf8.ValidString(tt.text) {
+				for i, chunk := range got {
+					if !utf8.ValidString(chunk) {
+						t.Errorf("chunk[%d] = %q is not valid UTF-8", i, chunk)
+					}
+				}
 			}
 		})
 	}
