@@ -7,9 +7,10 @@ import "context"
 
 // Message is an inbound message from any gateway.
 type Message struct {
-	Gateway    string // telegram | whatsapp | discord
-	ExternalID string // platform-specific user ID
-	Text       string
+	Gateway     string // telegram | whatsapp | discord
+	ExternalID  string // platform-specific user ID
+	Text        string
+	DisplayName string // from platform profile (best effort)
 }
 
 // Reply is an outbound response to send back through the gateway.
