@@ -59,6 +59,21 @@ func (s *Store) Unlink(gateway, externalID string) error {
 	return s.db.UnlinkGatewayAccount(strings.ToLower(gateway), externalID)
 }
 
+// RecordUnknown UPSERTs an unknown gateway-account hit.
+func (s *Store) RecordUnknown(gateway, externalID, displayName string) error {
+	return s.db.RecordUnknownAccount(gateway, externalID, displayName)
+}
+
+// ListUnknown returns all pending unknown accounts.
+func (s *Store) ListUnknown() ([]store.UnknownAccount, error) {
+	return s.db.ListUnknownAccounts()
+}
+
+// ClearUnknown removes a pending unknown-account row (no-op if missing).
+func (s *Store) ClearUnknown(gateway, externalID string) error {
+	return s.db.DeleteUnknownAccount(gateway, externalID)
+}
+
 // UnlinkedUsers returns the family-config users that have no linked
 // account for the given gateway. Used during gateway self-registration
 // to either auto-link by display name or present a numbered list.

@@ -181,5 +181,35 @@ func TestConcurrentResolve(t *testing.T) {
 	}
 }
 
+func TestStore_UnknownAccountLifecycle(t *testing.T) {
+	s := setupStore(t)
+	if err := s.RecordUnknown("telegram", "X1", "Julia"); err != nil {
+		t.Fatalf("RecordUnknown failed: %v", err)
+	}
+
+	unknowns, err := s.ListUnknown()
+	if err != nil {
+		t.Fatalf("ListUnknown failed: %v", err)
+	}
+	if len(unknowns) != 1 {
+		t.Fatalf("expected 1 unknown account, got %d", len(unknowns))
+	}
+	if unknowns[0].DisplayName != "Julia" {
+		t.Errorf("expected display name Julia, got %s", unknowns[0].DisplayName)
+	}
+
+	if err := s.ClearUnknown("telegram", "X1"); err != nil {
+		t.Fatalf("ClearUnknown failed: %v", err)
+	}
+
+	unknowns, err = s.ListUnknown()
+	if err != nil {
+		t.Fatalf("ListUnknown failed: %v", err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("expected 0 unknown accounts, got %d", len(unknowns))
+	}
+}
+
 // Prevent unused import error for os
 var _ = os.DevNull
