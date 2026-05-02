@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -182,32 +183,80 @@ func TestConcurrentResolve(t *testing.T) {
 }
 
 func TestStore_UnknownAccountLifecycle(t *testing.T) {
-	s := setupStore(t)
-	if err := s.RecordUnknown("telegram", "X1", "Julia"); err != nil {
-		t.Fatalf("RecordUnknown failed: %v", err)
+	cases := []struct {
+		name        string
+		recordGW    string
+		recordID    string
+		recordName  string
+		expectAfter int
+		clearGW     string
+		clearID     string
+		expectClear int
+	}{
+		{
+			name:        "record then clear matching",
+			recordGW:    "telegram",
+			recordID:    "X1",
+			recordName:  "Julia",
+			expectAfter: 1,
+			clearGW:     "telegram",
+			clearID:     "X1",
+			expectClear: 0,
+		},
+		{
+			name:        "record with mixed-case gateway lowercases on store",
+			recordGW:    "Telegram",
+			recordID:    "X2",
+			recordName:  "Sam",
+			expectAfter: 1,
+			clearGW:     "telegram",
+			clearID:     "X2",
+			expectClear: 0,
+		},
+		{
+			name:        "clear non-matching id leaves row in place",
+			recordGW:    "telegram",
+			recordID:    "X1",
+			recordName:  "Julia",
+			expectAfter: 1,
+			clearGW:     "telegram",
+			clearID:     "DOES_NOT_EXIST",
+			expectClear: 1,
+		},
 	}
 
-	unknowns, err := s.ListUnknown()
-	if err != nil {
-		t.Fatalf("ListUnknown failed: %v", err)
-	}
-	if len(unknowns) != 1 {
-		t.Fatalf("expected 1 unknown account, got %d", len(unknowns))
-	}
-	if unknowns[0].DisplayName != "Julia" {
-		t.Errorf("expected display name Julia, got %s", unknowns[0].DisplayName)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := setupStore(t)
+			ctx := context.Background()
 
-	if err := s.ClearUnknown("telegram", "X1"); err != nil {
-		t.Fatalf("ClearUnknown failed: %v", err)
-	}
+			if err := s.RecordUnknown(ctx, tc.recordGW, tc.recordID, tc.recordName); err != nil {
+				t.Fatalf("RecordUnknown: %v", err)
+			}
 
-	unknowns, err = s.ListUnknown()
-	if err != nil {
-		t.Fatalf("ListUnknown failed: %v", err)
-	}
-	if len(unknowns) != 0 {
-		t.Errorf("expected 0 unknown accounts, got %d", len(unknowns))
+			unknowns, err := s.ListUnknown(ctx)
+			if err != nil {
+				t.Fatalf("ListUnknown after record: %v", err)
+			}
+			if len(unknowns) != tc.expectAfter {
+				t.Fatalf("len(unknowns) after record = %d, want %d", len(unknowns), tc.expectAfter)
+			}
+			if tc.expectAfter > 0 && unknowns[0].DisplayName != tc.recordName {
+				t.Errorf("DisplayName = %q, want %q", unknowns[0].DisplayName, tc.recordName)
+			}
+
+			if err := s.ClearUnknown(ctx, tc.clearGW, tc.clearID); err != nil {
+				t.Fatalf("ClearUnknown: %v", err)
+			}
+
+			unknowns, err = s.ListUnknown(ctx)
+			if err != nil {
+				t.Fatalf("ListUnknown after clear: %v", err)
+			}
+			if len(unknowns) != tc.expectClear {
+				t.Errorf("len(unknowns) after clear = %d, want %d", len(unknowns), tc.expectClear)
+			}
+		})
 	}
 }
 
