@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -293,6 +294,44 @@ func TestParseStringList(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBuildMessages_DefaultUsesPromptBuilder(t *testing.T) {
+	cfg := &config.Config{
+		LLM: config.LLMConfig{}, // SystemPrompt empty → builder path
+		Users: []config.UserConfig{
+			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+	a := &Agent{cfg: cfg, user: &cfg.Users[0]}
+	msgs := a.buildMessages(nil, "hi")
+	if len(msgs) < 1 || msgs[0].Role != "system" {
+		t.Fatalf("first message must be system, got %+v", msgs)
+	}
+	sys := msgs[0].Content
+	for _, sub := range []string{"FamClaw", "Julia"} {
+		if !strings.Contains(sys, sub) {
+			t.Errorf("expected %q in system prompt: %q", sub, sys)
+		}
+	}
+	if sys == "You are FamClaw, a helpful, friendly, and safe family AI assistant." {
+		t.Error("agent is still emitting the legacy one-sentence prompt")
+	}
+}
+
+func TestBuildMessages_OperatorOverrideKept(t *testing.T) {
+	cfg := &config.Config{
+		LLM: config.LLMConfig{SystemPrompt: "You are a pirate."},
+		Users: []config.UserConfig{
+			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+	a := &Agent{cfg: cfg, user: &cfg.Users[0]}
+	msgs := a.buildMessages(nil, "hi")
+	sys := msgs[0].Content
+	if !strings.HasPrefix(sys, "You are a pirate.") {
+		t.Errorf("operator override should be verbatim at start, got: %q", sys)
 	}
 }
 
