@@ -214,3 +214,69 @@ func TestOAuthPrefixComponent(t *testing.T) {
 		t.Fatal("expected included for OAuth=true")
 	}
 }
+
+// approxTokens estimates token count from char count. Rough heuristic:
+// English text averages ~4 chars/token in Anthropic/OpenAI BPE tokenizers.
+// Off by 10-15% but stable enough for a regression budget.
+func approxTokens(s string) int {
+	return len(s) / 4
+}
+
+func TestBuild_ParentTokenBudget(t *testing.T) {
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "dep", DisplayName: "Dep", Role: "parent"},
+			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+			{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "under_8"},
+		},
+	}
+	out := Build(BuildContext{
+		Cfg:         cfg,
+		User:        &cfg.Users[0],
+		Gateway:     "telegram",
+		Skills:      []string{"seccheck", "honeybadger"},
+		OAuth:       true,
+		HardBlocked: []string{"weapons", "self_harm", "drugs"},
+	})
+	tokens := approxTokens(out)
+	if tokens > 1100 {
+		t.Fatalf("parent prompt over budget: %d tokens (limit 1100)\n---\n%s", tokens, out)
+	}
+	t.Logf("parent prompt: %d tokens, %d chars", tokens, len(out))
+}
+
+func TestBuild_ChildTokenBudget(t *testing.T) {
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "dep", DisplayName: "Dep", Role: "parent"},
+			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+	out := Build(BuildContext{
+		Cfg:         cfg,
+		User:        &cfg.Users[1],
+		Gateway:     "telegram",
+		HardBlocked: []string{"weapons"},
+	})
+	tokens := approxTokens(out)
+	if tokens > 750 {
+		t.Fatalf("child prompt over budget: %d tokens (limit 750)\n---\n%s", tokens, out)
+	}
+	t.Logf("child prompt: %d tokens, %d chars", tokens, len(out))
+}
+
+func TestBuild_OAuthPrefixIsFirst(t *testing.T) {
+	out := Build(BuildContext{
+		User:  &config.UserConfig{Name: "x", Role: "parent"},
+		OAuth: true,
+	})
+	if !strings.HasPrefix(out, "You are Claude Code") {
+		// The exact prefix is in llm.ClaudeCodeSystemPrefix; the first few
+		// words are what we assert. If this changes upstream, update here.
+		end := 80
+		if end > len(out) {
+			end = len(out)
+		}
+		t.Errorf("OAuth prefix not first; output starts with: %q", out[:end])
+	}
+}
