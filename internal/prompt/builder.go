@@ -29,6 +29,9 @@ type component func(BuildContext) (string, bool)
 func Build(ctx BuildContext) string {
 	components := []component{
 		identityComponent,
+		userComponent,
+		familyComponent,
+		ageComponent,
 		// remaining components added in later tasks
 	}
 	var parts []string
