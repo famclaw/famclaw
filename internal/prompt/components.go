@@ -66,3 +66,44 @@ func ageComponent(c BuildContext) (string, bool) {
 		return "", false
 	}
 }
+
+// policyComponent enumerates hard-blocked categories that policy will
+// reject before the LLM ever sees the message. Stating them up front
+// prevents the model from generating a refusal in voice it can't sustain.
+func policyComponent(c BuildContext) (string, bool) {
+	if len(c.HardBlocked) == 0 {
+		return "", false
+	}
+	return "The following topics cannot be discussed in this family — policy " +
+		"will reject any message about them before reaching you: " +
+		strings.Join(c.HardBlocked, ", ") + ". " +
+		"If a user asks about one, briefly say it's not allowed in this family " +
+		"and offer to help with something else.", true
+}
+
+// approvalsComponent explains the parent-approval flow to non-parents.
+func approvalsComponent(c BuildContext) (string, bool) {
+	if c.User == nil || c.User.Role == "parent" {
+		return "", false
+	}
+	return "Some topics need parent approval before you can discuss them. If " +
+		"policy returns 'request_approval', the user will see a notification " +
+		"to ask their parent. You don't need to mention this proactively — " +
+		"just answer normally and let policy do its job.", true
+}
+
+// capabilitiesComponent states what the assistant can actually do.
+// Always included so the model never says "I can't execute code" when
+// it has tools available.
+func capabilitiesComponent(c BuildContext) (string, bool) {
+	parts := []string{
+		"You can hold conversations, answer factual questions, do math, " +
+			"explain concepts, and help with homework.",
+	}
+	if len(c.Skills) > 0 {
+		parts = append(parts,
+			"You also have these skills available as tools: "+strings.Join(c.Skills, ", ")+
+				". Call them when relevant.")
+	}
+	return strings.Join(parts, " "), true
+}

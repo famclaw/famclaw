@@ -13,11 +13,12 @@ import (
 // BuildContext is the input to every component. Components only
 // read from it — never mutate.
 type BuildContext struct {
-	Cfg     *config.Config     // family config (users list, etc.)
-	User    *config.UserConfig // the user this prompt is for
-	Gateway string             // "telegram" | "discord" | "web" | ""
-	Skills  []string           // skill names loaded for this user; can be empty
-	OAuth   bool               // true if the LLM endpoint uses Anthropic OAuth
+	Cfg         *config.Config     // family config (users list, etc.)
+	User        *config.UserConfig // the user this prompt is for
+	Gateway     string             // "telegram" | "discord" | "web" | ""
+	Skills      []string           // skill names loaded for this user; can be empty
+	OAuth       bool               // true if the LLM endpoint uses Anthropic OAuth
+	HardBlocked []string           // hard-blocked policy categories for this user
 }
 
 // component returns (text, included). Empty text or included=false → skipped.
@@ -32,6 +33,9 @@ func Build(ctx BuildContext) string {
 		userComponent,
 		familyComponent,
 		ageComponent,
+		capabilitiesComponent,
+		policyComponent,
+		approvalsComponent,
 		// remaining components added in later tasks
 	}
 	var parts []string

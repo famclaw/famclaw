@@ -118,3 +118,43 @@ func TestAgeComponent(t *testing.T) {
 		})
 	}
 }
+
+func TestPolicyComponent(t *testing.T) {
+	if _, ok := policyComponent(BuildContext{HardBlocked: nil}); ok {
+		t.Error("expected excluded with no hard-blocked categories")
+	}
+	text, ok := policyComponent(BuildContext{HardBlocked: []string{"weapons", "self_harm"}})
+	if !ok {
+		t.Fatal("expected included")
+	}
+	for _, sub := range []string{"weapons", "self_harm", "cannot be discussed"} {
+		if !strings.Contains(text, sub) {
+			t.Errorf("missing %q in %q", sub, text)
+		}
+	}
+}
+
+func TestApprovalsComponent_ParentVsChild(t *testing.T) {
+	parent := &config.UserConfig{Role: "parent"}
+	if _, ok := approvalsComponent(BuildContext{User: parent}); ok {
+		t.Error("approvals component should be excluded for parents")
+	}
+	child := &config.UserConfig{Role: "child"}
+	text, ok := approvalsComponent(BuildContext{User: child})
+	if !ok {
+		t.Fatal("expected included for child")
+	}
+	if !strings.Contains(text, "approval") {
+		t.Errorf("missing approval mention: %q", text)
+	}
+}
+
+func TestCapabilitiesComponent_AlwaysOnBaseline(t *testing.T) {
+	text, ok := capabilitiesComponent(BuildContext{})
+	if !ok || text == "" {
+		t.Fatal("capabilities should always include baseline")
+	}
+	if !strings.Contains(text, "yes") && !strings.Contains(text, "can") {
+		t.Errorf("expected positive capability statement, got: %q", text)
+	}
+}
