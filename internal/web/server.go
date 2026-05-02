@@ -102,6 +102,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/setup/detect", s.handleSetupDetect)
+	mux.HandleFunc("/api/setup/test-telegram", s.handleTestTelegram)
+	mux.HandleFunc("/api/setup/test-discord", s.handleTestDiscord)
 	mux.HandleFunc("/api/settings", s.handleSettings)      // GET/POST config settings
 	mux.HandleFunc("/api/stream", s.handleStream)          // SSE for dashboard live updates
 	mux.HandleFunc("/api/oauth/anthropic/start", s.handleOAuthStart)
