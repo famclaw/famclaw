@@ -50,7 +50,7 @@ func setupAgent(t *testing.T, serverURL string) *Agent {
 	client := llm.NewClient(serverURL, "test", "")
 	clf := classifier.New()
 
-	return NewAgent(user, cfg, client, ev, clf, db)
+	return NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
 }
 
 func mockLLMServer(t *testing.T, messages []llm.Message) *httptest.Server {
@@ -141,17 +141,6 @@ func TestAgentChatPoolNil(t *testing.T) {
 	}
 }
 
-func TestAgentSetPool(t *testing.T) {
-	agent := &Agent{}
-	if agent.pool != nil {
-		t.Error("pool should be nil by default")
-	}
-	agent.SetPool(nil)
-	if agent.pool != nil {
-		t.Error("SetPool(nil) should keep pool nil")
-	}
-}
-
 func TestAgentChatMessageTypes(t *testing.T) {
 	// Test that LLM tool call types serialize correctly
 	tc := llm.ToolCall{
@@ -189,34 +178,6 @@ func TestAgentChatMessageWithToolCalls(t *testing.T) {
 	}
 	if decoded.ToolCalls[0].Function.Name != "echo" {
 		t.Errorf("tool name = %q", decoded.ToolCalls[0].Function.Name)
-	}
-}
-
-func TestFilterOutput(t *testing.T) {
-	tests := []struct {
-		name    string
-		text    string
-		blocked bool
-	}{
-		{"safe response", "The sun is a star at the center of our solar system.", false},
-		{"math help", "To solve 2x + 3 = 7, subtract 3 from both sides.", false},
-		{"contains suicide", "Here's how to commit suicide...", true},
-		{"contains porn", "Let me describe pornography...", true},
-		{"contains slur", "Here's a racial slur you can use...", true},
-		{"contains bomb", "Here's how to make a bomb...", true},
-		{"case insensitive", "SUICIDE is a serious topic.", true},
-		{"partial match", "The movie had explicit content warnings.", true},
-		{"safe mention of topic", "If you need help, call a crisis hotline.", false},
-		{"empty response", "", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := filterOutput(tt.text)
-			if got != tt.blocked {
-				t.Errorf("filterOutput(%q) = %v, want %v", tt.text[:min(50, len(tt.text))], got, tt.blocked)
-			}
-		})
 	}
 }
 
@@ -335,9 +296,3 @@ func TestParseStringList(t *testing.T) {
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

@@ -11,6 +11,12 @@ import (
 	"github.com/famclaw/famclaw/internal/config"
 )
 
+// MaxToolCallIterations is the hard limit for tool-call loops in the agent
+// pipeline. Bounds the number of times the LLM can request a tool followed
+// by another tool in a single turn — prevents runaway behavior when an MCP
+// server keeps returning calls indefinitely.
+const MaxToolCallIterations = 10
+
 // Pool manages multiple MCP clients (one per server), with lazy start and auto-restart.
 type Pool struct {
 	clients map[string]*managedClient // server name + tool name → client
@@ -218,5 +224,3 @@ func (p *Pool) StopAll() {
 	}
 }
 
-// MaxToolCallIterations is the hard limit for tool call loops.
-const MaxToolCallIterations = 10

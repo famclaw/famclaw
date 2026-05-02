@@ -230,14 +230,15 @@ func main() {
 		} else {
 			client = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 		}
-		a := agent.NewAgent(user, cfg, client, evaluator, clf, db)
-		a.SetPool(mcpPool)
-		a.SetSkills(enabledSkills)
-		a.SetQuarantine(quarantine)
-		a.SetScanner(hbScanner)
-		a.SetOAuthStore(oauthStore)
-		a.SetScheduler(agentScheduler)
-		a.SetBuiltinTools(builtinTools)
+		a := agent.NewAgent(user, cfg, client, evaluator, clf, db, agent.AgentDeps{
+			Pool:         mcpPool,
+			Skills:       enabledSkills,
+			Quarantine:   quarantine,
+			Scanner:      hbScanner,
+			OAuthStore:   oauthStore,
+			Scheduler:    agentScheduler,
+			BuiltinTools: builtinTools,
+		})
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {
 			return "", err
@@ -352,11 +353,6 @@ func must(err error, context string) {
 	if err != nil {
 		log.Fatalf("FATAL [%s]: %v", context, err)
 	}
-}
-
-func min(a, b int) int {
-	if a < b { return a }
-	return b
 }
 
 // hasOnlyBuiltinPolicyNames reports whether dir contains exactly the

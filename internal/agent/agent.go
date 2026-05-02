@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
@@ -50,43 +49,45 @@ type Agent struct {
 	convID       string
 }
 
-// SetPool attaches an MCP tool pool to the agent.
-func (a *Agent) SetPool(p *mcp.Pool) { a.pool = p }
+// AgentDeps holds optional dependencies for an Agent. All fields are
+// safe to leave nil — the Agent degrades gracefully (no MCP tools,
+// no skills, no scanning, no subagents).
+type AgentDeps struct {
+	Pool         *mcp.Pool
+	Skills       []*skillbridge.Skill
+	Quarantine   *skillbridge.Quarantine
+	Scanner      skillbridge.Scanner
+	OAuthStore   *llm.OAuthStore
+	Scheduler    *subagent.Scheduler
+	BuiltinTools []agentcore.Tool
+}
 
-// SetSkills sets the skills to inject into the system prompt.
-func (a *Agent) SetSkills(skills []*skillbridge.Skill) { a.skills = skills }
-
-// SetQuarantine attaches the quarantine store for runtime tool filtering.
-func (a *Agent) SetQuarantine(q *skillbridge.Quarantine) { a.quarantine = q }
-
-// SetScanner attaches the security scanner for async runtime scanning.
-func (a *Agent) SetScanner(s skillbridge.Scanner) { a.scanner = s }
-
-// SetOAuthStore attaches the OAuth token store for subscription-based auth.
-func (a *Agent) SetOAuthStore(s *llm.OAuthStore) { a.oauthStore = s }
-
-// SetScheduler attaches the subagent scheduler for spawn_agent dispatching.
-func (a *Agent) SetScheduler(s *subagent.Scheduler) { a.scheduler = s }
-
-// SetBuiltinTools sets the builtin tool definitions to inject onto every Turn.
-func (a *Agent) SetBuiltinTools(tools []agentcore.Tool) { a.builtinTools = tools }
-
-// NewAgent creates an Agent for the given user.
+// NewAgent creates an Agent for the given user. Optional dependencies
+// (MCP pool, skills, scanner, scheduler, etc.) are passed in deps —
+// any field left as zero value disables that capability for this Agent.
 func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client,
-	evaluator *policy.Evaluator, clf *classifier.Classifier, db *store.DB) *Agent {
+	evaluator *policy.Evaluator, clf *classifier.Classifier, db *store.DB,
+	deps AgentDeps) *Agent {
 
 	day := time.Now().UTC().Format("2006-01-02")
 	h := sha256.Sum256([]byte(user.Name + ":" + day))
 	convID := hex.EncodeToString(h[:8])
 
 	return &Agent{
-		user:       user,
-		cfg:        cfg,
-		llmClient:  llmClient,
-		evaluator:  evaluator,
-		classifier: clf,
-		db:         db,
-		convID:     convID,
+		user:         user,
+		cfg:          cfg,
+		llmClient:    llmClient,
+		evaluator:    evaluator,
+		classifier:   clf,
+		db:           db,
+		pool:         deps.Pool,
+		skills:       deps.Skills,
+		quarantine:   deps.Quarantine,
+		scanner:      deps.Scanner,
+		oauthStore:   deps.OAuthStore,
+		scheduler:    deps.Scheduler,
+		builtinTools: deps.BuiltinTools,
+		convID:       convID,
 	}
 }
 
@@ -94,7 +95,9 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client
 // Delegates to agentcore.FamilyPipeline for the processing stages.
 func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(string)) (*Response, error) {
 	// Save user message before processing
-	_ = a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, "", "")
+	if err := a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, "", ""); err != nil {
+		log.Printf("[agent][%s] save user message: %v", a.user.Name, err)
+	}
 
 	// Build conversation context
 	history, _ := a.db.GetConversationHistory(a.convID, 20)
@@ -197,7 +200,9 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// Handle policy blocks (not a real error — just a non-allow decision)
 	if errors.Is(err, agentcore.ErrPolicyBlock) {
 		log.Printf("[agent][%s] cat=%s action=%s", a.user.Name, turn.Category, turn.Policy.Action)
-		_ = a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), turn.Policy.Action)
+		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), turn.Policy.Action); err != nil {
+			log.Printf("[agent][%s] save policy-blocked response: %v", a.user.Name, err)
+		}
 		return &Response{
 			Content:      turn.Output,
 			PolicyAction: turn.Policy.Action,
@@ -212,7 +217,9 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	log.Printf("[agent][%s] cat=%s action=allow", a.user.Name, turn.Category)
 
 	// Save assistant response
-	_ = a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), "allow")
+	if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), "allow"); err != nil {
+		log.Printf("[agent][%s] save assistant response: %v", a.user.Name, err)
+	}
 
 	return &Response{
 		Content:      turn.Output,
@@ -386,26 +393,6 @@ func ageContextPrompt(user *config.UserConfig) string {
 	default:
 		return ""
 	}
-}
-
-// outputBlockedPatterns kept for backward compatibility with existing tests.
-var outputBlockedPatterns = []string{
-	"suicide", "kill yourself", "self-harm", "cutting yourself",
-	"pornography", "sexual intercourse", "explicit content",
-	"racial slur", "ethnic cleansing", "white supremac",
-	"how to make a bomb", "how to steal", "how to hack",
-}
-
-// filterOutput returns true if the LLM response contains blocked content.
-// Kept for backward compatibility with existing tests — the pipeline uses StageOutputFilter.
-func filterOutput(response string) bool {
-	lower := strings.ToLower(response)
-	for _, pattern := range outputBlockedPatterns {
-		if strings.Contains(lower, pattern) {
-			return true
-		}
-	}
-	return false
 }
 
 // ApprovalID generates a deterministic approval ID for user+category+day.

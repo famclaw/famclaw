@@ -121,21 +121,33 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 	switch decision.Action {
 	case "block":
 		text := fmt.Sprintf("I'm sorry, I can't help with that topic. %s", decision.Reason)
-		_ = r.db.SaveMessage(conversationID(user.Name), user.Name, "user", msg.Text, string(cat), "block")
-		_ = r.db.SaveMessage(conversationID(user.Name), user.Name, "assistant", text, string(cat), "block")
+		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "user", msg.Text, string(cat), "block"); err != nil {
+			log.Printf("[gateway][%s] save blocked user message: %v", user.Name, err)
+		}
+		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "assistant", text, string(cat), "block"); err != nil {
+			log.Printf("[gateway][%s] save blocked assistant response: %v", user.Name, err)
+		}
 		return Reply{Text: text, PolicyAction: "block"}
 
 	case "request_approval":
 		r.createApproval(ctx, userCfg, string(cat), msg.Text, requestID)
 		text := "I've asked a parent to approve this topic for you. They'll get a notification — once they approve, just ask me again!"
-		_ = r.db.SaveMessage(conversationID(user.Name), user.Name, "user", msg.Text, string(cat), "request_approval")
-		_ = r.db.SaveMessage(conversationID(user.Name), user.Name, "assistant", text, string(cat), "request_approval")
+		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "user", msg.Text, string(cat), "request_approval"); err != nil {
+			log.Printf("[gateway][%s] save approval-pending user message: %v", user.Name, err)
+		}
+		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "assistant", text, string(cat), "request_approval"); err != nil {
+			log.Printf("[gateway][%s] save approval-pending assistant response: %v", user.Name, err)
+		}
 		return Reply{Text: text, PolicyAction: "request_approval"}
 
 	case "pending":
 		text := "A parent has already been notified about this request. Once they approve, you can ask me!"
-		_ = r.db.SaveMessage(conversationID(user.Name), user.Name, "user", msg.Text, string(cat), "pending")
-		_ = r.db.SaveMessage(conversationID(user.Name), user.Name, "assistant", text, string(cat), "pending")
+		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "user", msg.Text, string(cat), "pending"); err != nil {
+			log.Printf("[gateway][%s] save pending user message: %v", user.Name, err)
+		}
+		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "assistant", text, string(cat), "pending"); err != nil {
+			log.Printf("[gateway][%s] save pending assistant response: %v", user.Name, err)
+		}
 		return Reply{Text: text, PolicyAction: "pending"}
 	}
 
