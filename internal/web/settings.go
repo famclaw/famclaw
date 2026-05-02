@@ -238,7 +238,7 @@ func (s *Server) writeConfig() error {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 	// Prepend warning — yaml.Marshal strips comments from original file
-	header := "# FamClaw configuration (managed by web UI)\n# Edit via http://famclaw.local:8080 settings, or edit this file and restart.\n\n"
+	header := "# FamClaw configuration (managed by web UI)\n# Edit via the Settings page in the web UI, or edit this file and restart.\n\n"
 	if err := os.WriteFile(s.cfgPath, append([]byte(header), data...), 0600); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}

@@ -519,6 +519,8 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         <div id="wiz-telegram-setup" style="display:none;padding:0 0 12px">
           <label class="wiz-label">Your Telegram bot's secret code (from @BotFather)</label>
           <input class="wiz-input" id="wiz-tg-token" placeholder="Paste the code BotFather gave you">
+          <button class="wiz-test-btn" onclick="wizTestTelegram()" style="margin-top:6px">Test connection</button>
+          <div id="wiz-tg-status" style="margin-top:6px;font-size:13px"></div>
         </div>
         <div class="wiz-card" id="wiz-gw-discord" onclick="wizToggleGW(this,'discord')">
           <div class="wiz-icon">🎮</div>
@@ -528,6 +530,12 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         <div id="wiz-discord-setup" style="display:none;padding:0 0 12px">
           <label class="wiz-label">Your Discord bot's secret code</label>
           <input class="wiz-input" id="wiz-dc-token" placeholder="Paste the token from Discord Developer Portal">
+          <button class="wiz-test-btn" onclick="wizTestDiscord()" style="margin-top:6px">Test &amp; generate invite link</button>
+          <div id="wiz-dc-status" style="margin-top:6px;font-size:13px"></div>
+          <div id="wiz-dc-invite" style="display:none;margin-top:6px">
+            <p style="margin:4px 0;font-size:13px">Add this bot to your family's Discord server:</p>
+            <a id="wiz-dc-invite-link" class="wiz-btn" href="#" target="_blank" rel="noopener">Add bot to server →</a>
+          </div>
         </div>
         <div class="wiz-nav">
           <button class="wiz-back" onclick="wizBack()">Back</button>
@@ -1552,6 +1560,68 @@ function wizToggleGW(card, gw) {
   card.classList.toggle('selected', wizState.gateways[gw]);
   const setup = document.getElementById('wiz-' + gw + '-setup');
   if (setup) setup.style.display = wizState.gateways[gw] ? 'block' : 'none';
+}
+
+// Verify a Telegram bot token via /api/setup/test-telegram. Replaces the
+// "save first, find out it's invalid later" failure mode with immediate
+// feedback in the wizard.
+async function wizTestTelegram() {
+  const token = (document.getElementById('wiz-tg-token').value || '').trim();
+  if (!token) return;
+  const status = document.getElementById('wiz-tg-status');
+  status.classList.remove('wiz-success', 'wiz-error');
+  status.textContent = 'Testing…';
+  try {
+    const resp = await fetch('/api/setup/test-telegram', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token}),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) {
+      status.textContent = '❌ Invalid token. Try again.';
+      status.classList.add('wiz-error');
+      return;
+    }
+    status.textContent = '✅ Connected as @' + data.username;
+    status.classList.add('wiz-success');
+  } catch (_) {
+    status.textContent = '❌ Network error. Try again.';
+    status.classList.add('wiz-error');
+  }
+}
+
+// Verify a Discord bot token and reveal an OAuth2 invite URL with the
+// minimum permissions FamClaw needs (Send Messages + View Channel + Read
+// Message History = 2048 + 1024 + 65536 = 68608).
+async function wizTestDiscord() {
+  const token = (document.getElementById('wiz-dc-token').value || '').trim();
+  if (!token) return;
+  const status = document.getElementById('wiz-dc-status');
+  status.classList.remove('wiz-success', 'wiz-error');
+  status.textContent = 'Testing…';
+  try {
+    const resp = await fetch('/api/setup/test-discord', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token}),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) {
+      status.textContent = '❌ Invalid token. Try again.';
+      status.classList.add('wiz-error');
+      return;
+    }
+    const inviteURL = 'https://discord.com/oauth2/authorize?client_id=' +
+      encodeURIComponent(data.app_id) + '&scope=bot&permissions=68608';
+    document.getElementById('wiz-dc-invite-link').href = inviteURL;
+    document.getElementById('wiz-dc-invite').style.display = 'block';
+    status.textContent = '✅ Connected as ' + data.username;
+    status.classList.add('wiz-success');
+  } catch (_) {
+    status.textContent = '❌ Network error. Try again.';
+    status.classList.add('wiz-error');
+  }
 }
 
 // ── Step 4: AI Profiles ──────────────────────────────────────────────────────

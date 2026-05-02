@@ -25,7 +25,6 @@ import (
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
-	"github.com/famclaw/famclaw/internal/mdns"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/honeybadger"
@@ -281,8 +280,7 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// mDNS — advertise on local network as famclaw.local
-	go mdns.Advertise(cfg.Server.MDNSName, cfg.Server.Port)
+	// mDNS removed in v0.5.x — see #110. Use the device IP address.
 
 	// Start
 	go func() {
@@ -329,16 +327,15 @@ func printStartGuide(cfg *config.Config) {
 ────────────────────────────────────────────────────────
   Open FamClaw on any device on your network:
 
-  📱 http://%s.local:%d
   🖥️  http://localhost:%d
 
-  Or find this device's IP with:
+  Find this device's IP with:
     Mac:   ipconfig getifaddr en0
     Linux: hostname -I | awk '{print $1}'
 
-  Then open http://<IP>:%d on any device.
+  Then open http://<IP>:%d on any device on your LAN.
 ────────────────────────────────────────────────────────
-`, cfg.Server.MDNSName, cfg.Server.Port, cfg.Server.Port, cfg.Server.Port)
+`, cfg.Server.Port, cfg.Server.Port)
 }
 
 func generateSecret() string {

@@ -55,10 +55,16 @@ type DiscordGWConfig struct {
 }
 
 type ServerConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	Secret   string `yaml:"secret"`
-	MDNSName string `yaml:"mdns_name"`
+	Host   string `yaml:"host"`
+	Port   int    `yaml:"port"`
+	Secret string `yaml:"secret"`
+	// Deprecated: mDNS was removed in v0.5.x (issue #110) because it
+	// didn't resolve reliably on Windows or many home routers. The field
+	// is retained so existing config.yaml files continue to load, and
+	// is still used by BaseURL() to construct notification links —
+	// users should change this to their device's IP or DNS hostname so
+	// approval-notification URLs work for recipients off the LAN.
+	MDNSName string `yaml:"mdns_name,omitempty"`
 }
 
 func (s ServerConfig) Addr() string {

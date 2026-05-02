@@ -5,6 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Added
+- **Gateway self-registration.** New users messaging FamClaw on Telegram or
+  Discord are auto-linked when their platform display name matches an
+  unlinked FamClaw user. When multiple unlinked users exist and no name
+  match, a numbered list lets the user pick. Unknown accounts with no
+  unlinked users are rejected — account creation is parents-only.
+- **Bot setup wizard with token testing.** Step-by-step instructions for
+  creating Telegram and Discord bots. Tokens verified against the platform
+  API before saving. Discord OAuth2 invite URL auto-generated with the
+  minimum required permissions (Send Messages + View Channel + Read
+  Message History = 68608).
+- `DisplayName` field on `gateway.Message`, populated from Telegram
+  `FirstName`/`LastName` and Discord `GlobalName`/`Username`.
+- `internal/gateway/chunk.go` — `ChunkMessage(text, maxLen)` utility for
+  platform character limits, with table-driven tests.
+- `UnlinkedUsers` method on identity store, `HasGatewayAccount` helper on
+  the db store.
+- API endpoints `/api/setup/test-telegram` and `/api/setup/test-discord`.
+- `internal/web/settings_test.go` covering the four PIN scenarios that
+  #109 broke (true first boot, re-run with correct PIN, wrong PIN, no PIN).
+
 ### Changed
 - **Agent constructor takes `AgentDeps` struct** instead of 7 individual
   setter methods. Forgotten dependencies now surface at compile time
@@ -13,13 +34,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   with a godoc comment.
 - `integration_test.go` moved from the repo root into `e2e/` as
   `package e2e` (kept `//go:build integration` tag — CI command unchanged).
+- Onboarding flow auto-matches platform profiles or shows a numbered list.
+  Strangers no longer auto-create users.
 
 ### Fixed
+- **Wizard "Finish setup" no longer fails with 403 on re-run.** Wizard now
+  sends the parent PIN from the family-member step. PIN-mismatch shows a
+  clear error ("Incorrect parent PIN. If re-running setup, use the PIN
+  from your first setup.") rather than the generic failure toast. Fixes #109.
+- **Discord messages over 2000 chars no longer silently dropped** — split
+  into multiple messages at newline boundaries.
+- **Telegram messages over 4096 bytes no longer silently dropped.** Telegram
+  `sendMessage` now uses a JSON POST body instead of URL query parameters
+  (the old form hit URL length limits well before the 4096-byte cap).
+- Telegram `tgUser` parser now captures `FirstName`/`LastName`/`Username`
+  (previously only `ID` was decoded).
+- Empty / whitespace-only LLM replies are no longer sent to platforms
+  (both rejected them with 4xx, leaving the user with silent failure).
 - Database write errors (`SaveMessage`) are now logged instead of silently
   swallowed. Disk-full and schema corruption surface in the logs instead
   of being lost.
 
 ### Removed
+- **mDNS removed entirely.** `famclaw.local` didn't resolve reliably on
+  Windows or many home routers — use the device's IP address. Closes #110.
+  The `grandcat/zeroconf` dependency, `internal/mdns` package,
+  `scripts/install-termux.sh`, and the Android binary in GoReleaser have
+  all been dropped.
+- `Server.MDNSName` config field is retained for compat but marked
+  deprecated. Notification approval URLs still consume it — set it to your
+  device's IP or DNS hostname so the URLs work for recipients off the LAN.
 - `min(a, b int)` shim — Go 1.21+ provides a builtin `min`.
 - `outputBlockedPatterns` and `filterOutput` dead code in `internal/agent`
   (production filtering lives in `internal/agentcore/stage_output_filter.go`,

@@ -1,6 +1,6 @@
 # 🛡️ FamClaw
 
-**A secure, local-first family AI gateway. Runs on Raspberry Pi, Mac, or an old Android phone.**
+**A secure, local-first family AI gateway. Runs on Raspberry Pi, Mac, or any Linux box.**
 
 FamClaw is a lightweight Go gateway that connects your family to any AI model — local or cloud — through Telegram, WhatsApp, Discord, and a web interface. Every message goes through a policy engine before the AI ever sees it.
 
@@ -35,7 +35,6 @@ FamClaw itself uses ~20MB RAM. The LLM runs elsewhere — on a Mac Mini on your 
 |--------|------|
 | Raspberry Pi 3/4/5 | Run FamClaw 24/7, flash SD card and plug in |
 | Mac Mini | Run as background daemon |
-| Old Android phone | Run via the FamClaw Android app, plug into charger |
 | Any Linux box | One binary, no dependencies |
 
 ---
@@ -63,9 +62,13 @@ llm:
 ### Raspberry Pi (flash and plug in)
 ```bash
 # Flash famclaw-rpi4-arm64.img.xz to SD card with Raspberry Pi Imager
-# Plug in, wait 2 minutes, open:
-http://famclaw.local:8080
+# Plug in, wait 2 minutes, find the device IP from your router and open:
+http://<your-pi-ip>:8080
 ```
+
+> mDNS (`famclaw.local`) was removed in v0.5.x because it didn't resolve
+> reliably on Windows or many home routers. Use the device's IP address
+> from your router's DHCP leases page or `ip addr` on the Pi.
 
 ### Mac / Linux
 ```bash
@@ -185,7 +188,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 | Mac Mini M1+ 16GB | `gemma4:e4b` | Native tool calling, multimodal |
 | RPi 5 8GB | `gemma4:e2b` | Fits in 3GB Q4, tool calling |
 | RPi 4 4GB | `qwen3:4b` | Best efficiency |
-| RPi 3 / Android | Use remote | Gateway only |
+| RPi 3 | Use remote | Gateway only |
 
 See [docs/BACKENDS.md](docs/BACKENDS.md) for inference engine comparison.
 

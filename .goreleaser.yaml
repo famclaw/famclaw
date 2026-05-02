@@ -16,7 +16,6 @@ builds:
     goos:
       - linux
       - darwin
-      - android
     goarch:
       - amd64
       - arm64
@@ -26,10 +25,6 @@ builds:
     ignore:
       - goos: darwin
         goarch: arm
-      - goos: android
-        goarch: arm
-      - goos: android
-        goarch: amd64
 
 archives:
   - formats: [tar.xz]
