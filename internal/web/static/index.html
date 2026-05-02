@@ -241,6 +241,15 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
 .wiz-input:focus{border-color:#6366f1;background:#fff;box-shadow:0 0 0 3px rgba(99,102,241,.08)}
 .wiz-label{font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;
   letter-spacing:.05em;margin-bottom:6px;display:block}
+/* Bot setup wizard test controls + status colors */
+.wiz-test-btn{padding:8px 14px;border:1.5px solid #6366f1;background:#eef2ff;color:#4f46e5;
+  border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s}
+.wiz-test-btn:hover{background:#e0e7ff}
+.wiz-btn{display:inline-block;padding:10px 16px;background:#6366f1;color:#fff;
+  border-radius:10px;font-size:14px;font-weight:600;text-decoration:none}
+.wiz-btn:hover{background:#4f46e5}
+.wiz-success{color:#059669;font-weight:600}
+.wiz-error{color:#dc2626;font-weight:600}
 /* Age selector pills */
 .wiz-ages{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .wiz-age-pill{padding:10px 16px;border:2px solid #e2e8f0;border-radius:12px;
@@ -519,6 +528,8 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         <div id="wiz-telegram-setup" style="display:none;padding:0 0 12px">
           <label class="wiz-label">Your Telegram bot's secret code (from @BotFather)</label>
           <input class="wiz-input" id="wiz-tg-token" placeholder="Paste the code BotFather gave you">
+          <button class="wiz-test-btn" onclick="wizTestTelegram()" style="margin-top:6px">Test connection</button>
+          <div id="wiz-tg-status" style="margin-top:6px;font-size:13px"></div>
         </div>
         <div class="wiz-card" id="wiz-gw-discord" onclick="wizToggleGW(this,'discord')">
           <div class="wiz-icon">🎮</div>
@@ -528,6 +539,12 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         <div id="wiz-discord-setup" style="display:none;padding:0 0 12px">
           <label class="wiz-label">Your Discord bot's secret code</label>
           <input class="wiz-input" id="wiz-dc-token" placeholder="Paste the token from Discord Developer Portal">
+          <button class="wiz-test-btn" onclick="wizTestDiscord()" style="margin-top:6px">Test &amp; generate invite link</button>
+          <div id="wiz-dc-status" style="margin-top:6px;font-size:13px"></div>
+          <div id="wiz-dc-invite" style="display:none;margin-top:6px">
+            <p style="margin:4px 0;font-size:13px">Add this bot to your family's Discord server:</p>
+            <a id="wiz-dc-invite-link" class="wiz-btn" href="#" target="_blank" rel="noopener">Add bot to server →</a>
+          </div>
         </div>
         <div class="wiz-nav">
           <button class="wiz-back" onclick="wizBack()">Back</button>
@@ -1554,6 +1571,76 @@ function wizToggleGW(card, gw) {
   if (setup) setup.style.display = wizState.gateways[gw] ? 'block' : 'none';
 }
 
+// Verify a Telegram bot token via /api/setup/test-telegram. Replaces the
+// "save first, find out it's invalid later" failure mode with immediate
+// feedback in the wizard.
+async function wizTestTelegram() {
+  const token = (document.getElementById('wiz-tg-token').value || '').trim();
+  if (!token) return;
+  const status = document.getElementById('wiz-tg-status');
+  status.classList.remove('wiz-success', 'wiz-error');
+  status.textContent = 'Testing…';
+  // After first boot, the endpoint requires a valid parent PIN. Pull
+  // it from wizState (set in step 2) so the test still works during
+  // wizard re-runs.
+  const pin = wizState.members.find(m => m.role === 'parent')?.pin || '';
+  try {
+    const resp = await fetch('/api/setup/test-telegram', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Parent-PIN': pin},
+      body: JSON.stringify({token}),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) {
+      status.textContent = '❌ Invalid token. Try again.';
+      status.classList.add('wiz-error');
+      return;
+    }
+    status.textContent = '✅ Connected as @' + data.username;
+    status.classList.add('wiz-success');
+  } catch (_) {
+    status.textContent = '❌ Network error. Try again.';
+    status.classList.add('wiz-error');
+  }
+}
+
+// Verify a Discord bot token and reveal an OAuth2 invite URL with the
+// minimum permissions FamClaw needs (Send Messages + View Channel + Read
+// Message History = 2048 + 1024 + 65536 = 68608).
+async function wizTestDiscord() {
+  const token = (document.getElementById('wiz-dc-token').value || '').trim();
+  if (!token) return;
+  const status = document.getElementById('wiz-dc-status');
+  status.classList.remove('wiz-success', 'wiz-error');
+  // CodeRabbit thread #7: hide a previously-revealed invite block so
+  // editing the token to a new value can't leave a stale invite URL up.
+  document.getElementById('wiz-dc-invite').style.display = 'none';
+  status.textContent = 'Testing…';
+  const pin = wizState.members.find(m => m.role === 'parent')?.pin || '';
+  try {
+    const resp = await fetch('/api/setup/test-discord', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Parent-PIN': pin},
+      body: JSON.stringify({token}),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) {
+      status.textContent = '❌ Invalid token. Try again.';
+      status.classList.add('wiz-error');
+      return;
+    }
+    const inviteURL = 'https://discord.com/oauth2/authorize?client_id=' +
+      encodeURIComponent(data.app_id) + '&scope=bot&permissions=68608';
+    document.getElementById('wiz-dc-invite-link').href = inviteURL;
+    document.getElementById('wiz-dc-invite').style.display = 'block';
+    status.textContent = '✅ Connected as ' + data.username;
+    status.classList.add('wiz-success');
+  } catch (_) {
+    status.textContent = '❌ Network error. Try again.';
+    status.classList.add('wiz-error');
+  }
+}
+
 // ── Step 4: AI Profiles ──────────────────────────────────────────────────────
 
 const PROVIDERS = {
@@ -1924,13 +2011,30 @@ async function wizFinish() {
   };
   if (defaultProfile.key) body.llm.api_key = defaultProfile.key;
 
-  // Save — no PIN needed on first boot (isFirstBoot allows it)
-  const result = await apiFetch('/api/settings', {
+  // Save — server requires X-Parent-PIN unless this is true first boot.
+  // The wizard always carries the PIN from the family-member step, so a
+  // re-run after first boot still authenticates correctly.
+  const pin = wizState.members.find(m => m.role === 'parent')?.pin || '';
+
+  const resp = await fetch('/api/settings', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Parent-PIN': pin,
+    },
     body: JSON.stringify(body),
   });
 
+  if (resp.status === 403) {
+    showToast('Incorrect parent PIN. If re-running setup, use the PIN from your first setup.');
+    return;
+  }
+  if (!resp.ok) {
+    showToast('Failed to save — please try again');
+    return;
+  }
+
+  const result = await resp.json();
   if (result && result.status === 'saved') {
     // Show completion
     for (let i = 1; i <= wizState.totalSteps; i++) {

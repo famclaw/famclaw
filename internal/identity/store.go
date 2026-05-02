@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -56,4 +57,18 @@ func (s *Store) IsRegistered(gateway, externalID string) bool {
 // Unlink removes a gateway account mapping.
 func (s *Store) Unlink(gateway, externalID string) error {
 	return s.db.UnlinkGatewayAccount(strings.ToLower(gateway), externalID)
+}
+
+// UnlinkedUsers returns the family-config users that have no linked
+// account for the given gateway. Used during gateway self-registration
+// to either auto-link by display name or present a numbered list.
+func (s *Store) UnlinkedUsers(cfg *config.Config, gateway string) []config.UserConfig {
+	gw := strings.ToLower(gateway)
+	var result []config.UserConfig
+	for _, user := range cfg.Users {
+		if !s.db.HasGatewayAccount(user.Name, gw) {
+			result = append(result, user)
+		}
+	}
+	return result
 }

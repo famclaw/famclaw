@@ -3,14 +3,15 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/gateway"
@@ -57,16 +58,33 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				continue
 			}
 
+			displayName := strings.TrimSpace(u.Message.From.FirstName + " " + u.Message.From.LastName)
+			if displayName == "" {
+				displayName = u.Message.From.Username
+			}
+
 			msg := gateway.Message{
-				Gateway:    "telegram",
-				ExternalID: strconv.FormatInt(u.Message.From.ID, 10),
-				Text:       u.Message.Text,
+				Gateway:     "telegram",
+				ExternalID:  strconv.FormatInt(u.Message.From.ID, 10),
+				Text:        u.Message.Text,
+				DisplayName: displayName,
 			}
 
 			reply := handleMsg(ctx, msg)
 
-			if err := b.sendMessage(ctx, u.Message.Chat.ID, reply.Text); err != nil {
-				log.Printf("[telegram] send error: %v", err)
+			// Skip whitespace-only replies — both platforms reject empty
+			// messages with a 4xx, leaving the user with no visible feedback.
+			if strings.TrimSpace(reply.Text) == "" {
+				continue
+			}
+
+			// Chunk at Telegram's 4096-byte message limit. Break on first
+			// error so we don't spam if the channel is gone or rate-limited.
+			for _, chunk := range gateway.ChunkMessage(reply.Text, 4096) {
+				if err := b.sendMessage(ctx, u.Message.Chat.ID, chunk); err != nil {
+					log.Printf("[telegram] send error: %v", err)
+					break
+				}
 			}
 		}
 	}
@@ -88,7 +106,10 @@ type tgChat struct {
 }
 
 type tgUser struct {
-	ID int64 `json:"id"`
+	ID        int64  `json:"id"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name,omitempty"`
+	Username  string `json:"username,omitempty"`
 }
 
 func (b *Bot) getUpdates(ctx context.Context, offset int) ([]tgUpdate, error) {
@@ -120,14 +141,19 @@ func (b *Bot) getUpdates(ctx context.Context, offset int) ([]tgUpdate, error) {
 
 func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error {
 	u := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.token)
-	params := url.Values{}
-	params.Set("chat_id", strconv.FormatInt(chatID, 10))
-	params.Set("text", text)
+	jsonBody, err := json.Marshal(map[string]any{
+		"chat_id": chatID,
+		"text":    text,
+	})
+	if err != nil {
+		return fmt.Errorf("marshaling send body: %w", err)
+	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", u+"?"+params.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(jsonBody))
 	if err != nil {
 		return fmt.Errorf("creating send request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := b.client.Do(req)
 	if err != nil {

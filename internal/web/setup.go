@@ -1,7 +1,11 @@
 package web
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/famclaw/famclaw/internal/hardware"
 )
@@ -15,6 +19,133 @@ func (s *Server) handleSetupDetect(w http.ResponseWriter, r *http.Request) {
 	}
 	info := hardware.Detect()
 	jsonOK(w, info)
+}
+
+// handleTestTelegram verifies a Telegram bot token by calling the platform's
+// getMe endpoint. Returns {ok: true, username: "..."} on success or
+// {ok: false, error: "<reason>"} on upstream failure. Always replies HTTP 200
+// for upstream errors so the wizard can use `ok` as the rejection signal.
+//
+// PIN-gated after first boot. On true first boot (isFirstBoot), the wizard
+// reaches this before any parent exists, so the gate is open. After that, a
+// LAN attacker would need the parent PIN to probe arbitrary tokens.
+func (s *Server) handleTestTelegram(w http.ResponseWriter, r *http.Request) {
+	if !s.isFirstBoot() {
+		if !s.verifyParentPINConstantTime(r.Header.Get("X-Parent-PIN")) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid JSON"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", body.Token)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "network error"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid token"})
+		return
+	}
+
+	var tg struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Username string `json:"username"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tg); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "decode error"})
+		return
+	}
+	if !tg.OK {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid token"})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":       true,
+		"username": tg.Result.Username,
+	})
+}
+
+// handleTestDiscord verifies a Discord bot token by calling /users/@me.
+// The bot's user-id doubles as the application id used in the OAuth2
+// invite URL the wizard generates client-side. PIN-gated after first
+// boot — see handleTestTelegram for the rationale.
+func (s *Server) handleTestDiscord(w http.ResponseWriter, r *http.Request) {
+	if !s.isFirstBoot() {
+		if !s.verifyParentPINConstantTime(r.Header.Get("X-Parent-PIN")) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid JSON"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://discord.com/api/v10/users/@me", nil)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	req.Header.Set("Authorization", "Bot "+body.Token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "network error"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid token"})
+		return
+	}
+
+	var dc struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&dc); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "decode error"})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":       true,
+		"username": dc.Username,
+		"app_id":   dc.ID,
+	})
 }
 
 // handleRoot serves the app. Redirects to /setup if unconfigured.
