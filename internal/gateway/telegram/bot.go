@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/gateway"
@@ -65,8 +66,19 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 
 			reply := handleMsg(ctx, msg)
 
-			if err := b.sendMessage(ctx, u.Message.Chat.ID, reply.Text); err != nil {
-				log.Printf("[telegram] send error: %v", err)
+			// Skip whitespace-only replies — both platforms reject empty
+			// messages with a 4xx, leaving the user with no visible feedback.
+			if strings.TrimSpace(reply.Text) == "" {
+				continue
+			}
+
+			// Chunk at Telegram's 4096-byte message limit. Break on first
+			// error so we don't spam if the channel is gone or rate-limited.
+			for _, chunk := range gateway.ChunkMessage(reply.Text, 4096) {
+				if err := b.sendMessage(ctx, u.Message.Chat.ID, chunk); err != nil {
+					log.Printf("[telegram] send error: %v", err)
+					break
+				}
 			}
 		}
 	}

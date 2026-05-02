@@ -4,6 +4,7 @@ package discord
 import (
 	"context"
 	"log"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/famclaw/famclaw/internal/gateway"
@@ -44,8 +45,18 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 
 		reply := handleMsg(ctx, msg)
 
-		if _, err := s.ChannelMessageSend(m.ChannelID, reply.Text); err != nil {
-			log.Printf("[discord] send error: %v", err)
+		// Skip whitespace-only replies — Discord rejects empty messages.
+		if strings.TrimSpace(reply.Text) == "" {
+			return
+		}
+
+		// Chunk at Discord's 2000-character message limit. Break on first
+		// error so we don't spam if the channel is gone or rate-limited.
+		for _, chunk := range gateway.ChunkMessage(reply.Text, 2000) {
+			if _, err := s.ChannelMessageSend(m.ChannelID, chunk); err != nil {
+				log.Printf("[discord] send error: %v", err)
+				break
+			}
 		}
 	})
 
