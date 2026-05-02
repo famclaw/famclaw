@@ -23,6 +23,7 @@ import (
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/classifier"
+	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/notify"
@@ -38,6 +39,7 @@ type Server struct {
 	cfg        *config.Config
 	cfgPath    string // path to config.yaml for settings API
 	db         *store.DB
+	identStore *identity.Store
 	evaluator  *policy.Evaluator
 	clf        *classifier.Classifier
 	notifier   *notify.MultiNotifier
@@ -58,12 +60,13 @@ type wsMessage struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-func NewServer(cfg *config.Config, cfgPath string, db *store.DB, evaluator *policy.Evaluator,
+func NewServer(cfg *config.Config, cfgPath string, db *store.DB, identStore *identity.Store, evaluator *policy.Evaluator,
 	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, pool *mcp.Pool, oauthStore *llm.OAuthStore) *Server {
 	return &Server{
 		cfg:        cfg,
 		cfgPath:    cfgPath,
 		db:         db,
+		identStore: identStore,
 		evaluator:  evaluator,
 		clf:        clf,
 		notifier:   notifier,
@@ -99,6 +102,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals", s.handleApprovals)
 	mux.HandleFunc("/api/approvals/decide", s.handleDecide)
 	mux.HandleFunc("/api/skills", s.handleSkills)
+	mux.HandleFunc("/api/unknown-accounts", s.handleUnknownAccounts)
+	mux.HandleFunc("/api/unknown-accounts/link", s.handleUnknownAccountLink)
+	mux.HandleFunc("/api/unknown-accounts/dismiss", s.handleUnknownAccountDismiss)
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/setup/detect", s.handleSetupDetect)
