@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- **Unknown-accounts backend (issue #111).** New `unknown_accounts` table
+  records every unlinked Discord/Telegram account that messages FamClaw,
+  with attempts counter and last-seen timestamp. Three new PIN-gated JSON
+  endpoints expose it: `GET /api/unknown-accounts`,
+  `POST /api/unknown-accounts/link`, `POST /api/unknown-accounts/dismiss`.
+  The router auto-clears rows on every link path (display-name auto-link,
+  numbered-list reply, web link). Dashboard UI lands in a follow-up PR.
 - **Gateway self-registration.** New users messaging FamClaw on Telegram or
   Discord are auto-linked when their platform display name matches an
   unlinked FamClaw user. When multiple unlinked users exist and no name
