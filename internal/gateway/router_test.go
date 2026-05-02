@@ -640,6 +640,78 @@ func TestHandleUnknownAccount_ParentNeverAutoLinked(t *testing.T) {
 	}
 }
 
+// TestRouter_UnknownAccountPersistAndClear verifies that an unknown-account
+// hit is recorded in identStore.ListUnknown, and that linking the account
+// (via numbered-list reply) clears the row.
+func TestRouter_UnknownAccountPersistAndClear(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+
+	// Stranger DisplayName won't match any user → numbered list path.
+	reply1 := router.Handle(context.Background(), Message{
+		Gateway:     "telegram",
+		ExternalID:  "X1",
+		Text:        "yo",
+		DisplayName: "Stranger",
+	})
+	if reply1.PolicyAction != "onboarding" {
+		t.Fatalf("first message should be onboarding, got %q", reply1.PolicyAction)
+	}
+
+	list, err := identStore.ListUnknown()
+	if err != nil {
+		t.Fatalf("ListUnknown after unknown hit: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("after unknown hit: want 1, got %d", len(list))
+	}
+	if list[0].Gateway != "telegram" || list[0].ExternalID != "X1" {
+		t.Errorf("recorded row mismatch: %+v", list[0])
+	}
+
+	// Pick option 1 (first non-parent child = emma in the fixture).
+	reply2 := router.Handle(context.Background(), Message{
+		Gateway:     "telegram",
+		ExternalID:  "X1",
+		Text:        "1",
+		DisplayName: "Stranger",
+	})
+	if reply2.PolicyAction == "" {
+		t.Fatalf("got empty reply: %+v", reply2)
+	}
+
+	list, err = identStore.ListUnknown()
+	if err != nil {
+		t.Fatalf("ListUnknown after link: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("after link via list: want 0, got %d", len(list))
+	}
+}
+
+// TestRouter_UnknownAccountClearedOnAutoLink verifies that auto-link by
+// display-name match also clears the unknown_accounts row.
+func TestRouter_UnknownAccountClearedOnAutoLink(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway:     "telegram",
+		ExternalID:  "tg-emma-auto",
+		Text:        "hi",
+		DisplayName: "Emma",
+	})
+	if reply.PolicyAction != "onboarding" {
+		t.Fatalf("expected onboarding, got %q", reply.PolicyAction)
+	}
+
+	list, err := identStore.ListUnknown()
+	if err != nil {
+		t.Fatalf("ListUnknown: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("auto-link should clear the row; got %d", len(list))
+	}
+}
+
 // TestCleanExpiredPending verifies that pendingRegistration entries
 // older than 5 minutes are dropped on the next sweep.
 func TestCleanExpiredPending(t *testing.T) {

@@ -279,6 +279,12 @@ func runGateway(ctx context.Context, gw Gateway, handler func(ctx context.Contex
 // Stronger auth would need a one-time pairing code from the dashboard.
 func (r *Router) handleUnknownAccount(msg Message) Reply {
 	r.cleanExpiredPending()
+
+	if err := r.identStore.RecordUnknown(msg.Gateway, msg.ExternalID, msg.DisplayName); err != nil {
+		log.Printf("[router] record unknown: %v", err)
+		// non-fatal — telemetry must not break message flow
+	}
+
 	key := msg.Gateway + ":" + msg.ExternalID
 
 	r.pendingMu.Lock()
@@ -317,6 +323,9 @@ func (r *Router) handleUnknownAccount(msg Message) Reply {
 						Text:         "Something went wrong linking your account. Please try again.",
 						PolicyAction: "onboarding",
 					}
+				}
+				if err := r.identStore.ClearUnknown(msg.Gateway, msg.ExternalID); err != nil {
+					log.Printf("[router] clear unknown after auto-link: %v", err)
 				}
 				log.Printf("[router] auto-linked %s/%s → %s (name match)",
 					msg.Gateway, msg.ExternalID, u.Name)
@@ -390,6 +399,10 @@ func (r *Router) handleRegistrationReply(msg Message, pending *pendingRegistrati
 	r.pendingMu.Lock()
 	delete(r.pendingRegs, msg.Gateway+":"+msg.ExternalID)
 	r.pendingMu.Unlock()
+
+	if err := r.identStore.ClearUnknown(msg.Gateway, msg.ExternalID); err != nil {
+		log.Printf("[router] clear unknown after registration link: %v", err)
+	}
 
 	log.Printf("[router] linked %s/%s → %s (user choice)",
 		msg.Gateway, msg.ExternalID, chosen.Name)
