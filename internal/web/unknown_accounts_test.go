@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -63,7 +64,7 @@ func TestUnknownAccounts_GET(t *testing.T) {
 			defer cleanup()
 
 			if tc.seed {
-				if err := srv.identStore.RecordUnknown("telegram", "X1", "Julia"); err != nil {
+				if err := srv.identStore.RecordUnknown(context.Background(), "telegram", "X1", "Julia"); err != nil {
 					t.Fatalf("RecordUnknown: %v", err)
 				}
 			}
@@ -96,7 +97,7 @@ func TestUnknownAccounts_LinkAndDismiss(t *testing.T) {
 	defer cleanup()
 
 	for _, ext := range []string{"X1", "X2"} {
-		if err := srv.identStore.RecordUnknown("telegram", ext, "Julia"); err != nil {
+		if err := srv.identStore.RecordUnknown(context.Background(), "telegram", ext, "Julia"); err != nil {
 			t.Fatalf("RecordUnknown %s: %v", ext, err)
 		}
 	}
@@ -121,7 +122,7 @@ func TestUnknownAccounts_LinkAndDismiss(t *testing.T) {
 		t.Fatalf("dismiss status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 
-	list, err := srv.identStore.ListUnknown()
+	list, err := srv.identStore.ListUnknown(context.Background())
 	if err != nil {
 		t.Fatalf("ListUnknown: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestUnknownAccounts_LinkUnknownUser(t *testing.T) {
 	srv, cleanup := newTestServer(t)
 	defer cleanup()
 
-	if err := srv.identStore.RecordUnknown("telegram", "X1", "Julia"); err != nil {
+	if err := srv.identStore.RecordUnknown(context.Background(), "telegram", "X1", "Julia"); err != nil {
 		t.Fatalf("RecordUnknown: %v", err)
 	}
 
@@ -155,7 +156,7 @@ func TestUnknownAccounts_LinkUnknownUser(t *testing.T) {
 		t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
 	}
 
-	list, err := srv.identStore.ListUnknown()
+	list, err := srv.identStore.ListUnknown(context.Background())
 	if err != nil {
 		t.Fatalf("ListUnknown: %v", err)
 	}
