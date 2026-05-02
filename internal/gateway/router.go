@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/classifier"
@@ -15,6 +18,17 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
 )
+
+// pendingRegistration tracks a user who was shown a "which family member
+// are you?" numbered list and is expected to reply with a number. Lives
+// at most 5 minutes — see cleanExpiredPending.
+type pendingRegistration struct {
+	gateway     string
+	externalID  string
+	displayName string
+	unlinked    []config.UserConfig
+	askedAt     time.Time
+}
 
 // ChatFunc is the function signature for LLM chat.
 // Matches the shape of agent.Chat but decoupled for testability.
@@ -31,6 +45,9 @@ type Router struct {
 	notifier   *notify.MultiNotifier
 	chatFn     ChatFunc
 	pool       *SessionPool
+
+	pendingMu   sync.Mutex
+	pendingRegs map[string]*pendingRegistration
 }
 
 // NewRouter creates a Router with all required dependencies.
@@ -44,13 +61,14 @@ func NewRouter(
 	chatFn ChatFunc,
 ) *Router {
 	r := &Router{
-		cfg:        cfg,
-		identStore: identStore,
-		clf:        clf,
-		evaluator:  evaluator,
-		db:         db,
-		notifier:   notifier,
-		chatFn:     chatFn,
+		cfg:         cfg,
+		identStore:  identStore,
+		clf:         clf,
+		evaluator:   evaluator,
+		db:          db,
+		notifier:    notifier,
+		chatFn:      chatFn,
+		pendingRegs: make(map[string]*pendingRegistration),
 	}
 	// Session pool dispatches heavy work (classify → policy → LLM) per-user
 	r.pool = NewSessionPool(r.process)
@@ -67,8 +85,7 @@ func (r *Router) Handle(ctx context.Context, msg Message) Reply {
 		return Reply{Text: "Something went wrong. Please try again.", PolicyAction: "error"}
 	}
 	if user == nil {
-		log.Printf("[router] unknown account: %s/%s", msg.Gateway, msg.ExternalID)
-		return Reply{Text: identity.OnboardingMessage(), PolicyAction: "onboarding"}
+		return r.handleUnknownAccount(msg)
 	}
 
 	userCfg := r.cfg.GetUser(user.Name)
@@ -242,6 +259,138 @@ func runGateway(ctx context.Context, gw Gateway, handler func(ctx context.Contex
 		backoff *= 2
 		if backoff > maxBackoff {
 			backoff = maxBackoff
+		}
+	}
+}
+
+// handleUnknownAccount runs when Resolve returned no user. Three paths:
+//   1. The user is replying to a still-fresh "which family member?" prompt
+//      → consume the choice via handleRegistrationReply.
+//   2. Their platform display name matches an unlinked FamClaw user
+//      → auto-link silently, send a friendly "linked!" message.
+//   3. Otherwise → if any users remain unlinked, present a numbered list
+//      and stash a pendingRegistration; if no unlinked users remain,
+//      reject with the private-family message. No createNewUser path —
+//      account creation is parents-only by design.
+//
+// Note: auto-link by display-name match is a deliberately weak auth
+// boundary (anyone with a matching first name on Telegram/Discord can
+// claim an unlinked account). Mitigated by parents-only-creates-users.
+// Stronger auth would need a one-time pairing code from the dashboard.
+func (r *Router) handleUnknownAccount(msg Message) Reply {
+	r.cleanExpiredPending()
+	key := msg.Gateway + ":" + msg.ExternalID
+
+	r.pendingMu.Lock()
+	pending := r.pendingRegs[key]
+	r.pendingMu.Unlock()
+
+	if pending != nil && time.Since(pending.askedAt) < 5*time.Minute {
+		return r.handleRegistrationReply(msg, pending)
+	}
+
+	unlinked := r.identStore.UnlinkedUsers(r.cfg, msg.Gateway)
+
+	if msg.DisplayName != "" {
+		firstWord := strings.Split(msg.DisplayName, " ")[0]
+		for _, u := range unlinked {
+			if strings.EqualFold(u.DisplayName, msg.DisplayName) ||
+				strings.EqualFold(u.Name, msg.DisplayName) ||
+				strings.EqualFold(u.DisplayName, firstWord) {
+				if err := r.identStore.LinkAccount(u.Name, msg.Gateway, msg.ExternalID); err != nil {
+					log.Printf("[router] auto-link error: %v", err)
+					return Reply{
+						Text:         "Something went wrong linking your account. Please try again.",
+						PolicyAction: "onboarding",
+					}
+				}
+				log.Printf("[router] auto-linked %s/%s → %s (name match)",
+					msg.Gateway, msg.ExternalID, u.Name)
+				return Reply{
+					Text: fmt.Sprintf(
+						"Hi %s! I matched your %s profile and linked your account. You can start chatting!",
+						u.DisplayName, msg.Gateway),
+					PolicyAction: "onboarding",
+				}
+			}
+		}
+	}
+
+	if len(unlinked) == 0 {
+		return Reply{
+			Text: "This bot belongs to a private family. If you're a family member, " +
+				"ask a parent to add your account in the FamClaw dashboard.",
+			PolicyAction: "onboarding",
+		}
+	}
+
+	greeting := "Hi"
+	if msg.DisplayName != "" {
+		greeting = "Hi " + msg.DisplayName
+	}
+
+	var options strings.Builder
+	fmt.Fprintf(&options, "%s! Which family member are you?\n\n", greeting)
+	for i, u := range unlinked {
+		fmt.Fprintf(&options, "%d. %s\n", i+1, u.DisplayName)
+	}
+
+	r.pendingMu.Lock()
+	r.pendingRegs[key] = &pendingRegistration{
+		gateway:     msg.Gateway,
+		externalID:  msg.ExternalID,
+		displayName: msg.DisplayName,
+		unlinked:    unlinked,
+		askedAt:     time.Now(),
+	}
+	r.pendingMu.Unlock()
+
+	return Reply{Text: options.String(), PolicyAction: "onboarding"}
+}
+
+// handleRegistrationReply parses a numbered-list reply and links the
+// chosen unlinked FamClaw user to the platform account.
+func (r *Router) handleRegistrationReply(msg Message, pending *pendingRegistration) Reply {
+	r.pendingMu.Lock()
+	delete(r.pendingRegs, msg.Gateway+":"+msg.ExternalID)
+	r.pendingMu.Unlock()
+
+	text := strings.TrimSpace(msg.Text)
+	choice, err := strconv.Atoi(text)
+	if err != nil || choice < 1 || choice > len(pending.unlinked) {
+		return Reply{
+			Text: fmt.Sprintf("Please reply with a number between 1 and %d.",
+				len(pending.unlinked)),
+			PolicyAction: "onboarding",
+		}
+	}
+
+	chosen := pending.unlinked[choice-1]
+	if err := r.identStore.LinkAccount(chosen.Name, msg.Gateway, msg.ExternalID); err != nil {
+		log.Printf("[router] link error: %v", err)
+		return Reply{Text: "Something went wrong. Please try again.", PolicyAction: "onboarding"}
+	}
+
+	log.Printf("[router] linked %s/%s → %s (user choice)",
+		msg.Gateway, msg.ExternalID, chosen.Name)
+	return Reply{
+		Text: fmt.Sprintf(
+			"Welcome, %s! Your account is now linked. You can start chatting!",
+			chosen.DisplayName),
+		PolicyAction: "onboarding",
+	}
+}
+
+// cleanExpiredPending drops any pendingRegistration older than 5 minutes.
+// Called at the top of every unknown-account flow so the map can't grow
+// unboundedly if a user starts the flow and walks away.
+func (r *Router) cleanExpiredPending() {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	now := time.Now()
+	for key, p := range r.pendingRegs {
+		if now.Sub(p.askedAt) > 5*time.Minute {
+			delete(r.pendingRegs, key)
 		}
 	}
 }

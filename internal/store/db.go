@@ -511,6 +511,20 @@ func (d *DB) IsGatewayAccountRegistered(gateway, externalID string) bool {
 	return count > 0
 }
 
+// HasGatewayAccount reports whether userName has any account linked
+// for the given gateway. Used during gateway self-registration to
+// filter the family-config user list to those still needing a link.
+func (d *DB) HasGatewayAccount(userName, gateway string) bool {
+	var count int
+	err := d.sql.QueryRow(
+		`SELECT COUNT(*) FROM gateway_accounts WHERE user_name=? AND gateway=?`,
+		userName, gateway).Scan(&count)
+	if err != nil {
+		return false
+	}
+	return count > 0
+}
+
 func (d *DB) UnlinkGatewayAccount(gateway, externalID string) error {
 	_, err := d.sql.Exec(`DELETE FROM gateway_accounts WHERE gateway=? AND external_id=?`,
 		gateway, externalID)

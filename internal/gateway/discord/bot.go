@@ -37,10 +37,16 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			return
 		}
 
+		displayName := m.Author.GlobalName
+		if displayName == "" {
+			displayName = m.Author.Username
+		}
+
 		msg := gateway.Message{
-			Gateway:    "discord",
-			ExternalID: m.Author.ID,
-			Text:       m.Content,
+			Gateway:     "discord",
+			ExternalID:  m.Author.ID,
+			Text:        m.Content,
+			DisplayName: displayName,
 		}
 
 		reply := handleMsg(ctx, msg)
