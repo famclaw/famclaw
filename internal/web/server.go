@@ -230,7 +230,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Broadcast dashboard update
-			go s.broadcastDashboardUpdate()
+			go s.broadcastDashboardUpdate(context.Background())
 
 		case "ping":
 			s.sendWS(conn, "pong", nil)
@@ -320,7 +320,7 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.broadcastDashboardUpdate()
+	go s.broadcastDashboardUpdate(context.Background())
 	jsonOK(w, map[string]string{"status": status})
 }
 
@@ -368,7 +368,7 @@ func (s *Server) handleDecideLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.broadcastDashboardUpdate()
+	go s.broadcastDashboardUpdate(context.Background())
 
 	icon := "✅"
 	if status == "denied" {
@@ -465,9 +465,9 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 	}
 }
 
-func (s *Server) broadcastDashboardUpdate() {
+func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 	pending, _ := s.db.PendingApprovals()
-	unknown, err := s.identStore.ListUnknown()
+	unknown, err := s.identStore.ListUnknown(ctx)
 	if err != nil {
 		log.Printf("[web] dashboard broadcast list unknown: %v", err)
 		unknown = nil

@@ -1,9 +1,9 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 
 	"github.com/famclaw/famclaw/internal/store"
@@ -18,7 +18,7 @@ func (s *Server) handleUnknownAccounts(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
 		return
 	}
-	list, err := s.identStore.ListUnknown()
+	list, err := s.identStore.ListUnknown(r.Context())
 	if err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
@@ -66,14 +66,11 @@ func (s *Server) handleUnknownAccountLink(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := s.identStore.LinkAccount(body.UserName, body.Gateway, body.ExternalID); err != nil {
+	if err := s.identStore.LinkAndClearUnknown(r.Context(), body.UserName, body.Gateway, body.ExternalID); err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
 	}
-	if err := s.identStore.ClearUnknown(body.Gateway, body.ExternalID); err != nil {
-		log.Printf("[web] clear unknown after link: %v", err)
-	}
-	go s.broadcastDashboardUpdate()
+	go s.broadcastDashboardUpdate(context.Background())
 	jsonOK(w, map[string]string{"status": "linked"})
 }
 
@@ -98,10 +95,10 @@ func (s *Server) handleUnknownAccountDismiss(w http.ResponseWriter, r *http.Requ
 		jsonErr(w, fmt.Errorf("gateway, external_id required"), http.StatusBadRequest)
 		return
 	}
-	if err := s.identStore.ClearUnknown(body.Gateway, body.ExternalID); err != nil {
+	if err := s.identStore.ClearUnknown(r.Context(), body.Gateway, body.ExternalID); err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
 	}
-	go s.broadcastDashboardUpdate()
+	go s.broadcastDashboardUpdate(context.Background())
 	jsonOK(w, map[string]string{"status": "dismissed"})
 }

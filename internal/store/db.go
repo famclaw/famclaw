@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -550,9 +551,9 @@ type UnknownAccount struct {
 	Attempts    int       `json:"attempts"`
 }
 
-func (d *DB) RecordUnknownAccount(gateway, externalID, displayName string) error {
+func (d *DB) RecordUnknownAccount(ctx context.Context, gateway, externalID, displayName string) error {
 	gw := strings.ToLower(gateway)
-	_, err := d.sql.Exec(`
+	_, err := d.sql.ExecContext(ctx, `
 		INSERT INTO unknown_accounts (gateway, external_id, display_name)
 		VALUES (?, ?, ?)
 		ON CONFLICT(gateway, external_id) DO UPDATE SET
@@ -568,8 +569,8 @@ func (d *DB) RecordUnknownAccount(gateway, externalID, displayName string) error
 	return nil
 }
 
-func (d *DB) ListUnknownAccounts() ([]UnknownAccount, error) {
-	rows, err := d.sql.Query(`
+func (d *DB) ListUnknownAccounts(ctx context.Context) ([]UnknownAccount, error) {
+	rows, err := d.sql.QueryContext(ctx, `
 		SELECT id, gateway, external_id, display_name, first_seen, last_seen, attempts
 		FROM unknown_accounts ORDER BY last_seen DESC`)
 	if err != nil {
@@ -585,15 +586,50 @@ func (d *DB) ListUnknownAccounts() ([]UnknownAccount, error) {
 		}
 		out = append(out, u)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating unknown accounts: %w", err)
+	}
+	return out, nil
 }
 
-func (d *DB) DeleteUnknownAccount(gateway, externalID string) error {
-	_, err := d.sql.Exec(
+func (d *DB) DeleteUnknownAccount(ctx context.Context, gateway, externalID string) error {
+	_, err := d.sql.ExecContext(ctx,
 		`DELETE FROM unknown_accounts WHERE gateway=? AND external_id=?`,
 		strings.ToLower(gateway), externalID)
 	if err != nil {
 		return fmt.Errorf("deleting unknown account: %w", err)
+	}
+	return nil
+}
+
+// LinkAndClearUnknownAccount links a gateway account to a user AND deletes
+// the matching unknown_accounts row in a single transaction. Either both
+// changes commit or neither does — preventing the operator UI from showing
+// a stale "unknown" entry for an already-linked account.
+func (d *DB) LinkAndClearUnknownAccount(ctx context.Context, userName, gateway, externalID string) error {
+	gw := strings.ToLower(gateway)
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin link+clear tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO gateway_accounts (user_name, gateway, external_id)
+		VALUES (?, ?, ?)
+		ON CONFLICT(gateway, external_id) DO UPDATE SET user_name=excluded.user_name`,
+		userName, gw, externalID); err != nil {
+		return fmt.Errorf("linking gateway account: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM unknown_accounts WHERE gateway=? AND external_id=?`,
+		gw, externalID); err != nil {
+		return fmt.Errorf("clearing unknown account: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit link+clear tx: %w", err)
 	}
 	return nil
 }

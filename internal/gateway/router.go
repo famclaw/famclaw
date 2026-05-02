@@ -85,7 +85,7 @@ func (r *Router) Handle(ctx context.Context, msg Message) Reply {
 		return Reply{Text: "Something went wrong. Please try again.", PolicyAction: "error"}
 	}
 	if user == nil {
-		return r.handleUnknownAccount(msg)
+		return r.handleUnknownAccount(ctx, msg)
 	}
 
 	userCfg := r.cfg.GetUser(user.Name)
@@ -277,10 +277,10 @@ func runGateway(ctx context.Context, gw Gateway, handler func(ctx context.Contex
 // boundary (anyone with a matching first name on Telegram/Discord can
 // claim an unlinked account). Mitigated by parents-only-creates-users.
 // Stronger auth would need a one-time pairing code from the dashboard.
-func (r *Router) handleUnknownAccount(msg Message) Reply {
+func (r *Router) handleUnknownAccount(ctx context.Context, msg Message) Reply {
 	r.cleanExpiredPending()
 
-	if err := r.identStore.RecordUnknown(msg.Gateway, msg.ExternalID, msg.DisplayName); err != nil {
+	if err := r.identStore.RecordUnknown(ctx, msg.Gateway, msg.ExternalID, msg.DisplayName); err != nil {
 		log.Printf("[router] record unknown: %v", err)
 		// non-fatal — telemetry must not break message flow
 	}
@@ -292,7 +292,7 @@ func (r *Router) handleUnknownAccount(msg Message) Reply {
 	r.pendingMu.Unlock()
 
 	if pending != nil && time.Since(pending.askedAt) < 5*time.Minute {
-		return r.handleRegistrationReply(msg, pending)
+		return r.handleRegistrationReply(ctx, msg, pending)
 	}
 
 	// Exclude parent-role users from gateway-side registration. Parent
@@ -324,7 +324,7 @@ func (r *Router) handleUnknownAccount(msg Message) Reply {
 						PolicyAction: "onboarding",
 					}
 				}
-				if err := r.identStore.ClearUnknown(msg.Gateway, msg.ExternalID); err != nil {
+				if err := r.identStore.ClearUnknown(ctx, msg.Gateway, msg.ExternalID); err != nil {
 					log.Printf("[router] clear unknown after auto-link: %v", err)
 				}
 				log.Printf("[router] auto-linked %s/%s → %s (name match)",
@@ -377,7 +377,7 @@ func (r *Router) handleUnknownAccount(msg Message) Reply {
 // The pendingRegs entry is removed only after a valid choice — invalid
 // input keeps the entry so a single typo doesn't drop the user back into
 // the auto-link/numbered-list flow from scratch.
-func (r *Router) handleRegistrationReply(msg Message, pending *pendingRegistration) Reply {
+func (r *Router) handleRegistrationReply(ctx context.Context, msg Message, pending *pendingRegistration) Reply {
 	text := strings.TrimSpace(msg.Text)
 	choice, err := strconv.Atoi(text)
 	if err != nil || choice < 1 || choice > len(pending.unlinked) {
@@ -400,7 +400,7 @@ func (r *Router) handleRegistrationReply(msg Message, pending *pendingRegistrati
 	delete(r.pendingRegs, msg.Gateway+":"+msg.ExternalID)
 	r.pendingMu.Unlock()
 
-	if err := r.identStore.ClearUnknown(msg.Gateway, msg.ExternalID); err != nil {
+	if err := r.identStore.ClearUnknown(ctx, msg.Gateway, msg.ExternalID); err != nil {
 		log.Printf("[router] clear unknown after registration link: %v", err)
 	}
 

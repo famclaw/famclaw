@@ -3,6 +3,7 @@
 package identity
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -60,18 +61,41 @@ func (s *Store) Unlink(gateway, externalID string) error {
 }
 
 // RecordUnknown UPSERTs an unknown gateway-account hit.
-func (s *Store) RecordUnknown(gateway, externalID, displayName string) error {
-	return s.db.RecordUnknownAccount(gateway, externalID, displayName)
+func (s *Store) RecordUnknown(ctx context.Context, gateway, externalID, displayName string) error {
+	gw := strings.ToLower(gateway)
+	if err := s.db.RecordUnknownAccount(ctx, gw, externalID, displayName); err != nil {
+		return fmt.Errorf("recording unknown account: %w", err)
+	}
+	return nil
 }
 
 // ListUnknown returns all pending unknown accounts.
-func (s *Store) ListUnknown() ([]store.UnknownAccount, error) {
-	return s.db.ListUnknownAccounts()
+func (s *Store) ListUnknown(ctx context.Context) ([]store.UnknownAccount, error) {
+	out, err := s.db.ListUnknownAccounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing unknown accounts: %w", err)
+	}
+	return out, nil
 }
 
 // ClearUnknown removes a pending unknown-account row (no-op if missing).
-func (s *Store) ClearUnknown(gateway, externalID string) error {
-	return s.db.DeleteUnknownAccount(gateway, externalID)
+func (s *Store) ClearUnknown(ctx context.Context, gateway, externalID string) error {
+	gw := strings.ToLower(gateway)
+	if err := s.db.DeleteUnknownAccount(ctx, gw, externalID); err != nil {
+		return fmt.Errorf("clearing unknown account: %w", err)
+	}
+	return nil
+}
+
+// LinkAndClearUnknown links a gateway account to a user and removes the
+// corresponding unknown_accounts entry atomically. Use this in operator
+// flows where partial success would leave the dashboard inconsistent.
+func (s *Store) LinkAndClearUnknown(ctx context.Context, userName, gateway, externalID string) error {
+	gw := strings.ToLower(gateway)
+	if err := s.db.LinkAndClearUnknownAccount(ctx, userName, gw, externalID); err != nil {
+		return fmt.Errorf("link and clear unknown: %w", err)
+	}
+	return nil
 }
 
 // UnlinkedUsers returns the family-config users that have no linked
