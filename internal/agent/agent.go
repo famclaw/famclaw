@@ -18,6 +18,7 @@ import (
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/prompt"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
@@ -342,24 +343,36 @@ func parseStringList(v any) []string {
 func (a *Agent) buildMessages(history []*store.Message, currentMessage string) []llm.Message {
 	var msgs []llm.Message
 
-	systemPrompt := a.cfg.LLM.SystemPrompt
-	if systemPrompt == "" {
-		systemPrompt = defaultSystemPrompt(a.user)
-	} else {
-		systemPrompt += "\n\n" + ageContextPrompt(a.user)
-	}
-
-	if len(a.skills) > 0 {
-		skillPrompt := skillbridge.LoadForPrompt(a.skills)
-		if skillPrompt != "" {
-			systemPrompt += "\n\n" + skillPrompt
-		}
-	}
-
-	// Anthropic OAuth requires this prefix in the system prompt
 	ep := a.cfg.LLMEndpointFor(a.user)
-	if ep.AuthType == "oauth" {
-		systemPrompt = llm.ClaudeCodeSystemPrefix + "\n\n" + systemPrompt
+
+	var systemPrompt string
+	if a.cfg.LLM.SystemPrompt != "" {
+		// Operator override — keep legacy behavior verbatim.
+		systemPrompt = a.cfg.LLM.SystemPrompt + "\n\n" + ageContextPrompt(a.user)
+		if len(a.skills) > 0 {
+			if sp := skillbridge.LoadForPrompt(a.skills); sp != "" {
+				systemPrompt += "\n\n" + sp
+			}
+		}
+		if ep.AuthType == "oauth" {
+			systemPrompt = llm.ClaudeCodeSystemPrefix + "\n\n" + systemPrompt
+		}
+	} else {
+		// Default — use the structured PromptBuilder.
+		skillNames := make([]string, 0, len(a.skills))
+		for _, sk := range a.skills {
+			if sk != nil {
+				skillNames = append(skillNames, sk.Name)
+			}
+		}
+		systemPrompt = prompt.Build(prompt.BuildContext{
+			Cfg:    a.cfg,
+			User:   a.user,
+			Skills: skillNames,
+			OAuth:  ep.AuthType == "oauth",
+			// Gateway and HardBlocked left empty for now — wired by future PRs
+			// that thread gateway and policy info through Agent.
+		})
 	}
 
 	msgs = append(msgs, llm.Message{Role: "system", Content: systemPrompt})

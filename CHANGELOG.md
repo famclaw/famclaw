@@ -27,6 +27,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   #109 broke (true first boot, re-run with correct PIN, wrong PIN, no PIN).
 
 ### Changed
+- **System prompt rebuilt as a 12-component PromptBuilder** (`internal/prompt`).
+  The default system prompt was a single sentence (`"You are FamClaw, a
+  helpful, friendly, and safe family AI assistant."`), which caused real
+  failures in the field — the deployed model told a parent *"I can't
+  execute code"* despite having tools. The new builder assembles identity,
+  user, family, age, capabilities, skills, policy, approvals, gateway,
+  output, memory (placeholder), and OAuth-prefix components. Each is
+  individually conditional. Token budget regression tests guard the size
+  (parent ≤ 1100 tokens, child ≤ 750). Operator-supplied
+  `cfg.llm.system_prompt` keeps legacy behavior verbatim — no breaking
+  change for customized deployments.
 - **Agent constructor takes `AgentDeps` struct** instead of 7 individual
   setter methods. Forgotten dependencies now surface at compile time
   instead of as a runtime nil-pointer dereference.
