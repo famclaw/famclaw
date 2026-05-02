@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -391,5 +392,193 @@ func TestCrossUserConcurrency(t *testing.T) {
 	// If serial: ~400ms. If concurrent: ~200ms (+overhead).
 	if elapsed > 350*time.Millisecond {
 		t.Errorf("cross-user took %v — should be ~200ms (concurrent), not ~400ms (serial)", elapsed)
+	}
+}
+
+// ── fix-109-110: gateway self-registration tests ────────────────────────────
+
+// TestHandleUnknownAccount_AutoLinkExactName confirms that an exact (case-insensitive)
+// match between Message.DisplayName and a configured FamClaw user's DisplayName
+// auto-links the platform account to that user.
+func TestHandleUnknownAccount_AutoLinkExactName(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway:     "telegram",
+		ExternalID:  "tg-emma-123",
+		Text:        "hello",
+		DisplayName: "Emma",
+	})
+	if reply.PolicyAction != "onboarding" {
+		t.Errorf("PolicyAction = %q, want onboarding", reply.PolicyAction)
+	}
+
+	user, err := identStore.Resolve("telegram", "tg-emma-123")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if user == nil || user.Name != "emma" {
+		t.Fatalf("expected emma to be auto-linked, got %v", user)
+	}
+}
+
+// TestHandleUnknownAccount_AutoLinkFirstWord confirms that the first-word
+// fallback fires: DisplayName "Emma Smith" matches user emma (DisplayName "Emma").
+func TestHandleUnknownAccount_AutoLinkFirstWord(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway:     "telegram",
+		ExternalID:  "tg-emma-456",
+		Text:        "hi",
+		DisplayName: "Emma Smith",
+	})
+	if reply.PolicyAction != "onboarding" {
+		t.Errorf("PolicyAction = %q, want onboarding", reply.PolicyAction)
+	}
+
+	user, err := identStore.Resolve("telegram", "tg-emma-456")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if user == nil || user.Name != "emma" {
+		t.Fatalf("expected emma via first-word match, got %v", user)
+	}
+}
+
+// TestHandleUnknownAccount_NumberedListWhenNoMatch confirms that a non-matching
+// DisplayName produces the numbered-list prompt for disambiguation, including
+// each unlinked user's DisplayName.
+func TestHandleUnknownAccount_NumberedListWhenNoMatch(t *testing.T) {
+	router, _ := setupRouter(t, echoChat)
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway:     "discord",
+		ExternalID:  "dc-stranger-1",
+		Text:        "yo",
+		DisplayName: "xXGamerXx",
+	})
+	if reply.PolicyAction != "onboarding" {
+		t.Errorf("PolicyAction = %q, want onboarding", reply.PolicyAction)
+	}
+	for _, name := range []string{"Which family member", "Parent", "Emma", "Lucas", "Sofia"} {
+		if !strings.Contains(reply.Text, name) {
+			t.Errorf("reply missing %q; got: %s", name, reply.Text)
+		}
+	}
+}
+
+// TestHandleUnknownAccount_RejectsWhenAllLinked confirms that with no
+// unlinked users remaining, an unknown account gets the private-family
+// rejection rather than a numbered list.
+func TestHandleUnknownAccount_RejectsWhenAllLinked(t *testing.T) {
+	router, identStore := setupRouter(t, echoChat)
+
+	// Link every configured user to a distinct external ID so UnlinkedUsers
+	// returns an empty slice for this gateway.
+	links := []struct {
+		userName, externalID string
+	}{
+		{"parent", "tg-parent-x"},
+		{"emma", "tg-emma-x"},
+		{"lucas", "tg-lucas-x"},
+		{"sofia", "tg-sofia-x"},
+	}
+	for _, l := range links {
+		if err := identStore.LinkAccount(l.userName, "telegram", l.externalID); err != nil {
+			t.Fatalf("LinkAccount %s: %v", l.userName, err)
+		}
+	}
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway:     "telegram",
+		ExternalID:  "tg-stranger-9",
+		Text:        "hello",
+		DisplayName: "Stranger",
+	})
+	if !strings.Contains(reply.Text, "private family") {
+		t.Errorf("expected private-family rejection, got: %s", reply.Text)
+	}
+	if reply.PolicyAction != "onboarding" {
+		t.Errorf("PolicyAction = %q, want onboarding", reply.PolicyAction)
+	}
+}
+
+// TestHandleRegistrationReply_ValidChoice runs the two-step flow:
+// first a non-matching DisplayName creates a pendingRegistration with
+// the numbered list, then a "1" reply links the first unlinked user
+// (parent in this fixture).
+func TestHandleRegistrationReply_ValidChoice(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+
+	// Step 1: trigger numbered-list pendingRegistration
+	router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "tg-anon-1",
+		Text: "yo", DisplayName: "Anonymous",
+	})
+
+	// Step 2: pick option 1 (parent — first user in the cfg fixture)
+	reply := router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "tg-anon-1",
+		Text: "1", DisplayName: "Anonymous",
+	})
+	if !strings.Contains(reply.Text, "Welcome") {
+		t.Errorf("expected Welcome message, got: %s", reply.Text)
+	}
+
+	user, err := identStore.Resolve("telegram", "tg-anon-1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if user == nil || user.Name != "parent" {
+		t.Fatalf("expected parent linked, got %v", user)
+	}
+}
+
+// TestHandleRegistrationReply_InvalidInput confirms that non-numeric or
+// out-of-range replies to the numbered-list prompt return the help text.
+func TestHandleRegistrationReply_InvalidInput(t *testing.T) {
+	router, _ := setupRouter(t, echoChat)
+
+	router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "tg-anon-2",
+		Text: "yo", DisplayName: "Anonymous",
+	})
+	reply := router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "tg-anon-2",
+		Text: "foo", DisplayName: "Anonymous",
+	})
+	if !strings.Contains(reply.Text, "number between 1 and") {
+		t.Errorf("expected number-prompt help, got: %s", reply.Text)
+	}
+}
+
+// TestCleanExpiredPending verifies that pendingRegistration entries
+// older than 5 minutes are dropped on the next sweep.
+func TestCleanExpiredPending(t *testing.T) {
+	router, _ := setupRouter(t, echoChat)
+
+	router.pendingMu.Lock()
+	router.pendingRegs["telegram:expired-1"] = &pendingRegistration{
+		gateway:    "telegram",
+		externalID: "expired-1",
+		askedAt:    time.Now().Add(-10 * time.Minute),
+	}
+	router.pendingRegs["telegram:fresh-1"] = &pendingRegistration{
+		gateway:    "telegram",
+		externalID: "fresh-1",
+		askedAt:    time.Now(),
+	}
+	router.pendingMu.Unlock()
+
+	router.cleanExpiredPending()
+
+	router.pendingMu.Lock()
+	defer router.pendingMu.Unlock()
+	if _, ok := router.pendingRegs["telegram:expired-1"]; ok {
+		t.Error("expired entry should have been deleted")
+	}
+	if _, ok := router.pendingRegs["telegram:fresh-1"]; !ok {
+		t.Error("fresh entry should have been preserved")
 	}
 }
