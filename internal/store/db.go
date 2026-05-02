@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -115,6 +116,18 @@ func (d *DB) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
 	CREATE INDEX IF NOT EXISTS idx_approvals_user ON approvals(user_name);
 	CREATE INDEX IF NOT EXISTS idx_gateway_accounts_lookup ON gateway_accounts(gateway, external_id);
+
+	CREATE TABLE IF NOT EXISTS unknown_accounts (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		gateway      TEXT NOT NULL,
+		external_id  TEXT NOT NULL,
+		display_name TEXT NOT NULL DEFAULT '',
+		first_seen   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_seen    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		attempts     INTEGER NOT NULL DEFAULT 1,
+		UNIQUE(gateway, external_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_unknown_accounts_lookup ON unknown_accounts(gateway, external_id);
 
 	CREATE TABLE IF NOT EXISTS used_tokens (
 		token_hash TEXT PRIMARY KEY,
@@ -523,6 +536,66 @@ func (d *DB) HasGatewayAccount(userName, gateway string) bool {
 		return false
 	}
 	return count > 0
+}
+
+// ── Unknown Accounts ──────────────────────────────────────────────────────────
+
+type UnknownAccount struct {
+	ID          int64     `json:"id"`
+	Gateway     string    `json:"gateway"`
+	ExternalID  string    `json:"external_id"`
+	DisplayName string    `json:"display_name"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
+	Attempts    int       `json:"attempts"`
+}
+
+func (d *DB) RecordUnknownAccount(gateway, externalID, displayName string) error {
+	gw := strings.ToLower(gateway)
+	_, err := d.sql.Exec(`
+		INSERT INTO unknown_accounts (gateway, external_id, display_name)
+		VALUES (?, ?, ?)
+		ON CONFLICT(gateway, external_id) DO UPDATE SET
+			last_seen = CURRENT_TIMESTAMP,
+			attempts  = attempts + 1,
+			display_name = CASE WHEN unknown_accounts.display_name = ''
+			                    THEN excluded.display_name
+			                    ELSE unknown_accounts.display_name END`,
+		gw, externalID, displayName)
+	if err != nil {
+		return fmt.Errorf("recording unknown account: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) ListUnknownAccounts() ([]UnknownAccount, error) {
+	rows, err := d.sql.Query(`
+		SELECT id, gateway, external_id, display_name, first_seen, last_seen, attempts
+		FROM unknown_accounts ORDER BY last_seen DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("listing unknown accounts: %w", err)
+	}
+	defer rows.Close()
+	var out []UnknownAccount
+	for rows.Next() {
+		var u UnknownAccount
+		if err := rows.Scan(&u.ID, &u.Gateway, &u.ExternalID, &u.DisplayName,
+			&u.FirstSeen, &u.LastSeen, &u.Attempts); err != nil {
+			return nil, fmt.Errorf("scanning unknown account: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) DeleteUnknownAccount(gateway, externalID string) error {
+	_, err := d.sql.Exec(
+		`DELETE FROM unknown_accounts WHERE gateway=? AND external_id=?`,
+		strings.ToLower(gateway), externalID)
+	if err != nil {
+		return fmt.Errorf("deleting unknown account: %w", err)
+	}
+	return nil
 }
 
 func (d *DB) UnlinkGatewayAccount(gateway, externalID string) error {
