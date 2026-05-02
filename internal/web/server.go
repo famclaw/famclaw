@@ -467,7 +467,15 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 
 func (s *Server) broadcastDashboardUpdate() {
 	pending, _ := s.db.PendingApprovals()
-	payload, _ := json.Marshal(map[string]any{"pending_count": len(pending)})
+	unknown, err := s.identStore.ListUnknown()
+	if err != nil {
+		log.Printf("[web] dashboard broadcast list unknown: %v", err)
+		unknown = nil
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"pending_count":     len(pending),
+		"unknown_accounts":  unknown,
+	})
 
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()
