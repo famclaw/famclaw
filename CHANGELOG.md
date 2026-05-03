@@ -6,6 +6,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- **Built-in `web_fetch` tool.** When `tools.web_fetch.enabled: true` in
+  config, the LLM gets a `web_fetch` tool that retrieves a URL and
+  returns extracted text (HTML→text via `golang.org/x/net/html`, plain
+  text and JSON passed through). Defaults: 256 KB cap, 15 s timeout, no
+  JS rendering, parent-only role gate, optional per-host allowlist with
+  subdomain matching. Per-user allow/deny via OPA `tool_policy` rules
+  (parent and `age_13_17` allowed; `under_8` and `age_8_12` denied).
+  Closes journal critical finding #2 (partial — web search follows in a
+  separate PR).
+- **OPA tool-policy enforcement at the tool loop.** New
+  `Evaluator.EvaluateToolCall` queries `data.family.tool_policy.allow`
+  and the in-pipeline tool loop now gates every dispatch through it.
+  Fails closed on evaluator errors. Tool names are stripped of their
+  `builtin__` / `mcp__<server>__` prefix before evaluation so Rego rules
+  match on the bare name.
+- **PromptBuilder describes builtin tools.** When `web_fetch` or
+  `spawn_agent` is registered for a user, the system prompt's
+  capabilities section names them with concrete usage hints — fixes the
+  "I can't fetch URLs" failure mode for tool-equipped agents.
+
+### Changed
+- `prompt.BuildContext` gains a `BuiltinTools []string` field; `Agent`
+  threads the bare names of builtins it has registered for the current
+  user (filtered by role) into `prompt.Build`.
+- The agent's builtin-handler dispatch is no longer gated on the
+  presence of the subagent scheduler — it now activates whenever any
+  builtin tool is registered. `handleSpawnAgent` returns a clear error
+  if invoked without a scheduler.
+
+### Removed
+- **Hardcoded keyword block** of `web_search` / `mcp__search__web` in
+  `internal/agentcore/stage_policy_tool.go` — superseded by the OPA
+  tool-policy decision wired into the tool loop.
+
 - **Unknown-accounts backend (issue #111).** New `unknown_accounts` table
   records every unlinked Discord/Telegram account that messages FamClaw,
   with attempts counter and last-seen timestamp. Three new PIN-gated JSON
