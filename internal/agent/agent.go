@@ -433,11 +433,19 @@ func (a *Agent) buildMessages(history []*store.Message, currentMessage string) [
 				skillNames = append(skillNames, sk.Name)
 			}
 		}
+		var builtinNames []string
+		for _, t := range a.builtinTools {
+			if t.AllowedForRole(a.user.Role) {
+				builtinNames = append(builtinNames, strings.TrimPrefix(t.Name, "builtin__"))
+			}
+		}
+
 		systemPrompt = prompt.Build(prompt.BuildContext{
-			Cfg:    a.cfg,
-			User:   a.user,
-			Skills: skillNames,
-			OAuth:  ep.AuthType == "oauth",
+			Cfg:          a.cfg,
+			User:         a.user,
+			Skills:       skillNames,
+			OAuth:        ep.AuthType == "oauth",
+			BuiltinTools: builtinNames,
 			// Gateway and HardBlocked left empty for now — wired by future PRs
 			// that thread gateway and policy info through Agent.
 		})

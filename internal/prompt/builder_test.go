@@ -265,6 +265,65 @@ func TestBuild_ChildTokenBudget(t *testing.T) {
 	t.Logf("child prompt: %d tokens, %d chars", tokens, len(out))
 }
 
+func TestCapabilitiesComponent_BuiltinTools(t *testing.T) {
+	t.Run("web_fetch only", func(t *testing.T) {
+		text, ok := capabilitiesComponent(BuildContext{BuiltinTools: []string{"web_fetch"}})
+		if !ok || text == "" {
+			t.Fatalf("expected included, got ok=%v text=%q", ok, text)
+		}
+		if !strings.Contains(text, "URL") && !strings.Contains(text, "fetch") && !strings.Contains(text, "current events") {
+			t.Errorf("expected web_fetch hint, got: %q", text)
+		}
+	})
+	t.Run("spawn_agent only", func(t *testing.T) {
+		text, ok := capabilitiesComponent(BuildContext{BuiltinTools: []string{"spawn_agent"}})
+		if !ok || text == "" {
+			t.Fatalf("expected included, got ok=%v text=%q", ok, text)
+		}
+		if !strings.Contains(text, "Delegate") && !strings.Contains(text, "spawn_agent") {
+			t.Errorf("expected spawn_agent hint, got: %q", text)
+		}
+	})
+	t.Run("both", func(t *testing.T) {
+		text, _ := capabilitiesComponent(BuildContext{BuiltinTools: []string{"web_fetch", "spawn_agent"}})
+		if !strings.Contains(text, "web_fetch") {
+			t.Errorf("missing web_fetch in: %q", text)
+		}
+		if !strings.Contains(text, "spawn_agent") {
+			t.Errorf("missing spawn_agent in: %q", text)
+		}
+	})
+	t.Run("empty", func(t *testing.T) {
+		text, _ := capabilitiesComponent(BuildContext{})
+		if strings.Contains(text, "web_fetch") || strings.Contains(text, "spawn_agent") {
+			t.Errorf("baseline should not mention specific tools, got: %q", text)
+		}
+	})
+}
+
+func TestBuild_TokenBudget_WithBuiltinTools(t *testing.T) {
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "dep", DisplayName: "Dep", Role: "parent"},
+			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+			{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "under_8"},
+		},
+	}
+	out := Build(BuildContext{
+		Cfg:          cfg,
+		User:         &cfg.Users[0],
+		Gateway:      "telegram",
+		OAuth:        true,
+		HardBlocked:  []string{"weapons"},
+		BuiltinTools: []string{"spawn_agent", "web_fetch"},
+	})
+	tokens := approxTokens(out)
+	if tokens > 1100 {
+		t.Fatalf("parent prompt with builtin tools over budget: %d tokens (limit 1100)\n---\n%s", tokens, out)
+	}
+	t.Logf("parent prompt with builtin tools: %d tokens, %d chars", tokens, len(out))
+}
+
 func TestBuild_OAuthPrefixIsFirst(t *testing.T) {
 	out := Build(BuildContext{
 		User:  &config.UserConfig{Name: "x", Role: "parent"},
