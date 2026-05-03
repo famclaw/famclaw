@@ -640,6 +640,100 @@ func TestHandleUnknownAccount_ParentNeverAutoLinked(t *testing.T) {
 	}
 }
 
+// TestRouter_UnknownAccountFlows is table-driven and covers the unknown-account
+// lifecycle through the router: record on first hit, clear on auto-link, clear
+// on numbered-list link. Every case uses panicChat as the LLM, so any case that
+// reaches the LLM would panic — that proves the policy gate (and the unknown
+// path's pre-policy short-circuit) keeps the LLM unreachable for unknown
+// accounts. The explicit "llm-must-not-be-called" case in the table is
+// redundant by construction but documents the invariant.
+func TestRouter_UnknownAccountFlows(t *testing.T) {
+	type step struct {
+		msg                Message
+		wantAction         string
+		wantTextContains   string
+		wantUnknownCount   int
+		wantUnknownGateway string
+		wantUnknownExtID   string
+	}
+	cases := []struct {
+		name  string
+		steps []step
+	}{
+		{
+			name: "first unknown hit records row, numbered-list link clears it",
+			steps: []step{
+				{
+					msg:                Message{Gateway: "telegram", ExternalID: "X1", Text: "yo", DisplayName: "Stranger"},
+					wantAction:         "onboarding",
+					wantUnknownCount:   1,
+					wantUnknownGateway: "telegram",
+					wantUnknownExtID:   "X1",
+				},
+				{
+					msg:              Message{Gateway: "telegram", ExternalID: "X1", Text: "1", DisplayName: "Stranger"},
+					wantAction:       "onboarding",
+					wantUnknownCount: 0,
+				},
+			},
+		},
+		{
+			name: "auto-link by display-name clears row in one shot",
+			steps: []step{
+				{
+					msg:              Message{Gateway: "telegram", ExternalID: "tg-emma-auto", Text: "hi", DisplayName: "Emma"},
+					wantAction:       "onboarding",
+					wantTextContains: "linked",
+					wantUnknownCount: 0,
+				},
+			},
+		},
+		{
+			name: "llm-must-not-be-called when account is unknown (policy gate)",
+			steps: []step{
+				{
+					// panicChat would panic if invoked. Reaching the LLM means the
+					// policy gate (or the unknown short-circuit before it) failed.
+					msg:              Message{Gateway: "telegram", ExternalID: "X-untouched", Text: "tell me anything", DisplayName: "Nobody"},
+					wantAction:       "onboarding",
+					wantUnknownCount: 1,
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, identStore := setupRouter(t, panicChat)
+			ctx := context.Background()
+
+			for i, st := range tc.steps {
+				reply := router.Handle(ctx, st.msg)
+				if reply.PolicyAction != st.wantAction {
+					t.Fatalf("step %d: PolicyAction = %q, want %q (text=%q)", i, reply.PolicyAction, st.wantAction, reply.Text)
+				}
+				if st.wantTextContains != "" && !strings.Contains(strings.ToLower(reply.Text), st.wantTextContains) {
+					t.Errorf("step %d: reply text missing %q: %s", i, st.wantTextContains, reply.Text)
+				}
+
+				list, err := identStore.ListUnknown(ctx)
+				if err != nil {
+					t.Fatalf("step %d: ListUnknown: %v", i, err)
+				}
+				if len(list) != st.wantUnknownCount {
+					t.Fatalf("step %d: unknown count = %d, want %d (rows: %+v)", i, len(list), st.wantUnknownCount, list)
+				}
+				if st.wantUnknownGateway != "" {
+					if list[0].Gateway != st.wantUnknownGateway || list[0].ExternalID != st.wantUnknownExtID {
+						t.Errorf("step %d: row mismatch: got %+v, want gateway=%s extID=%s",
+							i, list[0], st.wantUnknownGateway, st.wantUnknownExtID)
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestCleanExpiredPending verifies that pendingRegistration entries
 // older than 5 minutes are dropped on the next sweep.
 func TestCleanExpiredPending(t *testing.T) {

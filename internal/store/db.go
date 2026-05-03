@@ -3,10 +3,12 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -115,6 +117,18 @@ func (d *DB) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
 	CREATE INDEX IF NOT EXISTS idx_approvals_user ON approvals(user_name);
 	CREATE INDEX IF NOT EXISTS idx_gateway_accounts_lookup ON gateway_accounts(gateway, external_id);
+
+	CREATE TABLE IF NOT EXISTS unknown_accounts (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		gateway      TEXT NOT NULL,
+		external_id  TEXT NOT NULL,
+		display_name TEXT NOT NULL DEFAULT '',
+		first_seen   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_seen    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		attempts     INTEGER NOT NULL DEFAULT 1,
+		UNIQUE(gateway, external_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_unknown_accounts_lookup ON unknown_accounts(gateway, external_id);
 
 	CREATE TABLE IF NOT EXISTS used_tokens (
 		token_hash TEXT PRIMARY KEY,
@@ -523,6 +537,101 @@ func (d *DB) HasGatewayAccount(userName, gateway string) bool {
 		return false
 	}
 	return count > 0
+}
+
+// ── Unknown Accounts ──────────────────────────────────────────────────────────
+
+type UnknownAccount struct {
+	ID          int64     `json:"id"`
+	Gateway     string    `json:"gateway"`
+	ExternalID  string    `json:"external_id"`
+	DisplayName string    `json:"display_name"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
+	Attempts    int       `json:"attempts"`
+}
+
+func (d *DB) RecordUnknownAccount(ctx context.Context, gateway, externalID, displayName string) error {
+	gw := strings.ToLower(gateway)
+	_, err := d.sql.ExecContext(ctx, `
+		INSERT INTO unknown_accounts (gateway, external_id, display_name)
+		VALUES (?, ?, ?)
+		ON CONFLICT(gateway, external_id) DO UPDATE SET
+			last_seen = CURRENT_TIMESTAMP,
+			attempts  = attempts + 1,
+			display_name = CASE WHEN unknown_accounts.display_name = ''
+			                    THEN excluded.display_name
+			                    ELSE unknown_accounts.display_name END`,
+		gw, externalID, displayName)
+	if err != nil {
+		return fmt.Errorf("recording unknown account: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) ListUnknownAccounts(ctx context.Context) ([]UnknownAccount, error) {
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT id, gateway, external_id, display_name, first_seen, last_seen, attempts
+		FROM unknown_accounts ORDER BY last_seen DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("listing unknown accounts: %w", err)
+	}
+	defer rows.Close()
+	var out []UnknownAccount
+	for rows.Next() {
+		var u UnknownAccount
+		if err := rows.Scan(&u.ID, &u.Gateway, &u.ExternalID, &u.DisplayName,
+			&u.FirstSeen, &u.LastSeen, &u.Attempts); err != nil {
+			return nil, fmt.Errorf("scanning unknown account: %w", err)
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating unknown accounts: %w", err)
+	}
+	return out, nil
+}
+
+func (d *DB) DeleteUnknownAccount(ctx context.Context, gateway, externalID string) error {
+	_, err := d.sql.ExecContext(ctx,
+		`DELETE FROM unknown_accounts WHERE gateway=? AND external_id=?`,
+		strings.ToLower(gateway), externalID)
+	if err != nil {
+		return fmt.Errorf("deleting unknown account: %w", err)
+	}
+	return nil
+}
+
+// LinkAndClearUnknownAccount links a gateway account to a user AND deletes
+// the matching unknown_accounts row in a single transaction. Either both
+// changes commit or neither does — preventing the operator UI from showing
+// a stale "unknown" entry for an already-linked account.
+func (d *DB) LinkAndClearUnknownAccount(ctx context.Context, userName, gateway, externalID string) error {
+	gw := strings.ToLower(gateway)
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin link+clear tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO gateway_accounts (user_name, gateway, external_id)
+		VALUES (?, ?, ?)
+		ON CONFLICT(gateway, external_id) DO UPDATE SET user_name=excluded.user_name`,
+		userName, gw, externalID); err != nil {
+		return fmt.Errorf("linking gateway account: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM unknown_accounts WHERE gateway=? AND external_id=?`,
+		gw, externalID); err != nil {
+		return fmt.Errorf("clearing unknown account: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit link+clear tx: %w", err)
+	}
+	return nil
 }
 
 func (d *DB) UnlinkGatewayAccount(gateway, externalID string) error {

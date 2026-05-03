@@ -14,8 +14,6 @@ import (
 	"github.com/famclaw/famclaw/internal/skillbridge"
 )
 
-const testParentPIN = "1234"
-
 func newSkillTestServer(t *testing.T) *Server {
 	t.Helper()
 	parent := config.UserConfig{
