@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -333,5 +334,73 @@ func TestBuildMessages_OperatorOverrideKept(t *testing.T) {
 	if !strings.HasPrefix(sys, "You are a pirate.") {
 		t.Errorf("operator override should be verbatim at start, got: %q", sys)
 	}
+}
+
+func TestHandleWebFetch_AllowlistAndCap(t *testing.T) {
+	newSrv := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte("<p>hello world</p>"))
+		}))
+	}
+
+	newAgent := func(allowlist []string) *Agent {
+		return &Agent{
+			cfg: &config.Config{
+				Tools: config.ToolsConfig{
+					WebFetch: config.WebFetchConfig{
+						Enabled:      true,
+						URLAllowlist: allowlist,
+						MaxBytes:     256 * 1024,
+						TimeoutSec:   5,
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("allowed host returns text", func(t *testing.T) {
+		srv := newSrv()
+		defer srv.Close()
+		u, _ := url.Parse(srv.URL)
+		a := newAgent([]string{u.Hostname()})
+		out, err := a.handleWebFetch(context.Background(), map[string]any{"url": srv.URL})
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !strings.Contains(out, "hello world") {
+			t.Errorf("missing hello world: %q", out)
+		}
+	})
+
+	t.Run("disallowed host blocked", func(t *testing.T) {
+		srv := newSrv()
+		defer srv.Close()
+		a := newAgent([]string{"never.example.com"})
+		_, err := a.handleWebFetch(context.Background(), map[string]any{"url": srv.URL})
+		if err == nil {
+			t.Fatalf("expected error")
+		}
+		if !strings.Contains(err.Error(), "url_allowlist") {
+			t.Errorf("expected url_allowlist error, got: %v", err)
+		}
+	})
+
+	t.Run("max_bytes from caller truncates", func(t *testing.T) {
+		srv := newSrv()
+		defer srv.Close()
+		u, _ := url.Parse(srv.URL)
+		a := newAgent([]string{u.Hostname()})
+		out, err := a.handleWebFetch(context.Background(), map[string]any{
+			"url":       srv.URL,
+			"max_bytes": float64(2),
+		})
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !strings.Contains(out, "Truncated: true") {
+			t.Errorf("expected Truncated: true in output, got: %q", out)
+		}
+	})
 }
 
