@@ -25,6 +25,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `spawn_agent` is registered for a user, the system prompt's
   capabilities section names them with concrete usage hints — fixes the
   "I can't fetch URLs" failure mode for tool-equipped agents.
+- **Install and remove skills from the web dashboard.** Two new PIN-gated
+  endpoints: `POST /api/skills/install` (body `{"name_or_path": "..."}`)
+  wraps the existing `skillbridge.Registry.Install`, and
+  `POST /api/skills/remove` (body `{"name": "..."}`) mirrors it. The
+  dashboard's Skills card gets a one-line install form and a 🗑️ button
+  per installed skill. `/api/skills` now reads from the on-disk registry
+  (the previous DB-backed list was always empty because nothing wrote to
+  it). Closes journal critical finding #6.
 
 ### Changed
 - `prompt.BuildContext` gains a `BuiltinTools []string` field; `Agent`
