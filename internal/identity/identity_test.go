@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -256,6 +257,215 @@ func TestStore_UnknownAccountLifecycle(t *testing.T) {
 			if len(unknowns) != tc.expectClear {
 				t.Errorf("len(unknowns) after clear = %d, want %d", len(unknowns), tc.expectClear)
 			}
+		})
+	}
+}
+
+func TestStore_LinkAndClearUnknown(t *testing.T) {
+	cases := []struct {
+		name           string
+		seedUnknown    bool
+		seedGW         string
+		seedExtID      string
+		linkUserName   string
+		linkGW         string
+		linkExtID      string
+		wantLinkErr    bool
+		wantUserAfter  string
+		wantUnknownLen int
+	}{
+		{
+			name:           "happy path: link and clear in one tx",
+			seedUnknown:    true,
+			seedGW:         "telegram",
+			seedExtID:      "X1",
+			linkUserName:   "alice",
+			linkGW:         "telegram",
+			linkExtID:      "X1",
+			wantUserAfter:  "alice",
+			wantUnknownLen: 0,
+		},
+		{
+			name:           "mixed-case gateway is lowercased on both writes",
+			seedUnknown:    true,
+			seedGW:         "telegram",
+			seedExtID:      "X2",
+			linkUserName:   "bob",
+			linkGW:         "Telegram",
+			linkExtID:      "X2",
+			wantUserAfter:  "bob",
+			wantUnknownLen: 0,
+		},
+		{
+			name:           "no unknown row: link still succeeds, clear is no-op",
+			seedUnknown:    false,
+			linkUserName:   "carol",
+			linkGW:         "discord",
+			linkExtID:      "D1",
+			wantUserAfter:  "carol",
+			wantUnknownLen: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := setupStore(t)
+			ctx := context.Background()
+
+			if tc.seedUnknown {
+				if err := s.RecordUnknown(ctx, tc.seedGW, tc.seedExtID, "Display"); err != nil {
+					t.Fatalf("seed RecordUnknown: %v", err)
+				}
+			}
+
+			err := s.LinkAndClearUnknown(ctx, tc.linkUserName, tc.linkGW, tc.linkExtID)
+			if tc.wantLinkErr {
+				if err == nil {
+					t.Fatalf("LinkAndClearUnknown: want error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LinkAndClearUnknown: %v", err)
+			}
+
+			user, err := s.Resolve(tc.linkGW, tc.linkExtID)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if user == nil || user.Name != tc.wantUserAfter {
+				t.Errorf("Resolve = %+v, want user %q", user, tc.wantUserAfter)
+			}
+
+			list, err := s.ListUnknown(ctx)
+			if err != nil {
+				t.Fatalf("ListUnknown: %v", err)
+			}
+			if len(list) != tc.wantUnknownLen {
+				t.Errorf("len(unknown) = %d, want %d", len(list), tc.wantUnknownLen)
+			}
+		})
+	}
+}
+
+func TestStore_UnlinkedUsers(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(*testing.T, *Store, *config.Config)
+	}{
+		{
+			name: "no links: all users returned",
+			fn: func(t *testing.T, s *Store, cfg *config.Config) {
+				users := s.UnlinkedUsers(cfg, "telegram")
+				if len(users) != len(cfg.Users) {
+					t.Errorf("expected %d users, got %d", len(cfg.Users), len(users))
+				}
+			},
+		},
+		{
+			name: "one user linked: that user is excluded",
+			fn: func(t *testing.T, s *Store, cfg *config.Config) {
+				if err := s.LinkAccount("bob", "telegram", "B1"); err != nil {
+					t.Fatal(err)
+				}
+				users := s.UnlinkedUsers(cfg, "telegram")
+				if len(users) != len(cfg.Users)-1 {
+					t.Errorf("expected %d users, got %d", len(cfg.Users)-1, len(users))
+				}
+				for _, u := range users {
+					if u.Name == "bob" {
+						t.Errorf("bob should not be in unlinked users")
+					}
+				}
+			},
+		},
+		{
+			name: "different gateway: irrelevant",
+			fn: func(t *testing.T, s *Store, cfg *config.Config) {
+				if err := s.LinkAccount("bob", "whatsapp", "W1"); err != nil {
+					t.Fatal(err)
+				}
+				users := s.UnlinkedUsers(cfg, "telegram")
+				if len(users) != len(cfg.Users) {
+					t.Errorf("expected %d users for telegram (whatsapp link is irrelevant), got %d", len(cfg.Users), len(users))
+				}
+				found := false
+				for _, u := range users {
+					if u.Name == "bob" {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("bob should still be unlinked on telegram")
+				}
+			},
+		},
+	}
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "alice", DisplayName: "Alice", Role: "parent"},
+			{Name: "bob", DisplayName: "Bob", Role: "child"},
+			{Name: "carol", DisplayName: "Carol", Role: "child"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := setupStore(t)
+			tt.fn(t, s, cfg)
+		})
+	}
+}
+
+func TestStore_ErrorPathsAfterClose(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(*testing.T, *Store)
+	}{
+		{
+			name: "RecordUnknown",
+			fn: func(t *testing.T, s *Store) {
+				if err := s.RecordUnknown(context.Background(), "telegram", "id", "display"); err == nil {
+					t.Error("expected error, got nil")
+				}
+			},
+		},
+		{
+			name: "ListUnknown",
+			fn: func(t *testing.T, s *Store) {
+				if _, err := s.ListUnknown(context.Background()); err == nil {
+					t.Error("expected error, got nil")
+				}
+			},
+		},
+		{
+			name: "ClearUnknown",
+			fn: func(t *testing.T, s *Store) {
+				if err := s.ClearUnknown(context.Background(), "telegram", "id"); err == nil {
+					t.Error("expected error, got nil")
+				}
+			},
+		},
+		{
+			name: "LinkAndClearUnknown",
+			fn: func(t *testing.T, s *Store) {
+				if err := s.LinkAndClearUnknown(context.Background(), "user", "telegram", "id"); err == nil {
+					t.Error("expected error, got nil")
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			db, err := store.Open(filepath.Join(dir, "test.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s := NewStore(db)
+			tt.fn(t, s)
 		})
 	}
 }
