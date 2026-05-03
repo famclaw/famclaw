@@ -23,6 +23,7 @@ import (
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/classifier"
+	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/notify"
@@ -38,6 +39,7 @@ type Server struct {
 	cfg        *config.Config
 	cfgPath    string // path to config.yaml for settings API
 	db         *store.DB
+	identStore *identity.Store
 	evaluator  *policy.Evaluator
 	clf        *classifier.Classifier
 	notifier   *notify.MultiNotifier
@@ -58,12 +60,13 @@ type wsMessage struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-func NewServer(cfg *config.Config, cfgPath string, db *store.DB, evaluator *policy.Evaluator,
+func NewServer(cfg *config.Config, cfgPath string, db *store.DB, identStore *identity.Store, evaluator *policy.Evaluator,
 	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, pool *mcp.Pool, oauthStore *llm.OAuthStore) *Server {
 	return &Server{
 		cfg:        cfg,
 		cfgPath:    cfgPath,
 		db:         db,
+		identStore: identStore,
 		evaluator:  evaluator,
 		clf:        clf,
 		notifier:   notifier,
@@ -99,6 +102,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals", s.handleApprovals)
 	mux.HandleFunc("/api/approvals/decide", s.handleDecide)
 	mux.HandleFunc("/api/skills", s.handleSkills)
+	mux.HandleFunc("/api/unknown-accounts", s.handleUnknownAccounts)
+	mux.HandleFunc("/api/unknown-accounts/link", s.handleUnknownAccountLink)
+	mux.HandleFunc("/api/unknown-accounts/dismiss", s.handleUnknownAccountDismiss)
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/setup/detect", s.handleSetupDetect)
@@ -224,7 +230,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Broadcast dashboard update
-			go s.broadcastDashboardUpdate()
+			go s.broadcastDashboardUpdate(context.Background())
 
 		case "ping":
 			s.sendWS(conn, "pong", nil)
@@ -314,7 +320,7 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.broadcastDashboardUpdate()
+	go s.broadcastDashboardUpdate(context.Background())
 	jsonOK(w, map[string]string{"status": status})
 }
 
@@ -362,7 +368,7 @@ func (s *Server) handleDecideLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.broadcastDashboardUpdate()
+	go s.broadcastDashboardUpdate(context.Background())
 
 	icon := "✅"
 	if status == "denied" {
@@ -459,9 +465,17 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 	}
 }
 
-func (s *Server) broadcastDashboardUpdate() {
+func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 	pending, _ := s.db.PendingApprovals()
-	payload, _ := json.Marshal(map[string]any{"pending_count": len(pending)})
+	unknown, err := s.identStore.ListUnknown(ctx)
+	if err != nil {
+		log.Printf("[web] dashboard broadcast list unknown: %v", err)
+		unknown = nil
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"pending_count":     len(pending),
+		"unknown_accounts":  unknown,
+	})
 
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()

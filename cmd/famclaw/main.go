@@ -271,7 +271,7 @@ func main() {
 	}
 
 	// Web server
-	srv := web.NewServer(cfg, *cfgPath, db, evaluator, clf, notifier, enabledSkills, mcpPool, oauthStore)
+	srv := web.NewServer(cfg, *cfgPath, db, identStore, evaluator, clf, notifier, enabledSkills, mcpPool, oauthStore)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),
