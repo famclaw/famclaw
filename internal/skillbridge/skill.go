@@ -22,7 +22,7 @@ type Skill struct {
 		Bins []string `yaml:"bins" json:"bins,omitempty"`
 	} `yaml:"requires" json:"requires,omitempty"`
 	Body string `yaml:"-" json:"-"`              // raw body after frontmatter
-	Path string `yaml:"-" json:"path,omitempty"` // filesystem path of SKILL.md
+	Path string `yaml:"-" json:"-"`              // filesystem path of SKILL.md
 }
 
 // ParseSKILLMD reads and parses a SKILL.md file at the given path.
