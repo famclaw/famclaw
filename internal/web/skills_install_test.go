@@ -72,23 +72,24 @@ func TestSkillInstall_EmptyBody(t *testing.T) {
 
 func TestSkillInstall_HappyPath(t *testing.T) {
 	s := newSkillTestServer(t)
-	tempDir := t.TempDir()
-	skillDir := filepath.Join(tempDir, "testskill")
-	if err := os.Mkdir(skillDir, 0755); err != nil {
+	// The handler accepts org/repo style refs and resolves them relative
+	// to cwd (skillbridge.Registry.Install opens "<ref>/SKILL.md"). Chdir
+	// into a temp dir so the test owns the resolution root.
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join("famclaw", "testskill"), 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	skillPath := filepath.Join(skillDir, "SKILL.md")
 	content := `---
 name: testskill
 description: a test
 ---
 body
 `
-	if err := os.WriteFile(skillPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join("famclaw", "testskill", "SKILL.md"), []byte(content), 0644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 
-	bodyJSON, _ := json.Marshal(map[string]string{"name_or_path": skillDir})
+	bodyJSON, _ := json.Marshal(map[string]string{"name_or_path": "famclaw/testskill"})
 	req := httptest.NewRequest(http.MethodPost, "/api/skills/install", bytes.NewReader(bodyJSON))
 	req.Header.Set("X-Parent-PIN", testParentPIN)
 	rec := httptest.NewRecorder()
@@ -112,6 +113,9 @@ func TestSkillInstall_RejectsPathTraversal(t *testing.T) {
 		"../etc",
 		"foo/../../etc",
 		"\x00malicious",
+		"/abs/path",
+		".hidden",
+		"a/b/c",
 	}
 	for _, ref := range cases {
 		t.Run(ref, func(t *testing.T) {
