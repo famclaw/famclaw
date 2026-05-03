@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
@@ -22,6 +24,7 @@ import (
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
+	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
 // Response is the result of a single agent turn.
@@ -147,12 +150,10 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 			}
 		}
 	}
-	// Builtin tools (spawn_agent, etc.) — only when scheduler is wired
-	if a.scheduler != nil {
-		for _, t := range a.builtinTools {
-			if t.AllowedForRole(a.user.Role) {
-				turn.Tools = append(turn.Tools, t)
-			}
+	// Builtin tools (spawn_agent, web_fetch, etc.)
+	for _, t := range a.builtinTools {
+		if t.AllowedForRole(a.user.Role) {
+			turn.Tools = append(turn.Tools, t)
 		}
 	}
 
@@ -169,8 +170,8 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		OnToken:       onToken,
 	}
 
-	// Wire builtin tool handler (spawn_agent dispatching)
-	if a.scheduler != nil {
+	// Wire builtin tool handler (spawn_agent, web_fetch, etc.)
+	if len(a.builtinTools) > 0 {
 		deps.BuiltinHandler = a.makeBuiltinHandler()
 	}
 
@@ -235,6 +236,8 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		switch name {
 		case "builtin__spawn_agent":
 			return a.handleSpawnAgent(ctx, args)
+		case "builtin__web_fetch":
+			return a.handleWebFetch(ctx, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
@@ -248,6 +251,9 @@ const (
 )
 
 func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (string, error) {
+	if a.scheduler == nil {
+		return "", fmt.Errorf("spawn_agent unavailable: subagent scheduler is not configured")
+	}
 	prompt, _ := args["prompt"].(string)
 	if prompt == "" {
 		return "", fmt.Errorf("spawn_agent requires a 'prompt' argument")
@@ -305,6 +311,68 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	case <-subCtx.Done():
 		return "", fmt.Errorf("subagent timed out: %w", subCtx.Err())
 	}
+}
+
+// handleWebFetch dispatches the builtin__web_fetch tool. Enforces the
+// per-host URL allowlist (auth boundary), applies the configured size +
+// timeout caps, and delegates the actual HTTP work to webfetch.Fetch.
+func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string, error) {
+	rawURL, _ := args["url"].(string)
+	if rawURL == "" {
+		return "", fmt.Errorf("web_fetch requires a 'url' argument")
+	}
+
+	cfg := a.cfg.Tools.WebFetch
+	if !cfg.Enabled {
+		return "", fmt.Errorf("web_fetch is disabled in this deployment")
+	}
+
+	// URL allowlist enforcement (auth boundary). When the list is empty,
+	// any host is permitted; otherwise the request host must match an entry
+	// exactly or be a subdomain of one.
+	if len(cfg.URLAllowlist) > 0 {
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			return "", fmt.Errorf("invalid url: %w", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return "", fmt.Errorf("web_fetch only supports http(s) URLs, got %q", u.Scheme)
+		}
+		host := u.Hostname()
+		ok := false
+		for _, allowed := range cfg.URLAllowlist {
+			allowed = strings.TrimSpace(allowed)
+			if allowed == "" {
+				continue
+			}
+			if host == allowed || strings.HasSuffix(host, "."+allowed) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return "", fmt.Errorf("host %q not in url_allowlist", host)
+		}
+	}
+
+	opts := webfetch.Options{
+		MaxBytes: cfg.MaxBytes,
+		Timeout:  time.Duration(cfg.TimeoutSec) * time.Second,
+	}
+	// Caller-supplied max_bytes can only further restrict the cap, never raise it.
+	if v, ok := args["max_bytes"].(float64); ok && v > 0 {
+		caller := int64(v)
+		if opts.MaxBytes == 0 || caller < opts.MaxBytes {
+			opts.MaxBytes = caller
+		}
+	}
+
+	result, err := webfetch.Fetch(ctx, rawURL, opts)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("URL: %s\nStatus: %d\nContent-Type: %s\nTruncated: %v\n\n%s",
+		result.URL, result.StatusCode, result.ContentType, result.Truncated, result.Text), nil
 }
 
 // normalizeTimeoutSeconds extracts timeout_seconds from spawn_agent args.

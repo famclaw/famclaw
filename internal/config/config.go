@@ -21,6 +21,23 @@ type Config struct {
 	Notifications NotificationsConfig `yaml:"notifications"`
 	Storage       StorageConfig       `yaml:"storage"`
 	SecCheck      SecCheckConfig      `yaml:"seccheck"` // deprecated — use honeybadger instead
+	Tools         ToolsConfig         `yaml:"tools,omitempty"`
+}
+
+// ToolsConfig groups configuration for built-in tools registered with the LLM.
+type ToolsConfig struct {
+	WebFetch WebFetchConfig `yaml:"web_fetch,omitempty"`
+}
+
+// WebFetchConfig controls the built-in web_fetch tool. Disabled by default;
+// when enabled the LLM may fetch URLs subject to the per-host allowlist,
+// role gate, and OPA policy decision.
+type WebFetchConfig struct {
+	Enabled      bool     `yaml:"enabled"`
+	URLAllowlist []string `yaml:"url_allowlist,omitempty"` // empty = allow all hosts
+	MaxBytes     int64    `yaml:"max_bytes,omitempty"`     // 0 = 256KB default
+	TimeoutSec   int      `yaml:"timeout_seconds,omitempty"`
+	AllowedRoles []string `yaml:"allowed_roles,omitempty"` // default ["parent"]
 }
 
 // InferenceConfig controls local LLM inference via llama-server sidecar.
@@ -302,6 +319,17 @@ func applyDefaults(c *Config) {
 	}
 	if c.Notifications.Ntfy.URL == "" {
 		c.Notifications.Ntfy.URL = "http://localhost:2586"
+	}
+	// web_fetch defaults — only meaningful when Enabled, but applied
+	// unconditionally so the values are usable if a runtime toggle ever exists.
+	if c.Tools.WebFetch.MaxBytes == 0 {
+		c.Tools.WebFetch.MaxBytes = 256 * 1024
+	}
+	if c.Tools.WebFetch.TimeoutSec == 0 {
+		c.Tools.WebFetch.TimeoutSec = 15
+	}
+	if len(c.Tools.WebFetch.AllowedRoles) == 0 {
+		c.Tools.WebFetch.AllowedRoles = []string{"parent"}
 	}
 }
 
