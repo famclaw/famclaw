@@ -105,3 +105,49 @@ body
 		t.Errorf("want name=testskill, got %v", resp["name"])
 	}
 }
+
+func TestSkillInstall_RejectsPathTraversal(t *testing.T) {
+	s := newSkillTestServer(t)
+	cases := []string{
+		"../etc",
+		"foo/../../etc",
+		"\x00malicious",
+	}
+	for _, ref := range cases {
+		t.Run(ref, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]string{"name_or_path": ref})
+			req := httptest.NewRequest(http.MethodPost, "/api/skills/install", bytes.NewReader(body))
+			req.Header.Set("X-Parent-PIN", testParentPIN)
+			rec := httptest.NewRecorder()
+			s.handleSkillInstall(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("want 400, got %d (body: %s)", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestSkillRemove_RejectsBadName(t *testing.T) {
+	s := newSkillTestServer(t)
+	cases := []string{
+		"../etc",
+		"foo/bar",
+		"..",
+		".hidden",
+		"",
+		"name with space",
+		"name\x00",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]string{"name": name})
+			req := httptest.NewRequest(http.MethodPost, "/api/skills/remove", bytes.NewReader(body))
+			req.Header.Set("X-Parent-PIN", testParentPIN)
+			rec := httptest.NewRecorder()
+			s.handleSkillRemove(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("want 400, got %d (body: %s)", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
