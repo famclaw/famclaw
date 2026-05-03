@@ -361,6 +361,14 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	if c.Tools.WebFetch.Enabled {
+		if c.Tools.WebFetch.MaxBytes <= 0 {
+			return fmt.Errorf("tools.web_fetch.max_bytes must be > 0 (got %d)", c.Tools.WebFetch.MaxBytes)
+		}
+		if c.Tools.WebFetch.TimeoutSec <= 0 {
+			return fmt.Errorf("tools.web_fetch.timeout_seconds must be > 0 (got %d)", c.Tools.WebFetch.TimeoutSec)
+		}
+	}
 	return nil
 }
 

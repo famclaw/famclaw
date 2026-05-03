@@ -51,6 +51,11 @@ type Agent struct {
 	scheduler    *subagent.Scheduler
 	builtinTools []agentcore.Tool // tools to inject onto every Turn
 	convID       string
+
+	// webFetcher is the function used by handleWebFetch. Defaults to
+	// webfetch.Fetch in NewAgent. Tests can swap in a stub to assert the
+	// allowlist/scheme/empty-list gates without making real HTTP calls.
+	webFetcher func(ctx context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error)
 }
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
@@ -92,6 +97,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client
 		scheduler:    deps.Scheduler,
 		builtinTools: deps.BuiltinTools,
 		convID:       convID,
+		webFetcher:   webfetch.Fetch,
 	}
 }
 
@@ -313,9 +319,12 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	}
 }
 
-// handleWebFetch dispatches the builtin__web_fetch tool. Enforces the
-// per-host URL allowlist (auth boundary), applies the configured size +
-// timeout caps, and delegates the actual HTTP work to webfetch.Fetch.
+// handleWebFetch dispatches the builtin__web_fetch tool. Auth boundary:
+// validates scheme, enforces the per-host URL allowlist (must be non-empty
+// — empty list is treated as deny-all to prevent SSRF into the home LAN),
+// and propagates the same allowlist into webfetch.Fetch as a HostValidator
+// so it is re-applied to every redirect target. webfetch.Fetch additionally
+// blocks private/loopback/link-local IPs at the dialer.
 func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string, error) {
 	rawURL, _ := args["url"].(string)
 	if rawURL == "" {
@@ -327,37 +336,48 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		return "", fmt.Errorf("web_fetch is disabled in this deployment")
 	}
 
-	// URL allowlist enforcement (auth boundary). When the list is empty,
-	// any host is permitted; otherwise the request host must match an entry
-	// exactly or be a subdomain of one.
-	if len(cfg.URLAllowlist) > 0 {
-		u, err := url.Parse(rawURL)
-		if err != nil {
-			return "", fmt.Errorf("invalid url: %w", err)
-		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return "", fmt.Errorf("web_fetch only supports http(s) URLs, got %q", u.Scheme)
-		}
-		host := u.Hostname()
-		ok := false
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("web_fetch only supports http(s) URLs, got %q", u.Scheme)
+	}
+
+	// Empty allowlist = deny-all. The previous "empty means any host"
+	// semantic was an SSRF footgun on home networks — a misconfigured
+	// deployment could let a jailbroken LLM reach 192.168.1.1/admin or
+	// other LAN services. Operators must explicitly list the hosts they
+	// want web_fetch to reach.
+	if len(cfg.URLAllowlist) == 0 {
+		return "", fmt.Errorf("web_fetch denied: tools.web_fetch.url_allowlist is empty (set at least one host to enable)")
+	}
+
+	hostAllowed := func(host string) bool {
 		for _, allowed := range cfg.URLAllowlist {
 			allowed = strings.TrimSpace(allowed)
 			if allowed == "" {
 				continue
 			}
 			if host == allowed || strings.HasSuffix(host, "."+allowed) {
-				ok = true
-				break
+				return true
 			}
 		}
-		if !ok {
-			return "", fmt.Errorf("host %q not in url_allowlist", host)
-		}
+		return false
+	}
+	if !hostAllowed(u.Hostname()) {
+		return "", fmt.Errorf("host %q not in url_allowlist", u.Hostname())
 	}
 
 	opts := webfetch.Options{
 		MaxBytes: cfg.MaxBytes,
 		Timeout:  time.Duration(cfg.TimeoutSec) * time.Second,
+		HostValidator: func(host string) error {
+			if !hostAllowed(host) {
+				return fmt.Errorf("host %q not in url_allowlist", host)
+			}
+			return nil
+		},
 	}
 	// Caller-supplied max_bytes can only further restrict the cap, never raise it.
 	if v, ok := args["max_bytes"].(float64); ok && v > 0 {
@@ -367,7 +387,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		}
 	}
 
-	result, err := webfetch.Fetch(ctx, rawURL, opts)
+	result, err := a.webFetcher(ctx, rawURL, opts)
 	if err != nil {
 		return "", err
 	}

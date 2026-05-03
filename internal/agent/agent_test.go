@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +18,7 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
+	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
 func setupAgent(t *testing.T, serverURL string) *Agent {
@@ -336,15 +336,8 @@ func TestBuildMessages_OperatorOverrideKept(t *testing.T) {
 	}
 }
 
-func TestHandleWebFetch_AllowlistAndCap(t *testing.T) {
-	newSrv := func() *httptest.Server {
-		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/html")
-			w.Write([]byte("<p>hello world</p>"))
-		}))
-	}
-
-	newAgent := func(allowlist []string) *Agent {
+func TestHandleWebFetch(t *testing.T) {
+	newAgent := func(allowlist []string, fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
 		return &Agent{
 			cfg: &config.Config{
 				Tools: config.ToolsConfig{
@@ -356,51 +349,181 @@ func TestHandleWebFetch_AllowlistAndCap(t *testing.T) {
 					},
 				},
 			},
+			webFetcher: fetcher,
 		}
 	}
 
-	t.Run("allowed host returns text", func(t *testing.T) {
-		srv := newSrv()
-		defer srv.Close()
-		u, _ := url.Parse(srv.URL)
-		a := newAgent([]string{u.Hostname()})
-		out, err := a.handleWebFetch(context.Background(), map[string]any{"url": srv.URL})
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
-		}
-		if !strings.Contains(out, "hello world") {
-			t.Errorf("missing hello world: %q", out)
-		}
-	})
+	// stubFetcher records its calls and returns canned text.
+	type call struct {
+		rawURL string
+		opts   webfetch.Options
+	}
 
-	t.Run("disallowed host blocked", func(t *testing.T) {
-		srv := newSrv()
-		defer srv.Close()
-		a := newAgent([]string{"never.example.com"})
-		_, err := a.handleWebFetch(context.Background(), map[string]any{"url": srv.URL})
-		if err == nil {
-			t.Fatalf("expected error")
-		}
-		if !strings.Contains(err.Error(), "url_allowlist") {
-			t.Errorf("expected url_allowlist error, got: %v", err)
-		}
-	})
+	tests := []struct {
+		name        string
+		allowlist   []string
+		args        map[string]any
+		fetcherErr  error
+		fetcherRes  *webfetch.Result
+		wantErrSub  string // empty = expect success
+		wantOutSub  string
+		wantCalled  bool
+		wantMaxByte int64 // expected MaxBytes passed to fetcher (when called)
+	}{
+		{
+			name:        "allowed host calls fetcher",
+			allowlist:   []string{"example.com"},
+			args:        map[string]any{"url": "https://example.com/x"},
+			fetcherRes:  &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "hello world"},
+			wantOutSub:  "hello world",
+			wantCalled:  true,
+			wantMaxByte: 256 * 1024,
+		},
+		{
+			name:       "disallowed host blocked, fetcher not called",
+			allowlist:  []string{"never.example.com"},
+			args:       map[string]any{"url": "https://other.example.com/x"},
+			wantErrSub: "url_allowlist",
+		},
+		{
+			name:       "subdomain of allowlisted host accepted",
+			allowlist:  []string{"example.com"},
+			args:       map[string]any{"url": "https://api.example.com/x"},
+			fetcherRes: &webfetch.Result{URL: "https://api.example.com/x", StatusCode: 200, ContentType: "text/plain", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "empty allowlist denied (SSRF guard)",
+			allowlist:  nil,
+			args:       map[string]any{"url": "https://example.com/x"},
+			wantErrSub: "url_allowlist is empty",
+		},
+		{
+			name:       "non-http scheme rejected before fetcher",
+			allowlist:  []string{"example.com"},
+			args:       map[string]any{"url": "file:///etc/passwd"},
+			wantErrSub: "http(s)",
+		},
+		{
+			name:       "javascript: URL rejected",
+			allowlist:  []string{"example.com"},
+			args:       map[string]any{"url": "javascript:alert(1)"},
+			wantErrSub: "http(s)",
+		},
+		{
+			name:       "missing url arg",
+			allowlist:  []string{"example.com"},
+			args:       map[string]any{},
+			wantErrSub: "'url' argument",
+		},
+		{
+			name:        "caller max_bytes only tightens",
+			allowlist:   []string{"example.com"},
+			args:        map[string]any{"url": "https://example.com/x", "max_bytes": float64(2)},
+			fetcherRes:  &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/plain", Truncated: true, Text: "he"},
+			wantOutSub:  "Truncated: true",
+			wantCalled:  true,
+			wantMaxByte: 2,
+		},
+		{
+			name:        "caller max_bytes cannot raise cap",
+			allowlist:   []string{"example.com"},
+			args:        map[string]any{"url": "https://example.com/x", "max_bytes": float64(10 * 1024 * 1024)},
+			fetcherRes:  &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/plain", Text: "ok"},
+			wantOutSub:  "ok",
+			wantCalled:  true,
+			wantMaxByte: 256 * 1024,
+		},
+		{
+			name:       "fetcher error propagates",
+			allowlist:  []string{"example.com"},
+			args:       map[string]any{"url": "https://example.com/x"},
+			fetcherErr: fmt.Errorf("network down"),
+			wantErrSub: "network down",
+			wantCalled: true,
+		},
+	}
 
-	t.Run("max_bytes from caller truncates", func(t *testing.T) {
-		srv := newSrv()
-		defer srv.Close()
-		u, _ := url.Parse(srv.URL)
-		a := newAgent([]string{u.Hostname()})
-		out, err := a.handleWebFetch(context.Background(), map[string]any{
-			"url":       srv.URL,
-			"max_bytes": float64(2),
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got *call
+			fetcher := func(_ context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error) {
+				got = &call{rawURL: rawURL, opts: opts}
+				if tt.fetcherErr != nil {
+					return nil, tt.fetcherErr
+				}
+				return tt.fetcherRes, nil
+			}
+			a := newAgent(tt.allowlist, fetcher)
+
+			out, err := a.handleWebFetch(context.Background(), tt.args)
+
+			if tt.wantErrSub != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil (out=%q)", tt.wantErrSub, out)
+				}
+				if !strings.Contains(err.Error(), tt.wantErrSub) {
+					t.Errorf("err = %v, want substring %q", err, tt.wantErrSub)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+
+			if tt.wantOutSub != "" && !strings.Contains(out, tt.wantOutSub) {
+				t.Errorf("output missing %q: %q", tt.wantOutSub, out)
+			}
+
+			called := got != nil
+			if called != tt.wantCalled {
+				t.Errorf("fetcher called=%v, want=%v", called, tt.wantCalled)
+			}
+			if tt.wantCalled && tt.wantMaxByte > 0 && got.opts.MaxBytes != tt.wantMaxByte {
+				t.Errorf("MaxBytes passed to fetcher = %d, want %d", got.opts.MaxBytes, tt.wantMaxByte)
+			}
+			if tt.wantCalled && got.opts.HostValidator == nil {
+				t.Errorf("HostValidator should be set when fetcher is called")
+			}
 		})
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
-		}
-		if !strings.Contains(out, "Truncated: true") {
-			t.Errorf("expected Truncated: true in output, got: %q", out)
-		}
-	})
+	}
+}
+
+// TestHandleWebFetch_HostValidatorAppliesToRedirect ensures the validator
+// closure handed to webfetch enforces the same allowlist on redirect
+// targets as on the initial URL.
+func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
+	var capturedValidator func(string) error
+	a := &Agent{
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{
+				WebFetch: config.WebFetchConfig{
+					Enabled:      true,
+					URLAllowlist: []string{"good.example"},
+					MaxBytes:     1024,
+					TimeoutSec:   5,
+				},
+			},
+		},
+		webFetcher: func(_ context.Context, _ string, opts webfetch.Options) (*webfetch.Result, error) {
+			capturedValidator = opts.HostValidator
+			return &webfetch.Result{StatusCode: 200, ContentType: "text/plain", Text: "ok"}, nil
+		},
+	}
+
+	if _, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://good.example/page"}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if capturedValidator == nil {
+		t.Fatal("HostValidator should have been passed to fetcher")
+	}
+	if err := capturedValidator("good.example"); err != nil {
+		t.Errorf("good.example should pass validator, got: %v", err)
+	}
+	if err := capturedValidator("api.good.example"); err != nil {
+		t.Errorf("api.good.example (subdomain) should pass validator, got: %v", err)
+	}
+	if err := capturedValidator("evil.example"); err == nil {
+		t.Errorf("evil.example should be rejected by validator")
+	}
 }
 

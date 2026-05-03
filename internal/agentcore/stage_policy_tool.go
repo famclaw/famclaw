@@ -31,7 +31,8 @@ func NewStagePolicyToolCall(eval ToolPolicyEvaluator) Stage {
 		if eval == nil || len(turn.ToolCalls) == 0 {
 			return nil
 		}
-		for _, tc := range turn.ToolCalls {
+		for i := range turn.ToolCalls {
+			tc := &turn.ToolCalls[i]
 			if tc.Error != nil {
 				continue
 			}

@@ -10,9 +10,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   config, the LLM gets a `web_fetch` tool that retrieves a URL and
   returns extracted text (HTML→text via `golang.org/x/net/html`, plain
   text and JSON passed through). Defaults: 256 KB cap, 15 s timeout, no
-  JS rendering, parent-only role gate, optional per-host allowlist with
-  subdomain matching. Per-user allow/deny via OPA `tool_policy` rules
-  (parent and `age_13_17` allowed; `under_8` and `age_8_12` denied).
+  JS rendering, optional per-host allowlist with subdomain matching.
+  Two independent gates:
+  - **Registration** is controlled by `tools.web_fetch.allowed_roles`
+    (default `[parent]`). Children's agents do not even see the tool.
+  - **Per-user usage** of an already-registered tool is then evaluated
+    by OPA `tool_policy` rules. The shipped policy denies `web_fetch`
+    for `under_8` and `age_8_12`; `age_13_17` and `parent` are allowed
+    by the policy *if* the role gate registered the tool for them.
   Closes journal critical finding #2 (partial — web search follows in a
   separate PR).
 - **OPA tool-policy enforcement at the tool loop.** New
