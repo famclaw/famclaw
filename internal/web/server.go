@@ -41,8 +41,9 @@ type Server struct {
 	evaluator  *policy.Evaluator
 	clf        *classifier.Classifier
 	notifier   *notify.MultiNotifier
-	skills     []*skillbridge.Skill // injected into agent system prompt
-	pool          *mcp.Pool           // MCP tool pool for agent tool calls
+	skills        []*skillbridge.Skill  // injected into agent system prompt
+	skillRegistry *skillbridge.Registry // backs POST /api/skills/install + /remove
+	pool          *mcp.Pool             // MCP tool pool for agent tool calls
 	oauthStore    *llm.OAuthStore     // OAuth token store for subscription auth
 	oauthFlow     *llm.OAuthFlow      // active OAuth flow (nil when not in progress)
 	staticHandler http.Handler        // embedded static file server
@@ -59,18 +60,19 @@ type wsMessage struct {
 }
 
 func NewServer(cfg *config.Config, cfgPath string, db *store.DB, evaluator *policy.Evaluator,
-	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, pool *mcp.Pool, oauthStore *llm.OAuthStore) *Server {
+	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool, oauthStore *llm.OAuthStore) *Server {
 	return &Server{
-		cfg:        cfg,
-		cfgPath:    cfgPath,
-		db:         db,
-		evaluator:  evaluator,
-		clf:        clf,
-		notifier:   notifier,
-		pool:       pool,
-		oauthStore: oauthStore,
-		skills:     skills,
-		clients:   make(map[*websocket.Conn]string),
+		cfg:           cfg,
+		cfgPath:       cfgPath,
+		db:            db,
+		evaluator:     evaluator,
+		clf:           clf,
+		notifier:      notifier,
+		pool:          pool,
+		oauthStore:    oauthStore,
+		skills:        skills,
+		skillRegistry: skillRegistry,
+		clients:       make(map[*websocket.Conn]string),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				// Allow connections from LAN — all origins on local network
