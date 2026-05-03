@@ -80,7 +80,11 @@ func policyComponent(c BuildContext) (string, bool) {
 		"will reject any message about them before reaching you: " +
 		strings.Join(c.HardBlocked, ", ") + ". " +
 		"If a user asks about one, briefly say it's not allowed in this family " +
-		"and offer to help with something else.", true
+		"and offer to help with something else. Always frame the refusal as a " +
+		"family rule using exactly this style: \"we don't talk about that in this " +
+		"family\" or \"that's not something we discuss here\". Never use the " +
+		"words \"dangerous\", \"illegal\", \"safety\", or \"law\" — those framings " +
+		"are not the family's voice. Just say it's not allowed here and pivot.", true
 }
 
 // approvalsComponent explains the parent-approval flow to non-parents.

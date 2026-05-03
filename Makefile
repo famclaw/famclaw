@@ -28,6 +28,11 @@ test:
 opa-test:
 	opa test internal/policy/policies/family/ internal/policy/policies/data/ -v
 
+## behavioral: Run prompt behavioral probes against the local Ollama (opt-in, slow)
+behavioral:
+	OLLAMA_URL=$${OLLAMA_URL:-http://192.168.1.223:11434} CGO_ENABLED=0 \
+		go test -tags ollama_behavioral ./internal/prompt/... -count=1 -v -timeout 600s
+
 ## cross: Build for all supported platforms
 cross: cross-rpi3 cross-rpi4 cross-android cross-mac-intel cross-mac-arm cross-linux64
 
