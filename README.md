@@ -157,8 +157,8 @@ tools:
   web_fetch:
     enabled: true
     allowed_roles: [parent]   # role gate — checked when registering the tool
-    url_allowlist:            # empty = any host; subdomains of an allowed host match
-      - wikipedia.org
+    url_allowlist:            # REQUIRED — empty list denies all (SSRF guard).
+      - wikipedia.org         #   Subdomains of an allowed host match automatically.
       - en.wikipedia.org
     max_bytes: 262144         # 256 KB response cap
     timeout_seconds: 15
@@ -168,7 +168,8 @@ Defense in depth:
 
 - **Role gate** at registration — the tool is only added to the LLM's tool list for users in `allowed_roles`.
 - **OPA `tool_policy` rule** at the tool loop — `parent` and `age_13_17` are allowed; `under_8` and `age_8_12` are denied. Blocked calls never dispatch.
-- **URL allowlist** in `handleWebFetch` — only `http`/`https` schemes; the request host must equal an allowlist entry or be a subdomain of one. Empty allowlist permits any host.
+- **URL allowlist** in `handleWebFetch` — only `http`/`https` schemes; the request host must equal an allowlist entry or be a subdomain of one. **An empty allowlist denies all fetches** (SSRF guard) — operators must list the hosts they trust. The same predicate is re-applied to every redirect target inside `webfetch.Fetch`.
+- **Private-network block** in `internal/webfetch` — the dialer resolves DNS itself and rejects loopback / RFC1918 / RFC4193 ULA / link-local / multicast / unspecified IPs, so a misconfigured allowlist or DNS-rebinding trick can't reach the home LAN.
 - **Size + timeout caps** in `internal/webfetch` — `MaxBytes` enforced via `io.LimitReader`, redirect chain capped at 5 hops, request `Timeout` from config.
 
 The fetcher itself is in `internal/webfetch/`; the agent handler lives in `internal/agent/agent.go` (`handleWebFetch`).

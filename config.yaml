@@ -170,7 +170,11 @@ seccheck:
 #   web_fetch:
 #     enabled: false              # set true to allow the LLM to fetch URLs
 #     allowed_roles: [parent]     # roles permitted to invoke web_fetch
-#     url_allowlist: []           # empty = any host; populate with hostnames
-#                                 # (subdomains of an allowed host are allowed)
+#     url_allowlist:              # REQUIRED when enabled — empty list denies all
+#       - wikipedia.org           #   fetches (SSRF guard). List the hostnames
+#       - en.wikipedia.org        #   you trust; subdomains of an allowed host
+#                                 #   match automatically. http/https only;
+#                                 #   private/loopback IPs are blocked at the
+#                                 #   dialer regardless.
 #     max_bytes: 262144           # 256KB response cap
 #     timeout_seconds: 15
