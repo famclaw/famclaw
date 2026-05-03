@@ -101,6 +101,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals", s.handleApprovals)
 	mux.HandleFunc("/api/approvals/decide", s.handleDecide)
 	mux.HandleFunc("/api/skills", s.handleSkills)
+	mux.HandleFunc("/api/skills/install", s.handleSkillInstall)
+	mux.HandleFunc("/api/skills/remove", s.handleSkillRemove)
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/setup/detect", s.handleSetupDetect)
@@ -462,6 +464,9 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 }
 
 func (s *Server) broadcastDashboardUpdate() {
+	if s.db == nil {
+		return
+	}
 	pending, _ := s.db.PendingApprovals()
 	payload, _ := json.Marshal(map[string]any{"pending_count": len(pending)})
 
