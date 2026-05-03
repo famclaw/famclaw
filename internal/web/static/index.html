@@ -382,6 +382,10 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         <div class="d-card" id="skills-list">
           <div class="empty-state">Loading…</div>
         </div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <input id="skill-install-input" type="text" placeholder="famclaw/seccheck or /path/to/SKILL.md" style="flex:1">
+          <button onclick="installSkill()">Install</button>
+        </div>
       </div>
       <div class="d-section">
         <button class="s-save" style="background:var(--c-muted)" onclick="openSettings(false)">⚙️ Settings</button>
@@ -662,7 +666,7 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
 <div id="pin-modal">
   <div class="pin-card">
     <h3>🔒 Parent Access</h3>
-    <p>Enter your PIN to access the dashboard</p>
+    <p id="pin-message">Enter your PIN to access the dashboard</p>
     <input id="pin-input" type="password" inputmode="numeric" maxlength="6" placeholder="••••">
     <div class="pin-actions">
       <button id="pin-cancel">Cancel</button>
@@ -999,23 +1003,70 @@ function renderActivity(items) {
 
 function renderSkills(skills) {
   const list = document.getElementById('skills-list');
-  if (!skills.length) {
-    list.innerHTML = '<div class="empty-state">No skills installed</div>';
+  list.textContent = '';
+  if (!skills || !skills.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No skills installed.';
+    list.appendChild(empty);
     return;
   }
-  list.innerHTML = '';
-  skills.forEach(s => {
-    const item = el('div', { class: 'skill-item' });
-    const verdict = s.seccheck_verdict || 'PASS';
-    item.innerHTML = `
-      <div class="skill-icon">🔌</div>
-      <div class="skill-body">
-        <div class="skill-name">${s.name}</div>
-        <div class="skill-desc">${s.description || ''}</div>
-      </div>
-      <span class="verdict-badge verdict-${verdict}">${verdict}</span>`;
-    list.appendChild(item);
-  });
+  for (const skill of skills) {
+    const row = document.createElement('div');
+    row.style = 'display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--c-border)';
+    const left = document.createElement('div');
+    left.style = 'flex:1;min-width:0';
+    const name = document.createElement('strong');
+    name.textContent = skill.name;
+    left.appendChild(name);
+    const desc = document.createElement('span');
+    desc.style = 'color:var(--c-muted);margin-left:8px;font-size:0.85em';
+    desc.textContent = skill.description || '';
+    left.appendChild(desc);
+    const btn = document.createElement('button');
+    btn.textContent = '🗑️';
+    btn.addEventListener('click', () => removeSkill(skill.name));
+    row.appendChild(left);
+    row.appendChild(btn);
+    list.appendChild(row);
+  }
+}
+
+async function installSkill() {
+  const input = document.getElementById('skill-install-input');
+  const nameOrPath = input.value.trim();
+  if (!nameOrPath) { showToast('Enter a skill name like famclaw/seccheck'); return; }
+  const pin = state.parentPIN || await requestPIN('Enter parent PIN to install this skill');
+  if (!pin) return;
+  state.parentPIN = pin;
+  try {
+    const r = await fetch('/api/skills/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Parent-PIN': pin },
+      body: JSON.stringify({ name_or_path: nameOrPath }),
+    });
+    if (!r.ok) { showToast('Install failed: ' + (await r.text())); return; }
+    input.value = '';
+    await loadDashboard();
+    showToast('Installed.');
+  } catch (e) { showToast('Install failed: ' + e.message); }
+}
+
+async function removeSkill(name) {
+  if (!confirm('Remove skill ' + name + '?')) return;
+  const pin = state.parentPIN || await requestPIN('Enter parent PIN to remove this skill');
+  if (!pin) return;
+  state.parentPIN = pin;
+  try {
+    const r = await fetch('/api/skills/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Parent-PIN': pin },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) { showToast('Remove failed: ' + (await r.text())); return; }
+    await loadDashboard();
+    showToast('Removed.');
+  } catch (e) { showToast('Remove failed: ' + e.message); }
 }
 
 async function decide(id, action, btn) {
@@ -1031,9 +1082,12 @@ async function decide(id, action, btn) {
 }
 
 // ── PIN modal ─────────────────────────────────────────────────────────────────
+const PIN_DEFAULT_MESSAGE = 'Enter your PIN to access the dashboard';
+
 function showPINModal(user) {
   const modal = document.getElementById('pin-modal');
   const input = document.getElementById('pin-input');
+  document.getElementById('pin-message').textContent = PIN_DEFAULT_MESSAGE;
   modal.classList.add('open');
   input.value = '';
   input.focus();
@@ -1050,6 +1104,35 @@ function showPINModal(user) {
   document.getElementById('pin-ok').onclick = ok;
   document.getElementById('pin-cancel').onclick = () => modal.classList.remove('open');
   input.onkeydown = (e) => { if (e.key === 'Enter') ok(); };
+}
+
+// requestPIN opens the masked PIN modal and resolves with the entered PIN
+// (or null if the user cancels). Used for one-off parent-gated actions.
+function requestPIN(message) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('pin-modal');
+    const input = document.getElementById('pin-input');
+    const okBtn = document.getElementById('pin-ok');
+    const cancelBtn = document.getElementById('pin-cancel');
+    document.getElementById('pin-message').textContent = message || PIN_DEFAULT_MESSAGE;
+    input.value = '';
+    modal.classList.add('open');
+    input.focus();
+
+    const finish = (value) => {
+      modal.classList.remove('open');
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+      input.onkeydown = null;
+      resolve(value);
+    };
+    okBtn.onclick = () => finish(input.value || null);
+    cancelBtn.onclick = () => finish(null);
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') finish(input.value || null);
+      else if (e.key === 'Escape') finish(null);
+    };
+  });
 }
 
 // ── Event Listeners ───────────────────────────────────────────────────────────

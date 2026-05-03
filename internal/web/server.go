@@ -43,8 +43,9 @@ type Server struct {
 	evaluator  *policy.Evaluator
 	clf        *classifier.Classifier
 	notifier   *notify.MultiNotifier
-	skills     []*skillbridge.Skill // injected into agent system prompt
-	pool          *mcp.Pool           // MCP tool pool for agent tool calls
+	skills        []*skillbridge.Skill  // injected into agent system prompt
+	skillRegistry *skillbridge.Registry // backs POST /api/skills/install + /remove
+	pool          *mcp.Pool             // MCP tool pool for agent tool calls
 	oauthStore    *llm.OAuthStore     // OAuth token store for subscription auth
 	oauthFlow     *llm.OAuthFlow      // active OAuth flow (nil when not in progress)
 	staticHandler http.Handler        // embedded static file server
@@ -61,19 +62,20 @@ type wsMessage struct {
 }
 
 func NewServer(cfg *config.Config, cfgPath string, db *store.DB, identStore *identity.Store, evaluator *policy.Evaluator,
-	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, pool *mcp.Pool, oauthStore *llm.OAuthStore) *Server {
+	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool, oauthStore *llm.OAuthStore) *Server {
 	return &Server{
-		cfg:        cfg,
-		cfgPath:    cfgPath,
-		db:         db,
-		identStore: identStore,
-		evaluator:  evaluator,
-		clf:        clf,
-		notifier:   notifier,
-		pool:       pool,
-		oauthStore: oauthStore,
-		skills:     skills,
-		clients:   make(map[*websocket.Conn]string),
+		cfg:           cfg,
+		cfgPath:       cfgPath,
+		db:            db,
+		identStore:    identStore,
+		evaluator:     evaluator,
+		clf:           clf,
+		notifier:      notifier,
+		pool:          pool,
+		oauthStore:    oauthStore,
+		skills:        skills,
+		skillRegistry: skillRegistry,
+		clients:       make(map[*websocket.Conn]string),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				// Allow connections from LAN — all origins on local network
@@ -102,6 +104,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals", s.handleApprovals)
 	mux.HandleFunc("/api/approvals/decide", s.handleDecide)
 	mux.HandleFunc("/api/skills", s.handleSkills)
+	mux.HandleFunc("/api/skills/install", s.handleSkillInstall)
+	mux.HandleFunc("/api/skills/remove", s.handleSkillRemove)
 	mux.HandleFunc("/api/unknown-accounts", s.handleUnknownAccounts)
 	mux.HandleFunc("/api/unknown-accounts/link", s.handleUnknownAccountLink)
 	mux.HandleFunc("/api/unknown-accounts/dismiss", s.handleUnknownAccountDismiss)
@@ -390,7 +394,11 @@ h2{margin:0 0 8px;font-size:22px}p{color:#6b7280;margin:0}</style></head>
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
-	skills, err := s.db.ListSkills()
+	if s.skillRegistry == nil {
+		jsonOK(w, []*skillbridge.Skill{})
+		return
+	}
+	skills, err := s.skillRegistry.List()
 	if err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
@@ -466,15 +474,27 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 }
 
 func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
+	if s.db == nil {
+		return
+	}
 	pending, _ := s.db.PendingApprovals()
-	unknown, err := s.identStore.ListUnknown(ctx)
-	if err != nil {
-		log.Printf("[web] dashboard broadcast list unknown: %v", err)
-		unknown = nil
+	var unknown any
+	if s.identStore != nil {
+		u, err := s.identStore.ListUnknown(ctx)
+		if err != nil {
+			log.Printf("[web] dashboard broadcast list unknown: %v", err)
+		} else {
+			unknown = u
+		}
+	}
+	var installedSkills []*skillbridge.Skill
+	if s.skillRegistry != nil {
+		installedSkills, _ = s.skillRegistry.List()
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"pending_count":     len(pending),
-		"unknown_accounts":  unknown,
+		"pending_count":    len(pending),
+		"unknown_accounts": unknown,
+		"installed_skills": installedSkills,
 	})
 
 	s.clientsMu.RLock()
