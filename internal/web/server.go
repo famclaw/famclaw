@@ -388,7 +388,11 @@ h2{margin:0 0 8px;font-size:22px}p{color:#6b7280;margin:0}</style></head>
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
-	skills, err := s.db.ListSkills()
+	if s.skillRegistry == nil {
+		jsonOK(w, []*skillbridge.Skill{})
+		return
+	}
+	skills, err := s.skillRegistry.List()
 	if err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return

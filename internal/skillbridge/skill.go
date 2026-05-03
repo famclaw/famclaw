@@ -12,17 +12,17 @@ import (
 
 // Skill represents a parsed SKILL.md file.
 type Skill struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Version     string   `yaml:"version"`
-	Author      string   `yaml:"author"`
-	Tags        []string `yaml:"tags"`
-	Platforms   []string `yaml:"platforms"`
+	Name        string   `yaml:"name"        json:"name"`
+	Description string   `yaml:"description" json:"description"`
+	Version     string   `yaml:"version"     json:"version,omitempty"`
+	Author      string   `yaml:"author"      json:"author,omitempty"`
+	Tags        []string `yaml:"tags"        json:"tags,omitempty"`
+	Platforms   []string `yaml:"platforms"   json:"platforms,omitempty"`
 	Requires    struct {
-		Bins []string `yaml:"bins"`
-	} `yaml:"requires"`
-	Body string `yaml:"-"` // raw body after frontmatter
-	Path string `yaml:"-"` // filesystem path of SKILL.md
+		Bins []string `yaml:"bins" json:"bins,omitempty"`
+	} `yaml:"requires" json:"requires,omitempty"`
+	Body string `yaml:"-" json:"-"`              // raw body after frontmatter
+	Path string `yaml:"-" json:"path,omitempty"` // filesystem path of SKILL.md
 }
 
 // ParseSKILLMD reads and parses a SKILL.md file at the given path.

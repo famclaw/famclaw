@@ -382,6 +382,10 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         <div class="d-card" id="skills-list">
           <div class="empty-state">Loading…</div>
         </div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <input id="skill-install-input" type="text" placeholder="famclaw/seccheck or /path/to/SKILL.md" style="flex:1">
+          <button onclick="installSkill()">Install</button>
+        </div>
       </div>
       <div class="d-section">
         <button class="s-save" style="background:var(--c-muted)" onclick="openSettings(false)">⚙️ Settings</button>
@@ -999,23 +1003,68 @@ function renderActivity(items) {
 
 function renderSkills(skills) {
   const list = document.getElementById('skills-list');
-  if (!skills.length) {
-    list.innerHTML = '<div class="empty-state">No skills installed</div>';
+  list.textContent = '';
+  if (!skills || !skills.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No skills installed.';
+    list.appendChild(empty);
     return;
   }
-  list.innerHTML = '';
-  skills.forEach(s => {
-    const item = el('div', { class: 'skill-item' });
-    const verdict = s.seccheck_verdict || 'PASS';
-    item.innerHTML = `
-      <div class="skill-icon">🔌</div>
-      <div class="skill-body">
-        <div class="skill-name">${s.name}</div>
-        <div class="skill-desc">${s.description || ''}</div>
-      </div>
-      <span class="verdict-badge verdict-${verdict}">${verdict}</span>`;
-    list.appendChild(item);
-  });
+  for (const skill of skills) {
+    const row = document.createElement('div');
+    row.style = 'display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--c-border)';
+    const left = document.createElement('div');
+    left.style = 'flex:1;min-width:0';
+    const name = document.createElement('strong');
+    name.textContent = skill.name;
+    left.appendChild(name);
+    const desc = document.createElement('span');
+    desc.style = 'color:var(--c-muted);margin-left:8px;font-size:0.85em';
+    desc.textContent = skill.description || '';
+    left.appendChild(desc);
+    const btn = document.createElement('button');
+    btn.textContent = '🗑️';
+    btn.addEventListener('click', () => removeSkill(skill.name));
+    row.appendChild(left);
+    row.appendChild(btn);
+    list.appendChild(row);
+  }
+}
+
+async function installSkill() {
+  const input = document.getElementById('skill-install-input');
+  const nameOrPath = input.value.trim();
+  if (!nameOrPath) { showToast('Enter a skill name like famclaw/seccheck'); return; }
+  const pin = state.parentPIN || prompt('Parent PIN to install:');
+  if (!pin) return;
+  state.parentPIN = pin;
+  try {
+    const r = await fetch('/api/skills/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Parent-PIN': pin },
+      body: JSON.stringify({ name_or_path: nameOrPath }),
+    });
+    if (!r.ok) { showToast('Install failed: ' + (await r.text())); return; }
+    input.value = '';
+    showToast('Installed.');
+  } catch (e) { showToast('Install failed: ' + e.message); }
+}
+
+async function removeSkill(name) {
+  if (!confirm('Remove skill ' + name + '?')) return;
+  const pin = state.parentPIN || prompt('Parent PIN to remove:');
+  if (!pin) return;
+  state.parentPIN = pin;
+  try {
+    const r = await fetch('/api/skills/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Parent-PIN': pin },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) { showToast('Remove failed: ' + (await r.text())); return; }
+    showToast('Removed.');
+  } catch (e) { showToast('Remove failed: ' + e.message); }
 }
 
 async function decide(id, action, btn) {

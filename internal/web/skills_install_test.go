@@ -103,7 +103,7 @@ body
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp["Name"] != "testskill" {
-		t.Errorf("want Name=testskill, got %v", resp["Name"])
+	if resp["name"] != "testskill" {
+		t.Errorf("want name=testskill, got %v", resp["name"])
 	}
 }
