@@ -468,7 +468,14 @@ func (s *Server) broadcastDashboardUpdate() {
 		return
 	}
 	pending, _ := s.db.PendingApprovals()
-	payload, _ := json.Marshal(map[string]any{"pending_count": len(pending)})
+	var installedSkills []*skillbridge.Skill
+	if s.skillRegistry != nil {
+		installedSkills, _ = s.skillRegistry.List()
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"pending_count":    len(pending),
+		"installed_skills": installedSkills,
+	})
 
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()
