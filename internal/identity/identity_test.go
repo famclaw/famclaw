@@ -186,43 +186,52 @@ func TestConcurrentResolve(t *testing.T) {
 func TestStore_UnknownAccountLifecycle(t *testing.T) {
 	cases := []struct {
 		name        string
-		recordGW    string
-		recordID    string
-		recordName  string
+		records     []recordCall
 		expectAfter int
+		// Optional check on the row after all records are applied (only if expectAfter > 0).
+		expectName  string
 		clearGW     string
 		clearID     string
 		expectClear int
 	}{
 		{
 			name:        "record then clear matching",
-			recordGW:    "telegram",
-			recordID:    "X1",
-			recordName:  "Julia",
+			records:     []recordCall{{"telegram", "X1", "Julia"}},
 			expectAfter: 1,
+			expectName:  "Julia",
 			clearGW:     "telegram",
 			clearID:     "X1",
 			expectClear: 0,
 		},
 		{
 			name:        "record with mixed-case gateway lowercases on store",
-			recordGW:    "Telegram",
-			recordID:    "X2",
-			recordName:  "Sam",
+			records:     []recordCall{{"Telegram", "X2", "Sam"}},
 			expectAfter: 1,
+			expectName:  "Sam",
 			clearGW:     "telegram",
 			clearID:     "X2",
 			expectClear: 0,
 		},
 		{
 			name:        "clear non-matching id leaves row in place",
-			recordGW:    "telegram",
-			recordID:    "X1",
-			recordName:  "Julia",
+			records:     []recordCall{{"telegram", "X1", "Julia"}},
 			expectAfter: 1,
+			expectName:  "Julia",
 			clearGW:     "telegram",
 			clearID:     "DOES_NOT_EXIST",
 			expectClear: 1,
+		},
+		{
+			name: "repeated record on same key hits UPSERT path and preserves first display name",
+			records: []recordCall{
+				{"telegram", "X3", "Julia"},
+				{"telegram", "X3", ""}, // empty display name must NOT overwrite "Julia"
+			},
+			expectAfter: 1,
+			expectName:  "Julia",
+			clearGW:     "telegram",
+			clearID:     "X3",
+			expectClear: 0,
 		},
 	}
 
@@ -231,8 +240,10 @@ func TestStore_UnknownAccountLifecycle(t *testing.T) {
 			s := setupStore(t)
 			ctx := context.Background()
 
-			if err := s.RecordUnknown(ctx, tc.recordGW, tc.recordID, tc.recordName); err != nil {
-				t.Fatalf("RecordUnknown: %v", err)
+			for i, rc := range tc.records {
+				if err := s.RecordUnknown(ctx, rc.gw, rc.id, rc.name); err != nil {
+					t.Fatalf("RecordUnknown[%d]: %v", i, err)
+				}
 			}
 
 			unknowns, err := s.ListUnknown(ctx)
@@ -242,8 +253,8 @@ func TestStore_UnknownAccountLifecycle(t *testing.T) {
 			if len(unknowns) != tc.expectAfter {
 				t.Fatalf("len(unknowns) after record = %d, want %d", len(unknowns), tc.expectAfter)
 			}
-			if tc.expectAfter > 0 && unknowns[0].DisplayName != tc.recordName {
-				t.Errorf("DisplayName = %q, want %q", unknowns[0].DisplayName, tc.recordName)
+			if tc.expectAfter > 0 && unknowns[0].DisplayName != tc.expectName {
+				t.Errorf("DisplayName = %q, want %q", unknowns[0].DisplayName, tc.expectName)
 			}
 
 			if err := s.ClearUnknown(ctx, tc.clearGW, tc.clearID); err != nil {
@@ -259,6 +270,10 @@ func TestStore_UnknownAccountLifecycle(t *testing.T) {
 			}
 		})
 	}
+}
+
+type recordCall struct {
+	gw, id, name string
 }
 
 func TestStore_LinkAndClearUnknown(t *testing.T) {
