@@ -6,6 +6,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- **Schema golden file** at `internal/store/testdata/schema.sql` and a drift
+  test that fails any PR which accidentally changes the SQLite schema.
+  Regenerate via `UPDATE_SCHEMA_GOLDEN=1 go test ./internal/store/`.
+- **Seed fixture** at `internal/store/testdata/seed_basic.sql` — minimal fake
+  data (placeholder names, fake tokens, fake external IDs) for integration
+  tests. No real PII.
+- **Telegram integration tests** behind `//go:build integration`: send-chunking
+  through a mock API and unknown-account auto-link end-to-end. Adds an
+  endpoint-injection seam (`telegram.NewWithEndpoint`) plus a `SendChunked`
+  test helper.
+- **Discord integration test** behind `//go:build integration`: send-chunking
+  via REST stub (overrides `discordgo.EndpointChannelMessages` to httptest).
+  Adds a `discord.SendChunked` test helper.
+- **PromptBuilder snapshot tests** locking down all four persona outputs.
+  Regenerate via `UPDATE_PROMPT_SNAPSHOTS=1 go test ./internal/prompt/`.
+- **Race-detector CI job** running `go test -race` on the gateway router and
+  agent packages, wired into the `CI Pass` required gate. CGO_ENABLED=1 is
+  scoped to this job only — production binaries remain CGO-free.
+- **Ollama behavioral tier** behind `//go:build ollama_behavioral`. Probes
+  the assembled system prompt against the local Qwen3-14B for capability
+  declarations, blocked-topic refusal, family-context awareness, and basic
+  arithmetic correctness. 13 probe×persona pairs total. Run via
+  `make behavioral`.
+
+### Changed
+- **PromptBuilder policy component** now explicitly forbids "dangerous",
+  "illegal", "safety", and "law" framings on hard-blocked topics and
+  mandates family-voice phrasing — surfaced by the Ollama behavioral
+  tier where the small model defaulted to legal/safety voice for
+  age_13_17 users.
+
 - **Unknown-accounts backend (issue #111).** New `unknown_accounts` table
   records every unlinked Discord/Telegram account that messages FamClaw,
   with attempts counter and last-seen timestamp. Three new PIN-gated JSON
