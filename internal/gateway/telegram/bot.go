@@ -19,14 +19,19 @@ import (
 
 // Bot is a Telegram gateway using the Bot API with long-polling.
 type Bot struct {
-	token  string
-	client *http.Client
+	token    string
+	endpoint string // Bot API base URL (defaults to https://api.telegram.org)
+	client   *http.Client
 }
+
+// defaultEndpoint is the public Telegram Bot API host.
+const defaultEndpoint = "https://api.telegram.org"
 
 // New creates a Telegram bot with the given token.
 func New(token string) *Bot {
 	return &Bot{
-		token: token,
+		token:    token,
+		endpoint: defaultEndpoint,
 		client: &http.Client{
 			Timeout: 60 * time.Second, // long-poll timeout
 		},
@@ -113,7 +118,7 @@ type tgUser struct {
 }
 
 func (b *Bot) getUpdates(ctx context.Context, offset int) ([]tgUpdate, error) {
-	u := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", b.token, offset)
+	u := fmt.Sprintf("%s/bot%s/getUpdates?offset=%d&timeout=30", b.endpoint, b.token, offset)
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -140,7 +145,7 @@ func (b *Bot) getUpdates(ctx context.Context, offset int) ([]tgUpdate, error) {
 }
 
 func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error {
-	u := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.token)
+	u := fmt.Sprintf("%s/bot%s/sendMessage", b.endpoint, b.token)
 	jsonBody, err := json.Marshal(map[string]any{
 		"chat_id": chatID,
 		"text":    text,
