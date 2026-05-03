@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
@@ -22,6 +24,7 @@ import (
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
+	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
 // Response is the result of a single agent turn.
@@ -48,6 +51,11 @@ type Agent struct {
 	scheduler    *subagent.Scheduler
 	builtinTools []agentcore.Tool // tools to inject onto every Turn
 	convID       string
+
+	// webFetcher is the function used by handleWebFetch. Defaults to
+	// webfetch.Fetch in NewAgent. Tests can swap in a stub to assert the
+	// allowlist/scheme/empty-list gates without making real HTTP calls.
+	webFetcher func(ctx context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error)
 }
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
@@ -89,6 +97,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client
 		scheduler:    deps.Scheduler,
 		builtinTools: deps.BuiltinTools,
 		convID:       convID,
+		webFetcher:   webfetch.Fetch,
 	}
 }
 
@@ -147,12 +156,10 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 			}
 		}
 	}
-	// Builtin tools (spawn_agent, etc.) — only when scheduler is wired
-	if a.scheduler != nil {
-		for _, t := range a.builtinTools {
-			if t.AllowedForRole(a.user.Role) {
-				turn.Tools = append(turn.Tools, t)
-			}
+	// Builtin tools (spawn_agent, web_fetch, etc.)
+	for _, t := range a.builtinTools {
+		if t.AllowedForRole(a.user.Role) {
+			turn.Tools = append(turn.Tools, t)
 		}
 	}
 
@@ -169,8 +176,8 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		OnToken:       onToken,
 	}
 
-	// Wire builtin tool handler (spawn_agent dispatching)
-	if a.scheduler != nil {
+	// Wire builtin tool handler (spawn_agent, web_fetch, etc.)
+	if len(a.builtinTools) > 0 {
 		deps.BuiltinHandler = a.makeBuiltinHandler()
 	}
 
@@ -235,6 +242,8 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		switch name {
 		case "builtin__spawn_agent":
 			return a.handleSpawnAgent(ctx, args)
+		case "builtin__web_fetch":
+			return a.handleWebFetch(ctx, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
@@ -248,6 +257,9 @@ const (
 )
 
 func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (string, error) {
+	if a.scheduler == nil {
+		return "", fmt.Errorf("spawn_agent unavailable: subagent scheduler is not configured")
+	}
 	prompt, _ := args["prompt"].(string)
 	if prompt == "" {
 		return "", fmt.Errorf("spawn_agent requires a 'prompt' argument")
@@ -305,6 +317,82 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	case <-subCtx.Done():
 		return "", fmt.Errorf("subagent timed out: %w", subCtx.Err())
 	}
+}
+
+// handleWebFetch dispatches the builtin__web_fetch tool. Auth boundary:
+// validates scheme, enforces the per-host URL allowlist (must be non-empty
+// — empty list is treated as deny-all to prevent SSRF into the home LAN),
+// and propagates the same allowlist into webfetch.Fetch as a HostValidator
+// so it is re-applied to every redirect target. webfetch.Fetch additionally
+// blocks private/loopback/link-local IPs at the dialer.
+func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string, error) {
+	rawURL, _ := args["url"].(string)
+	if rawURL == "" {
+		return "", fmt.Errorf("web_fetch requires a 'url' argument")
+	}
+
+	cfg := a.cfg.Tools.WebFetch
+	if !cfg.Enabled {
+		return "", fmt.Errorf("web_fetch is disabled in this deployment")
+	}
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("web_fetch only supports http(s) URLs, got %q", u.Scheme)
+	}
+
+	// Empty allowlist = deny-all. The previous "empty means any host"
+	// semantic was an SSRF footgun on home networks — a misconfigured
+	// deployment could let a jailbroken LLM reach 192.168.1.1/admin or
+	// other LAN services. Operators must explicitly list the hosts they
+	// want web_fetch to reach.
+	if len(cfg.URLAllowlist) == 0 {
+		return "", fmt.Errorf("web_fetch denied: tools.web_fetch.url_allowlist is empty (set at least one host to enable)")
+	}
+
+	hostAllowed := func(host string) bool {
+		for _, allowed := range cfg.URLAllowlist {
+			allowed = strings.TrimSpace(allowed)
+			if allowed == "" {
+				continue
+			}
+			if host == allowed || strings.HasSuffix(host, "."+allowed) {
+				return true
+			}
+		}
+		return false
+	}
+	if !hostAllowed(u.Hostname()) {
+		return "", fmt.Errorf("host %q not in url_allowlist", u.Hostname())
+	}
+
+	opts := webfetch.Options{
+		MaxBytes: cfg.MaxBytes,
+		Timeout:  time.Duration(cfg.TimeoutSec) * time.Second,
+		HostValidator: func(host string) error {
+			if !hostAllowed(host) {
+				return fmt.Errorf("host %q not in url_allowlist", host)
+			}
+			return nil
+		},
+	}
+	// Caller-supplied max_bytes can only further restrict the cap, never raise it.
+	if v, ok := args["max_bytes"].(float64); ok && v > 0 {
+		caller := int64(v)
+		if opts.MaxBytes == 0 || caller < opts.MaxBytes {
+			opts.MaxBytes = caller
+		}
+	}
+
+	result, err := a.webFetcher(ctx, rawURL, opts)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("URL: %s\nStatus: %d\nContent-Type: %s\nTruncated: %v\n\n%s",
+		result.URL, result.StatusCode, result.ContentType, result.Truncated, result.Text), nil
 }
 
 // normalizeTimeoutSeconds extracts timeout_seconds from spawn_agent args.
@@ -365,11 +453,19 @@ func (a *Agent) buildMessages(history []*store.Message, currentMessage string) [
 				skillNames = append(skillNames, sk.Name)
 			}
 		}
+		var builtinNames []string
+		for _, t := range a.builtinTools {
+			if t.AllowedForRole(a.user.Role) {
+				builtinNames = append(builtinNames, strings.TrimPrefix(t.Name, "builtin__"))
+			}
+		}
+
 		systemPrompt = prompt.Build(prompt.BuildContext{
-			Cfg:    a.cfg,
-			User:   a.user,
-			Skills: skillNames,
-			OAuth:  ep.AuthType == "oauth",
+			Cfg:          a.cfg,
+			User:         a.user,
+			Skills:       skillNames,
+			OAuth:        ep.AuthType == "oauth",
+			BuiltinTools: builtinNames,
 			// Gateway and HardBlocked left empty for now — wired by future PRs
 			// that thread gateway and policy info through Agent.
 		})

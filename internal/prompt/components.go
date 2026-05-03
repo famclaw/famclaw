@@ -107,6 +107,20 @@ func capabilitiesComponent(c BuildContext) (string, bool) {
 			"You also have these skills available as tools: "+strings.Join(c.Skills, ", ")+
 				". Call them when relevant.")
 	}
+	if len(c.BuiltinTools) > 0 {
+		hints := make([]string, 0, len(c.BuiltinTools))
+		for _, tool := range c.BuiltinTools {
+			switch tool {
+			case "spawn_agent":
+				hints = append(hints, "Delegate sub-tasks to local LLM workers via spawn_agent.")
+			case "web_fetch":
+				hints = append(hints, "Fetch a URL and read its text content via web_fetch — useful for current events, weather, or public docs.")
+			default:
+				hints = append(hints, fmt.Sprintf("Use the %s tool when relevant.", tool))
+			}
+		}
+		parts = append(parts, strings.Join(hints, " "))
+	}
 	return strings.Join(parts, " "), true
 }
 

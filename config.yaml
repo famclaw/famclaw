@@ -163,3 +163,14 @@ seccheck:
   async_scan_timeout: "60s"    # per-scan timeout
   quarantine_on_fail: true     # block tools after FAIL verdict
   notify_on_quarantine: true   # send parent notification on quarantine
+
+# ── Built-in tools ───────────────────────────────────────────────────────────
+# Uncomment to expose web_fetch to the LLM. Disabled by default.
+# tools:
+#   web_fetch:
+#     enabled: false              # set true to allow the LLM to fetch URLs
+#     allowed_roles: [parent]     # roles permitted to invoke web_fetch
+#     url_allowlist: []           # empty = any host; populate with hostnames
+#                                 # (subdomains of an allowed host are allowed)
+#     max_bytes: 262144           # 256KB response cap
+#     timeout_seconds: 15

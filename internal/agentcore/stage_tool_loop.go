@@ -10,7 +10,20 @@ import (
 
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
+	"github.com/famclaw/famclaw/internal/policy"
 )
+
+// toolPolicyInput shapes a per-call OPA input from the turn user.
+func toolPolicyInput(turn *Turn, toolName string) policy.ToolCallInput {
+	return policy.ToolCallInput{
+		User: policy.UserInput{
+			Role:     turn.User.Role,
+			AgeGroup: turn.User.AgeGroup,
+			Name:     turn.User.Name,
+		},
+		ToolName: bareToolName(toolName),
+	}
+}
 
 // ToolLoopDeps holds dependencies for the tool loop stage.
 type ToolLoopDeps struct {
@@ -22,6 +35,9 @@ type ToolLoopDeps struct {
 	// BuiltinHandler dispatches builtin tools (spawn_agent, etc.) that are
 	// not in the MCP pool. Keyed by tool name prefix "builtin__".
 	BuiltinHandler func(ctx context.Context, name string, args map[string]any) (string, error)
+	// PolicyEvaluator gates each tool call through the OPA tool_policy rules.
+	// When nil, no per-call policy enforcement is applied (useful for tests).
+	PolicyEvaluator ToolPolicyEvaluator
 }
 
 // NewStageToolLoop returns a stage that executes MCP tool calls from LLM responses.
@@ -96,6 +112,32 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						Duration: time.Since(start),
 					})
 					continue
+				}
+
+				// OPA tool_policy gate — replaces the older hardcoded keyword
+				// block. On evaluator error, fail closed.
+				if deps.PolicyEvaluator != nil {
+					decision, perr := deps.PolicyEvaluator.EvaluateToolCall(ctx, toolPolicyInput(turn, tc.Function.Name))
+					if perr != nil || !decision.Allow {
+						reason := "blocked by policy"
+						if perr != nil {
+							reason = fmt.Sprintf("policy error: %v", perr)
+						} else if decision.Reason != "" {
+							reason = decision.Reason
+						}
+						llmMsgs = append(llmMsgs, llm.Message{
+							Role:       "tool",
+							Content:    fmt.Sprintf("Error: %s", reason),
+							ToolCallID: tc.ID,
+						})
+						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
+							ToolName: tc.Function.Name,
+							Args:     tc.Function.Arguments,
+							Error:    ErrToolBlocked,
+							Duration: time.Since(start),
+						})
+						continue
+					}
 				}
 
 				// Builtin tools (spawn_agent, etc.) route to the handler, not MCP pool

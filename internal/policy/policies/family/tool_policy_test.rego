@@ -49,3 +49,32 @@ test_teen_calculator if {
         "tool_name": "calculator"
     }
 }
+
+# web_fetch policy
+test_parent_web_fetch if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "web_fetch"
+    }
+}
+
+test_teen_web_fetch if {
+    tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_13_17"},
+        "tool_name": "web_fetch"
+    }
+}
+
+test_under8_no_web_fetch if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "under_8"},
+        "tool_name": "web_fetch"
+    }
+}
+
+test_age8_12_no_web_fetch if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_8_12"},
+        "tool_name": "web_fetch"
+    }
+}

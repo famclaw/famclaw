@@ -146,6 +146,35 @@ Concurrency is bounded by the scheduler (`subagent.NewScheduler(2)` in `cmd/famc
 
 ---
 
+## Web fetch (`web_fetch`)
+
+Off by default. When enabled, the LLM gets a `web_fetch` tool that retrieves a URL and returns extracted text — `text/html` is parsed via `golang.org/x/net/html` and stripped of `<script>`/`<style>`/`<head>`; `text/plain` and `application/json` pass through. Useful for "what's the weather", "look up the docs page for X", and similar fetches.
+
+Enable in `config.yaml`:
+
+```yaml
+tools:
+  web_fetch:
+    enabled: true
+    allowed_roles: [parent]   # role gate — checked when registering the tool
+    url_allowlist:            # empty = any host; subdomains of an allowed host match
+      - wikipedia.org
+      - en.wikipedia.org
+    max_bytes: 262144         # 256 KB response cap
+    timeout_seconds: 15
+```
+
+Defense in depth:
+
+- **Role gate** at registration — the tool is only added to the LLM's tool list for users in `allowed_roles`.
+- **OPA `tool_policy` rule** at the tool loop — `parent` and `age_13_17` are allowed; `under_8` and `age_8_12` are denied. Blocked calls never dispatch.
+- **URL allowlist** in `handleWebFetch` — only `http`/`https` schemes; the request host must equal an allowlist entry or be a subdomain of one. Empty allowlist permits any host.
+- **Size + timeout caps** in `internal/webfetch` — `MaxBytes` enforced via `io.LimitReader`, redirect chain capped at 5 hops, request `Timeout` from config.
+
+The fetcher itself is in `internal/webfetch/`; the agent handler lives in `internal/agent/agent.go` (`handleWebFetch`).
+
+---
+
 ## Security scanning
 
 FamClaw uses [HoneyBadger](https://github.com/famclaw/honeybadger) to scan skills at two points:
@@ -172,6 +201,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 | **Smart tool selection** | Token-budget-aware filtering, role+skill scoping |
 | **Context compression** | Tiered truncation keeping system prompt + pinned messages |
 | **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
+| **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps |
 | **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
 | **llama.cpp sidecar** | Spawns llama-server, GGUF model catalog, TurboQuant support |
 | **Security scanning** | Honeybadger runtime stage, install-time + stale scan gates |

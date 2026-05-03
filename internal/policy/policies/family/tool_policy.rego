@@ -25,6 +25,18 @@ allow := false if {
     input.tool_name == "spawn_agent"
 }
 
+# Block web_fetch for under_8 — open web content is not age-appropriate.
+allow := false if {
+    input.user.age_group == "under_8"
+    input.tool_name == "web_fetch"
+}
+
+# Block web_fetch for 8-12 — restricted browsing requires parental supervision.
+allow := false if {
+    input.user.age_group == "age_8_12"
+    input.tool_name == "web_fetch"
+}
+
 reason := "This tool is not available for your age group." if {
     not allow
 }
