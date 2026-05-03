@@ -271,6 +271,61 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+func TestEvaluateToolCall(t *testing.T) {
+	ev := setupEvaluator(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		role      string
+		ageGroup  string
+		toolName  string
+		wantAllow bool
+	}{
+		// default allow — unrecognised tool falls through to `default allow := true`
+		{"parent unknown tool allowed", "parent", "", "some_unknown_tool", true},
+		{"child unknown tool allowed", "child", "age_13_17", "some_unknown_tool", true},
+
+		// web_search — blocked only for under_8
+		{"under_8 web_search blocked", "child", "under_8", "web_search", false},
+		{"age_8_12 web_search allowed", "child", "age_8_12", "web_search", true},
+		{"parent web_search allowed", "parent", "", "web_search", true},
+
+		// file_* prefix — blocked for all children, allowed for parents
+		{"child file_read blocked", "child", "age_13_17", "file_read", false},
+		{"child file_write blocked", "child", "age_8_12", "file_write", false},
+		{"parent file_read allowed", "parent", "", "file_read", true},
+
+		// spawn_agent — blocked for children
+		{"child spawn_agent blocked", "child", "age_13_17", "spawn_agent", false},
+		{"parent spawn_agent allowed", "parent", "", "spawn_agent", true},
+
+		// web_fetch — blocked for under_8 and age_8_12
+		{"under_8 web_fetch blocked", "child", "under_8", "web_fetch", false},
+		{"age_8_12 web_fetch blocked", "child", "age_8_12", "web_fetch", false},
+		{"age_13_17 web_fetch allowed", "child", "age_13_17", "web_fetch", true},
+		{"parent web_fetch allowed", "parent", "", "web_fetch", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := ev.EvaluateToolCall(ctx, ToolCallInput{
+				User:     UserInput{Role: tt.role, AgeGroup: tt.ageGroup, Name: "testuser"},
+				ToolName: tt.toolName,
+			})
+			if err != nil {
+				t.Fatalf("EvaluateToolCall error: %v", err)
+			}
+			if d.Allow != tt.wantAllow {
+				t.Errorf("Allow = %v, want %v (reason: %q)", d.Allow, tt.wantAllow, d.Reason)
+			}
+			if !d.Allow && d.Reason == "" {
+				t.Errorf("blocked decision should carry a reason, got empty")
+			}
+		})
+	}
+}
+
 func makeInput(role, ageGroup, category, requestID string, approvals map[string]any) Input {
 	if approvals == nil {
 		approvals = map[string]any{}
