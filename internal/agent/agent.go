@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"strings"
 	"time"
@@ -385,10 +386,16 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 			return nil
 		},
 	}
-	// Caller-supplied max_bytes can only further restrict the cap, never raise it.
-	if v, ok := args["max_bytes"].(float64); ok && v > 0 {
+	// Caller-supplied max_bytes can only further restrict the cap, never
+	// raise it. Reject non-integer / negative / overflow values up front
+	// so a float like 0.4 doesn't silently truncate to int64(0) and reset
+	// the cap to its default.
+	if v, ok := args["max_bytes"].(float64); ok {
+		if v < 1 || math.Trunc(v) != v || v > math.MaxInt64 {
+			return "", fmt.Errorf("web_fetch max_bytes must be a positive integer")
+		}
 		caller := int64(v)
-		if opts.MaxBytes == 0 || caller < opts.MaxBytes {
+		if caller < opts.MaxBytes {
 			opts.MaxBytes = caller
 		}
 	}
@@ -459,11 +466,28 @@ func (a *Agent) buildMessages(history []*store.Message, currentMessage string) [
 				skillNames = append(skillNames, sk.Name)
 			}
 		}
+		// Filter builtins by BOTH the role gate AND the OPA tool_policy
+		// gate, so prompt hints don't advertise tools the user will be
+		// blocked from calling at the tool loop. (e.g. an operator who
+		// puts age_8_12 in allowed_roles still has tool_policy denying
+		// web_fetch for that age.) The evaluator is in-memory; using a
+		// background context here is fine.
 		var builtinNames []string
 		for _, t := range a.builtinTools {
-			if t.AllowedForRole(a.user.Role) {
-				builtinNames = append(builtinNames, strings.TrimPrefix(t.Name, "builtin__"))
+			if !t.AllowedForRole(a.user.Role) {
+				continue
 			}
+			bare := strings.TrimPrefix(t.Name, "builtin__")
+			if a.evaluator != nil {
+				dec, err := a.evaluator.EvaluateToolCall(context.Background(), policy.ToolCallInput{
+					User:     policy.UserInput{Role: a.user.Role, AgeGroup: a.user.AgeGroup, Name: a.user.Name},
+					ToolName: bare,
+				})
+				if err != nil || !dec.Allow {
+					continue
+				}
+			}
+			builtinNames = append(builtinNames, bare)
 		}
 
 		systemPrompt = prompt.Build(prompt.BuildContext{

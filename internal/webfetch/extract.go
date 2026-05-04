@@ -33,6 +33,8 @@ func ExtractText(htmlBytes []byte) (string, error) {
 		"h6":      true,
 		"li":      true,
 		"br":      true,
+		"td":      true,
+		"th":      true,
 		"tr":      true,
 		"table":   true,
 		"section": true,

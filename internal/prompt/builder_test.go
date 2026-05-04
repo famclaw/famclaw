@@ -271,8 +271,10 @@ func TestCapabilitiesComponent_BuiltinTools(t *testing.T) {
 		if !ok || text == "" {
 			t.Fatalf("expected included, got ok=%v text=%q", ok, text)
 		}
-		if !strings.Contains(text, "URL") && !strings.Contains(text, "fetch") && !strings.Contains(text, "current events") {
-			t.Errorf("expected web_fetch hint, got: %q", text)
+		for _, want := range []string{"web_fetch", "current events"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("expected %q in %q", want, text)
+			}
 		}
 	})
 	t.Run("spawn_agent only", func(t *testing.T) {
@@ -280,8 +282,10 @@ func TestCapabilitiesComponent_BuiltinTools(t *testing.T) {
 		if !ok || text == "" {
 			t.Fatalf("expected included, got ok=%v text=%q", ok, text)
 		}
-		if !strings.Contains(text, "Delegate") && !strings.Contains(text, "spawn_agent") {
-			t.Errorf("expected spawn_agent hint, got: %q", text)
+		for _, want := range []string{"spawn_agent", "Delegate"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("expected %q in %q", want, text)
+			}
 		}
 	})
 	t.Run("both", func(t *testing.T) {

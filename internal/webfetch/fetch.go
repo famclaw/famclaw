@@ -132,8 +132,15 @@ func Fetch(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 	}
 	defer resp.Body.Close()
 
+	// resp.Request.URL is the final URL after redirects — accurate for
+	// audit trails. Fall back to rawURL if the transport didn't populate
+	// it (defensive — current Go always sets it for client.Do results).
+	finalURL := rawURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
 	res := &Result{
-		URL:         rawURL,
+		URL:         finalURL,
 		StatusCode:  resp.StatusCode,
 		ContentType: resp.Header.Get("Content-Type"),
 	}

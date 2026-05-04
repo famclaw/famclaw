@@ -368,8 +368,15 @@ func (c *Config) Validate() error {
 		if c.Tools.WebFetch.TimeoutSec <= 0 {
 			return fmt.Errorf("tools.web_fetch.timeout_seconds must be > 0 (got %d)", c.Tools.WebFetch.TimeoutSec)
 		}
-		if len(c.Tools.WebFetch.URLAllowlist) == 0 {
-			return fmt.Errorf("tools.web_fetch.url_allowlist must list at least one host when enabled (empty list denies all fetches as an SSRF guard)")
+		hasHost := false
+		for _, host := range c.Tools.WebFetch.URLAllowlist {
+			if strings.TrimSpace(host) != "" {
+				hasHost = true
+				break
+			}
+		}
+		if !hasHost {
+			return fmt.Errorf("tools.web_fetch.url_allowlist must list at least one non-empty host when enabled (empty list denies all fetches as an SSRF guard)")
 		}
 	}
 	return nil

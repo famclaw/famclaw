@@ -10,8 +10,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   config, the LLM gets a `web_fetch` tool that retrieves a URL and
   returns extracted text (HTML→text via `golang.org/x/net/html`, plain
   text and JSON passed through). Defaults: 256 KB cap, 15 s timeout, no
-  JS rendering, optional per-host allowlist with subdomain matching.
-  Two independent gates:
+  JS rendering, per-host allowlist with subdomain matching
+  (`url_allowlist` is required when enabled — empty list denies all
+  fetches as an SSRF guard). Two independent gates:
   - **Registration** is controlled by `tools.web_fetch.allowed_roles`
     (default `[parent]`). Children's agents do not even see the tool.
   - **Per-user usage** of an already-registered tool is then evaluated
