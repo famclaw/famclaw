@@ -34,7 +34,7 @@ type ToolsConfig struct {
 // role gate, and OPA policy decision.
 type WebFetchConfig struct {
 	Enabled      bool     `yaml:"enabled"`
-	URLAllowlist []string `yaml:"url_allowlist,omitempty"` // empty = allow all hosts
+	URLAllowlist []string `yaml:"url_allowlist,omitempty"` // REQUIRED when Enabled — empty list denies all (SSRF guard)
 	MaxBytes     int64    `yaml:"max_bytes,omitempty"`     // 0 = 256KB default
 	TimeoutSec   int      `yaml:"timeout_seconds,omitempty"`
 	AllowedRoles []string `yaml:"allowed_roles,omitempty"` // default ["parent"]

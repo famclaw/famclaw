@@ -115,13 +115,15 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				}
 
 				// OPA tool_policy gate — replaces the older hardcoded keyword
-				// block. On evaluator error, fail closed.
+				// block. On evaluator error, fail closed and log the cause
+				// internally; never leak raw evaluator error text to the LLM
+				// transcript (could expose internal paths / module names).
 				if deps.PolicyEvaluator != nil {
 					decision, perr := deps.PolicyEvaluator.EvaluateToolCall(ctx, toolPolicyInput(turn, tc.Function.Name))
 					if perr != nil || !decision.Allow {
 						reason := "blocked by policy"
 						if perr != nil {
-							reason = fmt.Sprintf("policy error: %v", perr)
+							log.Printf("[stage_tool_loop] policy evaluator error for %s: %v (failing closed)", tc.Function.Name, perr)
 						} else if decision.Reason != "" {
 							reason = decision.Reason
 						}

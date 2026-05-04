@@ -353,9 +353,15 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		return "", fmt.Errorf("web_fetch denied: tools.web_fetch.url_allowlist is empty (set at least one host to enable)")
 	}
 
+	// canonicalHost lowercases the hostname and strips a trailing dot so
+	// "EXAMPLE.com" and "example.com." both match an "example.com" entry.
+	canonicalHost := func(h string) string {
+		return strings.TrimSuffix(strings.ToLower(h), ".")
+	}
 	hostAllowed := func(host string) bool {
+		host = canonicalHost(host)
 		for _, allowed := range cfg.URLAllowlist {
-			allowed = strings.TrimSpace(allowed)
+			allowed = canonicalHost(strings.TrimSpace(allowed))
 			if allowed == "" {
 				continue
 			}

@@ -78,3 +78,35 @@ test_age8_12_no_web_fetch if {
         "tool_name": "web_fetch"
     }
 }
+
+# Unknown / bogus / empty age_group on a child must collapse to under_8
+# rules — no bypass via missing or unrecognized age_group.
+test_unknown_age_no_web_fetch if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": ""},
+        "tool_name": "web_fetch"
+    }
+}
+
+test_bogus_age_no_web_fetch if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "toddler"},
+        "tool_name": "web_fetch"
+    }
+}
+
+test_unknown_age_no_web_search if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": ""},
+        "tool_name": "web_search"
+    }
+}
+
+# Parent with empty age_group must NOT fall back to under_8 — parents
+# bypass the age-fallback gates entirely.
+test_parent_empty_age_still_allowed if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "web_fetch"
+    }
+}

@@ -111,8 +111,17 @@ func TestStagePolicyToolCall(t *testing.T) {
 					t.Errorf("tc[%d]: got error %v, want nil", i, got)
 				case want != nil && got == nil:
 					t.Errorf("tc[%d]: got nil, want error %v", i, want)
-				case want != nil && got != nil && want.Error() != got.Error() && !errors.Is(got, ErrToolBlocked):
-					t.Errorf("tc[%d]: got %v, want %v", i, got, want)
+				case want != nil && got != nil:
+					// If the test wanted ErrToolBlocked specifically, demand
+					// the sentinel — anything else (including a wrapped one)
+					// is wrong here. Otherwise compare error text exactly.
+					if errors.Is(want, ErrToolBlocked) {
+						if !errors.Is(got, ErrToolBlocked) {
+							t.Errorf("tc[%d]: got %v, want ErrToolBlocked", i, got)
+						}
+					} else if want.Error() != got.Error() {
+						t.Errorf("tc[%d]: got %v, want %v", i, got, want)
+					}
 				}
 			}
 		})

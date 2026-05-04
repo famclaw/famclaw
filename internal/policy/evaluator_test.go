@@ -305,6 +305,20 @@ func TestEvaluateToolCall(t *testing.T) {
 		{"age_8_12 web_fetch blocked", "child", "age_8_12", "web_fetch", false},
 		{"age_13_17 web_fetch allowed", "child", "age_13_17", "web_fetch", true},
 		{"parent web_fetch allowed", "parent", "", "web_fetch", true},
+
+		// Unknown / bogus / empty age_group on a child collapses to
+		// under_8 rules via the effective_age_group fallback in
+		// tool_policy.rego. A child cannot bypass age gates by sending
+		// a missing or unrecognized age_group.
+		{"unknown age web_fetch blocked (under_8 fallback)", "child", "", "web_fetch", false},
+		{"bogus age web_fetch blocked (under_8 fallback)", "child", "toddler", "web_fetch", false},
+		{"unknown age web_search blocked (under_8 fallback)", "child", "", "web_search", false},
+		{"unknown age unrelated tool still allowed", "child", "", "calculator", true},
+
+		// Parents bypass the age fallback — empty age_group on a parent
+		// must remain default-allow, not fall through to under_8 rules.
+		{"parent empty age web_fetch still allowed", "parent", "", "web_fetch", true},
+		{"parent empty age web_search still allowed", "parent", "", "web_search", true},
 	}
 
 	for _, tt := range tests {

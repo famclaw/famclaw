@@ -193,15 +193,33 @@ func safeDialContext(allowPrivate bool) func(ctx context.Context, network, addr 
 		if err != nil {
 			return nil, fmt.Errorf("web fetch: resolve %q: %w", host, err)
 		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("web fetch: no addresses resolved for host %q", host)
+		}
+		// Vet every resolved IP. If any one is in a blocked range, refuse
+		// the entire request (fail-closed: a host that resolves to both
+		// public and LAN addresses must not be reachable, since DNS
+		// could shift to the LAN entry between connections).
+		vetted := make([]net.IP, 0, len(ips))
 		for _, ipa := range ips {
 			if blockedIP(ipa.IP) {
 				return nil, fmt.Errorf("web fetch: blocked IP %s for host %q", ipa.IP, host)
 			}
+			vetted = append(vetted, ipa.IP)
 		}
-		// Dial the first resolved address explicitly so the host is the
-		// IP we already vetted (avoids a DNS-rebinding race between the
-		// check above and net.Dial doing its own lookup).
-		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		// Try each vetted IP in turn so the standard A/AAAA fallback
+		// works when the first address is unreachable. Dial the IP
+		// directly (not the hostname) so the connection target is the
+		// one we already vetted — avoids a DNS-rebinding race.
+		var lastErr error
+		for _, ip := range vetted {
+			conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, fmt.Errorf("web fetch: dial %q: %w", host, lastErr)
 	}
 }
 
