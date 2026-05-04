@@ -4,7 +4,7 @@ CMD       := ./cmd/famclaw
 VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS   := -ldflags "-s -w -X main.Version=$(VERSION)"
 
-.PHONY: all build run dev test cross clean install install-service
+.PHONY: all build run dev test opa-test behavioral cross clean install install-service install-rpi install-systemd install-launchd build-seccheck cross-rpi3 cross-rpi4 cross-rpi5 cross-android cross-mac-intel cross-mac-arm cross-linux64
 
 ## build: Build for current machine
 build:

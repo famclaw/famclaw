@@ -93,7 +93,8 @@ func TestPrompt_BehavioralProbes(t *testing.T) {
 		t.Fatalf("parse probes.json: %v", err)
 	}
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	const probeTimeout = 45 * time.Second
+	client := &http.Client{Timeout: probeTimeout}
 
 	runProbe := func(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
 		reqBody := ollamaChatReq{
@@ -156,7 +157,7 @@ func TestPrompt_BehavioralProbes(t *testing.T) {
 			t.Run(p.Name+"/"+pname, func(t *testing.T) {
 				bctx := personas[pname]
 				sysPrompt := Build(bctx)
-				callCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+				callCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 				defer cancel()
 				response, err := runProbe(callCtx, sysPrompt, p.UserPrompt)
 				if err != nil {
