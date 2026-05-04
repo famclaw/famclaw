@@ -54,26 +54,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `spawn_agent` is registered for a user, the system prompt's
   capabilities section names them with concrete usage hints — fixes the
   "I can't fetch URLs" failure mode for tool-equipped agents.
-
-### Changed
-- **PromptBuilder policy component** now explicitly forbids "dangerous",
-  "illegal", "safety", and "law" framings on hard-blocked topics and
-  mandates family-voice phrasing — surfaced by the Ollama behavioral
-  tier where the small model defaulted to legal/safety voice for
-  age_13_17 users.
-- `prompt.BuildContext` gains a `BuiltinTools []string` field; `Agent`
-  threads the bare names of builtins it has registered for the current
-  user (filtered by role) into `prompt.Build`.
-- The agent's builtin-handler dispatch is no longer gated on the
-  presence of the subagent scheduler — it now activates whenever any
-  builtin tool is registered. `handleSpawnAgent` returns a clear error
-  if invoked without a scheduler.
-
-### Removed
-- **Hardcoded keyword block** of `web_search` / `mcp__search__web` in
-  `internal/agentcore/stage_policy_tool.go` — superseded by the OPA
-  tool-policy decision wired into the tool loop.
-
 - **Install and remove skills from the web dashboard.** Two new PIN-gated
   endpoints: `POST /api/skills/install` (body `{"name_or_path": "..."}`)
   wraps the existing `skillbridge.Registry.Install`, and
@@ -82,21 +62,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   per installed skill. `/api/skills` now reads from the on-disk registry
   (the previous DB-backed list was always empty because nothing wrote to
   it). Closes journal critical finding #6.
-
-### Changed
-- `prompt.BuildContext` gains a `BuiltinTools []string` field; `Agent`
-  threads the bare names of builtins it has registered for the current
-  user (filtered by role) into `prompt.Build`.
-- The agent's builtin-handler dispatch is no longer gated on the
-  presence of the subagent scheduler — it now activates whenever any
-  builtin tool is registered. `handleSpawnAgent` returns a clear error
-  if invoked without a scheduler.
-
-### Removed
-- **Hardcoded keyword block** of `web_search` / `mcp__search__web` in
-  `internal/agentcore/stage_policy_tool.go` — superseded by the OPA
-  tool-policy decision wired into the tool loop.
-
 - **Unknown-accounts backend (issue #111).** New `unknown_accounts` table
   records every unlinked Discord/Telegram account that messages FamClaw,
   with attempts counter and last-seen timestamp. Three new PIN-gated JSON
@@ -136,6 +101,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   (parent ≤ 1100 tokens, child ≤ 750). Operator-supplied
   `cfg.llm.system_prompt` keeps legacy behavior verbatim — no breaking
   change for customized deployments.
+- **PromptBuilder policy component** now explicitly forbids "dangerous",
+  "illegal", "safety", and "law" framings on hard-blocked topics and
+  mandates family-voice phrasing — surfaced by the Ollama behavioral
+  tier where the small model defaulted to legal/safety voice for
+  age_13_17 users.
+- `prompt.BuildContext` gains a `BuiltinTools []string` field; `Agent`
+  threads the bare names of builtins it has registered for the current
+  user (filtered by role) into `prompt.Build`.
+- The agent's builtin-handler dispatch is no longer gated on the
+  presence of the subagent scheduler — it now activates whenever any
+  builtin tool is registered. `handleSpawnAgent` returns a clear error
+  if invoked without a scheduler.
 - **Agent constructor takes `AgentDeps` struct** instead of 7 individual
   setter methods. Forgotten dependencies now surface at compile time
   instead of as a runtime nil-pointer dereference.
@@ -165,6 +142,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   of being lost.
 
 ### Removed
+- **Hardcoded keyword block** of `web_search` / `mcp__search__web` in
+  `internal/agentcore/stage_policy_tool.go` — superseded by the OPA
+  tool-policy decision wired into the tool loop.
 - **mDNS removed entirely.** `famclaw.local` didn't resolve reliably on
   Windows or many home routers — use the device's IP address. Closes #110.
   The `grandcat/zeroconf` dependency, `internal/mdns` package,
