@@ -42,6 +42,9 @@ func TestTelegram_SendMessage_Chunking(t *testing.T) {
 			http.Error(w, "Bad Request", 400)
 			return
 		}
+		if body.ChatID != 1001 {
+			t.Errorf("unexpected chat_id: got %d want %d", body.ChatID, 1001)
+		}
 
 		mu.Lock()
 		recorded = append(recorded, capturedSend{text: body.Text, when: time.Now()})
