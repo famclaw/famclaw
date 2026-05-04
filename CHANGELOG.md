@@ -29,6 +29,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   declarations, blocked-topic refusal, family-context awareness, and basic
   arithmetic correctness. 13 probe×persona pairs total. Run via
   `make behavioral`.
+- **Built-in `web_fetch` tool.** When `tools.web_fetch.enabled: true` in
+  config, the LLM gets a `web_fetch` tool that retrieves a URL and
+  returns extracted text (HTML→text via `golang.org/x/net/html`, plain
+  text and JSON passed through). Defaults: 256 KB cap, 15 s timeout, no
+  JS rendering, per-host allowlist with subdomain matching
+  (`url_allowlist` is required when enabled — empty list denies all
+  fetches as an SSRF guard). Two independent gates:
+  - **Registration** is controlled by `tools.web_fetch.allowed_roles`
+    (default `[parent]`). Children's agents do not even see the tool.
+  - **Per-user usage** of an already-registered tool is then evaluated
+    by OPA `tool_policy` rules. The shipped policy denies `web_fetch`
+    for `under_8` and `age_8_12`; `age_13_17` and `parent` are allowed
+    by the policy *if* the role gate registered the tool for them.
+  Closes journal critical finding #2 (partial — web search follows in a
+  separate PR).
+- **OPA tool-policy enforcement at the tool loop.** New
+  `Evaluator.EvaluateToolCall` queries `data.family.tool_policy.allow`
+  and the in-pipeline tool loop now gates every dispatch through it.
+  Fails closed on evaluator errors. Tool names are stripped of their
+  `builtin__` / `mcp__<server>__` prefix before evaluation so Rego rules
+  match on the bare name.
+- **PromptBuilder describes builtin tools.** When `web_fetch` or
+  `spawn_agent` is registered for a user, the system prompt's
+  capabilities section names them with concrete usage hints — fixes the
+  "I can't fetch URLs" failure mode for tool-equipped agents.
 
 ### Changed
 - **PromptBuilder policy component** now explicitly forbids "dangerous",
@@ -36,6 +61,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   mandates family-voice phrasing — surfaced by the Ollama behavioral
   tier where the small model defaulted to legal/safety voice for
   age_13_17 users.
+- `prompt.BuildContext` gains a `BuiltinTools []string` field; `Agent`
+  threads the bare names of builtins it has registered for the current
+  user (filtered by role) into `prompt.Build`.
+- The agent's builtin-handler dispatch is no longer gated on the
+  presence of the subagent scheduler — it now activates whenever any
+  builtin tool is registered. `handleSpawnAgent` returns a clear error
+  if invoked without a scheduler.
+
+### Removed
+- **Hardcoded keyword block** of `web_search` / `mcp__search__web` in
+  `internal/agentcore/stage_policy_tool.go` — superseded by the OPA
+  tool-policy decision wired into the tool loop.
 
 - **Install and remove skills from the web dashboard.** Two new PIN-gated
   endpoints: `POST /api/skills/install` (body `{"name_or_path": "..."}`)
@@ -45,6 +82,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   per installed skill. `/api/skills` now reads from the on-disk registry
   (the previous DB-backed list was always empty because nothing wrote to
   it). Closes journal critical finding #6.
+
+### Changed
+- `prompt.BuildContext` gains a `BuiltinTools []string` field; `Agent`
+  threads the bare names of builtins it has registered for the current
+  user (filtered by role) into `prompt.Build`.
+- The agent's builtin-handler dispatch is no longer gated on the
+  presence of the subagent scheduler — it now activates whenever any
+  builtin tool is registered. `handleSpawnAgent` returns a clear error
+  if invoked without a scheduler.
+
+### Removed
+- **Hardcoded keyword block** of `web_search` / `mcp__search__web` in
+  `internal/agentcore/stage_policy_tool.go` — superseded by the OPA
+  tool-policy decision wired into the tool loop.
+
 - **Unknown-accounts backend (issue #111).** New `unknown_accounts` table
   records every unlinked Discord/Telegram account that messages FamClaw,
   with attempts counter and last-seen timestamp. Three new PIN-gated JSON

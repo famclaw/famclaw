@@ -7,9 +7,23 @@ import rego.v1
 
 default allow := true
 
-# Block web search for children under 8
+# Map unknown / missing age_group to the most restrictive bucket
+# ("under_8") for non-parents. Mirrors the effective_age_group convention
+# in decision.rego so a child whose age_group is empty or invalid cannot
+# bypass age-restricted tool rules. The role gate below keeps parents on
+# default-allow regardless.
+effective_age_group := input.user.age_group if {
+    input.user.age_group in {"under_8", "age_8_12", "age_13_17"}
+}
+
+effective_age_group := "under_8" if {
+    not input.user.age_group in {"under_8", "age_8_12", "age_13_17"}
+}
+
+# Block web search for children whose effective age is under_8
 allow := false if {
-    input.user.age_group == "under_8"
+    input.user.role != "parent"
+    effective_age_group == "under_8"
     input.tool_name == "web_search"
 }
 
@@ -23,6 +37,20 @@ allow := false if {
 allow := false if {
     input.user.role == "child"
     input.tool_name == "spawn_agent"
+}
+
+# Block web_fetch for effective-under_8 — open web content is not age-appropriate.
+allow := false if {
+    input.user.role != "parent"
+    effective_age_group == "under_8"
+    input.tool_name == "web_fetch"
+}
+
+# Block web_fetch for age_8_12 — restricted browsing requires parental supervision.
+allow := false if {
+    input.user.role != "parent"
+    effective_age_group == "age_8_12"
+    input.tool_name == "web_fetch"
 }
 
 reason := "This tool is not available for your age group." if {
