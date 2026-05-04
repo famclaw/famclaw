@@ -26,3 +26,17 @@ type Decision struct {
 	Action string `json:"action"` // allow | block | request_approval | pending
 	Reason string `json:"reason"`
 }
+
+// ToolCallInput is the payload sent to data.family.tool_policy when
+// evaluating a tool call. The shape matches the existing tool_policy.rego
+// rules, which read input.user.{role,age_group} and input.tool_name.
+type ToolCallInput struct {
+	User     UserInput `json:"user"`
+	ToolName string    `json:"tool_name"`
+}
+
+// ToolDecision is the result of a tool-call policy check.
+type ToolDecision struct {
+	Allow  bool   `json:"allow"`
+	Reason string `json:"reason"`
+}

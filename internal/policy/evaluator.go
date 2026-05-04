@@ -19,9 +19,11 @@ import (
 
 // Evaluator wraps an embedded OPA instance for policy decisions.
 type Evaluator struct {
-	actionQuery rego.PreparedEvalQuery
-	reasonQuery rego.PreparedEvalQuery
-	store       storage.Store
+	actionQuery     rego.PreparedEvalQuery
+	reasonQuery     rego.PreparedEvalQuery
+	toolAllowQuery  rego.PreparedEvalQuery
+	toolReasonQuery rego.PreparedEvalQuery
+	store           storage.Store
 }
 
 // NewEvaluator builds an evaluator. When policyDir/dataDir are empty,
@@ -83,7 +85,31 @@ func NewEvaluator(policyDir, dataDir string) (*Evaluator, error) {
 		return nil, fmt.Errorf("preparing reason query: %w", err)
 	}
 
-	return &Evaluator{actionQuery: actionQ, reasonQuery: reasonQ, store: store}, nil
+	toolAllowQ, err := rego.New(
+		rego.Query("data.family.tool_policy.allow"),
+		rego.Compiler(compiler),
+		rego.Store(store),
+	).PrepareForEval(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("preparing tool_policy allow query: %w", err)
+	}
+
+	toolReasonQ, err := rego.New(
+		rego.Query("data.family.tool_policy.reason"),
+		rego.Compiler(compiler),
+		rego.Store(store),
+	).PrepareForEval(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("preparing tool_policy reason query: %w", err)
+	}
+
+	return &Evaluator{
+		actionQuery:     actionQ,
+		reasonQuery:     reasonQ,
+		toolAllowQuery:  toolAllowQ,
+		toolReasonQuery: toolReasonQ,
+		store:           store,
+	}, nil
 }
 
 // policySource returns the filesystem and root directory to load policy
@@ -178,6 +204,39 @@ func (e *Evaluator) Evaluate(ctx context.Context, input Input) (Decision, error)
 	}
 
 	return Decision{Action: action, Reason: reason}, nil
+}
+
+// EvaluateToolCall returns the tool-call policy decision for the given user
+// and tool name. Falls open (Allow=true) when the policy module yields no
+// result — matching the `default allow := true` rule in tool_policy.rego —
+// but evaluation errors are propagated and treated as deny by callers.
+func (e *Evaluator) EvaluateToolCall(ctx context.Context, input ToolCallInput) (ToolDecision, error) {
+	inputMap, err := toMap(input)
+	if err != nil {
+		return ToolDecision{}, fmt.Errorf("marshaling tool input: %w", err)
+	}
+
+	allowResults, err := e.toolAllowQuery.Eval(ctx, rego.EvalInput(inputMap))
+	if err != nil {
+		return ToolDecision{}, fmt.Errorf("evaluating tool_policy allow: %w", err)
+	}
+
+	allow := true
+	if len(allowResults) > 0 && len(allowResults[0].Expressions) > 0 {
+		if v, ok := allowResults[0].Expressions[0].Value.(bool); ok {
+			allow = v
+		}
+	}
+
+	reason := ""
+	reasonResults, err := e.toolReasonQuery.Eval(ctx, rego.EvalInput(inputMap))
+	if err == nil && len(reasonResults) > 0 && len(reasonResults[0].Expressions) > 0 {
+		if r, ok := reasonResults[0].Expressions[0].Value.(string); ok {
+			reason = r
+		}
+	}
+
+	return ToolDecision{Allow: allow, Reason: reason}, nil
 }
 
 func toMap(v any) (map[string]any, error) {
