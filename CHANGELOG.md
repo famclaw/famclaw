@@ -37,6 +37,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   tier where the small model defaulted to legal/safety voice for
   age_13_17 users.
 
+- **Install and remove skills from the web dashboard.** Two new PIN-gated
+  endpoints: `POST /api/skills/install` (body `{"name_or_path": "..."}`)
+  wraps the existing `skillbridge.Registry.Install`, and
+  `POST /api/skills/remove` (body `{"name": "..."}`) mirrors it. The
+  dashboard's Skills card gets a one-line install form and a 🗑️ button
+  per installed skill. `/api/skills` now reads from the on-disk registry
+  (the previous DB-backed list was always empty because nothing wrote to
+  it). Closes journal critical finding #6.
 - **Unknown-accounts backend (issue #111).** New `unknown_accounts` table
   records every unlinked Discord/Telegram account that messages FamClaw,
   with attempts counter and last-seen timestamp. Three new PIN-gated JSON

@@ -46,7 +46,7 @@ type ollamaChatResp struct {
 func TestPrompt_BehavioralProbes(t *testing.T) {
 	baseURL := os.Getenv("OLLAMA_URL")
 	if baseURL == "" {
-		baseURL = "http://192.168.1.223:11434"
+		baseURL = "http://localhost:11434"
 	}
 	model := os.Getenv("OLLAMA_MODEL")
 	if model == "" {

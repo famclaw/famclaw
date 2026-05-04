@@ -175,7 +175,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 | **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
 | **llama.cpp sidecar** | Spawns llama-server, GGUF model catalog, TurboQuant support |
 | **Security scanning** | Honeybadger runtime stage, install-time + stale scan gates |
-| **Web UI** | Chat, parent dashboard, 5-step wizard with AI profiles |
+| **Web UI** | Chat, parent dashboard, 5-step wizard with AI profiles, PIN-gated skill install/remove |
 | **Telegram + Discord** | Fully wired gateway bots |
 | **MCP tools** | Multi-transport (stdio/HTTP/SSE), unified tool registry |
 | **LLM profiles** | Multiple named endpoints, per-user assignment via wizard |
