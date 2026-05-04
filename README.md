@@ -190,7 +190,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 
 ## Status
 
-🚧 **v0.3.0-beta — agent core rewrite complete.**
+**v0.5.0 — first deployed family release.** v0.5.1 in flight (closes the bugs surfaced by the first real-world install).
 
 ### What works
 
@@ -204,13 +204,15 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 | **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
 | **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps |
 | **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
+| **Skill install** | From parent dashboard Skills tab or CLI; HoneyBadger-scanned at install time |
 | **llama.cpp sidecar** | Spawns llama-server, GGUF model catalog, TurboQuant support |
 | **Security scanning** | Honeybadger runtime stage, install-time + stale scan gates |
 | **Web UI** | Chat, parent dashboard, 5-step wizard with AI profiles, PIN-gated skill install/remove |
-| **Telegram + Discord** | Fully wired gateway bots |
+| **Telegram + Discord** | Fully wired gateway bots, message chunking past per-platform limits (4096/2000 chars) |
+| **Unknown-account backend** | Strangers messaging the bot are recorded against a parent-controlled queue, never auto-promoted to a user (issue #111 backend) |
 | **MCP tools** | Multi-transport (stdio/HTTP/SSE), unified tool registry |
 | **LLM profiles** | Multiple named endpoints, per-user assignment via wizard |
-| **CI/CD** | CodeQL, govulncheck, SBOM, cosign signing, TruffleHog |
+| **CI/CD** | CodeQL, govulncheck, SBOM, cosign signing, TruffleHog, race detector on gateway+agent, schema-drift gate, Telegram/Discord integration tests |
 
 ### Recommended models
 
@@ -224,6 +226,49 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 See [docs/BACKENDS.md](docs/BACKENDS.md) for inference engine comparison.
 
 See [AGENTS.md](./AGENTS.md) for the full build plan.
+
+---
+
+## Testing
+
+### Quick
+
+```bash
+CGO_ENABLED=0 go test ./... -count=1
+opa test internal/policy/policies/family/ internal/policy/policies/data/ -v
+```
+
+### Integration
+
+```bash
+CGO_ENABLED=0 go test -tags integration ./e2e/... -count=1
+```
+
+REST stubs only — no real bots, no network.
+
+### Behavioral (optional — needs local Ollama)
+
+```bash
+make behavioral
+```
+
+13 probe×persona pairs against the assembled system prompt.
+
+### Schema golden
+
+Regenerate the SQLite schema fixture:
+
+```bash
+UPDATE_SCHEMA_GOLDEN=1 go test ./internal/store/
+```
+
+### Prompt snapshots
+
+Regenerate the four persona snapshots:
+
+```bash
+UPDATE_PROMPT_SNAPSHOTS=1 go test ./internal/prompt/
+```
 
 ---
 
