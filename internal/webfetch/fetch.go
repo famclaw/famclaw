@@ -60,6 +60,9 @@ func Fetch(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 	if opts.MaxBytes < 0 {
 		return nil, fmt.Errorf("web fetch: max_bytes must be >= 0 (got %d)", opts.MaxBytes)
 	}
+	if opts.Timeout < 0 {
+		return nil, fmt.Errorf("web fetch: timeout must be >= 0 (got %s)", opts.Timeout)
+	}
 	if opts.MaxBytes == 0 {
 		opts.MaxBytes = defaultMaxBytes
 	}

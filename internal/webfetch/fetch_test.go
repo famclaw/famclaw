@@ -152,6 +152,18 @@ func TestFetch_NegativeMaxBytesRejected(t *testing.T) {
 	}
 }
 
+func TestFetch_NegativeTimeoutRejected(t *testing.T) {
+	// Go's http.Client.Timeout < 0 silently means "no timeout" — the
+	// boundary check stops a misconfiguration from disabling the limit.
+	_, err := Fetch(context.Background(), "https://example.com", Options{Timeout: -1 * time.Second})
+	if err == nil {
+		t.Fatalf("expected error for negative Timeout")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("expected 'timeout' in error, got: %v", err)
+	}
+}
+
 func TestFetch_PrivateIPBlockedByDefault(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
