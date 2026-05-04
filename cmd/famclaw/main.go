@@ -34,6 +34,7 @@ import (
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/web"
+	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
 var Version = "dev"
@@ -218,7 +219,12 @@ func main() {
 
 	// Builtin tools available to the LLM
 	builtinTools := []agentcore.Tool{subagent.SpawnAgentTool()}
-	log.Printf("Builtin tools: %d registered (spawn_agent)", len(builtinTools))
+	if cfg.Tools.WebFetch.Enabled {
+		builtinTools = append(builtinTools, webfetch.Tool(cfg.Tools.WebFetch.AllowedRoles))
+		log.Printf("Builtin tools: %d registered (spawn_agent, web_fetch)", len(builtinTools))
+	} else {
+		log.Printf("Builtin tools: %d registered (spawn_agent)", len(builtinTools))
+	}
 
 	// Chat function for gateway router
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
