@@ -102,6 +102,22 @@ test_unknown_age_no_web_search if {
     }
 }
 
+# After narrowing the web_search block to effective-under_8 only,
+# age_8_12 and age_13_17 children must be able to use web_search.
+test_age8_12_web_search_allowed if {
+    tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_8_12"},
+        "tool_name": "web_search"
+    }
+}
+
+test_teen_web_search_allowed if {
+    tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_13_17"},
+        "tool_name": "web_search"
+    }
+}
+
 # Parent with empty age_group must NOT fall back to under_8 — parents
 # bypass the age-fallback gates entirely.
 test_parent_empty_age_still_allowed if {

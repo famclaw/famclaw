@@ -142,6 +142,16 @@ func TestFetch(t *testing.T) {
 	})
 }
 
+func TestFetch_NegativeMaxBytesRejected(t *testing.T) {
+	_, err := Fetch(context.Background(), "https://example.com", Options{MaxBytes: -1})
+	if err == nil {
+		t.Fatalf("expected error for negative MaxBytes")
+	}
+	if !strings.Contains(err.Error(), "max_bytes") {
+		t.Errorf("expected 'max_bytes' in error, got: %v", err)
+	}
+}
+
 func TestFetch_PrivateIPBlockedByDefault(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")

@@ -57,6 +57,9 @@ type Result struct {
 // every redirect target; the dialer rejects private/loopback/link-local IPs
 // unless opts.AllowPrivateNetworks is set.
 func Fetch(ctx context.Context, rawURL string, opts Options) (*Result, error) {
+	if opts.MaxBytes < 0 {
+		return nil, fmt.Errorf("web fetch: max_bytes must be >= 0 (got %d)", opts.MaxBytes)
+	}
 	if opts.MaxBytes == 0 {
 		opts.MaxBytes = defaultMaxBytes
 	}
@@ -89,8 +92,13 @@ func Fetch(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 	}
 	req.Header.Set("User-Agent", opts.UserAgent)
 
+	// Proxy is intentionally nil. http.ProxyFromEnvironment would let
+	// HTTP(S)_PROXY env vars route the connection through an external
+	// proxy, which would bypass safeDialContext's private-IP / DNS
+	// rebinding guard — the proxy, not our dialer, would decide where
+	// the connection actually terminates. Direct connections only.
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 nil,
 		DialContext:           safeDialContext(opts.AllowPrivateNetworks),
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          10,
