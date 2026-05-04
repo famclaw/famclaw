@@ -6,6 +6,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- **Schema golden file** at `internal/store/testdata/schema.sql` and a drift
+  test that fails any PR which accidentally changes the SQLite schema.
+  Regenerate via `UPDATE_SCHEMA_GOLDEN=1 go test ./internal/store/`.
+- **Seed fixture** at `internal/store/testdata/seed_basic.sql` — minimal fake
+  data (placeholder names, fake tokens, fake external IDs) for integration
+  tests. No real PII.
+- **Telegram integration tests** behind `//go:build integration`: send-chunking
+  through a mock API and unknown-account auto-link end-to-end. Adds an
+  endpoint-injection seam (`telegram.NewWithEndpoint`) plus a `SendChunked`
+  test helper.
+- **Discord integration test** behind `//go:build integration`: send-chunking
+  via REST stub (overrides `discordgo.EndpointChannelMessages` to httptest).
+  Adds a `discord.SendChunked` test helper.
+- **PromptBuilder snapshot tests** locking down all four persona outputs.
+  Regenerate via `UPDATE_PROMPT_SNAPSHOTS=1 go test ./internal/prompt/`.
+- **Race-detector CI job** running `go test -race` on the gateway router and
+  agent packages, wired into the `CI Pass` required gate. CGO_ENABLED=1 is
+  scoped to this job only — production binaries remain CGO-free.
+- **Ollama behavioral tier** behind `//go:build ollama_behavioral`. Probes
+  the assembled system prompt against the local Qwen3-14B for capability
+  declarations, blocked-topic refusal, family-context awareness, and basic
+  arithmetic correctness. 13 probe×persona pairs total. Run via
+  `make behavioral`.
 - **Built-in `web_fetch` tool.** When `tools.web_fetch.enabled: true` in
   config, the LLM gets a `web_fetch` tool that retrieves a URL and
   returns extracted text (HTML→text via `golang.org/x/net/html`, plain
@@ -39,21 +62,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   per installed skill. `/api/skills` now reads from the on-disk registry
   (the previous DB-backed list was always empty because nothing wrote to
   it). Closes journal critical finding #6.
-
-### Changed
-- `prompt.BuildContext` gains a `BuiltinTools []string` field; `Agent`
-  threads the bare names of builtins it has registered for the current
-  user (filtered by role) into `prompt.Build`.
-- The agent's builtin-handler dispatch is no longer gated on the
-  presence of the subagent scheduler — it now activates whenever any
-  builtin tool is registered. `handleSpawnAgent` returns a clear error
-  if invoked without a scheduler.
-
-### Removed
-- **Hardcoded keyword block** of `web_search` / `mcp__search__web` in
-  `internal/agentcore/stage_policy_tool.go` — superseded by the OPA
-  tool-policy decision wired into the tool loop.
-
 - **Unknown-accounts backend (issue #111).** New `unknown_accounts` table
   records every unlinked Discord/Telegram account that messages FamClaw,
   with attempts counter and last-seen timestamp. Three new PIN-gated JSON
@@ -93,6 +101,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   (parent ≤ 1100 tokens, child ≤ 750). Operator-supplied
   `cfg.llm.system_prompt` keeps legacy behavior verbatim — no breaking
   change for customized deployments.
+- **PromptBuilder policy component** now explicitly forbids "dangerous",
+  "illegal", "safety", and "law" framings on hard-blocked topics and
+  mandates family-voice phrasing — surfaced by the Ollama behavioral
+  tier where the small model defaulted to legal/safety voice for
+  age_13_17 users.
+- `prompt.BuildContext` gains a `BuiltinTools []string` field; `Agent`
+  threads the bare names of builtins it has registered for the current
+  user (filtered by role) into `prompt.Build`.
+- The agent's builtin-handler dispatch is no longer gated on the
+  presence of the subagent scheduler — it now activates whenever any
+  builtin tool is registered. `handleSpawnAgent` returns a clear error
+  if invoked without a scheduler.
 - **Agent constructor takes `AgentDeps` struct** instead of 7 individual
   setter methods. Forgotten dependencies now surface at compile time
   instead of as a runtime nil-pointer dereference.
@@ -122,6 +142,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   of being lost.
 
 ### Removed
+- **Hardcoded keyword block** of `web_search` / `mcp__search__web` in
+  `internal/agentcore/stage_policy_tool.go` — superseded by the OPA
+  tool-policy decision wired into the tool loop.
 - **mDNS removed entirely.** `famclaw.local` didn't resolve reliably on
   Windows or many home routers — use the device's IP address. Closes #110.
   The `grandcat/zeroconf` dependency, `internal/mdns` package,

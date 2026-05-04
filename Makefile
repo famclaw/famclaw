@@ -4,7 +4,7 @@ CMD       := ./cmd/famclaw
 VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS   := -ldflags "-s -w -X main.Version=$(VERSION)"
 
-.PHONY: all build run dev test cross clean install install-service
+.PHONY: all build run dev test opa-test behavioral cross clean install install-service install-rpi install-systemd install-launchd build-seccheck cross-rpi3 cross-rpi4 cross-rpi5 cross-android cross-mac-intel cross-mac-arm cross-linux64
 
 ## build: Build for current machine
 build:
@@ -27,6 +27,11 @@ test:
 ## opa-test: Run OPA policy unit tests
 opa-test:
 	opa test internal/policy/policies/family/ internal/policy/policies/data/ -v
+
+## behavioral: Run prompt behavioral probes against the local Ollama (opt-in, slow)
+behavioral:
+	OLLAMA_URL=$${OLLAMA_URL:-http://localhost:11434} CGO_ENABLED=0 \
+		go test -tags ollama_behavioral ./internal/prompt/... -count=1 -v -timeout 600s
 
 ## cross: Build for all supported platforms
 cross: cross-rpi3 cross-rpi4 cross-android cross-mac-intel cross-mac-arm cross-linux64
