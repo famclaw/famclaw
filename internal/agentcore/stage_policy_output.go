@@ -2,19 +2,24 @@ package agentcore
 
 import (
 	"context"
+	"log"
 	"strings"
 
 	"github.com/famclaw/famclaw/internal/policy"
 )
 
+const outputGateBlockedMessage = "I'm unable to send this response right now. Please try again."
+
 // NewStagePolicyOutput returns a stage that evaluates LLM output against the
-// OPA output policy. Fail-closed: on evaluation error the turn output is
-// replaced with a safe message and no error is returned (so the pipeline does
-// not abort on a policy eval hiccup).
+// OPA output policy. Fail-closed: on evaluation error or denial the turn
+// output is replaced with a user-friendly safe message and the underlying
+// reason is logged to stderr for operator audit. No error is returned so the
+// pipeline does not abort on a policy eval hiccup.
 func NewStagePolicyOutput(eval *policy.Evaluator) Stage {
 	return func(ctx context.Context, turn *Turn) error {
 		if eval == nil {
-			turn.Output = "I'm unable to send this response right now. Please try again."
+			log.Printf("[stage_policy_output] nil evaluator — fail-closed")
+			turn.Output = outputGateBlockedMessage
 			return nil
 		}
 		userRole := turn.User.Role
@@ -28,11 +33,16 @@ func NewStagePolicyOutput(eval *policy.Evaluator) Stage {
 		})
 		if err != nil {
 			// Fail-closed: block on policy evaluation error
-			turn.Output = "I'm unable to send this response right now. Please try again."
+			log.Printf("[stage_policy_output] EvaluateOutput error (fail-closed): %v", err)
+			turn.Output = outputGateBlockedMessage
 			return nil
 		}
 		if !dec.Allow {
-			turn.Output = dec.Reason
+			// dec.Reason is an internal audit string ("hard-blocked content
+			// detected", "role not recognized", etc.). Don't leak it to the
+			// user — keep it in logs and emit a friendly fallback.
+			log.Printf("[stage_policy_output] output blocked: %s", dec.Reason)
+			turn.Output = outputGateBlockedMessage
 			return nil
 		}
 		if len(dec.Redact) > 0 {

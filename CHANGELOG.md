@@ -18,21 +18,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `skillbridge.LoadForPromptChecked`: policy-gated version of `LoadForPrompt`; blocked skills
   are silently skipped and logged to stderr.
 - `agent.EvaluateAndApply` in `internal/agent/output_gate.go`: post-pipeline output gate.
-
-### Changed
-- `tool_policy.rego` migrated from default-ALLOW to default-DENY. All tools require an
-  explicit allow rule; parents are allowed all tools; children are allowed all tools not on
-  the block list (file_*, spawn_agent, web_search/web_fetch for younger age groups).
-- `EvaluateToolCall` Go-level fallback changed from `allow=true` to `allow=false` (fail-closed).
-- `NewStagePolicyOutput` now calls OPA (`EvaluateOutput`) instead of a hardcoded keyword grep.
-
-### Removed
-- Hardcoded keyword slices `criticalPatterns`, `under8Patterns`, `age8to12Patterns` from
-  `internal/agentcore/stage_policy_output.go` — replaced by OPA output policy.
-- Dormant `internal/agentcore/stage_output_filter.go` — replaced by OPA-backed pipeline stage.
-
-
-### Added
 - **Unknown-account linking UI** on the parent dashboard. Shows strangers
   who messaged the bot (recorded by PR #113) in a table and lets the parent
   pick an existing user and link the gateway account in one click. Subscribes
@@ -122,6 +107,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   #109 broke (true first boot, re-run with correct PIN, wrong PIN, no PIN).
 
 ### Changed
+- `tool_policy.rego` migrated from default-ALLOW to default-DENY. All tools require an
+  explicit allow rule; parents are allowed all tools; children are allowed all tools not on
+  the block list (file_*, spawn_agent, web_search/web_fetch for younger age groups).
+- `EvaluateToolCall` Go-level fallback changed from `allow=true` to `allow=false` (fail-closed).
+- `NewStagePolicyOutput` now calls OPA (`EvaluateOutput`) instead of a hardcoded keyword grep.
 - **System prompt rebuilt as a 12-component PromptBuilder** (`internal/prompt`).
   The default system prompt was a single sentence (`"You are FamClaw, a
   helpful, friendly, and safe family AI assistant."`), which caused real
@@ -174,6 +164,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   of being lost.
 
 ### Removed
+- Hardcoded keyword slices `criticalPatterns`, `under8Patterns`, `age8to12Patterns` from
+  `internal/agentcore/stage_policy_output.go` — replaced by OPA output policy.
+- Dormant `internal/agentcore/stage_output_filter.go` — replaced by OPA-backed pipeline stage.
 - **Hardcoded keyword block** of `web_search` / `mcp__search__web` in
   `internal/agentcore/stage_policy_tool.go` — superseded by the OPA
   tool-policy decision wired into the tool loop.
