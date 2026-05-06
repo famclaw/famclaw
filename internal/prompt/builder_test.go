@@ -239,8 +239,8 @@ func TestBuild_ParentTokenBudget(t *testing.T) {
 		HardBlocked: []string{"weapons", "self_harm", "drugs"},
 	})
 	tokens := approxTokens(out)
-	if tokens > 1100 {
-		t.Fatalf("parent prompt over budget: %d tokens (limit 1100)\n---\n%s", tokens, out)
+	if tokens > 900 {
+		t.Fatalf("parent prompt over budget: %d tokens (limit 900)\n---\n%s", tokens, out)
 	}
 	t.Logf("parent prompt: %d tokens, %d chars", tokens, len(out))
 }
@@ -259,8 +259,8 @@ func TestBuild_ChildTokenBudget(t *testing.T) {
 		HardBlocked: []string{"weapons"},
 	})
 	tokens := approxTokens(out)
-	if tokens > 750 {
-		t.Fatalf("child prompt over budget: %d tokens (limit 750)\n---\n%s", tokens, out)
+	if tokens > 650 {
+		t.Fatalf("child prompt over budget: %d tokens (limit 650)\n---\n%s", tokens, out)
 	}
 	t.Logf("child prompt: %d tokens, %d chars", tokens, len(out))
 }
@@ -322,8 +322,8 @@ func TestBuild_TokenBudget_WithBuiltinTools(t *testing.T) {
 		BuiltinTools: []string{"spawn_agent", "web_fetch"},
 	})
 	tokens := approxTokens(out)
-	if tokens > 1100 {
-		t.Fatalf("parent prompt with builtin tools over budget: %d tokens (limit 1100)\n---\n%s", tokens, out)
+	if tokens > 900 {
+		t.Fatalf("parent prompt with builtin tools over budget: %d tokens (limit 900)\n---\n%s", tokens, out)
 	}
 	t.Logf("parent prompt with builtin tools: %d tokens, %d chars", tokens, len(out))
 }
