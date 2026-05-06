@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- **Unknown-account linking UI** on the parent dashboard. Shows strangers
+  who messaged the bot (recorded by PR #113) in a table and lets the parent
+  pick an existing user and link the gateway account in one click. Subscribes
+  to a new `unknown_account_added` SSE event so the table refreshes the
+  moment a new stranger appears. Closes journal finding #10.
 - **Schema golden file** at `internal/store/testdata/schema.sql` and a drift
   test that fails any PR which accidentally changes the SQLite schema.
   Regenerate via `UPDATE_SCHEMA_GOLDEN=1 go test ./internal/store/`.

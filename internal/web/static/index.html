@@ -378,6 +378,24 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap" id="conv-user-buttons"></div>
       </div>
       <div class="d-section">
+        <div class="d-title">👥 Unknown Accounts</div>
+        <div class="d-card">
+          <table id="unknown-accounts-table" style="width:100%;border-collapse:collapse">
+            <thead>
+              <tr>
+                <th style="text-align:left;padding:6px 8px">Gateway</th>
+                <th style="text-align:left;padding:6px 8px">Display name</th>
+                <th style="text-align:left;padding:6px 8px">First seen at</th>
+                <th style="text-align:left;padding:6px 8px">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td colspan="4" class="empty-state">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="d-section">
         <div class="d-title">🔌 Skills</div>
         <div class="d-card" id="skills-list">
           <div class="empty-state">Loading…</div>
@@ -900,6 +918,7 @@ async function loadDashboard() {
   renderActivity(all || []);
   renderSkills(skills || []);
   renderConversationButtons();
+  loadUnknownAccounts();
 }
 
 function renderConversationButtons() {
@@ -1030,6 +1049,76 @@ function renderSkills(skills) {
     row.appendChild(btn);
     list.appendChild(row);
   }
+}
+
+async function loadUnknownAccounts() {
+  const table = document.getElementById('unknown-accounts-table');
+  if (!table) return;
+  const tbody = table.querySelector('tbody');
+  tbody.textContent = '';
+  const items = await apiFetch('/api/unknown_accounts');
+  if (!items || !items.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'empty-state';
+    td.textContent = 'No unknown accounts.';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  items.forEach(a => {
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-account-id', a.id);
+    const tdGw = document.createElement('td');
+    tdGw.style = 'padding:6px 8px';
+    tdGw.textContent = a.gateway || '';
+    const tdName = document.createElement('td');
+    tdName.style = 'padding:6px 8px';
+    tdName.textContent = a.display_name || a.external_id || '';
+    const tdSeen = document.createElement('td');
+    tdSeen.style = 'padding:6px 8px';
+    tdSeen.textContent = formatTime(a.first_seen_at);
+    const tdAction = document.createElement('td');
+    tdAction.style = 'padding:6px 8px';
+    const sel = document.createElement('select');
+    sel.id = 'link-target-' + a.id;
+    state.users.forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.name;
+      opt.textContent = u.display_name;
+      sel.appendChild(opt);
+    });
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.textContent = 'Link';
+    btn.addEventListener('click', () => linkUnknownAccount(a.id, sel.value));
+    tdAction.appendChild(sel);
+    tdAction.appendChild(btn);
+    tr.appendChild(tdGw);
+    tr.appendChild(tdName);
+    tr.appendChild(tdSeen);
+    tr.appendChild(tdAction);
+    tbody.appendChild(tr);
+  });
+}
+
+async function linkUnknownAccount(accountId, userId) {
+  if (!userId) { showToast('Pick a user first'); return; }
+  try {
+    const r = await fetch('/api/unknown_accounts/' + encodeURIComponent(accountId) + '/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId }),
+    });
+    if (!r.ok) { showToast('Link failed: ' + r.status); return; }
+    const table = document.getElementById('unknown-accounts-table');
+    const row = table && table.querySelector('tr[data-account-id="' + CSS.escape(String(accountId)) + '"]');
+    if (row) row.remove();
+    const users = await apiFetch('/api/users');
+    state.users = users || [];
+    renderConversationButtons();
+  } catch (e) { showToast('Link failed: ' + e.message); }
 }
 
 async function installSkill() {
@@ -1195,6 +1284,7 @@ function startSSE() {
       if (state.mode === 'dashboard') loadDashboard();
     } catch {}
   };
+  evtSource.addEventListener('unknown_account_added', () => loadUnknownAccounts());
 }
 
 function updateApprovalBadge(count) {
