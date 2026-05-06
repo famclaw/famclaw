@@ -69,6 +69,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `POST /api/unknown-accounts/link`, `POST /api/unknown-accounts/dismiss`.
   The router auto-clears rows on every link path (display-name auto-link,
   numbered-list reply, web link). Dashboard UI lands in a follow-up PR.
+- **Unknown-accounts dashboard UI (issue #111).** Parent dashboard now
+  renders the unlinked-account list as a table with a per-row user picker
+  and a Link button, so the strangers detected by the backend can actually
+  be matched to a FamClaw user without editing config. Linking POSTs to
+  `/api/unknown-accounts/link` with the parent PIN, removes the row on
+  success, and refreshes the user grid. The SSE dashboard stream picks up
+  any future `unknown_account_added` events and reloads the table without
+  full-page churn. Closes journal finding #10.
 - **Gateway self-registration.** New users messaging FamClaw on Telegram or
   Discord are auto-linked when their platform display name matches an
   unlinked FamClaw user. When multiple unlinked users exist and no name

@@ -120,6 +120,12 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
 .btn-approve{background:var(--c-success);color:#fff}
 .btn-deny{background:var(--c-danger);color:#fff}
 .empty-state{padding:32px;text-align:center;color:var(--c-muted);font-size:14px}
+.d-table{width:100%;border-collapse:collapse;font-size:13px}
+.d-table th,.d-table td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--c-bg);vertical-align:middle}
+.d-table th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--c-muted);font-weight:700}
+.d-table tbody tr:last-child td{border-bottom:none}
+.d-table select{padding:6px 8px;border:1px solid var(--c-border);border-radius:6px;font-size:13px;background:var(--c-bg);margin-right:6px}
+.d-table .btn{padding:6px 12px;font-size:12px}
 
 /* Skills list */
 .skill-item{display:flex;align-items:center;padding:14px 16px;gap:12px;
@@ -376,6 +382,18 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
           <div class="empty-state">Select a child to view conversations</div>
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap" id="conv-user-buttons"></div>
+      </div>
+      <div class="d-section">
+        <div class="d-title">👤 Unknown Accounts</div>
+        <div class="d-card">
+          <table id="unknown-accounts-table" class="d-table">
+            <thead>
+              <tr><th>Gateway</th><th>Display name</th><th>First seen at</th><th>Action</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <div class="empty-state" id="unknown-accounts-empty">Loading…</div>
+        </div>
       </div>
       <div class="d-section">
         <div class="d-title">🔌 Skills</div>
@@ -900,6 +918,106 @@ async function loadDashboard() {
   renderActivity(all || []);
   renderSkills(skills || []);
   renderConversationButtons();
+  loadUnknownAccounts();
+}
+
+// ── Unknown accounts ──────────────────────────────────────────────────────────
+async function loadUnknownAccounts() {
+  const list = await apiFetch('/api/unknown-accounts', {
+    headers: { 'X-Parent-PIN': state.parentPIN || '' },
+  });
+  renderUnknownAccounts(list || []);
+}
+
+function renderUnknownAccounts(items) {
+  const tbody = document.querySelector('#unknown-accounts-table tbody');
+  const emptyEl = document.getElementById('unknown-accounts-empty');
+  if (!tbody) return;
+  tbody.textContent = '';
+  if (!items.length) {
+    if (emptyEl) {
+      emptyEl.textContent = 'No unknown accounts';
+      emptyEl.style.display = 'block';
+    }
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  items.forEach(a => {
+    const tr = document.createElement('tr');
+    tr.dataset.accountId = String(a.id);
+    tr.dataset.gateway = a.gateway || '';
+    tr.dataset.externalId = a.external_id || '';
+
+    const tdGw = document.createElement('td');
+    tdGw.textContent = a.gateway || '';
+    tr.appendChild(tdGw);
+
+    const tdName = document.createElement('td');
+    tdName.textContent = a.display_name || '(no name)';
+    tr.appendChild(tdName);
+
+    const tdFirst = document.createElement('td');
+    tdFirst.textContent = formatTime(a.first_seen);
+    tr.appendChild(tdFirst);
+
+    const tdAction = document.createElement('td');
+    const select = document.createElement('select');
+    select.id = 'link-target-' + a.id;
+    if (!state.users.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '(no users)';
+      select.appendChild(opt);
+    } else {
+      state.users.forEach(u => {
+        const opt = document.createElement('option');
+        opt.value = u.name;
+        opt.textContent = u.display_name;
+        select.appendChild(opt);
+      });
+    }
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-approve';
+    btn.textContent = 'Link';
+    btn.addEventListener('click', () => linkUnknownAccount(a.id, select.value));
+    tdAction.appendChild(select);
+    tdAction.appendChild(btn);
+    tr.appendChild(tdAction);
+
+    tbody.appendChild(tr);
+  });
+}
+
+async function linkUnknownAccount(accountId, userId) {
+  const tr = document.querySelector('tr[data-account-id="' + accountId + '"]');
+  if (!tr) return;
+  const gateway = tr.dataset.gateway;
+  const externalID = tr.dataset.externalId;
+  if (!userId) { showToast('Pick a user first'); return; }
+
+  const pin = state.parentPIN || await requestPIN('Enter parent PIN to link this account');
+  if (!pin) return;
+  state.parentPIN = pin;
+
+  try {
+    const r = await fetch('/api/unknown-accounts/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Parent-PIN': pin },
+      body: JSON.stringify({ gateway: gateway, external_id: externalID, user_name: userId }),
+    });
+    if (!r.ok) { showToast('Link failed: ' + (await r.text())); return; }
+    tr.remove();
+    const users = await apiFetch('/api/users');
+    state.users = users || [];
+    renderUserGrid();
+    if (!document.querySelector('#unknown-accounts-table tbody tr')) {
+      renderUnknownAccounts([]);
+    }
+    showToast('Linked.');
+  } catch (e) {
+    showToast('Link failed: ' + e.message);
+  }
 }
 
 function renderConversationButtons() {
@@ -1191,6 +1309,10 @@ function startSSE() {
   evtSource.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
+      if (data && data.type === 'unknown_account_added') {
+        if (state.mode === 'dashboard') loadUnknownAccounts();
+        return;
+      }
       updateApprovalBadge(data.pending_count);
       if (state.mode === 'dashboard') loadDashboard();
     } catch {}
