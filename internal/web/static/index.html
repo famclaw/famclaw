@@ -1060,7 +1060,17 @@ async function loadUnknownAccounts() {
   const items = await apiFetch('/api/unknown-accounts', {
     headers: { 'X-Parent-PIN': state.parentPIN },
   });
-  if (!items || !items.length) {
+  if (!Array.isArray(items)) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'empty-state';
+    td.textContent = 'Failed to load unknown accounts.';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  if (!items.length) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
     td.colSpan = 4;
@@ -1086,6 +1096,12 @@ async function loadUnknownAccounts() {
     tdAction.style = 'padding:6px 8px';
     const sel = document.createElement('select');
     sel.id = 'link-target-' + a.id;
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Select user…';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    sel.appendChild(placeholder);
     state.users.forEach(u => {
       const opt = document.createElement('option');
       opt.value = u.name;
