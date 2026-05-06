@@ -20,6 +20,9 @@ func EvaluateAndApply(
 	user policy.UserInput,
 	gateway string,
 ) (final string, allowed bool, err error) {
+	if eval == nil {
+		return "", false, fmt.Errorf("output policy evaluation: nil evaluator")
+	}
 	dec, err := eval.EvaluateOutput(ctx, policy.OutputInput{
 		User:          user,
 		Gateway:       gateway,
@@ -34,6 +37,9 @@ func EvaluateAndApply(
 	if len(dec.Redact) > 0 {
 		out := draft
 		for _, s := range dec.Redact {
+			if s == "" {
+				continue
+			}
 			out = strings.ReplaceAll(out, s, "[redacted]")
 		}
 		return out, true, nil

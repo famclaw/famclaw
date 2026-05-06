@@ -13,7 +13,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   entire response.
 - OPA skill-prompt policy (`skill_prompt_policy.rego`): skill bodies are checked for prompt
   injection patterns (`ignore previous instructions`, `system:`, `you are now`, `[SYSTEM]`)
-  and length limits (> 2048 bytes) before injection into the system prompt.
+  and length limits (> 2048 characters) before injection into the system prompt.
 - `policy.EvaluateOutput` and `policy.EvaluateSkillPrompt` methods on the Evaluator.
 - `skillbridge.LoadForPromptChecked`: policy-gated version of `LoadForPrompt`; blocked skills
   are silently skipped and logged to stderr.

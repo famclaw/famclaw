@@ -224,16 +224,24 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	}
 
 	if a.evaluator != nil {
-		final, allowed, err := EvaluateAndApply(
+		final, allowed, gateErr := EvaluateAndApply(
 			ctx, a.evaluator, turn.Output,
 			policy.UserInput{Role: a.user.Role, AgeGroup: a.user.AgeGroup},
 			"",
 		)
-		if err != nil {
-			return nil, fmt.Errorf("output gate: %w", err)
-		}
-		if !allowed {
-			return &Response{Content: "I'm unable to send this response right now."}, nil
+		if gateErr != nil || !allowed {
+			if gateErr != nil {
+				log.Printf("[agent][%s] output gate error (treating as block): %v", a.user.Name, gateErr)
+			}
+			blocked := "I'm unable to send this response right now."
+			if dbErr := a.db.SaveMessage(a.convID, a.user.Name, "assistant", blocked, string(turn.Category), "block"); dbErr != nil {
+				log.Printf("[agent][%s] save output-gated response: %v", a.user.Name, dbErr)
+			}
+			return &Response{
+				Content:      blocked,
+				PolicyAction: "block",
+				Category:     string(turn.Category),
+			}, nil
 		}
 		turn.Output = final
 	}

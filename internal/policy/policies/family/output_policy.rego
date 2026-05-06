@@ -61,7 +61,9 @@ _age8_12_keywords := {
     "drug use", "alcohol abuse"
 }
 
-# Matched soft-blocked keywords for the current child user
+# Matched soft-blocked keywords for the current child user.
+# under_8 inherits the age_8_12 keyword set so the youngest users always
+# receive at least the same level of protection as older children.
 _matched_soft_keywords[kw] if {
     input.user.role == "child"
     effective_age_group == "under_8"
@@ -71,7 +73,7 @@ _matched_soft_keywords[kw] if {
 
 _matched_soft_keywords[kw] if {
     input.user.role == "child"
-    effective_age_group == "age_8_12"
+    effective_age_group in {"under_8", "age_8_12"}
     some kw in _age8_12_keywords
     contains(lower(input.draft_response), kw)
 }

@@ -386,6 +386,35 @@ func TestEvaluateOutput(t *testing.T) {
 			wantAllow:  false,
 			wantRedact: false,
 		},
+		// Invariant: hard-blocked categories cannot be unlocked by parent role.
+		{
+			name: "parent hard-blocked still blocked",
+			input: OutputInput{
+				User:          UserInput{Role: "parent"},
+				DraftResponse: "you should kill yourself",
+			},
+			wantAllow:  false,
+			wantRedact: false,
+		},
+		// Invariant: unknown/empty age_group on a child defaults to under_8 rules.
+		{
+			name: "child empty age defaults to under_8 redaction",
+			input: OutputInput{
+				User:          UserInput{Role: "child", AgeGroup: ""},
+				DraftResponse: "the story has violence in it",
+			},
+			wantAllow:  true,
+			wantRedact: true,
+		},
+		{
+			name: "child bogus age defaults to under_8 redaction",
+			input: OutputInput{
+				User:          UserInput{Role: "child", AgeGroup: "toddler"},
+				DraftResponse: "this scene shows blood",
+			},
+			wantAllow:  true,
+			wantRedact: true,
+		},
 	}
 
 	for _, tt := range tests {

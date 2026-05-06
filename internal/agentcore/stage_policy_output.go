@@ -13,6 +13,10 @@ import (
 // not abort on a policy eval hiccup).
 func NewStagePolicyOutput(eval *policy.Evaluator) Stage {
 	return func(ctx context.Context, turn *Turn) error {
+		if eval == nil {
+			turn.Output = "I'm unable to send this response right now. Please try again."
+			return nil
+		}
 		userRole := turn.User.Role
 		ageGroup := turn.User.AgeGroup
 		gateway := "" // Turn does not carry a gateway field

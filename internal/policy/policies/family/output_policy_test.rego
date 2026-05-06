@@ -50,9 +50,17 @@ test_child_soft_blocked_redact if {
 }
 
 # 5. Child with PII (SSN) in response → blocked or redacted
-#    "your SSN is 123-45-6789" must be caught by PII detection
+#    "your SSN is 123-45-6789" must be caught by PII detection.
+#    Either deny (allow_output == false) OR redact list is non-empty satisfies
+#    the invariant — the test must accept both shapes so a future change to
+#    block-on-PII does not silently fail this case.
 test_child_pii_leak if {
-    # Either blocked entirely or redact list is non-empty
+    not output_policy.allow_output with input as {
+        "user": {"role": "child", "age_group": "age_13_17"},
+        "gateway": "web",
+        "draft_response": "your SSN is 123-45-6789 as requested."
+    }
+} else if {
     count(output_policy.redact) > 0 with input as {
         "user": {"role": "child", "age_group": "age_13_17"},
         "gateway": "web",
