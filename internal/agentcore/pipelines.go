@@ -82,7 +82,7 @@ func FamilyPipeline(deps FamilyPipelineDeps) Pipeline {
 	}
 
 	// Output policy
-	stages = stages.Append(NewStagePolicyOutput())
+	stages = stages.Append(NewStagePolicyOutput(deps.Evaluator))
 
 	// Async security scan — fires goroutines, returns immediately, never blocks the turn
 	if deps.RuntimeScan && deps.Scanner != nil {

@@ -112,7 +112,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 
 	// Build conversation context
 	history, _ := a.db.GetConversationHistory(a.convID, 20)
-	messages := a.buildMessages(history, userMessage)
+	messages := a.buildMessages(ctx, history, userMessage)
 
 	// Build the pipeline turn
 	turn := &agentcore.Turn{
@@ -221,6 +221,21 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 
 	if err != nil {
 		return nil, err
+	}
+
+	if a.evaluator != nil {
+		final, allowed, err := EvaluateAndApply(
+			ctx, a.evaluator, turn.Output,
+			policy.UserInput{Role: a.user.Role, AgeGroup: a.user.AgeGroup},
+			"",
+		)
+		if err != nil {
+			return nil, fmt.Errorf("output gate: %w", err)
+		}
+		if !allowed {
+			return &Response{Content: "I'm unable to send this response right now."}, nil
+		}
+		turn.Output = final
 	}
 
 	log.Printf("[agent][%s] cat=%s action=allow", a.user.Name, turn.Category)
@@ -441,7 +456,7 @@ func parseStringList(v any) []string {
 }
 
 // buildMessages assembles the LLM message list from history + system prompt.
-func (a *Agent) buildMessages(history []*store.Message, currentMessage string) []llm.Message {
+func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, currentMessage string) []llm.Message {
 	var msgs []llm.Message
 
 	ep := a.cfg.LLMEndpointFor(a.user)
@@ -451,8 +466,22 @@ func (a *Agent) buildMessages(history []*store.Message, currentMessage string) [
 		// Operator override — keep legacy behavior verbatim.
 		systemPrompt = a.cfg.LLM.SystemPrompt + "\n\n" + ageContextPrompt(a.user)
 		if len(a.skills) > 0 {
-			if sp := skillbridge.LoadForPrompt(a.skills); sp != "" {
-				systemPrompt += "\n\n" + sp
+			// When evaluator is available, use the policy-checked version
+			if a.evaluator != nil {
+				sp, err := skillbridge.LoadForPromptChecked(ctx, a.skills,
+					&skillPromptAdapter{eval: a.evaluator}, a.user.Role)
+				if err != nil {
+					// Treat evaluator failure as empty skills (fail open on loader error to avoid
+					// blocking the agent entirely; the output gate will still catch bad content)
+					sp = ""
+				}
+				if sp != "" {
+					systemPrompt += "\n\n" + sp
+				}
+			} else {
+				if sp := skillbridge.LoadForPrompt(a.skills); sp != "" {
+					systemPrompt += "\n\n" + sp
+				}
 			}
 		}
 		if ep.AuthType == "oauth" {
@@ -532,6 +561,25 @@ func ageContextPrompt(user *config.UserConfig) string {
 	default:
 		return ""
 	}
+}
+
+// skillPromptAdapter bridges *policy.Evaluator to skillbridge.SkillPromptEvaluator.
+// It lives in internal/agent which imports both packages, avoiding a direct
+// internal/skillbridge → internal/policy dependency.
+type skillPromptAdapter struct {
+	eval *policy.Evaluator
+}
+
+func (a *skillPromptAdapter) EvaluateSkillPrompt(ctx context.Context, in skillbridge.SkillPromptCheckInput) (skillbridge.SkillPromptCheckResult, error) {
+	dec, err := a.eval.EvaluateSkillPrompt(ctx, policy.SkillPromptInput{
+		SkillName:  in.SkillName,
+		PromptBody: in.PromptBody,
+		UserRole:   in.UserRole,
+	})
+	if err != nil {
+		return skillbridge.SkillPromptCheckResult{}, err
+	}
+	return skillbridge.SkillPromptCheckResult{Allow: dec.Allow, Reason: dec.Reason}, nil
 }
 
 // ApprovalID generates a deterministic approval ID for user+category+day.

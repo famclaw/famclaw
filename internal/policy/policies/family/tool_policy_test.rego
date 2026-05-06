@@ -126,3 +126,29 @@ test_parent_empty_age_still_allowed if {
         "tool_name": "web_fetch"
     }
 }
+
+# New tests for default-DENY migration
+
+# Parent explicitly allowed to call spawn_agent
+test_parent_explicit_allow_spawn_agent if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "spawn_agent"
+    }
+}
+
+# Child calling an arbitrary tool not in any block list → allowed
+test_unknown_tool_child_allowed if {
+    tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_13_17"},
+        "tool_name": "calculator_v2"
+    }
+}
+
+# Unknown role (not "parent" or "child") → denied under default-DENY
+test_unknown_tool_blocked_for_unknown_role if {
+    not tool_policy.allow with input as {
+        "user": {"role": "guest", "age_group": "age_13_17"},
+        "tool_name": "calculator_v2"
+    }
+}

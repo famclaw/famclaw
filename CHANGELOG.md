@@ -6,6 +6,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- OPA output policy (`output_policy.rego`): LLM draft responses are now evaluated by OPA
+  before reaching the user. Hard-blocked categories (sexual_content, self_harm, hate_speech,
+  illegal_activity) are blocked for all users including parents. Soft-blocked content for
+  children is redacted inline via a `[redacted]` substitution rather than discarding the
+  entire response.
+- OPA skill-prompt policy (`skill_prompt_policy.rego`): skill bodies are checked for prompt
+  injection patterns (`ignore previous instructions`, `system:`, `you are now`, `[SYSTEM]`)
+  and length limits (> 2048 bytes) before injection into the system prompt.
+- `policy.EvaluateOutput` and `policy.EvaluateSkillPrompt` methods on the Evaluator.
+- `skillbridge.LoadForPromptChecked`: policy-gated version of `LoadForPrompt`; blocked skills
+  are silently skipped and logged to stderr.
+- `agent.EvaluateAndApply` in `internal/agent/output_gate.go`: post-pipeline output gate.
+
+### Changed
+- `tool_policy.rego` migrated from default-ALLOW to default-DENY. All tools require an
+  explicit allow rule; parents are allowed all tools; children are allowed all tools not on
+  the block list (file_*, spawn_agent, web_search/web_fetch for younger age groups).
+- `EvaluateToolCall` Go-level fallback changed from `allow=true` to `allow=false` (fail-closed).
+- `NewStagePolicyOutput` now calls OPA (`EvaluateOutput`) instead of a hardcoded keyword grep.
+
+### Removed
+- Hardcoded keyword slices `criticalPatterns`, `under8Patterns`, `age8to12Patterns` from
+  `internal/agentcore/stage_policy_output.go` — replaced by OPA output policy.
+- Dormant `internal/agentcore/stage_output_filter.go` — replaced by OPA-backed pipeline stage.
+
+
+### Added
 - **Unknown-account linking UI** on the parent dashboard. Shows strangers
   who messaged the bot (recorded by PR #113) in a table and lets the parent
   pick an existing user and link the gateway account in one click. Subscribes
