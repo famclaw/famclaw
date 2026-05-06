@@ -1054,9 +1054,12 @@ function renderSkills(skills) {
 async function loadUnknownAccounts() {
   const table = document.getElementById('unknown-accounts-table');
   if (!table) return;
+  if (!state.parentPIN) return;
   const tbody = table.querySelector('tbody');
   tbody.textContent = '';
-  const items = await apiFetch('/api/unknown_accounts');
+  const items = await apiFetch('/api/unknown-accounts', {
+    headers: { 'X-Parent-PIN': state.parentPIN },
+  });
   if (!items || !items.length) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
@@ -1078,7 +1081,7 @@ async function loadUnknownAccounts() {
     tdName.textContent = a.display_name || a.external_id || '';
     const tdSeen = document.createElement('td');
     tdSeen.style = 'padding:6px 8px';
-    tdSeen.textContent = formatTime(a.first_seen_at);
+    tdSeen.textContent = formatTime(a.first_seen);
     const tdAction = document.createElement('td');
     tdAction.style = 'padding:6px 8px';
     const sel = document.createElement('select');
@@ -1092,7 +1095,7 @@ async function loadUnknownAccounts() {
     const btn = document.createElement('button');
     btn.className = 'btn';
     btn.textContent = 'Link';
-    btn.addEventListener('click', () => linkUnknownAccount(a.id, sel.value));
+    btn.addEventListener('click', () => linkUnknownAccount(a, sel.value));
     tdAction.appendChild(sel);
     tdAction.appendChild(btn);
     tr.appendChild(tdGw);
@@ -1103,17 +1106,27 @@ async function loadUnknownAccounts() {
   });
 }
 
-async function linkUnknownAccount(accountId, userId) {
-  if (!userId) { showToast('Pick a user first'); return; }
+async function linkUnknownAccount(account, userName) {
+  if (!userName) { showToast('Pick a user first'); return; }
+  const pin = state.parentPIN || await requestPIN('Enter parent PIN to link this account');
+  if (!pin) return;
+  state.parentPIN = pin;
   try {
-    const r = await fetch('/api/unknown_accounts/' + encodeURIComponent(accountId) + '/link', {
+    const r = await fetch('/api/unknown-accounts/link', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId }),
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Parent-PIN': pin,
+      },
+      body: JSON.stringify({
+        gateway: account.gateway,
+        external_id: account.external_id,
+        user_name: userName,
+      }),
     });
     if (!r.ok) { showToast('Link failed: ' + r.status); return; }
     const table = document.getElementById('unknown-accounts-table');
-    const row = table && table.querySelector('tr[data-account-id="' + CSS.escape(String(accountId)) + '"]');
+    const row = table && table.querySelector('tr[data-account-id="' + CSS.escape(String(account.id)) + '"]');
     if (row) row.remove();
     const users = await apiFetch('/api/users');
     state.users = users || [];
