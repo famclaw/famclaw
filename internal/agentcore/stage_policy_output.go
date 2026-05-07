@@ -48,6 +48,9 @@ func NewStagePolicyOutput(eval *policy.Evaluator) Stage {
 		if len(dec.Redact) > 0 {
 			out := turn.Output
 			for _, s := range dec.Redact {
+				if s == "" {
+					continue
+				}
 				out = strings.ReplaceAll(out, s, "[redacted]")
 			}
 			turn.Output = out
