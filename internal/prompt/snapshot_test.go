@@ -28,9 +28,9 @@ func TestBuild_Snapshots(t *testing.T) {
 		ctx  BuildContext
 	}{
 		{"parent", "testdata/parent.snap", BuildContext{Cfg: cfg, User: parent, Gateway: "telegram", Skills: []string{"seccheck"}, OAuth: true, HardBlocked: []string{"weapons", "self_harm"}}},
-		{"child_under_8", "testdata/child_under_8.snap", BuildContext{Cfg: cfg, User: teo, Gateway: "telegram", HardBlocked: []string{"weapons", "self_harm"}}},
-		{"child_age_8_12", "testdata/child_age_8_12.snap", BuildContext{Cfg: cfg, User: julia, Gateway: "telegram", HardBlocked: []string{"weapons"}}},
-		{"child_age_13_17", "testdata/child_age_13_17.snap", BuildContext{Cfg: cfg, User: sam, Gateway: "web"}},
+		{"under_8", "testdata/under_8.snap", BuildContext{Cfg: cfg, User: teo, Gateway: "telegram", HardBlocked: []string{"weapons", "self_harm"}}},
+		{"age_8_12", "testdata/age_8_12.snap", BuildContext{Cfg: cfg, User: julia, Gateway: "telegram", HardBlocked: []string{"weapons"}}},
+		{"age_13_17", "testdata/age_13_17.snap", BuildContext{Cfg: cfg, User: sam, Gateway: "web"}},
 	}
 
 	for _, tc := range cases {

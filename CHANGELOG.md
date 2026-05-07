@@ -120,7 +120,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   user, family, age, capabilities, skills, policy, approvals, gateway,
   output, memory (placeholder), and OAuth-prefix components. Each is
   individually conditional. Token budget regression tests guard the size
-  (parent ≤ 1100 tokens, child ≤ 750). Operator-supplied
+  (parent ≤ 900 tokens, child ≤ 650). Operator-supplied
   `cfg.llm.system_prompt` keeps legacy behavior verbatim — no breaking
   change for customized deployments.
 - **PromptBuilder policy component** now explicitly forbids "dangerous",
