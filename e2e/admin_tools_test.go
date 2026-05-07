@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || integration
 
 package e2e
 
@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,39 @@ import (
 )
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// assertAuditLogged asserts that the most recent audit_log row for toolName
+// has the expected actor and that every entry in argsContains appears in the
+// stored args JSON. Guards against silent regressions where a mutating tool
+// stops writing its audit entry.
+func assertAuditLogged(t *testing.T, db *store.DB, toolName, actor string, argsContains ...string) {
+	t.Helper()
+	rows, err := db.ListAuditLogs(context.Background(), 20)
+	if err != nil {
+		t.Fatalf("ListAuditLogs: %v", err)
+	}
+	var match *store.AuditLog
+	for _, r := range rows {
+		if r.ToolName == toolName {
+			match = r
+			break
+		}
+	}
+	if match == nil {
+		t.Fatalf("no audit_log row for tool %q (recent rows: %d)", toolName, len(rows))
+	}
+	if match.ActorName != actor {
+		t.Errorf("audit row actor = %q, want %q", match.ActorName, actor)
+	}
+	if match.Ts.IsZero() {
+		t.Errorf("audit row Ts is zero")
+	}
+	for _, sub := range argsContains {
+		if !strings.Contains(match.Args, sub) {
+			t.Errorf("audit row args missing %q (got %q)", sub, match.Args)
+		}
+	}
+}
 
 func newAdminTestDB(t *testing.T) *store.DB {
 	t.Helper()
@@ -159,6 +193,8 @@ func TestAdminApproveRequest_Parent(t *testing.T) {
 	if a.Status != "approved" {
 		t.Errorf("DB status = %q, want 'approved'", a.Status)
 	}
+
+	assertAuditLogged(t, db, "builtin__approve_request", "parent", id)
 }
 
 func TestAdminDenyRequest_Parent(t *testing.T) {
@@ -197,6 +233,8 @@ func TestAdminDenyRequest_Parent(t *testing.T) {
 	if a.Status != "denied" {
 		t.Errorf("DB status = %q, want 'denied'", a.Status)
 	}
+
+	assertAuditLogged(t, db, "builtin__deny_request", "parent", id, "not appropriate")
 }
 
 func TestAdminListUsers_Parent(t *testing.T) {
@@ -287,6 +325,8 @@ func TestAdminSetUserRole_Parent(t *testing.T) {
 	if found["has_role_override"] != true {
 		t.Errorf("has_role_override = %v, want true", found["has_role_override"])
 	}
+
+	assertAuditLogged(t, db, "builtin__set_user_role", "parent", "emma", "under_8")
 }
 
 func TestAdminListUnknownAccounts_Parent(t *testing.T) {
@@ -359,13 +399,15 @@ func TestAdminLinkAccount_Parent(t *testing.T) {
 	}
 
 	// Verify it is now in gateway_accounts.
-	linkedUser, err := db.ResolveGatewayAccount("discord", "dc-unknown-456")
+	linkedUser, err := db.ResolveGatewayAccount(ctx, "discord", "dc-unknown-456")
 	if err != nil {
 		t.Fatalf("ResolveGatewayAccount: %v", err)
 	}
 	if linkedUser != "emma" {
 		t.Errorf("linked user = %q, want 'emma'", linkedUser)
 	}
+
+	assertAuditLogged(t, db, "builtin__link_account", "parent", "emma")
 }
 
 // ── Role enforcement ─────────────────────────────────────────────────────────

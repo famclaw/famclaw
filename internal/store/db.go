@@ -564,11 +564,12 @@ func (d *DB) LinkGatewayAccount(userName, gateway, externalID string) error {
 	return nil
 }
 
-func (d *DB) ResolveGatewayAccount(gateway, externalID string) (string, error) {
+func (d *DB) ResolveGatewayAccount(ctx context.Context, gateway, externalID string) (string, error) {
 	var userName string
-	err := d.sql.QueryRow(`SELECT user_name FROM gateway_accounts WHERE gateway=? AND external_id=?`,
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT user_name FROM gateway_accounts WHERE gateway=? AND external_id=?`,
 		gateway, externalID).Scan(&userName)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
@@ -864,6 +865,16 @@ func (d *DB) SaveSecCheckReport(skillID, repoURL, commitSHA string, score int, v
 
 // ── Audit Log ─────────────────────────────────────────────────────────────────
 
+// AuditLog is one row from the audit_log table.
+type AuditLog struct {
+	ID        int64
+	ActorName string
+	Gateway   string
+	ToolName  string
+	Args      string // JSON-encoded payload, as stored
+	Ts        time.Time
+}
+
 // LogAudit records an admin tool invocation to the audit_log table.
 func (d *DB) LogAudit(ctx context.Context, actorName, gateway, toolName string, args []byte) error {
 	_, err := d.sql.ExecContext(ctx,
@@ -873,6 +884,30 @@ func (d *DB) LogAudit(ctx context.Context, actorName, gateway, toolName string, 
 		return fmt.Errorf("log audit: %w", err)
 	}
 	return nil
+}
+
+// ListAuditLogs returns the most recent audit_log rows, newest first. A
+// non-positive limit is clamped to 100.
+func (d *DB) ListAuditLogs(ctx context.Context, limit int) ([]*AuditLog, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT id, actor_name, gateway, tool_name, args, ts
+		 FROM audit_log ORDER BY ts DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list audit logs: %w", err)
+	}
+	defer rows.Close()
+	var out []*AuditLog
+	for rows.Next() {
+		a := &AuditLog{}
+		if err := rows.Scan(&a.ID, &a.ActorName, &a.Gateway, &a.ToolName, &a.Args, &a.Ts); err != nil {
+			return nil, fmt.Errorf("scan audit log: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // ── Role Overrides ────────────────────────────────────────────────────────────

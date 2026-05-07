@@ -38,9 +38,9 @@ func (s *Store) LinkAccount(userName, gateway, externalID string) error {
 
 // Resolve looks up a FamClaw user by gateway account.
 // Returns nil if the account is not registered — NEVER returns a default.
-func (s *Store) Resolve(gateway, externalID string) (*User, error) {
+func (s *Store) Resolve(ctx context.Context, gateway, externalID string) (*User, error) {
 	gw := strings.ToLower(gateway)
-	userName, err := s.db.ResolveGatewayAccount(gw, externalID)
+	userName, err := s.db.ResolveGatewayAccount(ctx, gw, externalID)
 	if err != nil {
 		return nil, fmt.Errorf("resolving identity: %w", err)
 	}

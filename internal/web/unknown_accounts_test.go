@@ -130,7 +130,7 @@ func TestUnknownAccounts_LinkAndDismiss(t *testing.T) {
 		t.Errorf("ListUnknown len = %d, want 0", len(list))
 	}
 
-	user, err := srv.identStore.Resolve("telegram", "X1")
+	user, err := srv.identStore.Resolve(context.Background(), "telegram", "X1")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
