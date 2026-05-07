@@ -45,9 +45,15 @@ func HandleApproveRequest(ctx context.Context, deps Deps, args map[string]any) (
 	}
 
 	// Fetch full approval row to get requester details for notification.
+	// Best-effort: the decision row is already committed above, so a fetch
+	// failure must NOT abort the tool — it would skip the audit entry
+	// (returned before logAudit) while leaving the DB mutated. Degrade to
+	// approval=nil and continue; the audit/result still records the decision
+	// minus the requester details.
 	approval, err := deps.DB.GetApproval(ctx, requestID)
 	if err != nil {
-		return "", fmt.Errorf("approve_request: fetch approval: %w", err)
+		fmt.Fprintf(os.Stderr, "[admin] approve_request: fetch approval %s after decide: %v\n", requestID, err)
+		approval = nil
 	}
 
 	// Aggregate per-gateway send results so users with multiple linked
@@ -58,6 +64,7 @@ func HandleApproveRequest(ctx context.Context, deps Deps, args map[string]any) (
 		accounts, err := deps.DB.ListGatewayAccountsByUser(ctx, approval.UserName)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[admin] list gateway accounts failed: %v\n", err)
+			notificationParts = append(notificationParts, fmt.Sprintf("failed:list_accounts:%v", err))
 		} else {
 			msg := fmt.Sprintf(
 				"Your request to discuss %s has been approved by %s. You may now re-send your message.",

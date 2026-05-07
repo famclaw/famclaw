@@ -210,7 +210,7 @@ func (d *DB) migrate() error {
 	// Guard for existing deployments that predate the decision_note column.
 	// SQLite does not support ADD COLUMN IF NOT EXISTS, so we attempt the
 	// ALTER TABLE and ignore the error when the column already exists.
-	if _, err := d.sql.Exec(`ALTER TABLE approvals ADD COLUMN decision_note TEXT NOT NULL DEFAULT ''`); err != nil {
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE approvals ADD COLUMN decision_note TEXT NOT NULL DEFAULT ''`); err != nil {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate add decision_note: %w", err)
 		}
@@ -882,7 +882,7 @@ func (d *DB) GetRoleOverride(ctx context.Context, userName string) (role, ageGro
 	err = d.sql.QueryRowContext(ctx,
 		`SELECT role, age_group FROM user_role_overrides WHERE user_name = ?`, userName).
 		Scan(&role, &ageGroup)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil
 	}
 	if err != nil {

@@ -50,9 +50,13 @@ func HandleDenyRequest(ctx context.Context, deps Deps, args map[string]any) (str
 	}
 
 	// Fetch full approval row to get requester details for notification.
+	// Best-effort: the decision row is already committed above, so a fetch
+	// failure must NOT abort the tool — it would skip the audit entry while
+	// leaving the DB mutated. Degrade to approval=nil and continue.
 	approval, err := deps.DB.GetApproval(ctx, requestID)
 	if err != nil {
-		return "", fmt.Errorf("deny_request: fetch approval: %w", err)
+		fmt.Fprintf(os.Stderr, "[admin] deny_request: fetch approval %s after decide: %v\n", requestID, err)
+		approval = nil
 	}
 
 	// Compose denial message including parent name and optional reason.
@@ -77,6 +81,7 @@ func HandleDenyRequest(ctx context.Context, deps Deps, args map[string]any) (str
 		accounts, err := deps.DB.ListGatewayAccountsByUser(ctx, approval.UserName)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[admin] list gateway accounts failed: %v\n", err)
+			notificationParts = append(notificationParts, fmt.Sprintf("failed:list_accounts:%v", err))
 		} else {
 			for _, account := range accounts {
 				sender, ok := deps.Gateways[account.Gateway]

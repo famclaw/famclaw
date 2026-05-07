@@ -323,171 +323,83 @@ func TestAdminListUnknownAccounts_Parent(t *testing.T) {
 }
 
 func TestAdminLinkAccount_Parent(t *testing.T) {
-	t.Run("by_user_name", func(t *testing.T) {
-		db := newAdminTestDB(t)
-		ctx := context.Background()
+	db := newAdminTestDB(t)
+	ctx := context.Background()
 
-		accountID := insertUnknownAccount(t, db, "discord", "dc-unknown-456", "Stranger")
+	accountID := insertUnknownAccount(t, db, "discord", "dc-unknown-456", "Stranger")
 
-		result, err := admin.HandleLinkAccount(ctx, parentDeps(db), map[string]any{
-			"account_id": float64(accountID), // JSON numbers decode as float64
-			"user_name":  "emma",
-		})
-		if err != nil {
-			t.Fatalf("HandleLinkAccount: %v", err)
-		}
-
-		var resp map[string]any
-		if err := json.Unmarshal([]byte(result), &resp); err != nil {
-			t.Fatalf("unmarshal result: %v", err)
-		}
-		if resp["user_name"] != "emma" {
-			t.Errorf("user_name = %v, want 'emma'", resp["user_name"])
-		}
-		if resp["external_id"] != "dc-unknown-456" {
-			t.Errorf("external_id = %v, want 'dc-unknown-456'", resp["external_id"])
-		}
-
-		// Verify the account is now linked (no longer in unknown_accounts).
-		accounts, err := db.ListUnknownAccounts(ctx)
-		if err != nil {
-			t.Fatalf("ListUnknownAccounts after link: %v", err)
-		}
-		for _, a := range accounts {
-			if a.ExternalID == "dc-unknown-456" {
-				t.Error("linked account still appears in unknown_accounts after link")
-			}
-		}
-
-		// Verify it is now in gateway_accounts.
-		linkedUser, err := db.ResolveGatewayAccount("discord", "dc-unknown-456")
-		if err != nil {
-			t.Fatalf("ResolveGatewayAccount: %v", err)
-		}
-		if linkedUser != "emma" {
-			t.Errorf("linked user = %q, want 'emma'", linkedUser)
-		}
+	result, err := admin.HandleLinkAccount(ctx, parentDeps(db), map[string]any{
+		"account_id": float64(accountID), // JSON numbers decode as float64
+		"user_name":  "emma",
 	})
+	if err != nil {
+		t.Fatalf("HandleLinkAccount: %v", err)
+	}
 
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if resp["user_name"] != "emma" {
+		t.Errorf("user_name = %v, want 'emma'", resp["user_name"])
+	}
+	if resp["external_id"] != "dc-unknown-456" {
+		t.Errorf("external_id = %v, want 'dc-unknown-456'", resp["external_id"])
+	}
+
+	// Verify the account is now linked (no longer in unknown_accounts).
+	accounts, err := db.ListUnknownAccounts(ctx)
+	if err != nil {
+		t.Fatalf("ListUnknownAccounts after link: %v", err)
+	}
+	for _, a := range accounts {
+		if a.ExternalID == "dc-unknown-456" {
+			t.Error("linked account still appears in unknown_accounts after link")
+		}
+	}
+
+	// Verify it is now in gateway_accounts.
+	linkedUser, err := db.ResolveGatewayAccount("discord", "dc-unknown-456")
+	if err != nil {
+		t.Fatalf("ResolveGatewayAccount: %v", err)
+	}
+	if linkedUser != "emma" {
+		t.Errorf("linked user = %q, want 'emma'", linkedUser)
+	}
 }
 
-// ── Child-deny tests (admin tools are not available to non-parent users) ──────
+// ── Role enforcement ─────────────────────────────────────────────────────────
 //
-// Role enforcement for admin tools has two layers:
-//  1. agentcore.Tool.AllowedForRole — the gate on the tool definition itself,
-//     which returns false for any non-parent role. This is what checkNoAdminTools
-//     exercises below.
-//  2. OPA tool_policy.rego — denies admin tool calls at request evaluation time.
-//     This layer is covered by the Rego unit tests in tool_policy_test.rego.
+// Admin tools are gated at two layers:
+//  1. agentcore.Tool.AllowedForRole — definition-level gate; returns false for
+//     any non-parent role. Covered here.
+//  2. OPA tool_policy.rego — runtime gate at request evaluation time. Covered
+//     by the Rego unit tests in tool_policy_test.rego.
 //
-// The child-deny tests below verify layer (1): that every admin tool definition
-// reports AllowedForRole == false for all non-parent roles. Because the handlers
-// themselves do not check roles (that is OPA's responsibility), testing at the
-// tool definition level is the correct and honest enforcement point.
+// Handlers themselves do NOT check roles (OPA's responsibility), so testing at
+// the tool-definition level is the correct enforcement point in this layer.
 
-// checkNoAdminTools asserts that none of the admin tool definitions report
-// being allowed for the given childRole.
-func checkNoAdminTools(t *testing.T, childRole string) {
-	t.Helper()
-	for _, tool := range admin.AllDefinitions() {
-		if tool.AllowedForRole(childRole) {
-			t.Errorf("admin tool %q unexpectedly allowed for role %q", tool.Name, childRole)
-		}
+// TestAdminTools_RoleEnforcement verifies that every admin tool definition
+// reports AllowedForRole == false for every non-parent role and == true for
+// "parent". Replaces seven near-duplicate per-tool denial tests.
+func TestAdminTools_RoleEnforcement(t *testing.T) {
+	denyRoles := []string{"child", "under_8", "age_8_12", "age_13_17"}
+	defs := admin.AllDefinitions()
+	if len(defs) == 0 {
+		t.Fatal("admin.AllDefinitions() returned no tools")
 	}
-}
 
-func TestAdminListPendingApprovals_ChildDenied(t *testing.T) {
-	checkNoAdminTools(t, "child")
-
-	// Verify the specific tool reports parent-only access.
-	for _, tool := range admin.AllDefinitions() {
-		if tool.Name != "builtin__list_pending_approvals" {
-			continue
-		}
-		if tool.AllowedForRole("child") {
-			t.Error("list_pending_approvals should not be allowed for role 'child'")
-		}
-		if !tool.AllowedForRole("parent") {
-			t.Error("list_pending_approvals should be allowed for role 'parent'")
-		}
-	}
-}
-
-func TestAdminApproveRequest_ChildDenied(t *testing.T) {
-	checkNoAdminTools(t, "child")
-
-	for _, tool := range admin.AllDefinitions() {
-		if tool.Name != "builtin__approve_request" {
-			continue
-		}
-		if tool.AllowedForRole("child") {
-			t.Error("approve_request should not be allowed for role 'child'")
-		}
-		if tool.AllowedForRole("under_8") {
-			t.Error("approve_request should not be allowed for role 'under_8'")
-		}
-		if tool.AllowedForRole("age_13_17") {
-			t.Error("approve_request should not be allowed for role 'age_13_17'")
-		}
-	}
-}
-
-func TestAdminDenyRequest_ChildDenied(t *testing.T) {
-	checkNoAdminTools(t, "under_8")
-
-	for _, tool := range admin.AllDefinitions() {
-		if tool.Name != "builtin__deny_request" {
-			continue
-		}
-		if tool.AllowedForRole("under_8") {
-			t.Error("deny_request should not be allowed for role 'under_8'")
-		}
-	}
-}
-
-func TestAdminListUsers_ChildDenied(t *testing.T) {
-	checkNoAdminTools(t, "age_13_17")
-
-	for _, tool := range admin.AllDefinitions() {
-		if tool.Name != "builtin__list_users" {
-			continue
-		}
-		if tool.AllowedForRole("age_13_17") {
-			t.Error("list_users should not be allowed for role 'age_13_17'")
-		}
-	}
-}
-
-func TestAdminSetUserRole_ChildDenied(t *testing.T) {
-	checkNoAdminTools(t, "age_8_12")
-
-	for _, tool := range admin.AllDefinitions() {
-		if tool.Name != "builtin__set_user_role" {
-			continue
-		}
-		if tool.AllowedForRole("age_8_12") {
-			t.Error("set_user_role should not be allowed for role 'age_8_12'")
-		}
-	}
-}
-
-func TestAdminListUnknownAccounts_ChildDenied(t *testing.T) {
-	// Verify the tool is denied for all child role variants.
-	for _, role := range []string{"child", "under_8", "age_8_12", "age_13_17"} {
-		role := role
-		t.Run(role, func(t *testing.T) {
-			checkNoAdminTools(t, role)
+	for _, tool := range defs {
+		tool := tool
+		t.Run(tool.Name, func(t *testing.T) {
+			if !tool.AllowedForRole("parent") {
+				t.Errorf("%s should be allowed for role 'parent'", tool.Name)
+			}
+			for _, role := range denyRoles {
+				if tool.AllowedForRole(role) {
+					t.Errorf("%s should NOT be allowed for role %q", tool.Name, role)
+				}
+			}
 		})
-	}
-}
-
-func TestAdminLinkAccount_ChildDenied(t *testing.T) {
-	checkNoAdminTools(t, "child")
-
-	// Also verify that all admin tools explicitly allow the "parent" role.
-	for _, tool := range admin.AllDefinitions() {
-		if !tool.AllowedForRole("parent") {
-			t.Errorf("admin tool %q not allowed for 'parent' role", tool.Name)
-		}
 	}
 }
