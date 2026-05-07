@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/config"
-	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 )
 
@@ -121,27 +120,13 @@ func TestExecute_MaxTurnsExhausted(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPrompt_OAuthPrefix(t *testing.T) {
-	tests := []struct {
-		name       string
-		authType   string
-		wantPrefix string
-	}{
-		{"oauth prepends ClaudeCode prefix", "oauth", llm.ClaudeCodeSystemPrefix},
-		{"api_key uses task-agent intro", "api_key", "You are a focused task agent"},
-		{"empty auth uses task-agent intro", "", "You are a focused task agent"},
+func TestBuildSystemPrompt(t *testing.T) {
+	got := buildSystemPrompt("do a thing")
+	if !strings.HasPrefix(got, "You are a focused task agent") {
+		t.Errorf("prompt does not start with task-agent intro\ngot: %q", got)
 	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := buildSystemPrompt("do a thing", tc.authType)
-			if !strings.HasPrefix(got, tc.wantPrefix) {
-				t.Errorf("prompt does not start with %q\ngot: %q", tc.wantPrefix, got)
-			}
-			if !strings.Contains(got, "do a thing") {
-				t.Errorf("prompt missing user task; got: %q", got)
-			}
-		})
+	if !strings.Contains(got, "do a thing") {
+		t.Errorf("prompt missing user task; got: %q", got)
 	}
 }
 

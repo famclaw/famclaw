@@ -90,8 +90,8 @@ func (s *Server) handleTestTelegram(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTestDiscord verifies a Discord bot token by calling /users/@me.
-// The bot's user-id doubles as the application id used in the OAuth2
-// invite URL the wizard generates client-side. PIN-gated after first
+// The bot's user-id doubles as the application id used in the bot invite
+// URL the wizard generates client-side. PIN-gated after first
 // boot — see handleTestTelegram for the rationale.
 func (s *Server) handleTestDiscord(w http.ResponseWriter, r *http.Request) {
 	if !s.isFirstBoot() {

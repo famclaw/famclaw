@@ -16,7 +16,6 @@ import (
 type ExecutorDeps struct {
 	Pool        *mcp.Pool      // MCP tool pool (shared with parent)
 	Config      *config.Config // full config (for profile resolution)
-	OAuthStore  *llm.OAuthStore
 	Temperature float64
 	MaxTokens   int
 }
@@ -59,17 +58,11 @@ func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map
 	return tools, allowed
 }
 
-// buildSystemPrompt assembles the subagent's system prompt. When the endpoint
-// uses OAuth (Anthropic), it prepends the ClaudeCodeSystemPrefix expected by
-// the API. Exported via lowercase so tests in the same package can exercise it.
-func buildSystemPrompt(prompt, authType string) string {
-	systemPrompt := "You are a focused task agent. Complete the following task and return your result.\n" +
+// buildSystemPrompt assembles the subagent's system prompt.
+func buildSystemPrompt(prompt string) string {
+	return "You are a focused task agent. Complete the following task and return your result.\n" +
 		"Be concise. Do not ask clarifying questions. Use available tools if they help.\n" +
 		"Task: " + prompt
-	if authType == "oauth" {
-		systemPrompt = llm.ClaudeCodeSystemPrefix + "\n\n" + systemPrompt
-	}
-	return systemPrompt
 }
 
 // Execute runs a subagent conversation and returns the final output.
@@ -81,14 +74,9 @@ func Execute(ctx context.Context, cfg Config, deps ExecutorDeps) (string, error)
 		return "", fmt.Errorf("LLM profile %q not found or incomplete", cfg.LLMProfile)
 	}
 
-	var client *llm.Client
-	if ep.AuthType == "oauth" && deps.OAuthStore != nil {
-		client = llm.NewOAuthClient(ep.BaseURL, ep.Model, deps.OAuthStore, "anthropic")
-	} else {
-		client = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
-	}
+	client := llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 
-	systemPrompt := buildSystemPrompt(cfg.Prompt, ep.AuthType)
+	systemPrompt := buildSystemPrompt(cfg.Prompt)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},

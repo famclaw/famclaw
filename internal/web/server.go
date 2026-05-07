@@ -25,6 +25,7 @@ import (
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/llm"
+	"github.com/famclaw/famclaw/internal/llm/claudecli"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/skillbridge"
@@ -46,9 +47,7 @@ type Server struct {
 	skills        []*skillbridge.Skill  // injected into agent system prompt
 	skillRegistry *skillbridge.Registry // backs POST /api/skills/install + /remove
 	pool          *mcp.Pool             // MCP tool pool for agent tool calls
-	oauthStore    *llm.OAuthStore     // OAuth token store for subscription auth
-	oauthFlow     *llm.OAuthFlow      // active OAuth flow (nil when not in progress)
-	staticHandler http.Handler        // embedded static file server
+	staticHandler http.Handler          // embedded static file server
 	upgrader      websocket.Upgrader
 	cfgMu      sync.RWMutex               // guards cfg during settings reads/writes
 	clients    map[*websocket.Conn]string // conn → userName
@@ -62,7 +61,7 @@ type wsMessage struct {
 }
 
 func NewServer(cfg *config.Config, cfgPath string, db *store.DB, identStore *identity.Store, evaluator *policy.Evaluator,
-	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool, oauthStore *llm.OAuthStore) *Server {
+	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool) *Server {
 	return &Server{
 		cfg:           cfg,
 		cfgPath:       cfgPath,
@@ -72,7 +71,6 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, identStore *ide
 		clf:           clf,
 		notifier:      notifier,
 		pool:          pool,
-		oauthStore:    oauthStore,
 		skills:        skills,
 		skillRegistry: skillRegistry,
 		clients:       make(map[*websocket.Conn]string),
@@ -116,10 +114,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/setup/test-discord", s.handleTestDiscord)
 	mux.HandleFunc("/api/settings", s.handleSettings)      // GET/POST config settings
 	mux.HandleFunc("/api/stream", s.handleStream)          // SSE for dashboard live updates
-	mux.HandleFunc("/api/oauth/anthropic/start", s.handleOAuthStart)
-	mux.HandleFunc("/api/oauth/anthropic/callback", s.handleOAuthCallback)
-	mux.HandleFunc("/api/oauth/anthropic/status", s.handleOAuthStatus)
-
 	// ── Parent decision links (from email/SMS) ────────────────────────────────
 	mux.HandleFunc("/decide", s.handleDecideLink)
 
@@ -159,17 +153,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[ws] %s connected", userCfg.DisplayName)
 
-	ep := s.cfg.LLMEndpointFor(userCfg)
-	var llmClient *llm.Client
-	if ep.AuthType == "oauth" && s.oauthStore != nil {
-		llmClient = llm.NewOAuthClient(ep.BaseURL, ep.Model, s.oauthStore, "anthropic")
-	} else {
+	var llmClient llm.Chatter
+	switch s.cfg.LLM.Provider {
+	case "claude_cli":
+		llmClient = claudecli.New()
+	default:
+		ep := s.cfg.LLMEndpointFor(userCfg)
 		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 	}
 	a := agent.NewAgent(userCfg, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
-		Skills:     s.skills,
-		Pool:       s.pool,
-		OAuthStore: s.oauthStore,
+		Skills: s.skills,
+		Pool:   s.pool,
 	})
 
 	for {

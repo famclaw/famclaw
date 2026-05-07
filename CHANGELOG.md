@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- Optional Claude CLI backend (provider: claude_cli) for users running famclaw alongside Claude Code
 - **Unknown-account linking UI** on the parent dashboard. Shows strangers
   who messaged the bot (recorded by PR #113) in a table and lets the parent
   pick an existing user and link the gateway account in one click. Subscribes

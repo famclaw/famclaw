@@ -40,7 +40,7 @@ type Response struct {
 type Agent struct {
 	user       *config.UserConfig
 	cfg        *config.Config
-	llmClient  *llm.Client
+	llmClient  llm.Chatter
 	evaluator  *policy.Evaluator
 	classifier *classifier.Classifier
 	db         *store.DB
@@ -48,7 +48,6 @@ type Agent struct {
 	skills       []*skillbridge.Skill
 	quarantine   *skillbridge.Quarantine
 	scanner      skillbridge.Scanner
-	oauthStore   *llm.OAuthStore
 	scheduler    *subagent.Scheduler
 	builtinTools []agentcore.Tool // tools to inject onto every Turn
 	convID       string
@@ -67,7 +66,6 @@ type AgentDeps struct {
 	Skills       []*skillbridge.Skill
 	Quarantine   *skillbridge.Quarantine
 	Scanner      skillbridge.Scanner
-	OAuthStore   *llm.OAuthStore
 	Scheduler    *subagent.Scheduler
 	BuiltinTools []agentcore.Tool
 }
@@ -75,7 +73,7 @@ type AgentDeps struct {
 // NewAgent creates an Agent for the given user. Optional dependencies
 // (MCP pool, skills, scanner, scheduler, etc.) are passed in deps —
 // any field left as zero value disables that capability for this Agent.
-func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client,
+func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter,
 	evaluator *policy.Evaluator, clf *classifier.Classifier, db *store.DB,
 	deps AgentDeps) *Agent {
 
@@ -94,7 +92,6 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient *llm.Client
 		skills:       deps.Skills,
 		quarantine:   deps.Quarantine,
 		scanner:      deps.Scanner,
-		oauthStore:   deps.OAuthStore,
 		scheduler:    deps.Scheduler,
 		builtinTools: deps.BuiltinTools,
 		convID:       convID,
@@ -128,14 +125,11 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		})
 	}
 
-	// Resolve LLM profile — supports both API key and OAuth auth
-	clientFactory := func(t *agentcore.Turn) *llm.Client {
+	// Resolve LLM profile
+	clientFactory := func(t *agentcore.Turn) llm.Chatter {
 		ep := a.cfg.LLMEndpointFor(t.User)
 		if ep.BaseURL == "" || ep.Model == "" {
 			return nil
-		}
-		if ep.AuthType == "oauth" && a.oauthStore != nil {
-			return llm.NewOAuthClient(ep.BaseURL, ep.Model, a.oauthStore, "anthropic")
 		}
 		return llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 	}
@@ -291,7 +285,6 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	execDeps := subagent.ExecutorDeps{
 		Pool:        a.pool,
 		Config:      a.cfg,
-		OAuthStore:  a.oauthStore,
 		Temperature: a.cfg.LLM.Temperature,
 		MaxTokens:   a.cfg.LLM.MaxResponseTokens,
 	}
@@ -444,8 +437,6 @@ func parseStringList(v any) []string {
 func (a *Agent) buildMessages(history []*store.Message, currentMessage string) []llm.Message {
 	var msgs []llm.Message
 
-	ep := a.cfg.LLMEndpointFor(a.user)
-
 	var systemPrompt string
 	if a.cfg.LLM.SystemPrompt != "" {
 		// Operator override — keep legacy behavior verbatim.
@@ -454,9 +445,6 @@ func (a *Agent) buildMessages(history []*store.Message, currentMessage string) [
 			if sp := skillbridge.LoadForPrompt(a.skills); sp != "" {
 				systemPrompt += "\n\n" + sp
 			}
-		}
-		if ep.AuthType == "oauth" {
-			systemPrompt = llm.ClaudeCodeSystemPrefix + "\n\n" + systemPrompt
 		}
 	} else {
 		// Default — use the structured PromptBuilder.
@@ -494,7 +482,6 @@ func (a *Agent) buildMessages(history []*store.Message, currentMessage string) [
 			Cfg:          a.cfg,
 			User:         a.user,
 			Skills:       skillNames,
-			OAuth:        ep.AuthType == "oauth",
 			BuiltinTools: builtinNames,
 			// Gateway and HardBlocked left empty for now — wired by future PRs
 			// that thread gateway and policy info through Agent.

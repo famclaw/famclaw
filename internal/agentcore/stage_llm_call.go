@@ -9,7 +9,7 @@ import (
 
 // LLMCallDeps holds dependencies for the LLM call stage.
 type LLMCallDeps struct {
-	ClientFactory func(turn *Turn) *llm.Client // creates a client for this turn's LLM profile
+	ClientFactory func(turn *Turn) llm.Chatter // creates a client for this turn's LLM profile
 	Temperature   float64
 	MaxTokens     int
 	OnToken       func(string) // streaming callback (can be nil)

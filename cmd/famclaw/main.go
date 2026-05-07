@@ -16,20 +16,21 @@ import (
 	"time"
 
 	"github.com/famclaw/famclaw/internal/agent"
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/gateway/discord"
 	"github.com/famclaw/famclaw/internal/gateway/telegram"
 	"github.com/famclaw/famclaw/internal/gateway/whatsapp"
+	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/identity"
+	"github.com/famclaw/famclaw/internal/inference"
 	"github.com/famclaw/famclaw/internal/llm"
+	"github.com/famclaw/famclaw/internal/llm/claudecli"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
-	"github.com/famclaw/famclaw/internal/honeybadger"
-	"github.com/famclaw/famclaw/internal/inference"
-	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
@@ -77,6 +78,9 @@ func main() {
 	// Validate config — fail fast with plain-language errors
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Configuration error:\n%v", err)
+	}
+	if err := cfg.LLM.ValidateProvider(); err != nil {
+		log.Fatalf("LLM provider error:\n%v", err)
 	}
 
 	log.Printf("Config: %d users, model=%s, addr=%s", len(cfg.Users), cfg.LLM.Model, cfg.Server.Addr())
@@ -135,10 +139,9 @@ func main() {
 		}
 	}
 
-	// LLM health check
-	// LLM health check (skipped for OAuth — tokens checked later)
-	hcEP := cfg.LLMEndpointFor(nil)
-	if hcEP.AuthType != "oauth" {
+	// LLM health check (skip for claude_cli — no HTTP endpoint to ping)
+	if cfg.LLM.Provider != "claude_cli" {
+		hcEP := cfg.LLMEndpointFor(nil)
 		llmClient := llm.NewClient(hcEP.BaseURL, hcEP.Model, hcEP.APIKey)
 		ctx5s, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := llmClient.Ping(ctx5s); err != nil {
@@ -191,14 +194,6 @@ func main() {
 		}
 	}
 
-	// OAuth token store for subscription-based auth (Anthropic Claude)
-	home, _ := os.UserHomeDir()
-	oauthStorePath := filepath.Join(home, ".famclaw", "oauth-tokens.json")
-	oauthStore := llm.NewOAuthStore(oauthStorePath, llm.DefaultTokenURL, llm.DefaultClientID)
-	if oauthStore.HasToken("anthropic") {
-		log.Printf("OAuth: Anthropic token loaded (auto-refresh enabled)")
-	}
-
 	// Skills loaded for prompt injection (independent of MCP)
 	reg := skillbridge.NewRegistry(cfg.Skills.Dir, nil, skillbridge.InstallConfig{})
 	var enabledSkills []*skillbridge.Skill
@@ -228,19 +223,19 @@ func main() {
 
 	// Chat function for gateway router
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
-		ep := cfg.LLMEndpointFor(user)
-		var client *llm.Client
-		if ep.AuthType == "oauth" {
-			client = llm.NewOAuthClient(ep.BaseURL, ep.Model, oauthStore, "anthropic")
-		} else {
-			client = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
+		var llmClient llm.Chatter
+		switch cfg.LLM.Provider {
+		case "claude_cli":
+			llmClient = claudecli.New()
+		default: // "" or "openai"
+			ep := cfg.LLMEndpointFor(user)
+			llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 		}
-		a := agent.NewAgent(user, cfg, client, evaluator, clf, db, agent.AgentDeps{
+		a := agent.NewAgent(user, cfg, llmClient, evaluator, clf, db, agent.AgentDeps{
 			Pool:         mcpPool,
 			Skills:       enabledSkills,
 			Quarantine:   quarantine,
 			Scanner:      hbScanner,
-			OAuthStore:   oauthStore,
 			Scheduler:    agentScheduler,
 			BuiltinTools: builtinTools,
 		})
@@ -277,7 +272,7 @@ func main() {
 	}
 
 	// Web server
-	srv := web.NewServer(cfg, *cfgPath, db, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool, oauthStore)
+	srv := web.NewServer(cfg, *cfgPath, db, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),
