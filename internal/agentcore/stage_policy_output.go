@@ -2,72 +2,59 @@ package agentcore
 
 import (
 	"context"
+	"log"
 	"strings"
+
+	"github.com/famclaw/famclaw/internal/policy"
 )
 
-// NewStagePolicyOutput returns a stage that evaluates LLM output against policy.
-// Currently uses the same pattern-based approach as StageOutputFilter, but
-// structured as a proper policy stage that can be migrated to OPA rules.
-// When OPA output rules exist, this stage calls the evaluator instead.
-func NewStagePolicyOutput() Stage {
-	return func(_ context.Context, turn *Turn) error {
-		if turn.User.Role == "parent" {
+const outputGateBlockedMessage = "I'm unable to send this response right now. Please try again."
+
+// NewStagePolicyOutput returns a stage that evaluates LLM output against the
+// OPA output policy. Fail-closed: on evaluation error or denial the turn
+// output is replaced with a user-friendly safe message and the underlying
+// reason is logged to stderr for operator audit. No error is returned so the
+// pipeline does not abort on a policy eval hiccup.
+func NewStagePolicyOutput(eval *policy.Evaluator) Stage {
+	return func(ctx context.Context, turn *Turn) error {
+		if eval == nil {
+			log.Printf("[stage_policy_output] nil evaluator — fail-closed")
+			turn.Output = outputGateBlockedMessage
 			return nil
 		}
+		userRole := turn.User.Role
+		ageGroup := turn.User.AgeGroup
+		gateway := "" // Turn does not carry a gateway field
 
-		lower := strings.ToLower(turn.Output)
-
-		// Check critical-risk patterns that should never reach children
-		for _, pattern := range criticalPatterns {
-			if strings.Contains(lower, pattern) {
-				turn.Output = "I generated a response that might not be appropriate. Let me try a different approach — could you rephrase your question?"
-				turn.SetMeta("output_filtered", true)
-				turn.SetMeta("output_filter_reason", "critical_pattern: "+pattern)
-				return nil
-			}
+		dec, err := eval.EvaluateOutput(ctx, policy.OutputInput{
+			User:          policy.UserInput{Role: userRole, AgeGroup: ageGroup},
+			Gateway:       gateway,
+			DraftResponse: turn.Output,
+		})
+		if err != nil {
+			// Fail-closed: block on policy evaluation error
+			log.Printf("[stage_policy_output] EvaluateOutput error (fail-closed): %v", err)
+			turn.Output = outputGateBlockedMessage
+			return nil
 		}
-
-		// Age-specific filtering
-		switch turn.User.AgeGroup {
-		case "under_8":
-			for _, pattern := range under8Patterns {
-				if strings.Contains(lower, pattern) {
-					turn.Output = "That's a topic for grown-ups! Let's talk about something fun instead."
-					turn.SetMeta("output_filtered", true)
-					return nil
-				}
-			}
-		case "age_8_12":
-			for _, pattern := range age8to12Patterns {
-				if strings.Contains(lower, pattern) {
-					turn.Output = "I'd like to give you a better answer on that topic. Could you ask a parent to help?"
-					turn.SetMeta("output_filtered", true)
-					return nil
-				}
-			}
+		if !dec.Allow {
+			// dec.Reason is an internal audit string ("hard-blocked content
+			// detected", "role not recognized", etc.). Don't leak it to the
+			// user — keep it in logs and emit a friendly fallback.
+			log.Printf("[stage_policy_output] output blocked: %s", dec.Reason)
+			turn.Output = outputGateBlockedMessage
+			return nil
 		}
-
+		if len(dec.Redact) > 0 {
+			out := turn.Output
+			for _, s := range dec.Redact {
+				if s == "" {
+					continue
+				}
+				out = strings.ReplaceAll(out, s, "[redacted]")
+			}
+			turn.Output = out
+		}
 		return nil
 	}
-}
-
-// criticalPatterns are blocked for ALL non-parent users.
-var criticalPatterns = []string{
-	"suicide", "kill yourself", "self-harm", "cutting yourself",
-	"pornography", "sexual intercourse", "explicit content",
-	"racial slur", "ethnic cleansing", "white supremac",
-	"how to make a bomb", "how to steal", "how to hack",
-}
-
-// under8Patterns are additionally blocked for very young children.
-var under8Patterns = []string{
-	"violence", "blood", "murder", "weapon",
-	"death", "dying", "dead body",
-	"drug", "alcohol", "cigarette",
-}
-
-// age8to12Patterns are additionally blocked for 8-12 year olds.
-var age8to12Patterns = []string{
-	"detailed violence", "graphic injury",
-	"drug use", "alcohol abuse",
 }
