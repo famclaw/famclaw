@@ -30,18 +30,12 @@ func ListPendingApprovalsDefinition() agentcore.Tool {
 // args is the raw JSON-decoded argument map (empty for this tool).
 // Returns a JSON-encoded slice of approval summaries.
 func HandleListPendingApprovals(ctx context.Context, deps Deps, args map[string]any) (string, error) {
-	// Parse args (empty for this tool — validated for future extension).
-	var _ map[string]any
-	if raw, err := json.Marshal(args); err == nil {
-		_ = raw // intentionally unused; present to mirror the pattern in agent.go
-	}
-
 	if err := logAudit(ctx, deps, toolNameListPendingApprovals, args); err != nil {
 		// Non-fatal: log and continue so the read still succeeds.
 		fmt.Fprintf(os.Stderr, "[admin] audit log failed: %v\n", err)
 	}
 
-	approvals, err := deps.DB.PendingApprovals()
+	approvals, err := deps.DB.PendingApprovals(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list pending approvals: %w", err)
 	}

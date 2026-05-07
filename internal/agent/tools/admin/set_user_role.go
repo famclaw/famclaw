@@ -68,8 +68,14 @@ func HandleSetUserRole(ctx context.Context, deps Deps, args map[string]any) (str
 		return "", fmt.Errorf("set_user_role: invalid role %q — must be one of: parent, age_13_17, age_8_12, under_8", role)
 	}
 
-	// age_group maps 1:1 with role in this system.
+	// age_group enumerates child cohorts only — for child roles it
+	// matches the role string (under_8 / age_8_12 / age_13_17). Parents
+	// have no age cohort, so we leave it empty rather than leaking the
+	// literal "parent" into downstream age-gating logic.
 	ageGroup := role
+	if role == "parent" {
+		ageGroup = ""
+	}
 
 	if err := deps.DB.SetRoleOverride(ctx, userName, role, ageGroup, deps.Actor); err != nil {
 		return "", fmt.Errorf("set_user_role: %w", err)

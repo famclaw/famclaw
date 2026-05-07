@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 )
@@ -49,7 +50,7 @@ func HandleDenyRequest(ctx context.Context, deps Deps, args map[string]any) (str
 	}
 
 	// Fetch full approval row to get requester details for notification.
-	approval, err := deps.DB.GetApproval(requestID)
+	approval, err := deps.DB.GetApproval(ctx, requestID)
 	if err != nil {
 		return "", fmt.Errorf("deny_request: fetch approval: %w", err)
 	}
@@ -68,7 +69,10 @@ func HandleDenyRequest(ctx context.Context, deps Deps, args map[string]any) (str
 		}
 	}
 
-	notificationStatus := "skipped:no_sender"
+	// Aggregate per-gateway send results so users with multiple linked
+	// accounts (e.g. telegram + discord) don't lose intermediate outcomes
+	// from the audit log.
+	var notificationParts []string
 	if approval != nil && len(deps.Gateways) > 0 {
 		accounts, err := deps.DB.ListGatewayAccountsByUser(ctx, approval.UserName)
 		if err != nil {
@@ -80,12 +84,16 @@ func HandleDenyRequest(ctx context.Context, deps Deps, args map[string]any) (str
 					continue
 				}
 				if sendErr := sender.Send(account.ExternalID, denialMsg); sendErr != nil {
-					notificationStatus = fmt.Sprintf("failed:%s:%v", account.Gateway, sendErr)
+					notificationParts = append(notificationParts, fmt.Sprintf("failed:%s:%v", account.Gateway, sendErr))
 				} else {
-					notificationStatus = fmt.Sprintf("sent:%s", account.Gateway)
+					notificationParts = append(notificationParts, fmt.Sprintf("sent:%s", account.Gateway))
 				}
 			}
 		}
+	}
+	notificationStatus := "skipped:no_sender"
+	if len(notificationParts) > 0 {
+		notificationStatus = strings.Join(notificationParts, ";")
 	}
 
 	userName := ""

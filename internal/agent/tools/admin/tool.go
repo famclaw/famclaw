@@ -1,6 +1,6 @@
-// Package admin provides read-only admin tool handlers for parent users.
-// Each tool is injected into the agent's BuiltinTools slice and dispatched
-// by the agent's makeBuiltinHandler() switch.
+// Package admin provides built-in admin tool handlers (read-only and
+// mutating) for parent users. Each tool is injected into the agent's
+// BuiltinTools slice and dispatched by makeBuiltinHandler() in agent.go.
 package admin
 
 import (

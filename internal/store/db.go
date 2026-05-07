@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,13 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// ErrApprovalAlreadyDecided is returned by DecideApprovalWithNote when the
+// target approval is missing OR is no longer in `pending` state. Distinguishing
+// this from a generic error lets callers surface "already decided" instead of
+// "not found" and prevents two parents from racing to overwrite each other's
+// decisions.
+var ErrApprovalAlreadyDecided = errors.New("approval not found or already decided")
 
 // DB is the FamClaw database.
 type DB struct {
@@ -184,6 +192,8 @@ func (d *DB) migrate() error {
 		args        TEXT NOT NULL,
 		ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+	CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_name);
+	CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts);
 
 	CREATE TABLE IF NOT EXISTS user_role_overrides (
 		user_name   TEXT PRIMARY KEY,
@@ -304,9 +314,9 @@ func (d *DB) UpsertApproval(a *Approval) (bool, error) {
 	return err == nil, err
 }
 
-func (d *DB) GetApproval(id string) (*Approval, error) {
+func (d *DB) GetApproval(ctx context.Context, id string) (*Approval, error) {
 	a := &Approval{}
-	err := d.sql.QueryRow(`
+	err := d.sql.QueryRowContext(ctx, `
 		SELECT id, user_name, user_display, age_group, category, query_text,
 		       status, created_at, updated_at, expires_at,
 		       COALESCE(decided_by,''), COALESCE(decision_note,'')
@@ -314,7 +324,7 @@ func (d *DB) GetApproval(id string) (*Approval, error) {
 		&a.ID, &a.UserName, &a.UserDisplay, &a.AgeGroup, &a.Category, &a.QueryText,
 		&a.Status, &a.CreatedAt, &a.UpdatedAt, &a.ExpiresAt,
 		&a.DecidedBy, &a.DecisionNote)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	return a, err
@@ -334,23 +344,27 @@ func (d *DB) DecideApproval(id, status, decidedBy string) error {
 	return nil
 }
 
-// DecideApprovalWithNote updates an approval's status and sets an optional decision note.
+// DecideApprovalWithNote updates an approval's status and sets an optional
+// decision note. The `AND status='pending'` guard prevents two parents from
+// racing to overwrite a prior decision (or the same parent from accidentally
+// flipping approve→deny). Returns ErrApprovalAlreadyDecided if no pending
+// row matches.
 func (d *DB) DecideApprovalWithNote(ctx context.Context, id, status, decidedBy, note string) error {
 	res, err := d.sql.ExecContext(ctx, `
-		UPDATE approvals SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP, decision_note = ?
-		WHERE id = ?`, status, decidedBy, note, id)
+		UPDATE approvals SET status = ?, decided_by = ?, updated_at = CURRENT_TIMESTAMP, decision_note = ?
+		WHERE id = ? AND status = 'pending'`, status, decidedBy, note, id)
 	if err != nil {
 		return fmt.Errorf("decide approval with note: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("decide approval with note: approval %s not found", id)
+		return fmt.Errorf("decide approval with note %s: %w", id, ErrApprovalAlreadyDecided)
 	}
 	return nil
 }
 
-func (d *DB) PendingApprovals() ([]*Approval, error) {
-	rows, err := d.sql.Query(`
+func (d *DB) PendingApprovals(ctx context.Context) ([]*Approval, error) {
+	rows, err := d.sql.QueryContext(ctx, `
 		SELECT id, user_name, user_display, age_group, category, query_text,
 		       status, created_at, updated_at, expires_at,
 		       COALESCE(decided_by,''), COALESCE(decision_note,'')

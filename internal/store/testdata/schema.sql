@@ -2,6 +2,10 @@ CREATE INDEX idx_approvals_status ON approvals(status);
 
 CREATE INDEX idx_approvals_user ON approvals(user_name);
 
+CREATE INDEX idx_audit_log_actor ON audit_log(actor_name);
+
+CREATE INDEX idx_audit_log_ts ON audit_log(ts);
+
 CREATE INDEX idx_gateway_accounts_lookup ON gateway_accounts(gateway, external_id);
 
 CREATE INDEX idx_messages_conv ON messages(conversation_id);

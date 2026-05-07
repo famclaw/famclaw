@@ -40,8 +40,14 @@ _child_blocked if { effective_age_group in {"under_8", "age_8_12"}; input.tool_n
 # Admin tools are restricted to parent role only — block them for any child.
 _child_blocked if { admin_tools[input.tool_name] }
 
+reason := "This tool is restricted to parents only." if {
+    not allow
+    admin_tools[input.tool_name]
+}
+
 reason := "This tool is not available for your age group." if {
     not allow
+    not admin_tools[input.tool_name]
 }
 
 # Admin tools are restricted to parent role only. Listed here so the

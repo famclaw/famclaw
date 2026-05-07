@@ -66,19 +66,29 @@ func HandleListUsers(ctx context.Context, deps Deps, args map[string]any) (strin
 			linkedGateways = append(linkedGateways, acc.Gateway+":"+acc.ExternalID)
 		}
 
-		// Check for a role override.
-		overrideRole, _, err := deps.DB.GetRoleOverride(ctx, u.name)
+		// Apply role override (if any) so the reported role/age_group reflect
+		// what the policy engine sees, not the stale config row. Both the
+		// effective and config values are surfaced for transparency.
+		overrideRole, overrideAgeGroup, err := deps.DB.GetRoleOverride(ctx, u.name)
 		if err != nil {
 			return "", fmt.Errorf("get role override for %q: %w", u.name, err)
 		}
 		hasRoleOverride := overrideRole != ""
+		effectiveRole := u.role
+		effectiveAgeGroup := u.ageGroup
+		if hasRoleOverride {
+			effectiveRole = overrideRole
+			effectiveAgeGroup = overrideAgeGroup
+		}
 
 		result = append(result, map[string]any{
-			"name":             u.name,
-			"display_name":     u.displayName,
-			"role":             u.role,
-			"age_group":        u.ageGroup,
-			"linked_gateways":  linkedGateways,
+			"name":              u.name,
+			"display_name":      u.displayName,
+			"role":              effectiveRole,
+			"age_group":         effectiveAgeGroup,
+			"config_role":       u.role,
+			"config_age_group":  u.ageGroup,
+			"linked_gateways":   linkedGateways,
 			"has_role_override": hasRoleOverride,
 		})
 	}

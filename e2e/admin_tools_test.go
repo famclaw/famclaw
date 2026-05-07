@@ -149,7 +149,7 @@ func TestAdminApproveRequest_Parent(t *testing.T) {
 	}
 
 	// Verify in DB.
-	a, err := db.GetApproval(id)
+	a, err := db.GetApproval(ctx, id)
 	if err != nil {
 		t.Fatalf("GetApproval: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestAdminDenyRequest_Parent(t *testing.T) {
 	}
 
 	// Verify in DB.
-	a, err := db.GetApproval(id)
+	a, err := db.GetApproval(ctx, id)
 	if err != nil {
 		t.Fatalf("GetApproval: %v", err)
 	}
@@ -228,39 +228,65 @@ func TestAdminListUsers_Parent(t *testing.T) {
 }
 
 func TestAdminSetUserRole_Parent(t *testing.T) {
-	t.Run("by_user_name", func(t *testing.T) {
-		db := newAdminTestDB(t)
-		ctx := context.Background()
+	db := newAdminTestDB(t)
+	ctx := context.Background()
 
-		result, err := admin.HandleSetUserRole(ctx, parentDeps(db), map[string]any{
-			"user_name": "emma",
-			"role":      "under_8",
-		})
-		if err != nil {
-			t.Fatalf("HandleSetUserRole: %v", err)
-		}
-
-		var resp map[string]any
-		if err := json.Unmarshal([]byte(result), &resp); err != nil {
-			t.Fatalf("unmarshal result: %v", err)
-		}
-		if resp["role"] != "under_8" {
-			t.Errorf("role = %v, want 'under_8'", resp["role"])
-		}
-		if resp["user_name"] != "emma" {
-			t.Errorf("user_name = %v, want 'emma'", resp["user_name"])
-		}
-
-		// Verify override is stored in DB.
-		overrideRole, _, err := db.GetRoleOverride(ctx, "emma")
-		if err != nil {
-			t.Fatalf("GetRoleOverride: %v", err)
-		}
-		if overrideRole != "under_8" {
-			t.Errorf("stored role override = %q, want 'under_8'", overrideRole)
-		}
+	result, err := admin.HandleSetUserRole(ctx, parentDeps(db), map[string]any{
+		"user_name": "emma",
+		"role":      "under_8",
 	})
+	if err != nil {
+		t.Fatalf("HandleSetUserRole: %v", err)
+	}
 
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if resp["role"] != "under_8" {
+		t.Errorf("role = %v, want 'under_8'", resp["role"])
+	}
+	if resp["user_name"] != "emma" {
+		t.Errorf("user_name = %v, want 'emma'", resp["user_name"])
+	}
+
+	// Verify override is stored in DB.
+	overrideRole, _, err := db.GetRoleOverride(ctx, "emma")
+	if err != nil {
+		t.Fatalf("GetRoleOverride: %v", err)
+	}
+	if overrideRole != "under_8" {
+		t.Errorf("stored role override = %q, want 'under_8'", overrideRole)
+	}
+
+	// Round-trip: list_users must surface the override (not the config row).
+	listResult, err := admin.HandleListUsers(ctx, parentDeps(db), map[string]any{})
+	if err != nil {
+		t.Fatalf("HandleListUsers after set_user_role: %v", err)
+	}
+	var users []map[string]any
+	if err := json.Unmarshal([]byte(listResult), &users); err != nil {
+		t.Fatalf("unmarshal list_users result: %v", err)
+	}
+	var found map[string]any
+	for _, u := range users {
+		if u["name"] == "emma" {
+			found = u
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("emma not in list_users output")
+	}
+	if found["role"] != "under_8" {
+		t.Errorf("list_users effective role = %v, want 'under_8'", found["role"])
+	}
+	if found["age_group"] != "under_8" {
+		t.Errorf("list_users effective age_group = %v, want 'under_8'", found["age_group"])
+	}
+	if found["has_role_override"] != true {
+		t.Errorf("has_role_override = %v, want true", found["has_role_override"])
+	}
 }
 
 func TestAdminListUnknownAccounts_Parent(t *testing.T) {
