@@ -276,7 +276,7 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 		if scope == "all" {
 			approvals, err = s.db.RecentApprovals(100)
 		} else {
-			approvals, err = s.db.PendingApprovals()
+			approvals, err = s.db.PendingApprovals(r.Context())
 		}
 		if err != nil {
 			jsonErr(w, err, http.StatusInternalServerError)
@@ -431,7 +431,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			pending, _ := s.db.PendingApprovals()
+			pending, _ := s.db.PendingApprovals(r.Context())
 			data, _ := json.Marshal(map[string]any{"pending_count": len(pending)})
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
@@ -471,7 +471,7 @@ func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 	if s.db == nil {
 		return
 	}
-	pending, _ := s.db.PendingApprovals()
+	pending, _ := s.db.PendingApprovals(ctx)
 	var unknown any
 	if s.identStore != nil {
 		u, err := s.identStore.ListUnknown(ctx)

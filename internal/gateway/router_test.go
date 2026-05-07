@@ -413,7 +413,7 @@ func TestHandleUnknownAccount_AutoLinkExactName(t *testing.T) {
 		t.Errorf("PolicyAction = %q, want onboarding", reply.PolicyAction)
 	}
 
-	user, err := identStore.Resolve("telegram", "tg-emma-123")
+	user, err := identStore.Resolve(context.Background(),"telegram", "tg-emma-123")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestHandleUnknownAccount_AutoLinkFirstWord(t *testing.T) {
 		t.Errorf("PolicyAction = %q, want onboarding", reply.PolicyAction)
 	}
 
-	user, err := identStore.Resolve("telegram", "tg-emma-456")
+	user, err := identStore.Resolve(context.Background(),"telegram", "tg-emma-456")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -532,7 +532,7 @@ func TestHandleRegistrationReply_ValidChoice(t *testing.T) {
 		t.Errorf("expected Welcome message, got: %s", reply.Text)
 	}
 
-	user, err := identStore.Resolve("telegram", "tg-anon-1")
+	user, err := identStore.Resolve(context.Background(),"telegram", "tg-anon-1")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -593,7 +593,7 @@ func TestHandleRegistrationReply_TypoKeepsPending(t *testing.T) {
 		Gateway: "telegram", ExternalID: "tg-typo-1",
 		Text: "1", DisplayName: "Anonymous",
 	})
-	user, err := identStore.Resolve("telegram", "tg-typo-1")
+	user, err := identStore.Resolve(context.Background(),"telegram", "tg-typo-1")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestHandleUnknownAccount_ParentNeverAutoLinked(t *testing.T) {
 		DisplayName: "Parent",
 	})
 	// Must NOT be linked to the parent user.
-	user, err := identStore.Resolve("telegram", "tg-impostor-1")
+	user, err := identStore.Resolve(context.Background(),"telegram", "tg-impostor-1")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

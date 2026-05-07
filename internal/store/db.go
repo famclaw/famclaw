@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,13 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// ErrApprovalAlreadyDecided is returned by DecideApprovalWithNote when the
+// target approval is missing OR is no longer in `pending` state. Distinguishing
+// this from a generic error lets callers surface "already decided" instead of
+// "not found" and prevents two parents from racing to overwrite each other's
+// decisions.
+var ErrApprovalAlreadyDecided = errors.New("approval not found or already decided")
 
 // DB is the FamClaw database.
 type DB struct {
@@ -175,8 +183,40 @@ func (d *DB) migrate() error {
 		key_finding  TEXT,
 		blocked_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS audit_log (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		actor_name  TEXT NOT NULL,
+		gateway     TEXT NOT NULL,
+		tool_name   TEXT NOT NULL,
+		args        TEXT NOT NULL,
+		ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_name);
+	CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts);
+
+	CREATE TABLE IF NOT EXISTS user_role_overrides (
+		user_name   TEXT PRIMARY KEY,
+		role        TEXT NOT NULL,
+		age_group   TEXT NOT NULL,
+		set_by      TEXT NOT NULL,
+		set_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Guard for existing deployments that predate the decision_note column.
+	// SQLite does not support ADD COLUMN IF NOT EXISTS, so we attempt the
+	// ALTER TABLE and ignore the error when the column already exists.
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE approvals ADD COLUMN decision_note TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add decision_note: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // ── Quarantine ───────────────────────────────────────────────────────────────
@@ -274,9 +314,9 @@ func (d *DB) UpsertApproval(a *Approval) (bool, error) {
 	return err == nil, err
 }
 
-func (d *DB) GetApproval(id string) (*Approval, error) {
+func (d *DB) GetApproval(ctx context.Context, id string) (*Approval, error) {
 	a := &Approval{}
-	err := d.sql.QueryRow(`
+	err := d.sql.QueryRowContext(ctx, `
 		SELECT id, user_name, user_display, age_group, category, query_text,
 		       status, created_at, updated_at, expires_at,
 		       COALESCE(decided_by,''), COALESCE(decision_note,'')
@@ -284,7 +324,7 @@ func (d *DB) GetApproval(id string) (*Approval, error) {
 		&a.ID, &a.UserName, &a.UserDisplay, &a.AgeGroup, &a.Category, &a.QueryText,
 		&a.Status, &a.CreatedAt, &a.UpdatedAt, &a.ExpiresAt,
 		&a.DecidedBy, &a.DecisionNote)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	return a, err
@@ -304,8 +344,27 @@ func (d *DB) DecideApproval(id, status, decidedBy string) error {
 	return nil
 }
 
-func (d *DB) PendingApprovals() ([]*Approval, error) {
-	rows, err := d.sql.Query(`
+// DecideApprovalWithNote updates an approval's status and sets an optional
+// decision note. The `AND status='pending'` guard prevents two parents from
+// racing to overwrite a prior decision (or the same parent from accidentally
+// flipping approve→deny). Returns ErrApprovalAlreadyDecided if no pending
+// row matches.
+func (d *DB) DecideApprovalWithNote(ctx context.Context, id, status, decidedBy, note string) error {
+	res, err := d.sql.ExecContext(ctx, `
+		UPDATE approvals SET status = ?, decided_by = ?, updated_at = CURRENT_TIMESTAMP, decision_note = ?
+		WHERE id = ? AND status = 'pending'`, status, decidedBy, note, id)
+	if err != nil {
+		return fmt.Errorf("decide approval with note: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("decide approval with note %s: %w", id, ErrApprovalAlreadyDecided)
+	}
+	return nil
+}
+
+func (d *DB) PendingApprovals(ctx context.Context) ([]*Approval, error) {
+	rows, err := d.sql.QueryContext(ctx, `
 		SELECT id, user_name, user_display, age_group, category, query_text,
 		       status, created_at, updated_at, expires_at,
 		       COALESCE(decided_by,''), COALESCE(decision_note,'')
@@ -505,11 +564,12 @@ func (d *DB) LinkGatewayAccount(userName, gateway, externalID string) error {
 	return nil
 }
 
-func (d *DB) ResolveGatewayAccount(gateway, externalID string) (string, error) {
+func (d *DB) ResolveGatewayAccount(ctx context.Context, gateway, externalID string) (string, error) {
 	var userName string
-	err := d.sql.QueryRow(`SELECT user_name FROM gateway_accounts WHERE gateway=? AND external_id=?`,
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT user_name FROM gateway_accounts WHERE gateway=? AND external_id=?`,
 		gateway, externalID).Scan(&userName)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
@@ -523,6 +583,38 @@ func (d *DB) IsGatewayAccountRegistered(gateway, externalID string) bool {
 	d.sql.QueryRow(`SELECT COUNT(*) FROM gateway_accounts WHERE gateway=? AND external_id=?`,
 		gateway, externalID).Scan(&count) //nolint:errcheck
 	return count > 0
+}
+
+// GatewayAccount represents a linked gateway account row.
+type GatewayAccount struct {
+	ID         int64     `json:"id"`
+	UserName   string    `json:"user_name"`
+	Gateway    string    `json:"gateway"`
+	ExternalID string    `json:"external_id"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// ListGatewayAccountsByUser returns all gateway accounts linked to a given user name.
+func (d *DB) ListGatewayAccountsByUser(ctx context.Context, userName string) ([]GatewayAccount, error) {
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT id, user_name, gateway, external_id, created_at FROM gateway_accounts WHERE user_name = ?`,
+		userName)
+	if err != nil {
+		return nil, fmt.Errorf("list gateway accounts by user: %w", err)
+	}
+	defer rows.Close()
+	var out []GatewayAccount
+	for rows.Next() {
+		var g GatewayAccount
+		if err := rows.Scan(&g.ID, &g.UserName, &g.Gateway, &g.ExternalID, &g.CreatedAt); err != nil {
+			return nil, fmt.Errorf("list gateway accounts by user: %w", err)
+		}
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list gateway accounts by user: %w", err)
+	}
+	return out, nil
 }
 
 // HasGatewayAccount reports whether userName has any account linked
@@ -769,4 +861,78 @@ func (d *DB) SaveSecCheckReport(skillID, repoURL, commitSHA string, score int, v
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		skillID, repoURL, commitSHA, score, verdict, summary, reportJSON)
 	return err
+}
+
+// ── Audit Log ─────────────────────────────────────────────────────────────────
+
+// AuditLog is one row from the audit_log table.
+type AuditLog struct {
+	ID        int64
+	ActorName string
+	Gateway   string
+	ToolName  string
+	Args      string // JSON-encoded payload, as stored
+	Ts        time.Time
+}
+
+// LogAudit records an admin tool invocation to the audit_log table.
+func (d *DB) LogAudit(ctx context.Context, actorName, gateway, toolName string, args []byte) error {
+	_, err := d.sql.ExecContext(ctx,
+		`INSERT INTO audit_log (actor_name, gateway, tool_name, args) VALUES (?, ?, ?, ?)`,
+		actorName, gateway, toolName, string(args))
+	if err != nil {
+		return fmt.Errorf("log audit: %w", err)
+	}
+	return nil
+}
+
+// ListAuditLogs returns the most recent audit_log rows, newest first. A
+// non-positive limit is clamped to 100.
+func (d *DB) ListAuditLogs(ctx context.Context, limit int) ([]*AuditLog, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT id, actor_name, gateway, tool_name, args, ts
+		 FROM audit_log ORDER BY ts DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list audit logs: %w", err)
+	}
+	defer rows.Close()
+	var out []*AuditLog
+	for rows.Next() {
+		a := &AuditLog{}
+		if err := rows.Scan(&a.ID, &a.ActorName, &a.Gateway, &a.ToolName, &a.Args, &a.Ts); err != nil {
+			return nil, fmt.Errorf("scan audit log: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ── Role Overrides ────────────────────────────────────────────────────────────
+
+// GetRoleOverride returns the role override for a user, or ("", "", nil) if none exists.
+func (d *DB) GetRoleOverride(ctx context.Context, userName string) (role, ageGroup string, err error) {
+	err = d.sql.QueryRowContext(ctx,
+		`SELECT role, age_group FROM user_role_overrides WHERE user_name = ?`, userName).
+		Scan(&role, &ageGroup)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("get role override: %w", err)
+	}
+	return role, ageGroup, nil
+}
+
+// SetRoleOverride upserts a role override for a user.
+func (d *DB) SetRoleOverride(ctx context.Context, userName, role, ageGroup, setBy string) error {
+	_, err := d.sql.ExecContext(ctx,
+		`INSERT OR REPLACE INTO user_role_overrides (user_name, role, age_group, set_by, set_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+		userName, role, ageGroup, setBy)
+	if err != nil {
+		return fmt.Errorf("set role override: %w", err)
+	}
+	return nil
 }

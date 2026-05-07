@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
+	"github.com/famclaw/famclaw/internal/agent/tools/admin"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/llm"
@@ -51,6 +52,7 @@ type Agent struct {
 	scheduler    *subagent.Scheduler
 	builtinTools []agentcore.Tool // tools to inject onto every Turn
 	convID       string
+	gateway      string // gateway name (telegram, discord, web, etc.) for audit logs
 
 	// webFetcher is the function used by handleWebFetch. Defaults to
 	// webfetch.Fetch in NewAgent. Tests can swap in a stub to assert the
@@ -68,6 +70,7 @@ type AgentDeps struct {
 	Scanner      skillbridge.Scanner
 	Scheduler    *subagent.Scheduler
 	BuiltinTools []agentcore.Tool
+	Gateway      string // gateway name (telegram, discord, web, etc.) for admin tool audit logs
 }
 
 // NewAgent creates an Agent for the given user. Optional dependencies
@@ -81,6 +84,13 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	h := sha256.Sum256([]byte(user.Name + ":" + day))
 	convID := hex.EncodeToString(h[:8])
 
+	// Append admin tools for parent users so they are always available
+	// without callers needing to wire them individually.
+	builtins := deps.BuiltinTools
+	if user.Role == "parent" {
+		builtins = append(builtins, admin.AllDefinitions()...)
+	}
+
 	return &Agent{
 		user:         user,
 		cfg:          cfg,
@@ -93,8 +103,9 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		quarantine:   deps.Quarantine,
 		scanner:      deps.Scanner,
 		scheduler:    deps.Scheduler,
-		builtinTools: deps.BuiltinTools,
+		builtinTools: builtins,
 		convID:       convID,
+		gateway:      deps.Gateway,
 		webFetcher:   webfetch.Fetch,
 	}
 }
@@ -125,8 +136,13 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		})
 	}
 
-	// Resolve LLM profile
+	// Resolve LLM profile. Prefer the injected backend (e.g. claude_cli)
+	// when provided; otherwise build an HTTP client from the per-user
+	// endpoint config.
 	clientFactory := func(t *agentcore.Turn) llm.Chatter {
+		if a.llmClient != nil {
+			return a.llmClient
+		}
 		ep := a.cfg.LLMEndpointFor(t.User)
 		if ep.BaseURL == "" || ep.Model == "" {
 			return nil
@@ -262,6 +278,27 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			return a.handleSpawnAgent(ctx, args)
 		case "builtin__web_fetch":
 			return a.handleWebFetch(ctx, args)
+		case "builtin__list_pending_approvals":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			return admin.HandleListPendingApprovals(ctx, deps, args)
+		case "builtin__list_users":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			return admin.HandleListUsers(ctx, deps, args)
+		case "builtin__list_unknown_accounts":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			return admin.HandleListUnknownAccounts(ctx, deps, args)
+		case "builtin__approve_request":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			return admin.HandleApproveRequest(ctx, deps, args)
+		case "builtin__deny_request":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			return admin.HandleDenyRequest(ctx, deps, args)
+		case "builtin__set_user_role":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			return admin.HandleSetUserRole(ctx, deps, args)
+		case "builtin__link_account":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			return admin.HandleLinkAccount(ctx, deps, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}

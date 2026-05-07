@@ -60,7 +60,7 @@ func TestTelegram_UnknownAccount_AutoLink(t *testing.T) {
 		t.Errorf("expected 'linked' in reply text, got %q", reply.Text)
 	}
 
-	resolved, err := identStore.Resolve("telegram", "tg-test-9999")
+	resolved, err := identStore.Resolve(context.Background(), "telegram", "tg-test-9999")
 	if err != nil {
 		t.Fatalf("identStore.Resolve: %v", err)
 	}

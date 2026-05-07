@@ -79,7 +79,7 @@ func NewRouter(
 // Returns immediately after identity resolution — heavy work runs per-user serially.
 func (r *Router) Handle(ctx context.Context, msg Message) Reply {
 	// ── Step 1: Identity resolve (fast, in caller goroutine) ─────────────
-	user, err := r.identStore.Resolve(msg.Gateway, msg.ExternalID)
+	user, err := r.identStore.Resolve(ctx, msg.Gateway, msg.ExternalID)
 	if err != nil {
 		log.Printf("[router] identity error: %v", err)
 		return Reply{Text: "Something went wrong. Please try again.", PolicyAction: "error"}
@@ -102,7 +102,7 @@ func (r *Router) Handle(ctx context.Context, msg Message) Reply {
 // Called by the SessionPool — one at a time per user, concurrent across users.
 func (r *Router) process(ctx context.Context, msg Message) Reply {
 	// Re-resolve identity (needed for userCfg in this goroutine)
-	user, _ := r.identStore.Resolve(msg.Gateway, msg.ExternalID)
+	user, _ := r.identStore.Resolve(ctx, msg.Gateway, msg.ExternalID)
 	if user == nil {
 		return Reply{Text: identity.OnboardingMessage(), PolicyAction: "onboarding"}
 	}
