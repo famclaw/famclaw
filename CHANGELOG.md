@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- Optional Claude CLI backend (provider: claude_cli) for users running famclaw alongside Claude Code
 - OPA output policy (`output_policy.rego`): LLM draft responses are now evaluated by OPA
   before reaching the user. Hard-blocked categories (sexual_content, self_harm, hate_speech,
   illegal_activity) are blocked for all users including parents. Soft-blocked content for

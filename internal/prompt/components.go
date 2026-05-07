@@ -3,8 +3,6 @@ package prompt
 import (
 	"fmt"
 	"strings"
-
-	"github.com/famclaw/famclaw/internal/llm"
 )
 
 // userComponent describes who the user is.
@@ -165,11 +163,3 @@ func memoryComponent(_ BuildContext) (string, bool) {
 	return "", false
 }
 
-// oauthPrefixComponent — Anthropic-required prefix when using Sign in with Claude.
-// Must come FIRST in the component list so the joined system prompt starts with it.
-func oauthPrefixComponent(c BuildContext) (string, bool) {
-	if !c.OAuth {
-		return "", false
-	}
-	return llm.ClaudeCodeSystemPrefix, true
-}

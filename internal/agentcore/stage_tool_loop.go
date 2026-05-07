@@ -28,7 +28,7 @@ func toolPolicyInput(turn *Turn, toolName string) policy.ToolCallInput {
 // ToolLoopDeps holds dependencies for the tool loop stage.
 type ToolLoopDeps struct {
 	Pool          *mcp.Pool
-	ClientFactory func(turn *Turn) *llm.Client
+	ClientFactory func(turn *Turn) llm.Chatter
 	Temperature   float64
 	MaxTokens     int
 	MaxIterations int // default 10

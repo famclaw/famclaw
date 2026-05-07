@@ -78,7 +78,7 @@ func TestPrompt_BehavioralProbes(t *testing.T) {
 	sam := &config.UserConfig{Name: "sam", DisplayName: "Sam", Role: "child", AgeGroup: "age_13_17"}
 
 	personas := map[string]BuildContext{
-		"parent":          {Cfg: cfg, User: parent, Gateway: "telegram", Skills: []string{"seccheck"}, OAuth: true, HardBlocked: []string{"weapons", "self_harm"}},
+		"parent":          {Cfg: cfg, User: parent, Gateway: "telegram", Skills: []string{"seccheck"}, HardBlocked: []string{"weapons", "self_harm"}},
 		"child_under_8":   {Cfg: cfg, User: teo, Gateway: "telegram", HardBlocked: []string{"weapons", "self_harm"}},
 		"child_age_8_12":  {Cfg: cfg, User: julia, Gateway: "telegram", HardBlocked: []string{"weapons"}},
 		"child_age_13_17": {Cfg: cfg, User: sam, Gateway: "web"},

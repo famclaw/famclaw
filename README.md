@@ -43,6 +43,14 @@ FamClaw itself uses ~20MB RAM. The LLM runs elsewhere — on a Mac Mini on your 
 
 FamClaw talks to any OpenAI-compatible endpoint:
 
+| Platform | Backend | api_key needed |
+|---|---|---|
+| RPi 3/4/5 | Ollama (local, auto-installed by firstboot.sh) | No |
+| Mac Mini | Ollama (local) | No |
+| Old Android (Termux) | OpenAI / Anthropic / OpenRouter / another device's Ollama | Yes (or LAN URL) |
+| Any device | Can point at RPi's Ollama on LAN | No |
+| Any device | Claude CLI (`provider: claude_cli`) | No (uses local claude binary) |
+
 ```yaml
 llm:
   primary:

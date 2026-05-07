@@ -19,7 +19,7 @@ type FamilyPipelineDeps struct {
 	Evaluator     *policy.Evaluator
 	DB            *store.DB
 	Pool          *mcp.Pool
-	ClientFactory func(turn *Turn) *llm.Client
+	ClientFactory func(turn *Turn) llm.Chatter
 	Temperature   float64
 	MaxTokens     int
 	ContextWindow int

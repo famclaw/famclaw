@@ -202,7 +202,7 @@ func TestStageToolLoop_ToolCallIDPropagation(t *testing.T) {
 			defer server.Close()
 
 			deps := ToolLoopDeps{
-				ClientFactory: func(*Turn) *llm.Client {
+				ClientFactory: func(*Turn) llm.Chatter {
 					return llm.NewClient(server.URL, "test", "")
 				},
 				BuiltinHandler: tc.buildHandler(),

@@ -48,15 +48,26 @@ type ToolDefFunc struct {
 	Parameters  map[string]any `json:"parameters"` // JSON Schema
 }
 
+// Chatter is implemented by any LLM backend (OpenAI-compatible HTTP, claude CLI, etc.).
+type Chatter interface {
+	Chat(ctx context.Context, messages []Message, temp float64, maxTokens int, onToken func(string)) (string, error)
+	ChatMessage(ctx context.Context, messages []Message, temp float64, maxTokens int) (*Message, error)
+	ChatWithTools(ctx context.Context, messages []Message, temp float64, maxTokens int, tools []ToolDef) (*Message, error)
+	ChatSync(ctx context.Context, messages []Message, temp float64, maxTokens int) (string, error)
+}
+
+// ClaudeCodeSystemPrefix must be prepended to system prompts when using Claude Code API.
+const ClaudeCodeSystemPrefix = "You are Claude Code, Anthropic's official CLI for Claude."
+
+// Compile-time assertion that *Client satisfies Chatter.
+var _ Chatter = (*Client)(nil)
+
 // Client talks to an OpenAI-compatible LLM server.
 type Client struct {
-	baseURL    string
-	model      string
-	apiKey     string
-	oauthStore *OAuthStore // nil = use apiKey
-	oauthName  string      // provider name for OAuth token lookup
-	betaHeader string      // anthropic-beta header (set for OAuth)
-	http       *http.Client
+	baseURL string
+	model   string
+	apiKey  string
+	http    *http.Client
 }
 
 // NewClient creates a new LLM client with API key auth.
@@ -74,33 +85,10 @@ func NewClient(baseURL, model, apiKey string) *Client {
 	}
 }
 
-// NewOAuthClient creates an LLM client that authenticates via OAuth tokens.
-func NewOAuthClient(baseURL, model string, store *OAuthStore, providerName string) *Client {
-	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		model:      model,
-		oauthStore: store,
-		oauthName:  providerName,
-		betaHeader: AnthropicBetaHeader,
-		http: &http.Client{
-			Timeout: 5 * time.Minute,
-		},
-	}
-}
-
-// setAuth sets the Authorization and beta headers on a request.
+// setAuth sets the Authorization header on a request.
 func (c *Client) setAuth(ctx context.Context, req *http.Request) error {
-	if c.oauthStore != nil {
-		token, err := c.oauthStore.GetAccessToken(ctx, c.oauthName)
-		if err != nil {
-			return fmt.Errorf("oauth auth: %w", err)
-		}
-		req.Header.Set("Authorization", "Bearer "+token)
-	} else if c.apiKey != "" {
+	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-	if c.betaHeader != "" {
-		req.Header.Set("anthropic-beta", c.betaHeader)
 	}
 	return nil
 }

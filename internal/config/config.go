@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -98,11 +99,10 @@ func (s ServerConfig) BaseURL() string {
 
 // LLMProfile is a named LLM endpoint configuration.
 type LLMProfile struct {
-	Label    string `yaml:"label"`
-	BaseURL  string `yaml:"base_url"`
-	Model    string `yaml:"model"`
-	APIKey   string `yaml:"api_key,omitempty"`
-	AuthType string `yaml:"auth_type,omitempty"` // "api_key" (default) | "oauth"
+	Label   string `yaml:"label"`
+	BaseURL string `yaml:"base_url"`
+	Model   string `yaml:"model"`
+	APIKey  string `yaml:"api_key,omitempty"`
 }
 
 type LLMConfig struct {
@@ -400,26 +400,25 @@ func (c *Config) ModelFor(user *UserConfig) string {
 
 // LLMEndpoint holds resolved LLM connection details for a user.
 type LLMEndpoint struct {
-	BaseURL  string
-	Model    string
-	APIKey   string
-	AuthType string // "api_key" (default) | "oauth"
+	BaseURL string
+	Model   string
+	APIKey  string
 }
 
-// LLMEndpointFor resolves the full LLM endpoint for a user, including AuthType.
+// LLMEndpointFor resolves the full LLM endpoint for a user.
 // Priority: user.LLMProfile → cfg.LLM.Default → legacy cfg.LLM.BaseURL/Model.
 func (c *Config) LLMEndpointFor(user *UserConfig) LLMEndpoint {
 	// Try user's profile override
 	if user != nil && user.LLMProfile != "" {
 		if p, ok := c.LLM.Profiles[user.LLMProfile]; ok {
-			return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey, AuthType: p.AuthType}
+			return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey}
 		}
 		log.Printf("[config] warning: user %q references unknown LLM profile %q, falling back", user.Name, user.LLMProfile)
 	}
 	// Try default profile
 	if c.LLM.Default != "" {
 		if p, ok := c.LLM.Profiles[c.LLM.Default]; ok {
-			return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey, AuthType: p.AuthType}
+			return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey}
 		}
 		log.Printf("[config] warning: default LLM profile %q not found, using legacy config", c.LLM.Default)
 	}
@@ -434,8 +433,25 @@ func (c *Config) LLMEndpointForProfile(profileName string) LLMEndpoint {
 		return c.LLMEndpointFor(nil) // use default
 	}
 	if p, ok := c.LLM.Profiles[profileName]; ok {
-		return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey, AuthType: p.AuthType}
+		return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey}
 	}
 	log.Printf("[config] warning: LLM profile %q not found", profileName)
 	return LLMEndpoint{}
+}
+
+// ValidateProvider checks that the configured LLM provider is valid.
+// If Provider is "claude_cli", it verifies the claude binary exists in $PATH.
+// Empty string and "openai" are always valid (openai is the default).
+func (c *LLMConfig) ValidateProvider() error {
+	switch c.Provider {
+	case "", "openai":
+		return nil
+	case "claude_cli":
+		if _, err := exec.LookPath("claude"); err != nil {
+			return fmt.Errorf("provider %q requires the claude binary in $PATH: %w", c.Provider, err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown llm provider %q: valid values are \"openai\", \"claude_cli\"", c.Provider)
+	}
 }

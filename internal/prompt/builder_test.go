@@ -205,16 +205,6 @@ func TestMemoryComponent_PlaceholderExcluded(t *testing.T) {
 	}
 }
 
-func TestOAuthPrefixComponent(t *testing.T) {
-	if _, ok := oauthPrefixComponent(BuildContext{OAuth: false}); ok {
-		t.Error("oauth prefix should be excluded when OAuth=false")
-	}
-	text, ok := oauthPrefixComponent(BuildContext{OAuth: true})
-	if !ok || text == "" {
-		t.Fatal("expected included for OAuth=true")
-	}
-}
-
 // approxTokens estimates token count from char count. Rough heuristic:
 // English text averages ~4 chars/token in Anthropic/OpenAI BPE tokenizers.
 // Off by 10-15% but stable enough for a regression budget.
@@ -235,7 +225,6 @@ func TestBuild_ParentTokenBudget(t *testing.T) {
 		User:        &cfg.Users[0],
 		Gateway:     "telegram",
 		Skills:      []string{"seccheck", "honeybadger"},
-		OAuth:       true,
 		HardBlocked: []string{"weapons", "self_harm", "drugs"},
 	})
 	tokens := approxTokens(out)
@@ -317,7 +306,6 @@ func TestBuild_TokenBudget_WithBuiltinTools(t *testing.T) {
 		Cfg:          cfg,
 		User:         &cfg.Users[0],
 		Gateway:      "telegram",
-		OAuth:        true,
 		HardBlocked:  []string{"weapons"},
 		BuiltinTools: []string{"spawn_agent", "web_fetch"},
 	})
@@ -328,18 +316,3 @@ func TestBuild_TokenBudget_WithBuiltinTools(t *testing.T) {
 	t.Logf("parent prompt with builtin tools: %d tokens, %d chars", tokens, len(out))
 }
 
-func TestBuild_OAuthPrefixIsFirst(t *testing.T) {
-	out := Build(BuildContext{
-		User:  &config.UserConfig{Name: "x", Role: "parent"},
-		OAuth: true,
-	})
-	if !strings.HasPrefix(out, "You are Claude Code") {
-		// The exact prefix is in llm.ClaudeCodeSystemPrefix; the first few
-		// words are what we assert. If this changes upstream, update here.
-		end := 80
-		if end > len(out) {
-			end = len(out)
-		}
-		t.Errorf("OAuth prefix not first; output starts with: %q", out[:end])
-	}
-}
