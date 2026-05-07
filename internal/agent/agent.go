@@ -136,8 +136,13 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		})
 	}
 
-	// Resolve LLM profile
+	// Resolve LLM profile. Prefer the injected backend (e.g. claude_cli)
+	// when provided; otherwise build an HTTP client from the per-user
+	// endpoint config.
 	clientFactory := func(t *agentcore.Turn) llm.Chatter {
+		if a.llmClient != nil {
+			return a.llmClient
+		}
 		ep := a.cfg.LLMEndpointFor(t.User)
 		if ep.BaseURL == "" || ep.Model == "" {
 			return nil
