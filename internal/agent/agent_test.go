@@ -306,7 +306,7 @@ func TestBuildMessages_DefaultUsesPromptBuilder(t *testing.T) {
 		},
 	}
 	a := &Agent{cfg: cfg, user: &cfg.Users[0]}
-	msgs := a.buildMessages(nil, "hi")
+	msgs := a.buildMessages(context.Background(), nil, "hi")
 	if len(msgs) < 1 || msgs[0].Role != "system" {
 		t.Fatalf("first message must be system, got %+v", msgs)
 	}
@@ -329,7 +329,7 @@ func TestBuildMessages_OperatorOverrideKept(t *testing.T) {
 		},
 	}
 	a := &Agent{cfg: cfg, user: &cfg.Users[0]}
-	msgs := a.buildMessages(nil, "hi")
+	msgs := a.buildMessages(context.Background(), nil, "hi")
 	sys := msgs[0].Content
 	if !strings.HasPrefix(sys, "You are a pirate.") {
 		t.Errorf("operator override should be verbatim at start, got: %q", sys)

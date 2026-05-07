@@ -19,11 +19,16 @@ import (
 
 // Evaluator wraps an embedded OPA instance for policy decisions.
 type Evaluator struct {
-	actionQuery     rego.PreparedEvalQuery
-	reasonQuery     rego.PreparedEvalQuery
-	toolAllowQuery  rego.PreparedEvalQuery
-	toolReasonQuery rego.PreparedEvalQuery
-	store           storage.Store
+	actionQuery       rego.PreparedEvalQuery
+	reasonQuery       rego.PreparedEvalQuery
+	toolAllowQuery    rego.PreparedEvalQuery
+	toolReasonQuery   rego.PreparedEvalQuery
+	outputAllowQuery  rego.PreparedEvalQuery
+	outputReasonQuery rego.PreparedEvalQuery
+	outputRedactQuery rego.PreparedEvalQuery
+	skillAllowQuery   rego.PreparedEvalQuery
+	skillReasonQuery  rego.PreparedEvalQuery
+	store             storage.Store
 }
 
 // NewEvaluator builds an evaluator. When policyDir/dataDir are empty,
@@ -103,12 +108,62 @@ func NewEvaluator(policyDir, dataDir string) (*Evaluator, error) {
 		return nil, fmt.Errorf("preparing tool_policy reason query: %w", err)
 	}
 
+	outputAllowQ, err := rego.New(
+		rego.Query("data.family.output_policy.allow_output"),
+		rego.Compiler(compiler),
+		rego.Store(store),
+	).PrepareForEval(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("preparing output_policy allow_output query: %w", err)
+	}
+
+	outputReasonQ, err := rego.New(
+		rego.Query("data.family.output_policy.reason"),
+		rego.Compiler(compiler),
+		rego.Store(store),
+	).PrepareForEval(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("preparing output_policy reason query: %w", err)
+	}
+
+	outputRedactQ, err := rego.New(
+		rego.Query("data.family.output_policy.redact"),
+		rego.Compiler(compiler),
+		rego.Store(store),
+	).PrepareForEval(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("preparing output_policy redact query: %w", err)
+	}
+
+	skillAllowQ, err := rego.New(
+		rego.Query("data.family.skill_prompt_policy.allow"),
+		rego.Compiler(compiler),
+		rego.Store(store),
+	).PrepareForEval(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("preparing skill_prompt_policy allow query: %w", err)
+	}
+
+	skillReasonQ, err := rego.New(
+		rego.Query("data.family.skill_prompt_policy.reason"),
+		rego.Compiler(compiler),
+		rego.Store(store),
+	).PrepareForEval(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("preparing skill_prompt_policy reason query: %w", err)
+	}
+
 	return &Evaluator{
-		actionQuery:     actionQ,
-		reasonQuery:     reasonQ,
-		toolAllowQuery:  toolAllowQ,
-		toolReasonQuery: toolReasonQ,
-		store:           store,
+		actionQuery:       actionQ,
+		reasonQuery:       reasonQ,
+		toolAllowQuery:    toolAllowQ,
+		toolReasonQuery:   toolReasonQ,
+		outputAllowQuery:  outputAllowQ,
+		outputReasonQuery: outputReasonQ,
+		outputRedactQuery: outputRedactQ,
+		skillAllowQuery:   skillAllowQ,
+		skillReasonQuery:  skillReasonQ,
+		store:             store,
 	}, nil
 }
 
@@ -207,9 +262,10 @@ func (e *Evaluator) Evaluate(ctx context.Context, input Input) (Decision, error)
 }
 
 // EvaluateToolCall returns the tool-call policy decision for the given user
-// and tool name. Falls open (Allow=true) when the policy module yields no
-// result — matching the `default allow := true` rule in tool_policy.rego —
-// but evaluation errors are propagated and treated as deny by callers.
+// and tool name. Fail-closed: returns ToolDecision{Allow: false} when OPA
+// returns no result — matches the `default allow := false` rule in
+// tool_policy.rego after the default-DENY migration. Evaluation errors are
+// propagated and treated as deny by callers.
 func (e *Evaluator) EvaluateToolCall(ctx context.Context, input ToolCallInput) (ToolDecision, error) {
 	inputMap, err := toMap(input)
 	if err != nil {
@@ -221,7 +277,7 @@ func (e *Evaluator) EvaluateToolCall(ctx context.Context, input ToolCallInput) (
 		return ToolDecision{}, fmt.Errorf("evaluating tool_policy allow: %w", err)
 	}
 
-	allow := true
+	allow := false // fail-closed: if OPA returns no result, deny
 	if len(allowResults) > 0 && len(allowResults[0].Expressions) > 0 {
 		if v, ok := allowResults[0].Expressions[0].Value.(bool); ok {
 			allow = v
@@ -237,6 +293,74 @@ func (e *Evaluator) EvaluateToolCall(ctx context.Context, input ToolCallInput) (
 	}
 
 	return ToolDecision{Allow: allow, Reason: reason}, nil
+}
+
+// EvaluateOutput checks the LLM draft response against the output policy.
+// Fail-closed: returns OutputDecision{Allow: false} on evaluation error.
+func (e *Evaluator) EvaluateOutput(ctx context.Context, input OutputInput) (OutputDecision, error) {
+	m, err := toMap(input)
+	if err != nil {
+		return OutputDecision{Allow: false}, fmt.Errorf("marshalling output input: %w", err)
+	}
+
+	allow := false // fail-closed
+	rs, err := e.outputAllowQuery.Eval(ctx, rego.EvalInput(m))
+	if err != nil {
+		return OutputDecision{Allow: false}, fmt.Errorf("evaluating output allow: %w", err)
+	}
+	if len(rs) > 0 && len(rs[0].Expressions) > 0 {
+		if v, ok := rs[0].Expressions[0].Value.(bool); ok {
+			allow = v
+		}
+	}
+
+	reason := ""
+	rs2, err := e.outputReasonQuery.Eval(ctx, rego.EvalInput(m))
+	if err == nil && len(rs2) > 0 && len(rs2[0].Expressions) > 0 {
+		reason, _ = rs2[0].Expressions[0].Value.(string)
+	}
+
+	var redact []string
+	rs3, err := e.outputRedactQuery.Eval(ctx, rego.EvalInput(m))
+	if err == nil && len(rs3) > 0 && len(rs3[0].Expressions) > 0 {
+		if arr, ok := rs3[0].Expressions[0].Value.([]interface{}); ok {
+			for _, v := range arr {
+				if s, ok := v.(string); ok {
+					redact = append(redact, s)
+				}
+			}
+		}
+	}
+
+	return OutputDecision{Allow: allow, Reason: reason, Redact: redact}, nil
+}
+
+// EvaluateSkillPrompt checks a skill's prompt body against the skill-prompt policy.
+// Fail-closed: returns SkillPromptDecision{Allow: false} on evaluation error.
+func (e *Evaluator) EvaluateSkillPrompt(ctx context.Context, input SkillPromptInput) (SkillPromptDecision, error) {
+	m, err := toMap(input)
+	if err != nil {
+		return SkillPromptDecision{Allow: false}, fmt.Errorf("marshalling skill prompt input: %w", err)
+	}
+
+	allow := false // fail-closed
+	rs, err := e.skillAllowQuery.Eval(ctx, rego.EvalInput(m))
+	if err != nil {
+		return SkillPromptDecision{Allow: false}, fmt.Errorf("evaluating skill allow: %w", err)
+	}
+	if len(rs) > 0 && len(rs[0].Expressions) > 0 {
+		if v, ok := rs[0].Expressions[0].Value.(bool); ok {
+			allow = v
+		}
+	}
+
+	reason := ""
+	rs2, err := e.skillReasonQuery.Eval(ctx, rego.EvalInput(m))
+	if err == nil && len(rs2) > 0 && len(rs2[0].Expressions) > 0 {
+		reason, _ = rs2[0].Expressions[0].Value.(string)
+	}
+
+	return SkillPromptDecision{Allow: allow, Reason: reason}, nil
 }
 
 func toMap(v any) (map[string]any, error) {

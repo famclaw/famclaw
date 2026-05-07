@@ -40,3 +40,32 @@ type ToolDecision struct {
 	Allow  bool   `json:"allow"`
 	Reason string `json:"reason"`
 }
+
+// OutputInput is the payload sent to data.family.output_policy.
+// Field names match the Rego input shape exactly.
+type OutputInput struct {
+	User          UserInput `json:"user"`
+	Gateway       string    `json:"gateway"`
+	DraftResponse string    `json:"draft_response"`
+}
+
+// OutputDecision is the result of an output policy check.
+type OutputDecision struct {
+	Allow  bool     `json:"allow"`
+	Reason string   `json:"reason"`
+	Redact []string `json:"redact"`
+}
+
+// SkillPromptInput is the payload sent to data.family.skill_prompt_policy.
+// Fields are top-level (not nested) per the task spec.
+type SkillPromptInput struct {
+	SkillName  string `json:"skill_name"`
+	PromptBody string `json:"prompt_body"`
+	UserRole   string `json:"user_role"`
+}
+
+// SkillPromptDecision is the result of a skill-prompt policy check.
+type SkillPromptDecision struct {
+	Allow  bool   `json:"allow"`
+	Reason string `json:"reason"`
+}

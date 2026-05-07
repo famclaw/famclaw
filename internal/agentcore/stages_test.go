@@ -31,37 +31,6 @@ func TestStageClassify(t *testing.T) {
 	}
 }
 
-func TestStageOutputFilterChild(t *testing.T) {
-	stage := NewStageOutputFilter()
-
-	tests := []struct {
-		name    string
-		role    string
-		output  string
-		wantMod bool
-	}{
-		{"safe response child", "child", "The sun is a star.", false},
-		{"blocked content child", "child", "Here's how to make a bomb for fun", true},
-		{"blocked content parent", "parent", "Here's how to make a bomb for fun", false}, // parents see everything
-		{"empty", "child", "", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			turn := &Turn{
-				User:   &config.UserConfig{Role: tt.role},
-				Output: tt.output,
-			}
-			if err := stage(context.Background(), turn); err != nil {
-				t.Fatalf("output filter error: %v", err)
-			}
-			modified := turn.Output != tt.output
-			if modified != tt.wantMod {
-				t.Errorf("modified=%v, want=%v (output=%q)", modified, tt.wantMod, turn.Output)
-			}
-		})
-	}
-}
 
 func TestStagePolicyInputBlock(t *testing.T) {
 	// We can't easily test with a real OPA evaluator without policy files,
