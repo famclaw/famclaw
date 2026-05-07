@@ -152,3 +152,110 @@ test_unknown_tool_blocked_for_unknown_role if {
         "tool_name": "calculator_v2"
     }
 }
+
+# --- Admin tools: only parents may use them ---
+
+# list_pending_approvals
+test_parent_can_list_pending_approvals if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "list_pending_approvals"
+    }
+}
+
+test_child_cannot_list_pending_approvals if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_8_12"},
+        "tool_name": "list_pending_approvals"
+    }
+}
+
+# approve_request
+test_parent_can_approve_request if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "approve_request"
+    }
+}
+
+test_child_cannot_approve_request if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_13_17"},
+        "tool_name": "approve_request"
+    }
+}
+
+# deny_request
+test_parent_can_deny_request if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "deny_request"
+    }
+}
+
+test_child_cannot_deny_request if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "under_8"},
+        "tool_name": "deny_request"
+    }
+}
+
+# list_users
+test_parent_can_list_users if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "list_users"
+    }
+}
+
+test_child_cannot_list_users if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_8_12"},
+        "tool_name": "list_users"
+    }
+}
+
+# set_user_role
+test_parent_can_set_user_role if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "set_user_role"
+    }
+}
+
+test_child_cannot_set_user_role if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_13_17"},
+        "tool_name": "set_user_role"
+    }
+}
+
+# list_unknown_accounts
+test_parent_can_list_unknown_accounts if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "list_unknown_accounts"
+    }
+}
+
+test_child_cannot_list_unknown_accounts if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "under_8"},
+        "tool_name": "list_unknown_accounts"
+    }
+}
+
+# link_account
+test_parent_can_link_account if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "link_account"
+    }
+}
+
+test_child_cannot_link_account if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_8_12"},
+        "tool_name": "link_account"
+    }
+}

@@ -37,7 +37,22 @@ _child_blocked if { startswith(input.tool_name, "file_") }
 _child_blocked if { input.tool_name == "spawn_agent" }
 _child_blocked if { effective_age_group == "under_8"; input.tool_name == "web_search" }
 _child_blocked if { effective_age_group in {"under_8", "age_8_12"}; input.tool_name == "web_fetch" }
+# Admin tools are restricted to parent role only — block them for any child.
+_child_blocked if { admin_tools[input.tool_name] }
 
 reason := "This tool is not available for your age group." if {
     not allow
+}
+
+# Admin tools are restricted to parent role only. Listed here so the
+# `_child_blocked` rule and any future role gate share a single source
+# of truth.
+admin_tools := {
+    "list_pending_approvals",
+    "approve_request",
+    "deny_request",
+    "list_users",
+    "set_user_role",
+    "list_unknown_accounts",
+    "link_account",
 }

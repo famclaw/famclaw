@@ -1,7 +1,3 @@
--- FamClaw schema golden file. Regenerate with:
---   go test -tags dumpschema -run TestDumpSchema ./internal/store/
--- (or set UPDATE_SCHEMA_GOLDEN=1 and run TestSchemaGolden)
-
 CREATE INDEX idx_approvals_status ON approvals(status);
 
 CREATE INDEX idx_approvals_user ON approvals(user_name);
@@ -27,6 +23,15 @@ CREATE TABLE approvals (
 		expires_at     DATETIME NOT NULL,
 		decided_by     TEXT,
 		decision_note  TEXT
+	);
+
+CREATE TABLE audit_log (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		actor_name  TEXT NOT NULL,
+		gateway     TEXT NOT NULL,
+		tool_name   TEXT NOT NULL,
+		args        TEXT NOT NULL,
+		ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
 CREATE TABLE conversations (
@@ -134,5 +139,13 @@ CREATE TABLE unknown_accounts (
 CREATE TABLE used_tokens (
 		token_hash TEXT PRIMARY KEY,
 		used_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+CREATE TABLE user_role_overrides (
+		user_name   TEXT PRIMARY KEY,
+		role        TEXT NOT NULL,
+		age_group   TEXT NOT NULL,
+		set_by      TEXT NOT NULL,
+		set_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 

@@ -175,8 +175,38 @@ func (d *DB) migrate() error {
 		key_finding  TEXT,
 		blocked_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS audit_log (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		actor_name  TEXT NOT NULL,
+		gateway     TEXT NOT NULL,
+		tool_name   TEXT NOT NULL,
+		args        TEXT NOT NULL,
+		ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS user_role_overrides (
+		user_name   TEXT PRIMARY KEY,
+		role        TEXT NOT NULL,
+		age_group   TEXT NOT NULL,
+		set_by      TEXT NOT NULL,
+		set_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Guard for existing deployments that predate the decision_note column.
+	// SQLite does not support ADD COLUMN IF NOT EXISTS, so we attempt the
+	// ALTER TABLE and ignore the error when the column already exists.
+	if _, err := d.sql.Exec(`ALTER TABLE approvals ADD COLUMN decision_note TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add decision_note: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // ── Quarantine ───────────────────────────────────────────────────────────────
@@ -300,6 +330,21 @@ func (d *DB) DecideApproval(id, status, decidedBy string) error {
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("approval %s not found or already decided", id)
+	}
+	return nil
+}
+
+// DecideApprovalWithNote updates an approval's status and sets an optional decision note.
+func (d *DB) DecideApprovalWithNote(ctx context.Context, id, status, decidedBy, note string) error {
+	res, err := d.sql.ExecContext(ctx, `
+		UPDATE approvals SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP, decision_note = ?
+		WHERE id = ?`, status, decidedBy, note, id)
+	if err != nil {
+		return fmt.Errorf("decide approval with note: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("decide approval with note: approval %s not found", id)
 	}
 	return nil
 }
@@ -523,6 +568,38 @@ func (d *DB) IsGatewayAccountRegistered(gateway, externalID string) bool {
 	d.sql.QueryRow(`SELECT COUNT(*) FROM gateway_accounts WHERE gateway=? AND external_id=?`,
 		gateway, externalID).Scan(&count) //nolint:errcheck
 	return count > 0
+}
+
+// GatewayAccount represents a linked gateway account row.
+type GatewayAccount struct {
+	ID         int64     `json:"id"`
+	UserName   string    `json:"user_name"`
+	Gateway    string    `json:"gateway"`
+	ExternalID string    `json:"external_id"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// ListGatewayAccountsByUser returns all gateway accounts linked to a given user name.
+func (d *DB) ListGatewayAccountsByUser(ctx context.Context, userName string) ([]GatewayAccount, error) {
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT id, user_name, gateway, external_id, created_at FROM gateway_accounts WHERE user_name = ?`,
+		userName)
+	if err != nil {
+		return nil, fmt.Errorf("list gateway accounts by user: %w", err)
+	}
+	defer rows.Close()
+	var out []GatewayAccount
+	for rows.Next() {
+		var g GatewayAccount
+		if err := rows.Scan(&g.ID, &g.UserName, &g.Gateway, &g.ExternalID, &g.CreatedAt); err != nil {
+			return nil, fmt.Errorf("list gateway accounts by user: %w", err)
+		}
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list gateway accounts by user: %w", err)
+	}
+	return out, nil
 }
 
 // HasGatewayAccount reports whether userName has any account linked
@@ -769,4 +846,44 @@ func (d *DB) SaveSecCheckReport(skillID, repoURL, commitSHA string, score int, v
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		skillID, repoURL, commitSHA, score, verdict, summary, reportJSON)
 	return err
+}
+
+// ── Audit Log ─────────────────────────────────────────────────────────────────
+
+// LogAudit records an admin tool invocation to the audit_log table.
+func (d *DB) LogAudit(ctx context.Context, actorName, gateway, toolName string, args []byte) error {
+	_, err := d.sql.ExecContext(ctx,
+		`INSERT INTO audit_log (actor_name, gateway, tool_name, args) VALUES (?, ?, ?, ?)`,
+		actorName, gateway, toolName, string(args))
+	if err != nil {
+		return fmt.Errorf("log audit: %w", err)
+	}
+	return nil
+}
+
+// ── Role Overrides ────────────────────────────────────────────────────────────
+
+// GetRoleOverride returns the role override for a user, or ("", "", nil) if none exists.
+func (d *DB) GetRoleOverride(ctx context.Context, userName string) (role, ageGroup string, err error) {
+	err = d.sql.QueryRowContext(ctx,
+		`SELECT role, age_group FROM user_role_overrides WHERE user_name = ?`, userName).
+		Scan(&role, &ageGroup)
+	if err == sql.ErrNoRows {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("get role override: %w", err)
+	}
+	return role, ageGroup, nil
+}
+
+// SetRoleOverride upserts a role override for a user.
+func (d *DB) SetRoleOverride(ctx context.Context, userName, role, ageGroup, setBy string) error {
+	_, err := d.sql.ExecContext(ctx,
+		`INSERT OR REPLACE INTO user_role_overrides (user_name, role, age_group, set_by, set_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+		userName, role, ageGroup, setBy)
+	if err != nil {
+		return fmt.Errorf("set role override: %w", err)
+	}
+	return nil
 }

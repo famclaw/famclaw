@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- 7 built-in parent-only admin tools (`list_pending_approvals`, `approve_request`,
+  `deny_request`, `list_users`, `set_user_role`, `list_unknown_accounts`,
+  `link_account`) with OPA deny rules and `audit_log`/`user_role_overrides` DB tables
 - Optional Claude CLI backend (provider: claude_cli) for users running famclaw alongside Claude Code
 - OPA output policy (`output_policy.rego`): LLM draft responses are now evaluated by OPA
   before reaching the user. Hard-blocked categories (sexual_content, self_harm, hate_speech,
