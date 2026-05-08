@@ -19,6 +19,10 @@ const testParentPIN = "1234"
 
 // newTestServer returns a *Server with an in-memory store, identity store,
 // one parent (PIN=1234), and one child user "julia". Cleanup closes the db.
+//
+// The server is intentionally constructed without a SessionStore — these tests
+// invoke handlers directly to exercise their behaviour, bypassing the session
+// middleware (which is tested in package middleware and via auth_test.go).
 func newTestServer(t *testing.T) (*Server, func()) {
 	t.Helper()
 	dir := t.TempDir()
@@ -42,21 +46,21 @@ func newTestServer(t *testing.T) (*Server, func()) {
 	return srv, func() { _ = db.Close() }
 }
 
+// TestUnknownAccounts_GET exercises the handler directly. Auth is now enforced
+// by the session middleware on the protected route (Phase 6) and is covered
+// elsewhere — this test only locks in handler behaviour for method routing
+// and payload shape.
 func TestUnknownAccounts_GET(t *testing.T) {
 	cases := []struct {
 		name       string
 		seed       bool
-		setHeader  bool
-		pinHeader  string
 		method     string
 		wantStatus int
 		wantLen    int
 	}{
-		{"no PIN", false, false, "", http.MethodGet, http.StatusForbidden, 0},
-		{"wrong PIN", false, true, "9999", http.MethodGet, http.StatusForbidden, 0},
-		{"correct PIN empty", false, true, testParentPIN, http.MethodGet, http.StatusOK, 0},
-		{"correct PIN with row", true, true, testParentPIN, http.MethodGet, http.StatusOK, 1},
-		{"method not allowed", false, true, testParentPIN, http.MethodPost, http.StatusMethodNotAllowed, 0},
+		{"empty", false, http.MethodGet, http.StatusOK, 0},
+		{"with row", true, http.MethodGet, http.StatusOK, 1},
+		{"method not allowed", false, http.MethodPost, http.StatusMethodNotAllowed, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,11 +74,8 @@ func TestUnknownAccounts_GET(t *testing.T) {
 			}
 
 			req := httptest.NewRequest(tc.method, "/api/unknown-accounts", nil)
-			if tc.setHeader {
-				req.Header.Set("X-Parent-PIN", tc.pinHeader)
-			}
 			rec := httptest.NewRecorder()
-			srv.Handler().ServeHTTP(rec, req)
+			srv.handleUnknownAccounts(rec, req)
 
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d (body: %s)", rec.Code, tc.wantStatus, rec.Body.String())
@@ -105,9 +106,8 @@ func TestUnknownAccounts_LinkAndDismiss(t *testing.T) {
 	// Link X1 → julia
 	linkBody := []byte(`{"gateway":"telegram","external_id":"X1","user_name":"julia"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/unknown-accounts/link", bytes.NewReader(linkBody))
-	req.Header.Set("X-Parent-PIN", testParentPIN)
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
+	srv.handleUnknownAccountLink(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("link status = %d, body=%s", rec.Code, rec.Body.String())
 	}
@@ -115,9 +115,8 @@ func TestUnknownAccounts_LinkAndDismiss(t *testing.T) {
 	// Dismiss X2
 	dismissBody := []byte(`{"gateway":"telegram","external_id":"X2"}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/unknown-accounts/dismiss", bytes.NewReader(dismissBody))
-	req.Header.Set("X-Parent-PIN", testParentPIN)
 	rec = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
+	srv.handleUnknownAccountDismiss(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dismiss status = %d, body=%s", rec.Code, rec.Body.String())
 	}
@@ -149,9 +148,8 @@ func TestUnknownAccounts_LinkUnknownUser(t *testing.T) {
 
 	body := []byte(`{"gateway":"telegram","external_id":"X1","user_name":"ghost"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/unknown-accounts/link", bytes.NewReader(body))
-	req.Header.Set("X-Parent-PIN", testParentPIN)
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
+	srv.handleUnknownAccountLink(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
 	}

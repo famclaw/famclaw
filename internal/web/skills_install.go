@@ -55,10 +55,7 @@ func (s *Server) handleSkillInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.verifyParentPINConstantTime(r.Header.Get("X-Parent-PIN")) {
-		jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
-		return
-	}
+	// Auth enforced by the session middleware on the protected route.
 	if s.skillRegistry == nil {
 		jsonErr(w, fmt.Errorf("skill registry not configured"), http.StatusServiceUnavailable)
 		return
@@ -89,10 +86,7 @@ func (s *Server) handleSkillRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.verifyParentPINConstantTime(r.Header.Get("X-Parent-PIN")) {
-		jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
-		return
-	}
+	// Auth enforced by the session middleware on the protected route.
 	if s.skillRegistry == nil {
 		jsonErr(w, fmt.Errorf("skill registry not configured"), http.StatusServiceUnavailable)
 		return

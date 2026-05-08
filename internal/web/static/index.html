@@ -134,23 +134,6 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
 .verdict-WARN{background:#fef3c7;color:#92400e}
 .verdict-FAIL{background:#fee2e2;color:#991b1b}
 
-/* ── PIN modal ─────────────────────────────────────────────────────────────── */
-#pin-modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;
-  align-items:center;justify-content:center;z-index:100;padding:20px}
-#pin-modal.open{display:flex}
-.pin-card{background:var(--c-surface);border-radius:var(--radius);padding:32px;
-  width:100%;max-width:320px;text-align:center}
-.pin-card h3{font-size:18px;margin-bottom:8px}
-.pin-card p{color:var(--c-muted);font-size:14px;margin-bottom:20px}
-#pin-input{width:100%;padding:12px;font-size:22px;text-align:center;letter-spacing:8px;
-  border:2px solid var(--c-border);border-radius:8px;outline:none;font-family:monospace}
-#pin-input:focus{border-color:var(--c-primary)}
-.pin-card .pin-actions{display:flex;gap:10px;margin-top:14px}
-.pin-card .pin-actions button{flex:1;padding:12px;border:none;border-radius:8px;
-  font-size:15px;font-weight:600;cursor:pointer}
-#pin-cancel{background:var(--c-bg);color:var(--c-text)}
-#pin-ok{background:var(--c-primary);color:#fff}
-
 /* ── Settings screen ──────────────────────────────────────────────────────── */
 #settings-screen{flex:1;display:none;flex-direction:column;overflow:hidden}
 #settings-screen .d-scroll{flex:1;overflow-y:auto;padding:20px}
@@ -675,19 +658,6 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
   </div>
 </div>
 
-<!-- PIN modal -->
-<div id="pin-modal">
-  <div class="pin-card">
-    <h3>🔒 Parent Access</h3>
-    <p id="pin-message">Enter your PIN to access the dashboard</p>
-    <input id="pin-input" type="password" inputmode="numeric" maxlength="6" placeholder="••••">
-    <div class="pin-actions">
-      <button id="pin-cancel">Cancel</button>
-      <button id="pin-ok">Unlock</button>
-    </div>
-  </div>
-</div>
-
 <div id="toast"></div>
 
 <script>
@@ -697,17 +667,31 @@ const state = {
   currentUser: null,
   ws: null,
   mode: 'chat',           // 'chat' | 'dashboard'
-  parentPIN: null,
   streamingMsg: null,     // DOM element being streamed into
 };
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 async function boot() {
+  // First-boot wizard takes precedence — no PIN configured yet means no
+  // session is possible, so the wizard owns the screen until /api/setup/pin
+  // succeeds and seats a cookie.
   const health = await apiFetch('/api/health');
   if (health && health.needs_setup) {
     openWizard();
     return;
   }
+
+  // Otherwise the SPA requires an authenticated session. Anything else (no
+  // cookie, expired cookie, server-revoked cookie) bounces to /login so the
+  // protected admin endpoints never see an unauthenticated request.
+  const sess = await fetch('/session', {credentials: 'same-origin'})
+    .then(r => r.json())
+    .catch(() => ({logged_in: false}));
+  if (!sess || !sess.logged_in) {
+    window.location.href = '/login';
+    return;
+  }
+
   const users = await apiFetch('/api/users');
   state.users = users || [];
   renderUserGrid();
@@ -733,7 +717,11 @@ function renderUserGrid() {
 
 function selectUser(user) {
   if (user.role === 'parent') {
-    showPINModal(user);
+    // Boot already verified the session, so the parent doesn't need to
+    // re-authenticate just to switch into the dashboard view.
+    state.currentUser = user;
+    openDashboard();
+    document.getElementById('mode-btn').textContent = '← Back';
     return;
   }
   openChat(user);
@@ -911,9 +899,7 @@ async function loadConversations(userName) {
   loading.textContent = 'Loading...';
   list.appendChild(loading);
 
-  const msgs = await apiFetch('/api/conversations?user=' + userName + '&limit=30', {
-    headers: { 'X-Parent-PIN': state.parentPIN },
-  });
+  const msgs = await apiFetch('/api/conversations?user=' + userName + '&limit=30');
 
   list.textContent = '';
   if (!msgs || !msgs.length) {
@@ -1026,12 +1012,9 @@ function renderSkills(skills) {
 async function loadUnknownAccounts() {
   const table = document.getElementById('unknown-accounts-table');
   if (!table) return;
-  if (!state.parentPIN) return;
   const tbody = table.querySelector('tbody');
   tbody.textContent = '';
-  const items = await apiFetch('/api/unknown-accounts', {
-    headers: { 'X-Parent-PIN': state.parentPIN },
-  });
+  const items = await apiFetch('/api/unknown-accounts');
   if (!Array.isArray(items)) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
@@ -1096,15 +1079,12 @@ async function loadUnknownAccounts() {
 
 async function linkUnknownAccount(account, userName) {
   if (!userName) { showToast('Pick a user first'); return; }
-  const pin = state.parentPIN || await requestPIN('Enter parent PIN to link this account');
-  if (!pin) return;
-  state.parentPIN = pin;
   try {
     const r = await fetch('/api/unknown-accounts/link', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
-        'X-Parent-PIN': pin,
       },
       body: JSON.stringify({
         gateway: account.gateway,
@@ -1112,6 +1092,7 @@ async function linkUnknownAccount(account, userName) {
         user_name: userName,
       }),
     });
+    if (r.status === 401) { window.location.href = '/login'; return; }
     if (!r.ok) { showToast('Link failed: ' + r.status); return; }
     const table = document.getElementById('unknown-accounts-table');
     const row = table && table.querySelector('tr[data-account-id="' + CSS.escape(String(account.id)) + '"]');
@@ -1126,15 +1107,14 @@ async function installSkill() {
   const input = document.getElementById('skill-install-input');
   const nameOrPath = input.value.trim();
   if (!nameOrPath) { showToast('Enter a skill name like famclaw/seccheck'); return; }
-  const pin = state.parentPIN || await requestPIN('Enter parent PIN to install this skill');
-  if (!pin) return;
-  state.parentPIN = pin;
   try {
     const r = await fetch('/api/skills/install', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Parent-PIN': pin },
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name_or_path: nameOrPath }),
     });
+    if (r.status === 401) { window.location.href = '/login'; return; }
     if (!r.ok) { showToast('Install failed: ' + (await r.text())); return; }
     input.value = '';
     await loadDashboard();
@@ -1144,15 +1124,14 @@ async function installSkill() {
 
 async function removeSkill(name) {
   if (!confirm('Remove skill ' + name + '?')) return;
-  const pin = state.parentPIN || await requestPIN('Enter parent PIN to remove this skill');
-  if (!pin) return;
-  state.parentPIN = pin;
   try {
     const r = await fetch('/api/skills/remove', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Parent-PIN': pin },
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     });
+    if (r.status === 401) { window.location.href = '/login'; return; }
     if (!r.ok) { showToast('Remove failed: ' + (await r.text())); return; }
     await loadDashboard();
     showToast('Removed.');
@@ -1160,69 +1139,14 @@ async function removeSkill(name) {
 }
 
 async function decide(id, action, btn) {
-  if (!state.parentPIN) { showToast('PIN required'); return; }
   btn.disabled = true;
   await apiFetch('/api/approvals/decide', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Parent-PIN': state.parentPIN },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, action }),
   });
   showToast(action === 'approve' ? '✅ Approved' : '❌ Denied');
   loadDashboard();
-}
-
-// ── PIN modal ─────────────────────────────────────────────────────────────────
-const PIN_DEFAULT_MESSAGE = 'Enter your PIN to access the dashboard';
-
-function showPINModal(user) {
-  const modal = document.getElementById('pin-modal');
-  const input = document.getElementById('pin-input');
-  document.getElementById('pin-message').textContent = PIN_DEFAULT_MESSAGE;
-  modal.classList.add('open');
-  input.value = '';
-  input.focus();
-
-  const ok = () => {
-    const pin = input.value;
-    modal.classList.remove('open');
-    state.parentPIN = pin;
-    state.currentUser = user;
-    openDashboard();
-    document.getElementById('mode-btn').textContent = '← Back';
-  };
-
-  document.getElementById('pin-ok').onclick = ok;
-  document.getElementById('pin-cancel').onclick = () => modal.classList.remove('open');
-  input.onkeydown = (e) => { if (e.key === 'Enter') ok(); };
-}
-
-// requestPIN opens the masked PIN modal and resolves with the entered PIN
-// (or null if the user cancels). Used for one-off parent-gated actions.
-function requestPIN(message) {
-  return new Promise((resolve) => {
-    const modal = document.getElementById('pin-modal');
-    const input = document.getElementById('pin-input');
-    const okBtn = document.getElementById('pin-ok');
-    const cancelBtn = document.getElementById('pin-cancel');
-    document.getElementById('pin-message').textContent = message || PIN_DEFAULT_MESSAGE;
-    input.value = '';
-    modal.classList.add('open');
-    input.focus();
-
-    const finish = (value) => {
-      modal.classList.remove('open');
-      okBtn.onclick = null;
-      cancelBtn.onclick = null;
-      input.onkeydown = null;
-      resolve(value);
-    };
-    okBtn.onclick = () => finish(input.value || null);
-    cancelBtn.onclick = () => finish(null);
-    input.onkeydown = (e) => {
-      if (e.key === 'Enter') finish(input.value || null);
-      else if (e.key === 'Escape') finish(null);
-    };
-  });
 }
 
 // ── Event Listeners ───────────────────────────────────────────────────────────
@@ -1248,11 +1172,14 @@ function setupEventListeners() {
       hide('dashboard-screen');
       document.getElementById('mode-btn').textContent = 'Dashboard';
     } else {
+      // Boot already proved we hold a valid session, so the dashboard is
+      // reachable without re-prompting for a PIN. resolveParentUserID on the
+      // server side has already pinned this session to a parent role.
       if (!state.currentUser || state.currentUser.role !== 'parent') {
-        showPINModal({ name: 'parent', display_name: 'Parent', role: 'parent' });
-      } else {
-        openDashboard();
+        state.currentUser = { name: 'parent', display_name: 'Parent', role: 'parent' };
       }
+      openDashboard();
+      document.getElementById('mode-btn').textContent = '← Back';
     }
   };
 
@@ -1301,7 +1228,17 @@ function updateApprovalBadge(count) {
 // ── Utilities ─────────────────────────────────────────────────────────────────
 async function apiFetch(url, opts) {
   try {
-    const r = await fetch(url, opts);
+    // Always send the session cookie. credentials defaults to 'same-origin'
+    // in modern browsers but we set it explicitly so the contract is obvious
+    // and so any future cross-origin proxy doesn't silently strip it.
+    const merged = Object.assign({credentials: 'same-origin'}, opts || {});
+    const r = await fetch(url, merged);
+    if (r.status === 401) {
+      // Session expired or never existed — bounce to login. Returning null
+      // here would let the caller render an empty state and confuse the user.
+      window.location.href = '/login';
+      return null;
+    }
     if (!r.ok) return null;
     return r.json();
   } catch { return null; }
@@ -1527,13 +1464,11 @@ async function saveSettings() {
   const apiKey = document.getElementById('s-llm-key').value.trim();
   if (apiKey) body.llm.api_key = apiKey;
 
-  const pin = state.parentPIN || prompt('Parent PIN to save:');
-  if (!pin) return;
-  state.parentPIN = pin;
-
+  // Cookie auth — session middleware on /api/settings rejects unauthenticated
+  // requests. apiFetch handles the 401 → /login bounce centrally.
   const result = await apiFetch('/api/settings', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Parent-PIN': pin },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
 
@@ -1541,7 +1476,7 @@ async function saveSettings() {
     showToast('Settings saved');
     setTimeout(() => location.reload(), 500);
   } else {
-    showToast('Failed to save — check PIN');
+    showToast('Failed to save');
   }
 }
 
@@ -1749,14 +1684,15 @@ async function wizTestTelegram() {
   const status = document.getElementById('wiz-tg-status');
   status.classList.remove('wiz-success', 'wiz-error');
   status.textContent = 'Testing…';
-  // After first boot, the endpoint requires a valid parent PIN. Pull
-  // it from wizState (set in step 2) so the test still works during
-  // wizard re-runs.
-  const pin = wizState.members.find(m => m.role === 'parent')?.pin || '';
+  // Cookie auth: on first boot we haven't seated a session yet (the wizard
+  // does that in wizFinish via /api/setup/pin), but the endpoint allows the
+  // call to proceed for the unconfigured case. After first boot, the user
+  // reached /setup via a logged-in session so the cookie carries.
   try {
     const resp = await fetch('/api/setup/test-telegram', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-Parent-PIN': pin},
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({token}),
     });
     const data = await resp.json();
@@ -1785,11 +1721,11 @@ async function wizTestDiscord() {
   // editing the token to a new value can't leave a stale invite URL up.
   document.getElementById('wiz-dc-invite').style.display = 'none';
   status.textContent = 'Testing…';
-  const pin = wizState.members.find(m => m.role === 'parent')?.pin || '';
   try {
     const resp = await fetch('/api/setup/test-discord', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-Parent-PIN': pin},
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({token}),
     });
     const data = await resp.json();
@@ -2070,22 +2006,39 @@ async function wizFinish() {
   };
   if (defaultProfile.key) body.llm.api_key = defaultProfile.key;
 
-  // Save — server requires X-Parent-PIN unless this is true first boot.
-  // The wizard always carries the PIN from the family-member step, so a
-  // re-run after first boot still authenticates correctly.
+  // First boot: bootstrap the parent PIN. This both stores the hashed PIN
+  // in the vault and seats a session cookie in the response, so the
+  // following /api/settings call authenticates via that cookie.
+  //
+  // On a wizard re-run after first boot, the PIN is already configured and
+  // /api/setup/pin returns 409 Conflict — we treat that as benign and let
+  // the existing session cookie (set when the user logged in to reach the
+  // re-run) authenticate the /api/settings call.
   const pin = wizState.members.find(m => m.role === 'parent')?.pin || '';
+  if (pin) {
+    const pinResp = await fetch('/api/setup/pin', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pin}),
+    });
+    if (!pinResp.ok && pinResp.status !== 409) {
+      showToast('Failed to set parent PIN — please try again');
+      return;
+    }
+  }
 
   const resp = await fetch('/api/settings', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
-      'X-Parent-PIN': pin,
     },
     body: JSON.stringify(body),
   });
 
-  if (resp.status === 403) {
-    showToast('Incorrect parent PIN. If re-running setup, use the PIN from your first setup.');
+  if (resp.status === 401) {
+    window.location.href = '/login';
     return;
   }
   if (!resp.ok) {

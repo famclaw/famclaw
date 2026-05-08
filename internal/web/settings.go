@@ -1,7 +1,6 @@
 package web
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -127,15 +126,10 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
-	// On first boot (no users configured), skip PIN check so the wizard can
-	// create the first parent user. After that, PIN is always required.
-	if !s.isFirstBoot() {
-		pin := r.Header.Get("X-Parent-PIN")
-		if !s.verifyParentPINConstantTime(pin) {
-			jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
-			return
-		}
-	}
+	// Auth is enforced by the session middleware on the protected route. The
+	// first-boot wizard hits this through the same gate, but Phase 7's
+	// /api/setup/pin endpoint runs the PIN bootstrap before this is invoked,
+	// so by the time we get here a session cookie is always present.
 
 	var update settingsView
 	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
@@ -242,18 +236,6 @@ func (s *Server) writeConfig() error {
 	return nil
 }
 
-// verifyParentPINConstantTime checks the PIN using constant-time comparison.
-func (s *Server) verifyParentPINConstantTime(pin string) bool {
-	for _, u := range s.cfg.Users {
-		if u.Role == "parent" && u.PIN != "" {
-			if subtle.ConstantTimeCompare([]byte(pin), []byte(u.PIN)) == 1 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // NeedsSetup returns true if the LLM is not fully configured.
 func (s *Server) NeedsSetup() bool {
 	s.cfgMu.RLock()
@@ -261,15 +243,3 @@ func (s *Server) NeedsSetup() bool {
 	return s.cfg.LLM.BaseURL == "" || s.cfg.LLM.Model == ""
 }
 
-// isFirstBoot returns true if no parent users are configured yet.
-// Used to skip PIN check during initial setup wizard.
-func (s *Server) isFirstBoot() bool {
-	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	for _, u := range s.cfg.Users {
-		if u.Role == "parent" && u.PIN != "" {
-			return false
-		}
-	}
-	return true
-}

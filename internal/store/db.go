@@ -51,6 +51,13 @@ func Open(path string) (*DB, error) {
 // Close closes the database.
 func (d *DB) Close() error { return d.sql.Close() }
 
+// SQL returns the underlying *sql.DB. Exposed so callers in other packages
+// (notably web.Server, which needs raw access for vault_secrets and session
+// helpers) can run ad-hoc queries without DB having to grow a wrapper method
+// for every shape. Use sparingly — prefer adding a typed method on *DB when
+// the query has more than one call site.
+func (d *DB) SQL() *sql.DB { return d.sql }
+
 // ── Schema ────────────────────────────────────────────────────────────────────
 
 func (d *DB) migrate() error {
@@ -201,6 +208,23 @@ func (d *DB) migrate() error {
 		age_group   TEXT NOT NULL,
 		set_by      TEXT NOT NULL,
 		set_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS web_sessions (
+		id          TEXT PRIMARY KEY NOT NULL,
+		user_id     INTEGER NOT NULL,
+		created_at  INTEGER NOT NULL,
+		expires_at  INTEGER NOT NULL,
+		last_seen   INTEGER NOT NULL,
+		ip          TEXT NOT NULL DEFAULT '',
+		user_agent  TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX IF NOT EXISTS idx_web_sessions_expires_at ON web_sessions(expires_at);
+
+	CREATE TABLE IF NOT EXISTS vault_secrets (
+		name        TEXT PRIMARY KEY NOT NULL,
+		ciphertext  BLOB NOT NULL,
+		updated_at  INTEGER NOT NULL DEFAULT 0
 	);
 	`)
 	if err != nil {

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FamClaw — Unlock</title>
+  <style>
+    body { font-family: sans-serif; max-width: 480px; margin: 80px auto; padding: 0 1rem; }
+    input { width: 100%; padding: .5rem; font-size: 1.5rem; letter-spacing: .5rem;
+            text-align: center; box-sizing: border-box; margin-bottom: 1rem; }
+    button { width: 100%; padding: .75rem; font-size: 1rem; cursor: pointer; }
+    .err { color: #c00; display: none; margin-top: .5rem; }
+    .warn { background: #fff8e1; border-left: 4px solid #f59e0b;
+            padding: .75rem 1rem; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <h2>FamClaw — Machine Fingerprint Changed</h2>
+  <p>This device's machine fingerprint changed since the last boot.
+     Enter your parent PIN to re-bind the credential vault to this machine.</p>
+  <div class="warn">
+    <strong>Warning:</strong> If you did not move the database file or change hardware,
+    this may indicate tampering. Contact support before proceeding.
+  </div>
+  <form id="f" autocomplete="off">
+    <input id="pin" name="pin" type="password" inputmode="numeric"
+           autocomplete="off" required placeholder="****" autofocus>
+    <button type="submit">Re-bind Vault</button>
+    <p id="err" class="err"></p>
+  </form>
+  <script>
+    const f = document.getElementById('f');
+    const errEl = document.getElementById('err');
+    f.addEventListener('submit', async e => {
+      e.preventDefault();
+      errEl.style.display = 'none';
+      const pin = document.getElementById('pin').value;
+      try {
+        const r = await fetch('/api/setup/unlock', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({pin})
+        });
+        if (r.ok) {
+          window.location.href = '/';
+        } else if (r.status === 429) {
+          errEl.textContent = 'Too many attempts. Please wait a minute and try again.';
+          errEl.style.display = 'block';
+        } else {
+          errEl.textContent = 'Incorrect PIN. Please try again.';
+          errEl.style.display = 'block';
+        }
+      } catch {
+        errEl.textContent = 'Connection error. Please try again.';
+        errEl.style.display = 'block';
+      }
+      document.getElementById('pin').value = '';
+    });
+  </script>
+</body>
+</html>

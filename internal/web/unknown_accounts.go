@@ -14,10 +14,7 @@ func (s *Server) handleUnknownAccounts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.verifyParentPINConstantTime(r.Header.Get("X-Parent-PIN")) {
-		jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
-		return
-	}
+	// Auth enforced by the session middleware on the protected route.
 	list, err := s.identStore.ListUnknown(r.Context())
 	if err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
@@ -34,10 +31,7 @@ func (s *Server) handleUnknownAccountLink(w http.ResponseWriter, r *http.Request
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.verifyParentPINConstantTime(r.Header.Get("X-Parent-PIN")) {
-		jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
-		return
-	}
+	// Auth enforced by the session middleware on the protected route.
 	var body struct {
 		Gateway    string `json:"gateway"`
 		ExternalID string `json:"external_id"`
@@ -79,10 +73,7 @@ func (s *Server) handleUnknownAccountDismiss(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.verifyParentPINConstantTime(r.Header.Get("X-Parent-PIN")) {
-		jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
-		return
-	}
+	// Auth enforced by the session middleware on the protected route.
 	var body struct {
 		Gateway    string `json:"gateway"`
 		ExternalID string `json:"external_id"`

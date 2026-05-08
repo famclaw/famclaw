@@ -14,6 +14,8 @@ CREATE INDEX idx_unknown_accounts_lookup ON unknown_accounts(gateway, external_i
 
 CREATE INDEX idx_used_tokens_used_at ON used_tokens(used_at);
 
+CREATE INDEX idx_web_sessions_expires_at ON web_sessions(expires_at);
+
 CREATE TABLE approvals (
 		id             TEXT PRIMARY KEY,
 		user_name      TEXT NOT NULL,
@@ -151,5 +153,21 @@ CREATE TABLE user_role_overrides (
 		age_group   TEXT NOT NULL,
 		set_by      TEXT NOT NULL,
 		set_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+CREATE TABLE vault_secrets (
+		name        TEXT PRIMARY KEY NOT NULL,
+		ciphertext  BLOB NOT NULL,
+		updated_at  INTEGER NOT NULL DEFAULT 0
+	);
+
+CREATE TABLE web_sessions (
+		id          TEXT PRIMARY KEY NOT NULL,
+		user_id     INTEGER NOT NULL,
+		created_at  INTEGER NOT NULL,
+		expires_at  INTEGER NOT NULL,
+		last_seen   INTEGER NOT NULL,
+		ip          TEXT NOT NULL DEFAULT '',
+		user_agent  TEXT NOT NULL DEFAULT ''
 	);
 

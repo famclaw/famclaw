@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -19,6 +21,7 @@ import (
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/credstore"
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/gateway/discord"
 	"github.com/famclaw/famclaw/internal/gateway/telegram"
@@ -271,8 +274,56 @@ func main() {
 		log.Printf("Gateways: %d started", len(gateways))
 	}
 
+	// Session store + credential vault for the web admin auth flow.
+	// SessionStore needs the raw *sql.DB underlying store.DB. The vault is
+	// keyed off /etc/machine-id (or the platform-specific equivalent); a
+	// failure here means the host has no stable identifier — fail fast since
+	// nothing in the auth flow can succeed without it.
+	sessions := store.NewSessionStore(db.SQL())
+	machineID, midErr := credstore.MachineID()
+	if midErr != nil {
+		log.Fatalf("FATAL [machine-id]: %v", midErr)
+	}
+	vault, err := credstore.New(machineID)
+	if err != nil {
+		log.Fatalf("FATAL [vault]: %v", err)
+	}
+
+	// Vault-mismatch probe. If a parent_pin row exists but cannot be decrypted
+	// with the current machine-bound key, the binary is running on different
+	// hardware (or against a copied database). Surface this to the web server
+	// so the UI shows the unlock page instead of failing every login with a
+	// generic 401. First boot (no PIN row yet) is not a mismatch — the
+	// bootstrap wizard handles it.
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer startupCancel()
+	var vaultMismatch bool
+	var pinCT []byte
+	pinErr := db.SQL().QueryRowContext(startupCtx,
+		`SELECT ciphertext FROM vault_secrets WHERE name = 'parent_pin'`).Scan(&pinCT)
+	switch {
+	case errors.Is(pinErr, sql.ErrNoRows):
+		// First boot — no PIN yet; vault is not yet bound.
+		vaultMismatch = false
+	case pinErr != nil:
+		log.Fatalf("reading vault_secrets: %v", pinErr)
+	default:
+		// PIN exists — try decrypting with the current machine key.
+		_, decErr := vault.Decrypt(pinCT)
+		switch {
+		case decErr == nil:
+			vaultMismatch = false
+		case errors.Is(decErr, credstore.ErrMachineMismatch):
+			vaultMismatch = true
+			log.Printf("[WARN] machine fingerprint changed; vault locked; web UI will show unlock page")
+		default:
+			log.Fatalf("vault decrypt error (possible corruption): %v", decErr)
+		}
+	}
+
 	// Web server
-	srv := web.NewServer(cfg, *cfgPath, db, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
+	srv := web.NewServer(cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
+	srv.SetVaultMismatch(vaultMismatch)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),
@@ -282,6 +333,37 @@ func main() {
 	}
 
 	// mDNS removed in v0.5.x — see #110. Use the device IP address.
+
+	// Run a one-shot cleanup of expired web sessions at startup so a long-idle
+	// box doesn't carry yesterday's stale rows into today's first request.
+	if deleted, err := sessions.DeleteExpired(startupCtx); err != nil {
+		log.Printf("[session-cleanup] startup error: %v", err)
+	} else if deleted > 0 {
+		log.Printf("[session-cleanup] deleted %d expired sessions at startup", deleted)
+	}
+
+	// Hourly background sweep. The session middleware filters expired rows on
+	// read, so the worst-case effect of a missed tick is a transiently larger
+	// table — never an auth bypass. Cancelled on shutdown so the goroutine
+	// exits before the process does.
+	sessionCleanupCtx, sessionCleanupCancel := context.WithCancel(context.Background())
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-sessionCleanupCtx.Done():
+				return
+			case <-ticker.C:
+				deleted, err := sessions.DeleteExpired(sessionCleanupCtx)
+				if err != nil {
+					log.Printf("[session-cleanup] error: %v", err)
+				} else if deleted > 0 {
+					log.Printf("[session-cleanup] deleted %d expired sessions", deleted)
+				}
+			}
+		}
+	}()
 
 	// Start
 	go func() {
@@ -298,7 +380,8 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down…")
-	gwCancel() // stop gateway bots
+	gwCancel()             // stop gateway bots
+	sessionCleanupCancel() // stop session-cleanup goroutine
 
 	ctx, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel2()

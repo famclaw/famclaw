@@ -216,6 +216,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 | **llama.cpp sidecar** | Spawns llama-server, GGUF model catalog, TurboQuant support |
 | **Security scanning** | Honeybadger runtime stage, install-time + stale scan gates |
 | **Web UI** | Chat, parent dashboard, 5-step wizard with AI profiles, PIN-gated skill install/remove |
+| **Web auth** | Cookie-based web sessions + machine-bound credential vault (`internal/credstore`, `internal/web/middleware`); see [docs/SECURITY.md](docs/SECURITY.md) |
 | **Telegram + Discord** | Fully wired gateway bots, message chunking past per-platform limits (4096/2000 chars) |
 | **Unknown-account backend** | Strangers messaging the bot are recorded against a parent-controlled queue, never auto-promoted to a user (issue #111 backend) |
 | **MCP tools** | Multi-transport (stdio/HTTP/SSE), unified tool registry |
