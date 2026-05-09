@@ -327,6 +327,29 @@ func (s *Server) handleSetupUnlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Trust boundary outside the machine-bound vault: require a pre-existing
+	// authenticated session before re-keying. web_sessions rows are not
+	// encrypted under the machine-derived key, so a session created before the
+	// machine-id change is still valid here — i.e. the caller already proved
+	// knowledge of the prior PIN. Without this check, anyone reaching this
+	// endpoint during mismatch state could submit any PIN and take over admin.
+	if s.sessions == nil {
+		limiter.recordFailure(ip)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+		return
+	}
+	cookie, cerr := r.Cookie("famclaw_session")
+	if cerr != nil || cookie.Value == "" {
+		limiter.recordFailure(ip)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+		return
+	}
+	if _, serr := s.sessions.Get(r.Context(), cookie.Value); serr != nil {
+		limiter.recordFailure(ip)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+		return
+	}
+
 	var req struct {
 		PIN string `json:"pin"`
 	}
