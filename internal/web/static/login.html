@@ -38,7 +38,9 @@
         if (r.ok) {
           window.location.href = '/';
         } else if (r.status === 429) {
-          errEl.textContent = 'Too many attempts. Please wait a minute and try again.';
+          const ra = parseInt(r.headers.get('Retry-After') || '', 10);
+          const mins = Number.isFinite(ra) && ra > 0 ? Math.ceil(ra / 60) : 15;
+          errEl.textContent = `Too many attempts. Please wait ${mins} minute${mins === 1 ? '' : 's'} and try again.`;
           errEl.style.display = 'block';
         } else {
           errEl.textContent = 'Incorrect PIN. Please try again.';
