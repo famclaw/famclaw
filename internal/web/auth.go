@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -271,19 +270,15 @@ func (a *AuthHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"logged_in": true, "user_id": sess.UserID})
 }
 
-// clientIP extracts the best-effort source IP from the request. Honours the
-// first hop of X-Forwarded-For when present (the LAN reverse-proxy use case),
-// falling back to RemoteAddr otherwise. The result is used as the rate-limit
-// key, not for authorisation, so a spoofable XFF is acceptable here.
+// clientIP extracts the best-effort source IP from the request. Uses
+// RemoteAddr directly so that callers cannot spoof the rate-limit key by
+// sending an arbitrary X-Forwarded-For header.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.Index(xff, ","); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
 	}
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return host
+	return r.RemoteAddr
 }
 
 // writeJSON writes a JSON response with the given status code. Encode errors
