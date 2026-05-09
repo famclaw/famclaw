@@ -30,39 +30,23 @@ func newSkillTestServer(t *testing.T) *Server {
 	}
 }
 
-func TestSkillInstall_PINGate(t *testing.T) {
-	tests := []struct {
-		name      string
-		method    string
-		pin       string
-		setHeader bool
-		wantCode  int
-	}{
-		{"no PIN", http.MethodPost, "", false, 403},
-		{"wrong PIN", http.MethodPost, "0000", true, 403},
-		{"GET not allowed", http.MethodGet, testParentPIN, true, 405},
-	}
-
+// TestSkillInstall_MethodGate locks in that the handler still rejects non-POST
+// requests. The PIN gate that previously lived in this handler is gone — auth
+// is now enforced by the session middleware on the protected route, and is
+// covered by the auth/middleware tests rather than here.
+func TestSkillInstall_MethodGate(t *testing.T) {
 	s := newSkillTestServer(t)
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, "/api/skills/install", bytes.NewReader([]byte("{}")))
-			if tc.setHeader {
-				req.Header.Set("X-Parent-PIN", tc.pin)
-			}
-			rec := httptest.NewRecorder()
-			s.handleSkillInstall(rec, req)
-			if rec.Code != tc.wantCode {
-				t.Errorf("want %d, got %d (body: %s)", tc.wantCode, rec.Code, rec.Body.String())
-			}
-		})
+	req := httptest.NewRequest(http.MethodGet, "/api/skills/install", bytes.NewReader([]byte("{}")))
+	rec := httptest.NewRecorder()
+	s.handleSkillInstall(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("want 405, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 }
 
 func TestSkillInstall_EmptyBody(t *testing.T) {
 	s := newSkillTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/skills/install", bytes.NewReader([]byte("{}")))
-	req.Header.Set("X-Parent-PIN", testParentPIN)
 	rec := httptest.NewRecorder()
 	s.handleSkillInstall(rec, req)
 	if rec.Code != 400 {
@@ -91,7 +75,6 @@ body
 
 	bodyJSON, _ := json.Marshal(map[string]string{"name_or_path": "famclaw/testskill"})
 	req := httptest.NewRequest(http.MethodPost, "/api/skills/install", bytes.NewReader(bodyJSON))
-	req.Header.Set("X-Parent-PIN", testParentPIN)
 	rec := httptest.NewRecorder()
 	s.handleSkillInstall(rec, req)
 	if rec.Code != 200 {
@@ -121,7 +104,6 @@ func TestSkillInstall_RejectsPathTraversal(t *testing.T) {
 		t.Run(ref, func(t *testing.T) {
 			body, _ := json.Marshal(map[string]string{"name_or_path": ref})
 			req := httptest.NewRequest(http.MethodPost, "/api/skills/install", bytes.NewReader(body))
-			req.Header.Set("X-Parent-PIN", testParentPIN)
 			rec := httptest.NewRecorder()
 			s.handleSkillInstall(rec, req)
 			if rec.Code != http.StatusBadRequest {
@@ -146,7 +128,6 @@ func TestSkillRemove_RejectsBadName(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			body, _ := json.Marshal(map[string]string{"name": name})
 			req := httptest.NewRequest(http.MethodPost, "/api/skills/remove", bytes.NewReader(body))
-			req.Header.Set("X-Parent-PIN", testParentPIN)
 			rec := httptest.NewRecorder()
 			s.handleSkillRemove(rec, req)
 			if rec.Code != http.StatusBadRequest {

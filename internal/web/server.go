@@ -20,16 +20,18 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/famclaw/famclaw/internal/agent"
-	"github.com/famclaw/famclaw/internal/config"
-	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/classifier"
+	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/credstore"
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/llm/claudecli"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/notify"
+	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
+	"github.com/famclaw/famclaw/internal/web/middleware"
 )
 
 //go:embed static
@@ -52,6 +54,13 @@ type Server struct {
 	cfgMu      sync.RWMutex               // guards cfg during settings reads/writes
 	clients    map[*websocket.Conn]string // conn → userName
 	clientsMu  sync.RWMutex
+
+	// Session-based auth wiring (Phase 6).
+	sessions      *store.SessionStore
+	vault         *credstore.Vault
+	auth          *AuthHandler
+	vaultMismatch bool         // protected by vaultMu — true once a probe finds the on-disk vault was sealed by a different machine
+	vaultMu       sync.RWMutex
 }
 
 // wsMessage is a WebSocket protocol message.
@@ -60,12 +69,15 @@ type wsMessage struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-func NewServer(cfg *config.Config, cfgPath string, db *store.DB, identStore *identity.Store, evaluator *policy.Evaluator,
-	clf *classifier.Classifier, notifier *notify.MultiNotifier, skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool) *Server {
-	return &Server{
+func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store.SessionStore, vault *credstore.Vault,
+	identStore *identity.Store, evaluator *policy.Evaluator, clf *classifier.Classifier, notifier *notify.MultiNotifier,
+	skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool) *Server {
+	s := &Server{
 		cfg:           cfg,
 		cfgPath:       cfgPath,
 		db:            db,
+		sessions:      sessions,
+		vault:         vault,
 		identStore:    identStore,
 		evaluator:     evaluator,
 		clf:           clf,
@@ -81,9 +93,25 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, identStore *ide
 			},
 		},
 	}
+	// Auth handler is wired with closures so the dependency graph stays
+	// one-directional: AuthHandler does not import *Server, only the bits of
+	// state it needs.
+	if sessions != nil && vault != nil {
+		s.auth = NewAuthHandler(sessions, vault, s.getParentPINCiphertext, s.resolveParentUserID)
+	}
+	return s
 }
 
 // Handler returns the root HTTP handler.
+//
+// Routing layers:
+//   - Always-public: /login, /logout, /session, /api/health, /decide
+//     (HMAC-signed approval token), the static asset tree, the setup-wizard
+//     endpoints used before any PIN exists.
+//   - Protected: every admin surface plus /api/chat (settings, approvals,
+//     skills, unknown accounts, conversations, SSE stream, gateway tester
+//     probes, web-UI chat WebSocket). Wrapped in s.protect(...), which
+//     delegates to middleware.WithSession — no handler re-checks auth.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -93,31 +121,143 @@ func (s *Server) Handler() http.Handler {
 		log.Fatalf("static files: %v", err)
 	}
 	s.staticHandler = http.FileServer(http.FS(staticFS))
-	// Root: redirect to /setup if unconfigured, otherwise serve static files
+	// Root: redirect to /setup if unconfigured, otherwise serve static files.
+	// /login and /unlock are also served from the static tree (Phase 8 adds
+	// the actual HTML files; until then they 404, which is acceptable for the
+	// transition window).
 	mux.HandleFunc("/", s.handleRoot)
 
-	// ── API ───────────────────────────────────────────────────────────────────
-	mux.HandleFunc("/api/users", s.handleUsers)
-	mux.HandleFunc("/api/chat", s.handleChat)              // WebSocket
-	mux.HandleFunc("/api/approvals", s.handleApprovals)
-	mux.HandleFunc("/api/approvals/decide", s.handleDecide)
-	mux.HandleFunc("/api/skills", s.handleSkills)
-	mux.HandleFunc("/api/skills/install", s.handleSkillInstall)
-	mux.HandleFunc("/api/skills/remove", s.handleSkillRemove)
-	mux.HandleFunc("/api/unknown-accounts", s.handleUnknownAccounts)
-	mux.HandleFunc("/api/unknown-accounts/link", s.handleUnknownAccountLink)
-	mux.HandleFunc("/api/unknown-accounts/dismiss", s.handleUnknownAccountDismiss)
-	mux.HandleFunc("/api/conversations", s.handleConversations)
-	mux.HandleFunc("/api/health", s.handleHealth)
+	// ── Auth (always public) ──────────────────────────────────────────────────
+	if s.auth != nil {
+		mux.HandleFunc("/login", s.auth.HandleLogin)
+		mux.HandleFunc("/logout", s.auth.HandleLogout)
+		mux.HandleFunc("/session", s.auth.HandleSession)
+	}
+
+	// ── First-boot setup endpoints (always public) ────────────────────────────
+	// /api/setup/detect runs before any PIN is configured (see handleSetupDetect
+	// for its own first-boot guard). The PIN-bootstrap and vault-unlock endpoints
+	// are stubs in Phase 6 and get fleshed out in Phase 7.
 	mux.HandleFunc("/api/setup/detect", s.handleSetupDetect)
-	mux.HandleFunc("/api/setup/test-telegram", s.handleTestTelegram)
-	mux.HandleFunc("/api/setup/test-discord", s.handleTestDiscord)
-	mux.HandleFunc("/api/settings", s.handleSettings)      // GET/POST config settings
-	mux.HandleFunc("/api/stream", s.handleStream)          // SSE for dashboard live updates
-	// ── Parent decision links (from email/SMS) ────────────────────────────────
-	mux.HandleFunc("/decide", s.handleDecideLink)
+	mux.HandleFunc("/api/setup/pin", s.handleSetupPIN)
+	mux.HandleFunc("/api/setup/unlock", s.handleSetupUnlock)
+	mux.HandleFunc("/api/health", s.handleHealth)
+
+	// ── Gateway / external entry points (their own auth) ──────────────────────
+	mux.HandleFunc("/decide", s.handleDecideLink) // HMAC-signed approval token
+
+	// ── Protected admin surface (session-gated) ───────────────────────────────
+	mux.Handle("/api/chat", s.protect(s.handleChat)) // WebSocket — session-gated, derives user from cookie via ?user=
+	mux.Handle("/api/users", s.protect(s.handleUsers))
+	mux.Handle("/api/approvals", s.protect(s.handleApprovals))
+	mux.Handle("/api/approvals/decide", s.protect(s.handleDecide))
+	mux.Handle("/api/skills", s.protect(s.handleSkills))
+	mux.Handle("/api/skills/install", s.protect(s.handleSkillInstall))
+	mux.Handle("/api/skills/remove", s.protect(s.handleSkillRemove))
+	mux.Handle("/api/unknown-accounts", s.protect(s.handleUnknownAccounts))
+	mux.Handle("/api/unknown-accounts/link", s.protect(s.handleUnknownAccountLink))
+	mux.Handle("/api/unknown-accounts/dismiss", s.protect(s.handleUnknownAccountDismiss))
+	mux.Handle("/api/conversations", s.protect(s.handleConversations))
+	mux.Handle("/api/settings", s.protect(s.handleSettings))
+	mux.Handle("/api/setup/test-telegram", s.conditionalProtect(s.handleTestTelegram))
+	mux.Handle("/api/setup/test-discord", s.conditionalProtect(s.handleTestDiscord))
+	mux.Handle("/api/stream", s.protect(s.handleStream))
 
 	return mux
+}
+
+// protect wraps a handler with the session-validation middleware. Every admin
+// route in Handler() goes through this — handlers themselves never re-check
+// auth, so removing the middleware would silently expose them.
+func (s *Server) protect(h http.HandlerFunc) http.Handler {
+	if s.sessions == nil {
+		// Defensive: a Server constructed without sessions (test fixtures, or
+		// a misconfigured boot path) should fail closed rather than serve the
+		// admin surface unauthenticated.
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthenticated"}` + "\n"))
+		})
+	}
+	return middleware.WithSession(s.sessions)(h)
+}
+
+// conditionalProtect bypasses session protection while the parent PIN has not
+// been configured yet, and falls back to s.protect once setup is complete.
+// Used by setup-wizard endpoints (gateway "Test connection" probes) that the
+// wizard hits before /api/setup/pin seats the initial session cookie — without
+// this gate they would 401 on every fresh install.
+func (s *Server) conditionalProtect(h http.HandlerFunc) http.Handler {
+	protected := s.protect(h)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.hasPINConfigured(r.Context()) {
+			h(w, r)
+			return
+		}
+		protected.ServeHTTP(w, r)
+	})
+}
+
+// getParentPINCiphertext fetches the encrypted parent PIN hash from the
+// vault_secrets table. Returns sql.ErrNoRows when no PIN has been configured;
+// AuthHandler maps that to the same generic 401 as a wrong-PIN attempt so
+// callers cannot distinguish the two.
+func (s *Server) getParentPINCiphertext(ctx context.Context) ([]byte, error) {
+	var ct []byte
+	err := s.db.SQL().QueryRowContext(ctx,
+		`SELECT ciphertext FROM vault_secrets WHERE name = 'parent_pin'`).Scan(&ct)
+	return ct, err
+}
+
+// hasPINConfigured reports whether a parent_pin row exists in the vault. Used
+// by the first-boot wizard to choose between the PIN-bootstrap flow and the
+// unlock flow. Errors are logged and treated as "not configured" so the UI
+// gracefully falls through to the bootstrap path on a transient DB hiccup.
+func (s *Server) hasPINConfigured(ctx context.Context) bool {
+	var n int
+	err := s.db.SQL().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM vault_secrets WHERE name = 'parent_pin'`).Scan(&n)
+	if err != nil {
+		log.Printf("hasPINConfigured: %v", err)
+		return false
+	}
+	return n > 0
+}
+
+// resolveParentUserID returns a stable numeric ID for the first parent user.
+// Users live in YAML config (no DB users table), so we synthesise the ID from
+// the config-order index of the first parent. This is fine for session
+// accounting (web_sessions.user_id is informational), and a future `users`
+// table can drop in without changing the closure signature.
+func (s *Server) resolveParentUserID(ctx context.Context) (int64, error) {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	for i, u := range s.cfg.Users {
+		if u.Role == "parent" {
+			return int64(i + 1), nil
+		}
+	}
+	return 0, fmt.Errorf("resolving parent user id: no parent user configured")
+}
+
+// getVaultMismatch returns the current vault-mismatch flag. Used by handleRoot
+// to decide whether to redirect into the /unlock page, and by handleSetupUnlock
+// to short-circuit the rebind endpoint when no mismatch is in flight.
+func (s *Server) getVaultMismatch() bool {
+	s.vaultMu.RLock()
+	defer s.vaultMu.RUnlock()
+	return s.vaultMismatch
+}
+
+// SetVaultMismatch sets the vault-mismatch flag. main.go calls this once at
+// startup after probing the on-disk PIN ciphertext against the current
+// machine-bound key; the unlock handler clears it back to false after a
+// successful re-bind.
+func (s *Server) SetVaultMismatch(v bool) {
+	s.vaultMu.Lock()
+	s.vaultMismatch = v
+	s.vaultMu.Unlock()
 }
 
 // ── WebSocket chat ─────────────────────────────────────────────────────────────
@@ -292,12 +432,8 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Require parent PIN for dashboard decisions
-	pin := r.Header.Get("X-Parent-PIN")
-	if !s.verifyParentPIN(pin) {
-		jsonErr(w, fmt.Errorf("invalid PIN"), http.StatusForbidden)
-		return
-	}
+	// Auth gate: this route is mounted via s.protect(...) — the session
+	// middleware has already validated the cookie before we get here.
 
 	var body struct {
 		ID     string `json:"id"`
@@ -499,24 +635,9 @@ func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 	}
 }
 
-func (s *Server) verifyParentPIN(pin string) bool {
-	for _, u := range s.cfg.Users {
-		if u.Role == "parent" && u.PIN == pin {
-			return true
-		}
-	}
-	return false
-}
-
 // handleConversations returns recent messages for a user (parent dashboard).
-// Requires parent PIN.
+// Mounted behind s.protect(...); the session middleware enforces auth.
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
-	pin := r.Header.Get("X-Parent-PIN")
-	if !s.verifyParentPIN(pin) {
-		jsonErr(w, fmt.Errorf("parent PIN required"), http.StatusForbidden)
-		return
-	}
-
 	userName := r.URL.Query().Get("user")
 	if userName == "" {
 		jsonErr(w, fmt.Errorf("missing ?user= parameter"), http.StatusBadRequest)

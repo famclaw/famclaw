@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- Cookie-based web sessions (HttpOnly, SameSite=Strict, Secure-when-TLS, 7-day TTL)
+- `internal/credstore` package — AES-256-GCM credential vault keyed to machine ID via HKDF-SHA256
+- `POST /login`, `POST /logout`, `GET /session` auth endpoints
+- Login rate limiting: 5 attempts / 15 min / IP, then 1-min lockout
+- Machine-mismatch unlock page at `/unlock` with rate-limited PIN re-bind (`POST /api/setup/unlock`)
+- First-boot PIN endpoint `POST /api/setup/pin`
+- Hourly expired-session cleanup goroutine in `cmd/famclaw/main.go`
+- `internal/web/static/login.html` — minimal PIN login page
+- `internal/web/static/unlock.html` — machine-fingerprint-change unlock page
+- `docs/SECURITY.md` — auth + vault model, recovery guide, threat model
+- `internal/web/middleware` package — session cookie middleware
 - 7 built-in parent-only admin tools (`list_pending_approvals`, `approve_request`,
   `deny_request`, `list_users`, `set_user_role`, `list_unknown_accounts`,
   `link_account`) with OPA deny rules and `audit_log`/`user_role_overrides` DB tables
@@ -111,6 +122,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   #109 broke (true first boot, re-run with correct PIN, wrong PIN, no PIN).
 
 ### Changed
+- Parent PIN moved from plaintext `config.yaml` to encrypted `vault_secrets` SQLite row
+  (SHA-256 of PIN, AES-256-GCM-encrypted with machine-bound HKDF key)
+- Frontend admin requests now use session cookie; `X-Parent-PIN` header removed
+- `/api/users` endpoint is now session-authenticated (was previously public)
 - `tool_policy.rego` migrated from default-ALLOW to default-DENY. All tools require an
   explicit allow rule; parents are allowed all tools; children are allowed all tools not on
   the block list (file_*, spawn_agent, web_search/web_fetch for younger age groups).
@@ -168,6 +183,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   of being lost.
 
 ### Removed
+- `verifyParentPIN` and `verifyParentPINConstantTime` functions
+- JS `state.parentPIN` and PIN modal in the dashboard SPA
+- `X-Parent-PIN` header from all frontend requests
 - Hardcoded keyword slices `criticalPatterns`, `under8Patterns`, `age8to12Patterns` from
   `internal/agentcore/stage_policy_output.go` — replaced by OPA output policy.
 - Dormant `internal/agentcore/stage_output_filter.go` — replaced by OPA-backed pipeline stage.
