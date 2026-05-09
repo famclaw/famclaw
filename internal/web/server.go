@@ -105,13 +105,13 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store
 // Handler returns the root HTTP handler.
 //
 // Routing layers:
-//   - Always-public: /login, /logout, /session, /api/health, /decide, /api/chat
-//     (gateway HMAC), the static asset tree, the setup-wizard endpoints used
-//     before any PIN exists.
-//   - Protected: every admin surface (settings, approvals, skills, unknown
-//     accounts, conversations, SSE stream, gateway tester probes). Wrapped in
-//     s.protect(...), which delegates to middleware.WithSession — no handler
-//     re-checks auth.
+//   - Always-public: /login, /logout, /session, /api/health, /decide
+//     (HMAC-signed approval token), the static asset tree, the setup-wizard
+//     endpoints used before any PIN exists.
+//   - Protected: every admin surface plus /api/chat (settings, approvals,
+//     skills, unknown accounts, conversations, SSE stream, gateway tester
+//     probes, web-UI chat WebSocket). Wrapped in s.protect(...), which
+//     delegates to middleware.WithSession — no handler re-checks auth.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -144,10 +144,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/health", s.handleHealth)
 
 	// ── Gateway / external entry points (their own auth) ──────────────────────
-	mux.HandleFunc("/api/chat", s.handleChat)   // WebSocket — gateway identity path
 	mux.HandleFunc("/decide", s.handleDecideLink) // HMAC-signed approval token
 
 	// ── Protected admin surface (session-gated) ───────────────────────────────
+	mux.Handle("/api/chat", s.protect(s.handleChat)) // WebSocket — session-gated, derives user from cookie via ?user=
 	mux.Handle("/api/users", s.protect(s.handleUsers))
 	mux.Handle("/api/approvals", s.protect(s.handleApprovals))
 	mux.Handle("/api/approvals/decide", s.protect(s.handleDecide))
