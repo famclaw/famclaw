@@ -159,8 +159,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/unknown-accounts/dismiss", s.protect(s.handleUnknownAccountDismiss))
 	mux.Handle("/api/conversations", s.protect(s.handleConversations))
 	mux.Handle("/api/settings", s.protect(s.handleSettings))
-	mux.Handle("/api/setup/test-telegram", s.protect(s.handleTestTelegram))
-	mux.Handle("/api/setup/test-discord", s.protect(s.handleTestDiscord))
+	mux.Handle("/api/setup/test-telegram", s.conditionalProtect(s.handleTestTelegram))
+	mux.Handle("/api/setup/test-discord", s.conditionalProtect(s.handleTestDiscord))
 	mux.Handle("/api/stream", s.protect(s.handleStream))
 
 	return mux
@@ -181,6 +181,22 @@ func (s *Server) protect(h http.HandlerFunc) http.Handler {
 		})
 	}
 	return middleware.WithSession(s.sessions)(h)
+}
+
+// conditionalProtect bypasses session protection while the parent PIN has not
+// been configured yet, and falls back to s.protect once setup is complete.
+// Used by setup-wizard endpoints (gateway "Test connection" probes) that the
+// wizard hits before /api/setup/pin seats the initial session cookie — without
+// this gate they would 401 on every fresh install.
+func (s *Server) conditionalProtect(h http.HandlerFunc) http.Handler {
+	protected := s.protect(h)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.hasPINConfigured(r.Context()) {
+			h(w, r)
+			return
+		}
+		protected.ServeHTTP(w, r)
+	})
 }
 
 // getParentPINCiphertext fetches the encrypted parent PIN hash from the
