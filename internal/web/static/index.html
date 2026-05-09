@@ -1140,11 +1140,16 @@ async function removeSkill(name) {
 
 async function decide(id, action, btn) {
   btn.disabled = true;
-  await apiFetch('/api/approvals/decide', {
+  const result = await apiFetch('/api/approvals/decide', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, action }),
   });
+  if (!result) {
+    btn.disabled = false;
+    showToast('Request failed');
+    return;
+  }
   showToast(action === 'approve' ? '✅ Approved' : '❌ Denied');
   loadDashboard();
 }
