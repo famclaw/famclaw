@@ -110,9 +110,10 @@ func (s *SessionStore) Get(ctx context.Context, sessionID string) (*Session, err
 // rowcount check, since this runs from a goroutine after the response has
 // already been written and a concurrent Delete is a benign race.
 func (s *SessionStore) Touch(ctx context.Context, sessionID string) error {
+	now := s.now()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE web_sessions SET last_seen = ? WHERE id = ?`,
-		s.now().Unix(), sessionID)
+		`UPDATE web_sessions SET last_seen = ?, expires_at = ? WHERE id = ?`,
+		now.Unix(), now.Add(s.ttl).Unix(), sessionID)
 	if err != nil {
 		return fmt.Errorf("touch web_session: %w", err)
 	}
