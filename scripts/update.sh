@@ -96,7 +96,7 @@ echo "  Verifying checksum..."
 (
     cd "$TMP"
     # Extract just the line for our artifact and pipe it to sha256sum -c
-    if grep -F "  ${ARTIFACT_ARCHIVE}" checksums.txt | sha256sum -c --status; then
+    if grep -F "  ${ARTIFACT_ARCHIVE}$" checksums.txt | sha256sum -c --status; then
         echo "  ✓ Checksum verified"
     else
         echo "  ✗ Checksum mismatch — aborting" >&2
