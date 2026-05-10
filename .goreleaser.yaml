@@ -81,4 +81,3 @@ release:
   prerelease: auto
   extra_files:
     - glob: scripts/install-rpi.sh
-    - glob: scripts/install-termux.sh
