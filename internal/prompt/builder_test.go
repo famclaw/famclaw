@@ -292,6 +292,41 @@ func TestCapabilitiesComponent_BuiltinTools(t *testing.T) {
 			t.Errorf("baseline should not mention specific tools, got: %q", text)
 		}
 	})
+	t.Run("behavioral rules included with tools", func(t *testing.T) {
+		text, _ := capabilitiesComponent(BuildContext{BuiltinTools: []string{"web_fetch"}})
+		// Tool-call format guardrail — prevents <tool_call> XML leak
+		// to user-visible reply (Nemotron-style trailing block).
+		for _, want := range []string{"tool call FIRST", "do NOT append another tool_call", "Never write the literal text"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("missing tool-format rule %q in capabilities text", want)
+			}
+		}
+		// Anti-hallucination guardrails.
+		for _, want := range []string{"ONLY summarize what the tool actually returned", "I couldn't find that information", "don't have current data"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("missing grounding rule %q in capabilities text", want)
+			}
+		}
+	})
+	t.Run("behavioral rules omitted when no tools", func(t *testing.T) {
+		text, _ := capabilitiesComponent(BuildContext{})
+		// No tools = no tool-call guardrails (they wouldn't apply).
+		if strings.Contains(text, "<tool_call>") || strings.Contains(text, "ONLY summarize what the tool") {
+			t.Errorf("toolless capabilities should not include tool-call rules, got: %q", text)
+		}
+	})
+}
+
+func TestBehavioralRules_Exported(t *testing.T) {
+	rules := BehavioralRules()
+	if rules == "" {
+		t.Fatal("BehavioralRules() must not return empty")
+	}
+	for _, want := range []string{"tool call FIRST", "ONLY summarize"} {
+		if !strings.Contains(rules, want) {
+			t.Errorf("exported BehavioralRules() missing %q", want)
+		}
+	}
 }
 
 func TestBuild_TokenBudget_WithBuiltinTools(t *testing.T) {
@@ -315,4 +350,3 @@ func TestBuild_TokenBudget_WithBuiltinTools(t *testing.T) {
 	}
 	t.Logf("parent prompt with builtin tools: %d tokens, %d chars", tokens, len(out))
 }
-

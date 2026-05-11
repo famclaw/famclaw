@@ -1,12 +1,13 @@
 package llm
 
 import (
-	"reflect"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -488,6 +489,37 @@ func TestToolCallArguments_UnmarshalJSON(t *testing.T) {
 			}
 			if !reflect.DeepEqual(map[string]any(got), tc.want) {
 				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToolCallArguments_TruncatedReturnsSentinel(t *testing.T) {
+	// Nemotron occasionally truncates mid-emit under load; the inner
+	// arguments JSON arrives incomplete. Callers should be able to
+	// distinguish this with errors.Is(ErrToolCallArgsTruncated) so the
+	// user gets a clean "try rephrasing" instead of a low-level parser
+	// trace.
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		// String-encoded JSON cut off mid-value: `"{"url":"http://exa`
+		{"truncated-mid-string", `"{\"url\":\"http://exa"`},
+		// String-encoded JSON cut off after key: `"{"url"`
+		{"truncated-after-key", `"{\"url\""`},
+		// String-encoded empty open brace: `"{` — incomplete object
+		{"truncated-open-brace", `"{"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got ToolCallArguments
+			err := json.Unmarshal([]byte(tc.raw), &got)
+			if err == nil {
+				t.Fatalf("expected error, got nil; parsed %v", got)
+			}
+			if !errors.Is(err, ErrToolCallArgsTruncated) {
+				t.Errorf("want errors.Is(ErrToolCallArgsTruncated), got %v", err)
 			}
 		})
 	}

@@ -7,12 +7,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// ErrToolCallArgsTruncated is returned when an OpenAI-spec string-encoded
+// tool-call arguments payload cannot be parsed because the inner JSON is
+// incomplete. Local models occasionally truncate mid-emit under load.
+// Callers can use errors.Is to surface a clean retry message instead of
+// failing the whole turn with a low-level parser error.
+var ErrToolCallArgsTruncated = errors.New("tool call arguments JSON truncated")
 
 // Message is a conversation turn.
 type Message struct {
@@ -65,6 +73,12 @@ func (a *ToolCallArguments) UnmarshalJSON(data []byte) error {
 		}
 		m := make(map[string]any)
 		if err := json.Unmarshal([]byte(s), &m); err != nil {
+			// Treat unterminated/incomplete JSON specifically so callers can
+			// distinguish a model truncation (retry-friendly) from a real
+			// parser bug (developer error).
+			if isIncompleteJSON(err) {
+				return fmt.Errorf("%w: %v (raw: %q)", ErrToolCallArgsTruncated, err, s)
+			}
 			return fmt.Errorf("parsing arguments JSON from string: %w", err)
 		}
 		*a = m
@@ -314,7 +328,29 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 		return &Message{Role: "assistant"}, nil
 	}
 
-	return &result.Choices[0].Message, nil
+	msg := &result.Choices[0].Message
+	// Rescue inline <tool_call> XML blocks that small local models emit
+	// when they violate the trained "tool call comes BEFORE prose, not
+	// after" instruction. Without this, the raw XML leaks to the user as
+	// visible text and the bot looks broken.
+	salvageInlineToolCalls(msg)
+	return msg, nil
+}
+
+// isIncompleteJSON identifies truncation-style decode errors from
+// encoding/json. The stdlib returns io.ErrUnexpectedEOF or a
+// *json.SyntaxError with "unexpected end of JSON input" depending on
+// where in the stream the cut happened.
+func isIncompleteJSON(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "unexpected end of JSON input") ||
+		strings.Contains(msg, "unexpected EOF")
 }
 
 // ChatSync sends a conversation and returns the full response (non-streaming).
