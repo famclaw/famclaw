@@ -504,8 +504,11 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 
 	var systemPrompt string
 	if a.cfg.LLM.SystemPrompt != "" {
-		// Operator override — keep legacy behavior verbatim.
-		systemPrompt = a.cfg.LLM.SystemPrompt + "\n\n" + ageContextPrompt(a.user)
+		// Operator override — keep legacy behavior verbatim, but always
+		// append the behavioral guardrails (tool-call format + grounding
+		// rules) so deployments that set a custom system_prompt still get
+		// the leak/hallucination protection.
+		systemPrompt = a.cfg.LLM.SystemPrompt + "\n\n" + ageContextPrompt(a.user) + "\n\n" + prompt.BehavioralRules()
 		if len(a.skills) > 0 {
 			// When evaluator is available, use the policy-checked version
 			if a.evaluator != nil {

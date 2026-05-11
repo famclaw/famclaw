@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/identity"
+	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
@@ -172,6 +174,11 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 	response, err := r.chatFn(ctx, userCfg, msg.Text)
 	if err != nil {
 		log.Printf("[router] chat error: %v", err)
+		// Surface a more actionable hint when the model truncated its tool
+		// call arguments. Bubbles through wrapped error chains.
+		if errors.Is(err, llm.ErrToolCallArgsTruncated) {
+			return Reply{Text: "My tool call got cut off mid-thought. Could you rephrase or try again?", PolicyAction: "error"}
+		}
 		return Reply{Text: "I had trouble thinking of a response. Try again?", PolicyAction: "error"}
 	}
 

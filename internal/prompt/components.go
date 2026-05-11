@@ -122,8 +122,37 @@ func capabilitiesComponent(c BuildContext) (string, bool) {
 			}
 		}
 		parts = append(parts, strings.Join(hints, " "))
+		parts = append(parts, behavioralRules())
 	}
 	return strings.Join(parts, " "), true
+}
+
+// BehavioralRules returns the always-on guardrails for any model that
+// has tools available. Used by both the structured prompt builder
+// (capabilitiesComponent) and the operator-override path in agent.go so
+// custom system_prompt deployments still get the rules.
+func BehavioralRules() string {
+	return behavioralRules()
+}
+
+func behavioralRules() string {
+	return strings.Join([]string{
+		// Tool-call format guardrails. Nemotron and similar small models
+		// frequently violate the "tool call BEFORE prose, never after"
+		// rule and emit a trailing <tool_call> XML block; salvageInlineToolCalls
+		// rescues it on the client side, but reminding the model up front
+		// reduces how often that fallback fires.
+		"Tool-call rules: when you decide to call a tool, emit the tool call FIRST, before any prose.",
+		"After your final user-facing message, do NOT append another tool_call block — the conversation is over for that turn.",
+		"Never write the literal text \"<tool_call>\" or \"<function=\" in a user-visible reply. Tool-call syntax is for the runtime, not for the user.",
+		// Anti-hallucination rules. Small local models confabulate stores,
+		// addresses, prices, and URLs when asked to "research" something
+		// without grounding. Make it explicit: tool output is the only
+		// source of truth for facts the model didn't already learn.
+		"Grounding rules: when you use a tool to look something up, ONLY summarize what the tool actually returned. Do not invent specifics (store names, addresses, phone numbers, prices, dates, URLs) that the tool did not provide.",
+		"If a search or fetch returns no useful results, SAY SO plainly (\"I couldn't find that information\") instead of falling back to training-time guesses dressed up as fresh data.",
+		"If the user asks for current/live information (weather, news, prices, store hours) and no tool is available or no result came back, say you don't have current data — do not make up numbers.",
+	}, " ")
 }
 
 // skillsComponent — installed skills available as tools.
