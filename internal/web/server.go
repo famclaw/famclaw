@@ -146,8 +146,9 @@ func (s *Server) Handler() http.Handler {
 	// ── Gateway / external entry points (their own auth) ──────────────────────
 	mux.HandleFunc("/decide", s.handleDecideLink) // HMAC-signed approval token
 
+	mux.HandleFunc("/api/chat", s.handleChat) // WebSocket — public, user identity from ?user=NAME query (gateway model, not session)
+
 	// ── Protected admin surface (session-gated) ───────────────────────────────
-	mux.Handle("/api/chat", s.protect(s.handleChat)) // WebSocket — session-gated, derives user from cookie via ?user=
 	mux.Handle("/api/users", s.protect(s.handleUsers))
 	mux.Handle("/api/approvals", s.protect(s.handleApprovals))
 	mux.Handle("/api/approvals/decide", s.protect(s.handleDecide))

@@ -688,7 +688,9 @@ async function boot() {
     .then(r => r.json())
     .catch(() => ({logged_in: false}));
   if (!sess || !sess.logged_in) {
-    window.location.href = '/login';
+    console.log('not logged in — guest mode (chat-only)');
+    // Render chat UI in guest mode
+    renderUserGrid();
     return;
   }
 
