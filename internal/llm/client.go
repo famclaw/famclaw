@@ -57,7 +57,7 @@ func (a *ToolCallArguments) UnmarshalJSON(data []byte) error {
 	if data[0] == '"' {
 		var s string
 		if err := json.Unmarshal(data, &s); err != nil {
-			return err
+			return fmt.Errorf("decoding string-encoded arguments: %w", err)
 		}
 		if s == "" {
 			*a = ToolCallArguments{}
@@ -65,14 +65,14 @@ func (a *ToolCallArguments) UnmarshalJSON(data []byte) error {
 		}
 		m := make(map[string]any)
 		if err := json.Unmarshal([]byte(s), &m); err != nil {
-			return err
+			return fmt.Errorf("parsing arguments JSON from string: %w", err)
 		}
 		*a = m
 		return nil
 	}
 	m := make(map[string]any)
 	if err := json.Unmarshal(data, &m); err != nil {
-		return err
+		return fmt.Errorf("decoding arguments object: %w", err)
 	}
 	*a = m
 	return nil
