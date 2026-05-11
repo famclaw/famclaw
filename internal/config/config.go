@@ -35,10 +35,18 @@ type ToolsConfig struct {
 // role gate, and OPA policy decision.
 type WebFetchConfig struct {
 	Enabled      bool     `yaml:"enabled"`
-	URLAllowlist []string `yaml:"url_allowlist,omitempty"` // REQUIRED when Enabled — empty list denies all (SSRF guard)
+	URLAllowlist []string `yaml:"url_allowlist,omitempty"` // REQUIRED when Enabled — empty list denies all (host-level gate)
 	MaxBytes     int64    `yaml:"max_bytes,omitempty"`     // 0 = 256KB default
 	TimeoutSec   int      `yaml:"timeout_seconds,omitempty"`
 	AllowedRoles []string `yaml:"allowed_roles,omitempty"` // default ["parent"]
+	// BlockPrivateNetworks opts INTO rejecting private/loopback/RFC1918/
+	// link-local addresses at the dialer. famclaw's product model is a
+	// home-LAN self-hosted server that legitimately needs to reach other
+	// home-LAN services (SearXNG, Playwright, llama-server, etc.), so
+	// the default is FALSE (allow private). Set to true for multi-tenant
+	// or hostile-LAN deployments where the bot must not reach internal
+	// addresses even when they appear in url_allowlist.
+	BlockPrivateNetworks bool `yaml:"block_private_networks,omitempty"`
 }
 
 // InferenceConfig controls local LLM inference via llama-server sidecar.
