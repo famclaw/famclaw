@@ -203,14 +203,33 @@ jobs:
           curl -sf http://localhost:8080/api/setup/detect | jq -e '.os' || \
             (echo "FAIL: detect API" && exit 1)
 
-      - name: "Smoke: settings API (first boot)"
-        run: |
-          curl -sf http://localhost:8080/api/settings | jq -e '.llm' || \
-            (echo "FAIL: settings GET" && exit 1)
+      # Post-v0.5.1 (PR #129): auth model is cookie-based sessions, not per-request
+      # PIN. /api/settings is session-gated; first-boot uses the wizard's
+      # /api/setup/pin to seat a session cookie. PIN header is gone.
 
-      - name: "Smoke: wizard setup flow"
+      - name: "Smoke: protected /api/settings returns 401 without session"
         run: |
-          curl -sf -X POST http://localhost:8080/api/settings \
+          status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/settings)
+          echo "Anonymous GET /api/settings: HTTP $status"
+          [ "$status" = "401" ] || (echo "FAIL: expected 401 (session-gated), got $status" && exit 1)
+
+      - name: "Smoke: wizard PIN bootstrap seats famclaw_session cookie"
+        run: |
+          curl -sf -c /tmp/famclaw-cookies.txt -X POST http://localhost:8080/api/setup/pin \
+            -H 'Content-Type: application/json' \
+            -d '{"pin":"9999"}' || (echo "FAIL: /api/setup/pin POST" && exit 1)
+          grep -q famclaw_session /tmp/famclaw-cookies.txt || \
+            (echo "FAIL: /api/setup/pin did not seat famclaw_session cookie" && exit 1)
+          echo "famclaw_session cookie set"
+
+      - name: "Smoke: settings API (with session)"
+        run: |
+          curl -sf -b /tmp/famclaw-cookies.txt http://localhost:8080/api/settings | jq -e '.llm' || \
+            (echo "FAIL: settings GET with session" && exit 1)
+
+      - name: "Smoke: wizard setup flow (with session)"
+        run: |
+          curl -sf -b /tmp/famclaw-cookies.txt -X POST http://localhost:8080/api/settings \
             -H 'Content-Type: application/json' \
             -d '{
               "llm": {"base_url": "http://localhost:11434", "model": "test"},
@@ -223,25 +242,16 @@ jobs:
                 "whatsapp": {"enabled": false}
               }
             }' | jq -e '.status == "saved"' || \
-            (echo "FAIL: wizard POST" && exit 1)
+            (echo "FAIL: wizard POST with session" && exit 1)
 
-      - name: "Smoke: PIN enforcement — POST without PIN returns 403"
+      - name: "Smoke: session enforcement — POST /api/settings without cookie returns 401"
         run: |
           status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
             http://localhost:8080/api/settings \
             -H 'Content-Type: application/json' \
             -d '{"llm":{"base_url":"http://evil.com","model":"x"}}')
-          echo "POST without PIN: HTTP $status"
-          [ "$status" = "403" ] || (echo "FAIL: expected 403, got $status" && exit 1)
-
-      - name: "Smoke: PIN enforcement — POST with correct PIN returns 200"
-        run: |
-          curl -sf -X POST http://localhost:8080/api/settings \
-            -H 'Content-Type: application/json' \
-            -H 'X-Parent-PIN: 9999' \
-            -d '{"llm":{"base_url":"http://localhost:11434","model":"test"}}' \
-            | jq -e '.status == "saved"' || \
-            (echo "FAIL: PIN-auth POST failed" && exit 1)
+          echo "Anonymous POST /api/settings: HTTP $status"
+          [ "$status" = "401" ] || (echo "FAIL: expected 401 for unauthenticated POST, got $status" && exit 1)
 
       # ── 7. Verify SBOM ────────────────────────────────────────────────────
       - name: Verify SBOM format
