@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/agent/tools/admin"
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/llm"
@@ -39,12 +39,12 @@ type Response struct {
 
 // Agent handles a single user's conversation with policy enforcement.
 type Agent struct {
-	user       *config.UserConfig
-	cfg        *config.Config
-	llmClient  llm.Chatter
-	evaluator  *policy.Evaluator
-	classifier *classifier.Classifier
-	db         *store.DB
+	user         *config.UserConfig
+	cfg          *config.Config
+	llmClient    llm.Chatter
+	evaluator    *policy.Evaluator
+	classifier   *classifier.Classifier
+	db           *store.DB
 	pool         *mcp.Pool
 	skills       []*skillbridge.Skill
 	quarantine   *skillbridge.Quarantine

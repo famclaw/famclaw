@@ -350,4 +350,3 @@ func TestBuild_TokenBudget_WithBuiltinTools(t *testing.T) {
 	}
 	t.Logf("parent prompt with builtin tools: %d tokens, %d chars", tokens, len(out))
 }
-

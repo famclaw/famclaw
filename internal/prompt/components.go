@@ -191,4 +191,3 @@ func outputComponent(_ BuildContext) (string, bool) {
 func memoryComponent(_ BuildContext) (string, bool) {
 	return "", false
 }
-

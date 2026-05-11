@@ -271,14 +271,14 @@ func runGateway(ctx context.Context, gw Gateway, handler func(ctx context.Contex
 }
 
 // handleUnknownAccount runs when Resolve returned no user. Three paths:
-//   1. The user is replying to a still-fresh "which family member?" prompt
-//      → consume the choice via handleRegistrationReply.
-//   2. Their platform display name matches an unlinked FamClaw user
-//      → auto-link silently, send a friendly "linked!" message.
-//   3. Otherwise → if any users remain unlinked, present a numbered list
-//      and stash a pendingRegistration; if no unlinked users remain,
-//      reject with the private-family message. No createNewUser path —
-//      account creation is parents-only by design.
+//  1. The user is replying to a still-fresh "which family member?" prompt
+//     → consume the choice via handleRegistrationReply.
+//  2. Their platform display name matches an unlinked FamClaw user
+//     → auto-link silently, send a friendly "linked!" message.
+//  3. Otherwise → if any users remain unlinked, present a numbered list
+//     and stash a pendingRegistration; if no unlinked users remain,
+//     reject with the private-family message. No createNewUser path —
+//     account creation is parents-only by design.
 //
 // Note: auto-link by display-name match is a deliberately weak auth
 // boundary (anyone with a matching first name on Telegram/Discord can
