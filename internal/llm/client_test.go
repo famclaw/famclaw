@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"reflect"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -453,4 +454,41 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestToolCallArguments_UnmarshalJSON(t *testing.T) {
+	// Regression: Nemotron / qwen / gpt-oss / mistral return
+	// tool_calls[].function.arguments as a JSON-encoded string per
+	// OpenAI spec; some lenient servers send a raw object. Both must
+	// parse into map[string]any without exploding.
+	tests := []struct {
+		name    string
+		raw     string
+		want    map[string]any
+		wantErr bool
+	}{
+		{name: "openai-spec-string", raw: `"{\"city\":\"Boston\"}"`, want: map[string]any{"city": "Boston"}},
+		{name: "lenient-object", raw: `{"city":"Boston"}`, want: map[string]any{"city": "Boston"}},
+		{name: "empty-string", raw: `""`, want: map[string]any{}},
+		{name: "null", raw: `null`, want: map[string]any{}},
+		{name: "invalid-string", raw: `"not json"`, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got ToolCallArguments
+			err := json.Unmarshal([]byte(tc.raw), &got)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(map[string]any(got), tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

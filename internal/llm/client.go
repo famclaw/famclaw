@@ -30,9 +30,52 @@ type ToolCall struct {
 }
 
 // ToolCallFunction holds the tool name and arguments.
+//
+// Arguments is a custom type to bridge the OpenAI spec mismatch with
+// local models: the spec says `arguments` is a JSON-encoded STRING
+// (each call site then json.Unmarshals it into the tool's expected
+// schema). Some lenient servers also send a raw object. Both formats
+// are accepted; call sites still see map[string]any.
 type ToolCallFunction struct {
-	Name      string         `json:"name"`
-	Arguments map[string]any `json:"arguments"`
+	Name      string            `json:"name"`
+	Arguments ToolCallArguments `json:"arguments"`
+}
+
+// ToolCallArguments accepts either a JSON-encoded string (per the
+// OpenAI tool-calling spec) or a JSON object (lenient servers).
+// Callers see it as map[string]any either way.
+type ToolCallArguments map[string]any
+
+// UnmarshalJSON accepts both the spec-compliant string form and the
+// lenient object form. Empty string and null both decode to an empty
+// map (the LLM emitted no arguments).
+func (a *ToolCallArguments) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*a = ToolCallArguments{}
+		return nil
+	}
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		if s == "" {
+			*a = ToolCallArguments{}
+			return nil
+		}
+		m := make(map[string]any)
+		if err := json.Unmarshal([]byte(s), &m); err != nil {
+			return err
+		}
+		*a = m
+		return nil
+	}
+	m := make(map[string]any)
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	*a = m
+	return nil
 }
 
 // ToolDef describes a tool for the LLM to call (OpenAI function calling format).
