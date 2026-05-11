@@ -142,7 +142,12 @@ func NewAuthHandler(
 // indistinguishable to the caller. The handler enforces a minLatency floor on
 // every code path so attackers cannot infer state from response timing.
 func (a *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		http.Redirect(w, r, "/login.html", http.StatusSeeOther)
+		return
+	}
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
