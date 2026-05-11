@@ -438,6 +438,11 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 			}
 			return nil
 		},
+		// famclaw is a home-LAN product — by default we allow private/loopback
+		// addresses so the bot can reach co-located services (SearXNG,
+		// Playwright, llama-server, etc.). Admins opt INTO enterprise-style
+		// SSRF blocking by setting tools.web_fetch.block_private_networks: true.
+		AllowPrivateNetworks: !cfg.BlockPrivateNetworks,
 	}
 	// Caller-supplied max_bytes can only further restrict the cap, never
 	// raise it. Reject non-integer / negative / overflow values up front
