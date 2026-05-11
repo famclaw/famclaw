@@ -198,6 +198,10 @@ jobs:
           curl -sf http://localhost:8080/setup | grep -q "FamClaw" || \
             (echo "FAIL: /setup missing" && exit 1)
 
+      - name: "Smoke: GET /login serves login page (regression for v0.5.2 405 bug)"
+        run: |
+          curl -sf -L http://localhost:8080/login | grep -q "FamClaw" || \
+            (echo "FAIL: GET /login did not serve a usable login page (followed redirect)" && exit 1)
       - name: "Smoke: hardware detect API"
         run: |
           curl -sf http://localhost:8080/api/setup/detect | jq -e '.os' || \
