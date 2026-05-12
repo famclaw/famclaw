@@ -265,6 +265,18 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		turn.Output = final
 	}
 
+	// Empty-response guard. Local LLMs (Nemotron particularly) occasionally
+	// emit an empty assistant message — no text, no tool_calls — when they
+	// can't resolve a prompt cleanly. Without this guard, the gateway sends
+	// "" to Discord/Telegram and the user sees nothing, indistinguishable
+	// from Butler being down. Per roadmap §11 UX commitment "Never silent
+	// failure": surface a brief user-readable fallback instead.
+	if strings.TrimSpace(turn.Output) == "" && !turn.Streamed {
+		log.Printf("[agent][%s] empty response from LLM — substituting fallback (cat=%s)",
+			a.user.Name, turn.Category)
+		turn.Output = "I'm not sure how to answer that — could you ask again with more specifics, or rephrase what you're looking for?"
+	}
+
 	log.Printf("[agent][%s] cat=%s action=allow", a.user.Name, turn.Category)
 
 	// Save assistant response

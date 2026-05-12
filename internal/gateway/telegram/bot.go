@@ -75,10 +75,34 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				DisplayName: displayName,
 			}
 
+			// Typing indicator. Telegram's chat action expires after ~5s,
+			// so we refresh every 4s for the duration of agent processing.
+			// Per UX commitment §11: never silent failure — show the user
+			// Butler is working rather than letting a 20-30s LLM call look
+			// like a hung bot.
+			stopTyping := make(chan struct{})
+			go func(chatID int64) {
+				_ = b.sendChatAction(ctx, chatID, "typing")
+				t := time.NewTicker(4 * time.Second)
+				defer t.Stop()
+				for {
+					select {
+					case <-stopTyping:
+						return
+					case <-t.C:
+						_ = b.sendChatAction(ctx, chatID, "typing")
+					}
+				}
+			}(u.Message.Chat.ID)
+
 			reply := handleMsg(ctx, msg)
+			close(stopTyping)
 
 			// Skip whitespace-only replies — both platforms reject empty
 			// messages with a 4xx, leaving the user with no visible feedback.
+			// The agent layer now substitutes a fallback for empty LLM
+			// output (see internal/agent/agent.go) so this should be rare,
+			// but keep the guard as defense in depth.
 			if strings.TrimSpace(reply.Text) == "" {
 				continue
 			}
@@ -170,5 +194,30 @@ func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error 
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("telegram send error %d: %s", resp.StatusCode, string(body))
 	}
+	return nil
+}
+
+// sendChatAction posts a sendChatAction call to show "Butler is typing..."
+// in the Telegram client. Best-effort — errors are not surfaced (the
+// caller wants the typing UX, not a hard dependency on it).
+func (b *Bot) sendChatAction(ctx context.Context, chatID int64, action string) error {
+	u := fmt.Sprintf("%s/bot%s/sendChatAction", b.endpoint, b.token)
+	body, err := json.Marshal(map[string]any{
+		"chat_id": chatID,
+		"action":  action,
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
 	return nil
 }

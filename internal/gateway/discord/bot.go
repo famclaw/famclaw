@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/famclaw/famclaw/internal/gateway"
@@ -49,9 +50,35 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			DisplayName: displayName,
 		}
 
+		// Typing indicator. Discord's typing state expires after ~10s, so
+		// we refresh every 8s for the duration of agent processing. Lets
+		// the user see "Butler is typing..." while the LLM thinks, instead
+		// of a silent 20-30s wait that looks identical to a hung bot.
+		// (UX commitment §11: never silent failure.)
+		stopTyping := make(chan struct{})
+		go func() {
+			// Fire once immediately so the indicator shows up before the
+			// first 8s tick.
+			_ = s.ChannelTyping(m.ChannelID)
+			t := time.NewTicker(8 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-stopTyping:
+					return
+				case <-t.C:
+					_ = s.ChannelTyping(m.ChannelID)
+				}
+			}
+		}()
+
 		reply := handleMsg(ctx, msg)
+		close(stopTyping)
 
 		// Skip whitespace-only replies — Discord rejects empty messages.
+		// The agent layer now substitutes a fallback for empty LLM output
+		// (see internal/agent/agent.go) so this should be rare, but keep
+		// the guard as defense in depth.
 		if strings.TrimSpace(reply.Text) == "" {
 			return
 		}
