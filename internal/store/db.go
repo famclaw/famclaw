@@ -226,6 +226,42 @@ func (d *DB) migrate() error {
 		ciphertext  BLOB NOT NULL,
 		updated_at  INTEGER NOT NULL DEFAULT 0
 	);
+
+	-- Phase 2 — tool result spillover cache + audit log.
+	-- See docs/superpowers/specs/2026-05-12-context-management-design.md §3.
+	CREATE TABLE IF NOT EXISTS tool_result_cache (
+		id            TEXT PRIMARY KEY,
+		user_name     TEXT NOT NULL,
+		conv_id       TEXT NOT NULL,
+		tool_name     TEXT NOT NULL,
+		args_hash     TEXT NOT NULL,
+		payload_path  TEXT NOT NULL,
+		bytes         INTEGER NOT NULL,
+		content_type  TEXT NOT NULL,
+		created_at    INTEGER NOT NULL,
+		expires_at    INTEGER NOT NULL,
+		accessed_at   INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_tool_cache_user_conv ON tool_result_cache (user_name, conv_id);
+	CREATE INDEX IF NOT EXISTS idx_tool_cache_dedup     ON tool_result_cache (user_name, tool_name, args_hash);
+	CREATE INDEX IF NOT EXISTS idx_tool_cache_expires   ON tool_result_cache (expires_at);
+
+	CREATE TABLE IF NOT EXISTS tool_result_audit (
+		id                TEXT PRIMARY KEY,
+		user_name         TEXT NOT NULL,
+		conv_id           TEXT NOT NULL,
+		tool_name         TEXT NOT NULL,
+		args_hash         TEXT NOT NULL,
+		args_summary      TEXT NOT NULL,
+		bytes             INTEGER NOT NULL,
+		content_type      TEXT NOT NULL,
+		category          TEXT,
+		created_at        INTEGER NOT NULL,
+		payload_id        TEXT,
+		payload_purged_at INTEGER
+	);
+	CREATE INDEX IF NOT EXISTS idx_tool_audit_user_conv ON tool_result_audit (user_name, conv_id);
+	CREATE INDEX IF NOT EXISTS idx_tool_audit_created   ON tool_result_audit (created_at);
 	`)
 	if err != nil {
 		return err

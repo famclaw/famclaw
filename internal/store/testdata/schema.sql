@@ -10,6 +10,16 @@ CREATE INDEX idx_gateway_accounts_lookup ON gateway_accounts(gateway, external_i
 
 CREATE INDEX idx_messages_conv ON messages(conversation_id);
 
+CREATE INDEX idx_tool_audit_created   ON tool_result_audit (created_at);
+
+CREATE INDEX idx_tool_audit_user_conv ON tool_result_audit (user_name, conv_id);
+
+CREATE INDEX idx_tool_cache_dedup     ON tool_result_cache (user_name, tool_name, args_hash);
+
+CREATE INDEX idx_tool_cache_expires   ON tool_result_cache (expires_at);
+
+CREATE INDEX idx_tool_cache_user_conv ON tool_result_cache (user_name, conv_id);
+
 CREATE INDEX idx_unknown_accounts_lookup ON unknown_accounts(gateway, external_id);
 
 CREATE INDEX idx_used_tokens_used_at ON used_tokens(used_at);
@@ -129,6 +139,35 @@ CREATE TABLE skills (
 		seccheck_verdict TEXT,
 		installed_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+CREATE TABLE tool_result_audit (
+		id                TEXT PRIMARY KEY,
+		user_name         TEXT NOT NULL,
+		conv_id           TEXT NOT NULL,
+		tool_name         TEXT NOT NULL,
+		args_hash         TEXT NOT NULL,
+		args_summary      TEXT NOT NULL,
+		bytes             INTEGER NOT NULL,
+		content_type      TEXT NOT NULL,
+		category          TEXT,
+		created_at        INTEGER NOT NULL,
+		payload_id        TEXT,
+		payload_purged_at INTEGER
+	);
+
+CREATE TABLE tool_result_cache (
+		id            TEXT PRIMARY KEY,
+		user_name     TEXT NOT NULL,
+		conv_id       TEXT NOT NULL,
+		tool_name     TEXT NOT NULL,
+		args_hash     TEXT NOT NULL,
+		payload_path  TEXT NOT NULL,
+		bytes         INTEGER NOT NULL,
+		content_type  TEXT NOT NULL,
+		created_at    INTEGER NOT NULL,
+		expires_at    INTEGER NOT NULL,
+		accessed_at   INTEGER NOT NULL
 	);
 
 CREATE TABLE unknown_accounts (
