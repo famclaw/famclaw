@@ -46,7 +46,7 @@ func SpawnAgentTool() agentcore.Tool {
 				"tools": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
-					"description": "Allowlist of MCP tool names the subagent may call. Empty or missing means the subagent has NO MCP tools.",
+					"description": "Allowlist of tool names (MCP or builtin, e.g. \"web_fetch\") the subagent may call. Empty or missing defaults to [\"web_fetch\"]. Use deny_tools to remove tools from the effective allowlist.",
 				},
 				"deny_tools": map[string]any{
 					"type":        "array",
