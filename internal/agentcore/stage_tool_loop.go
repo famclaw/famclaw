@@ -103,6 +103,20 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				log.Printf("[agentcore][%s] tool_call: %s", turn.User.Name, tc.Function.Name)
 				start := time.Now()
 
+				// Local LLMs occasionally emit the bare tool name
+				// ("web_fetch") instead of the namespaced form
+				// ("builtin__web_fetch"). If the bare name is unqualified
+				// and the prefixed builtin form is in the turn allowlist,
+				// rewrite to the canonical form for dispatch. Mismatches
+				// still fall through to the unknown-tool error below.
+				if !strings.HasPrefix(tc.Function.Name, "builtin__") && !strings.HasPrefix(tc.Function.Name, "mcp__") {
+					if turnAllowed["builtin__"+tc.Function.Name] {
+						log.Printf("[agentcore][%s] tool_call normalized: %s -> builtin__%s",
+							turn.User.Name, tc.Function.Name, tc.Function.Name)
+						tc.Function.Name = "builtin__" + tc.Function.Name
+					}
+				}
+
 				// Reject tools not in the turn's allowlist (prevents
 				// hallucinated/injected calls from bypassing role filtering).
 				if len(turnAllowed) > 0 && !turnAllowed[tc.Function.Name] {
