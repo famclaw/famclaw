@@ -167,12 +167,32 @@ func skillsComponent(c BuildContext) (string, bool) {
 // gatewayComponent — tells the model which channel the user is on.
 // Useful because output formatting differs (markdown on web, plain text
 // chunked on Telegram/Discord). Excluded for unknown gateways.
+//
+// Formatting rules sent to the model:
+//   - Discord renders standard markdown EXCEPT tables. Avoid the `|col|col|`
+//     table syntax; use bullet lists for side-by-side comparisons.
+//   - Telegram parses HTML when famclaw enables parse_mode (it does for HTML
+//     bold/italic/code). Avoid raw HTML tags other than those.
+//   - Both: never use <br>, <table>, <tr>, <td>. They appear as literal text.
 func gatewayComponent(c BuildContext) (string, bool) {
 	switch c.Gateway {
 	case "telegram":
-		return "The user is on Telegram. Replies over ~4096 chars get auto-chunked at the gateway, but prefer concise answers anyway. Plain text or light markdown only.", true
+		return "The user is on Telegram. Replies over ~4096 chars get auto-chunked. " +
+			"FORMATTING: prefer plain text and bullet lists. Use **bold** and *italic* sparingly. " +
+			"Do NOT emit markdown tables (the `|col|col|` syntax — they render as literal pipes). " +
+			"Do NOT emit HTML tags like <br>, <table>, <tr>, <td>. " +
+			"For side-by-side comparisons use bullet lists with a label, not tables. " +
+			"For code or alignment-critical text, wrap in triple-backtick fences.", true
 	case "discord":
-		return "The user is on Discord. Replies over ~2000 chars get auto-chunked at the gateway. Discord renders standard markdown.", true
+		return "The user is on Discord. Replies over ~2000 chars get auto-chunked. " +
+			"FORMATTING: Discord renders standard markdown (bold, italic, code, headers) " +
+			"but does NOT render markdown tables — the `|col|col|` syntax shows literal " +
+			"pipes and a broken separator row. " +
+			"Do NOT use markdown tables. Use bullet lists with a clear `Label: value` per " +
+			"row for comparisons. " +
+			"Do NOT use HTML tags like <br>, <table>, <tr>, <td> — they appear as literal " +
+			"text in Discord. " +
+			"For code or alignment-critical content, wrap in triple-backtick fences.", true
 	case "web":
 		return "The user is on the FamClaw web dashboard. Full markdown is fine; long replies are OK.", true
 	default:

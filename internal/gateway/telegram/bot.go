@@ -107,9 +107,19 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				continue
 			}
 
+			// Normalize for chat-gateway rendering: strip <br> tags, convert
+			// markdown tables to bullet lists, collapse excess blank lines.
+			// Code blocks (triple-backtick fences) are preserved verbatim.
+			text := gateway.NormalizeReplyForChatGateway(reply.Text)
+
+			// Convert remaining markdown bold/italic/code to HTML so
+			// Telegram's parse_mode="HTML" renders them. Plain text falls
+			// through unchanged.
+			text = markdownToTelegramHTML(text)
+
 			// Chunk at Telegram's 4096-byte message limit. Break on first
 			// error so we don't spam if the channel is gone or rate-limited.
-			for _, chunk := range gateway.ChunkMessage(reply.Text, 4096) {
+			for _, chunk := range gateway.ChunkMessage(text, 4096) {
 				if err := b.sendMessage(ctx, u.Message.Chat.ID, chunk); err != nil {
 					log.Printf("[telegram] send error: %v", err)
 					break
@@ -171,8 +181,9 @@ func (b *Bot) getUpdates(ctx context.Context, offset int) ([]tgUpdate, error) {
 func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error {
 	u := fmt.Sprintf("%s/bot%s/sendMessage", b.endpoint, b.token)
 	jsonBody, err := json.Marshal(map[string]any{
-		"chat_id": chatID,
-		"text":    text,
+		"chat_id":    chatID,
+		"text":       text,
+		"parse_mode": "HTML",
 	})
 	if err != nil {
 		return fmt.Errorf("marshaling send body: %w", err)

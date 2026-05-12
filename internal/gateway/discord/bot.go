@@ -83,9 +83,14 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			return
 		}
 
+		// Normalize for chat-gateway rendering: strip <br> tags, convert
+		// markdown tables to bullet lists, collapse excess blank lines.
+		// Code blocks (triple-backtick fences) are preserved verbatim.
+		text := gateway.NormalizeReplyForChatGateway(reply.Text)
+
 		// Chunk at Discord's 2000-character message limit. Break on first
 		// error so we don't spam if the channel is gone or rate-limited.
-		for _, chunk := range gateway.ChunkMessage(reply.Text, 2000) {
+		for _, chunk := range gateway.ChunkMessage(text, 2000) {
 			if _, err := s.ChannelMessageSend(m.ChannelID, chunk); err != nil {
 				log.Printf("[discord] send error: %v", err)
 				break
