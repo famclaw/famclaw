@@ -135,6 +135,92 @@ func TestCompressDefaultWindow(t *testing.T) {
 	}
 }
 
+// TestPrunableFieldDistinctFromPinned ensures Prunable is not aliased
+// to Pinned. Tool results need to be preferred-drop, not kept.
+func TestPrunableFieldDistinctFromPinned(t *testing.T) {
+	m := Message{Role: "tool", Content: "x", Prunable: true}
+	if m.Pinned {
+		t.Error("Prunable message should not be Pinned by default")
+	}
+	if !m.Prunable {
+		t.Error("Prunable should round-trip true")
+	}
+}
+
+// TestPrunablePreferredOverNonPrunable asserts the two-pass drop order:
+// Prunable tool results evict before user/assistant turns when over budget.
+func TestPrunablePreferredOverNonPrunable(t *testing.T) {
+	msgs := []Message{
+		{Role: "system", Content: "you are helpful"},
+		{Role: "user", Content: "hi"},
+		{Role: "tool", Content: strings.Repeat("A", 4000), Prunable: true},
+		{Role: "tool", Content: strings.Repeat("B", 4000), Prunable: true},
+		{Role: "assistant", Content: "ok"},
+		{Role: "user", Content: "more"},
+		{Role: "assistant", Content: "last assistant"},
+		{Role: "user", Content: "second last user"},
+		{Role: "assistant", Content: "last reply"},
+	}
+	// Budget that's small enough to force dropping, but easily fits
+	// everything once the two big tool messages are gone.
+	out := Compress(msgs, Options{ContextWindow: 800})
+
+	for _, m := range out {
+		if m.Role == "tool" {
+			t.Errorf("prunable tool message survived when budget required dropping: %+v", m)
+		}
+	}
+	hasUserHi := false
+	for _, m := range out {
+		if m.Role == "user" && m.Content == "hi" {
+			hasUserHi = true
+		}
+	}
+	if !hasUserHi {
+		t.Error("expected non-prunable user message 'hi' to survive (prunable should have gone first)")
+	}
+}
+
+// TestEstimatorMarginShrinksBudget asserts the safety margin produces
+// more-aggressive compression than the default zero-margin path.
+func TestEstimatorMarginShrinksBudget(t *testing.T) {
+	msgs := []Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: strings.Repeat("x", 3000)}, // ~750 tokens
+		{Role: "assistant", Content: "a"},
+		{Role: "user", Content: "b"},
+		{Role: "assistant", Content: "c"},
+		{Role: "user", Content: "d"},
+	}
+	// Margin 0 (no buffer): budget = 1000 * 0.85 = 850
+	noMargin := Compress(msgs, Options{ContextWindow: 1000, EstimatorMargin: -1}) // -1 clamps to 0
+	// Margin 0.30: budget = 1000 * 0.85 * 0.70 ≈ 595
+	withMargin := Compress(msgs, Options{ContextWindow: 1000, EstimatorMargin: 0.30})
+
+	if len(withMargin) >= len(noMargin) {
+		t.Errorf("margin should make compression more aggressive: noMargin=%d withMargin=%d",
+			len(noMargin), len(withMargin))
+	}
+}
+
+// TestEstimatorMarginDefaults asserts zero-margin gets the 0.15 default.
+func TestEstimatorMarginDefaults(t *testing.T) {
+	msgs := []Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: strings.Repeat("x", 3000)},
+		{Role: "assistant", Content: "a"},
+		{Role: "user", Content: "b"},
+		{Role: "assistant", Content: "c"},
+		{Role: "user", Content: "d"},
+	}
+	zeroMargin := Compress(msgs, Options{ContextWindow: 1000, EstimatorMargin: -1}) // explicit no margin
+	defaultMargin := Compress(msgs, Options{ContextWindow: 1000})                    // gets 0.15 default
+	if len(defaultMargin) >= len(zeroMargin) {
+		t.Errorf("default margin should be more aggressive than zero: zero=%d default=%d",
+			len(zeroMargin), len(defaultMargin))
+	}
+}
+
 func TestTotalTokens(t *testing.T) {
 	est := &SimpleEstimator{}
 	msgs := []Message{
