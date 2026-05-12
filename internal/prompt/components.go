@@ -114,7 +114,7 @@ func capabilitiesComponent(c BuildContext) (string, bool) {
 		for _, tool := range c.BuiltinTools {
 			switch tool {
 			case "spawn_agent":
-				hints = append(hints, "Delegate sub-tasks to local LLM workers via spawn_agent.")
+				hints = append(hints, "Delegate research tasks to a subagent via spawn_agent — pass tools: [\"web_fetch\"] so the subagent can browse. Use it for parallel comparisons (\"compare A and B\" → one spawn per option) or deep multi-source research. NOT for simple factual questions you can answer directly.")
 			case "web_fetch":
 				hints = append(hints, "Fetch a URL and read its text content via web_fetch — useful for current events, weather, or public docs.")
 			default:

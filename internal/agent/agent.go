@@ -333,6 +333,14 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 
 	allowTools := parseStringList(args["tools"])
 	denyTools := parseStringList(args["deny_tools"])
+	// Default the subagent to web_fetch when the caller leaves tools
+	// empty — otherwise the subagent has zero tools and just answers
+	// from training data, which is the silent failure mode we saw
+	// before v0.5.9 where the parent agent "delegated research" to a
+	// subagent that couldn't actually research anything.
+	if len(allowTools) == 0 {
+		allowTools = []string{"web_fetch"}
+	}
 
 	cfg := subagent.Config{
 		Prompt:     prompt,
@@ -342,11 +350,34 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 		DenyTools:  denyTools,
 	}
 
+	// Build the subagent's builtin tool view from this parent's builtins.
+	// The parent's makeBuiltinHandler dispatches by namespaced name and
+	// already shares state (config, db, user, pool) with the subagent.
+	builtinDefs := make([]llm.ToolDef, 0, len(a.builtinTools))
+	for _, t := range a.builtinTools {
+		// Don't let a subagent spawn another subagent — easy way to wedge
+		// the scheduler. The parent's own spawn_agent is still available
+		// to the user; only the subagent's view excludes it.
+		if t.Name == "builtin__spawn_agent" {
+			continue
+		}
+		builtinDefs = append(builtinDefs, llm.ToolDef{
+			Type: "function",
+			Function: llm.ToolDefFunc{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
+			},
+		})
+	}
+
 	execDeps := subagent.ExecutorDeps{
-		Pool:        a.pool,
-		Config:      a.cfg,
-		Temperature: a.cfg.LLM.Temperature,
-		MaxTokens:   a.cfg.LLM.MaxResponseTokens,
+		Pool:           a.pool,
+		Config:         a.cfg,
+		Temperature:    a.cfg.LLM.Temperature,
+		MaxTokens:      a.cfg.LLM.MaxResponseTokens,
+		BuiltinDefs:    builtinDefs,
+		BuiltinHandler: a.makeBuiltinHandler(),
 	}
 
 	subCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
