@@ -37,6 +37,11 @@ _child_blocked if { startswith(input.tool_name, "file_") }
 _child_blocked if { input.tool_name == "spawn_agent" }
 _child_blocked if { effective_age_group == "under_8"; input.tool_name == "web_search" }
 _child_blocked if { effective_age_group in {"under_8", "age_8_12"}; input.tool_name == "web_fetch" }
+# tool_result_more reads spilled tool outputs. Cross-user ownership is
+# enforced at the cache layer (ErrNotFound on mismatch), so this gate is
+# defense in depth. Mirror web_fetch's age restrictions so a younger child
+# can't read cached results even if they somehow obtained an id.
+_child_blocked if { effective_age_group in {"under_8", "age_8_12"}; input.tool_name == "tool_result_more" }
 # Admin tools are restricted to parent role only — block them for any child.
 _child_blocked if { admin_tools[input.tool_name] }
 
