@@ -166,72 +166,15 @@ seccheck:
 
 # ── Built-in tools ───────────────────────────────────────────────────────────
 # Uncomment to expose web_fetch to the LLM. Disabled by default.
-#
-# url_allowlist is REQUIRED when enabled — an empty list denies all fetches as
-# an SSRF guard. Listed hostnames match exact + all subdomains automatically
-# (so "wikipedia.org" covers "en.wikipedia.org"). http/https only; private /
-# loopback IPs are blocked at the dialer regardless of allowlist contents.
-#
-# Below is a curated default list grouped by category. Remove categories you
-# don't want; add your own family-relevant hosts under the local-region
-# section. Conservative kid-safe sources — review for your family's needs.
-#
 # tools:
 #   web_fetch:
-#     enabled: false
-#     allowed_roles: [parent]
+#     enabled: false              # set true to allow the LLM to fetch URLs
+#     allowed_roles: [parent]     # roles permitted to invoke web_fetch
+#     url_allowlist:              # REQUIRED when enabled — empty list denies all
+#       - wikipedia.org           #   fetches (SSRF guard). List the hostnames
+#       - en.wikipedia.org        #   you trust; subdomains of an allowed host
+#                                 #   match automatically. http/https only;
+#                                 #   private/loopback IPs are blocked at the
+#                                 #   dialer regardless.
 #     max_bytes: 262144           # 256KB response cap
 #     timeout_seconds: 15
-#     url_allowlist:
-#       # Reference / general knowledge
-#       - wikipedia.org
-#       - simple.wikipedia.org    # plain-English Wikipedia for younger readers
-#       - britannica.com
-#       - merriam-webster.com
-#       - dictionary.com
-#       - thesaurus.com
-#
-#       # Education
-#       - khanacademy.org
-#       - ck12.org
-#       - pbskids.org
-#       - nasa.gov
-#       - noaa.gov
-#       - nationalgeographic.com
-#       - smithsonianmag.com
-#
-#       # Weather
-#       - weather.gov
-#       - wunderground.com
-#       - timeanddate.com
-#       - accuweather.com
-#
-#       # News (kid-appropriate sources)
-#       - npr.org
-#       - bbc.com
-#       - bbc.co.uk
-#       - reuters.com
-#       - apnews.com
-#
-#       # Government / civic
-#       - usa.gov
-#       - cdc.gov
-#       - nih.gov
-#       - state.gov
-#
-#       # Travel & outdoors
-#       - tripadvisor.com         # may block automated UA — try fallback hosts
-#       - nps.gov                 # national parks
-#       - recreation.gov
-#       - visittheusa.com
-#
-#       # Local-region preset (customize for your area)
-#       # - <your-city>.org       # city government
-#       # - <your-county>.gov     # county services
-#       # - <local-paper>.com     # local news
-#       # - <local-library>.org   # library catalog
-#       # - <local-school-district>.org
-#
-#       # Family-specific
-#       # - <school-portal-host>  # school grades/assignments portal
-#       # - <pediatrician-host>   # doctor's office portal
