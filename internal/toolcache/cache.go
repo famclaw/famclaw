@@ -98,7 +98,7 @@ func (c *Cache) Put(ctx context.Context, in PutInput) (PutOutput, error) {
 	if existing, derr := c.store.findDedup(ctx, in.User, in.ToolName, argsHash, now); derr == nil {
 		_ = c.store.touchAccessed(ctx, existing.ID, now)
 		_ = c.store.refreshExpiry(ctx, existing.ID, now+ttl.Milliseconds())
-		full, rerr := readPayload(c.cfg.CacheDir, existing.PayloadPath, 0, int(existing.Bytes))
+		full, rerr := readPayload(ctx, c.cfg.CacheDir, existing.PayloadPath, 0, int(existing.Bytes))
 		if rerr != nil {
 			// Row exists but file is missing — proceed to a fresh write below.
 			_ = c.store.deleteCache(ctx, existing.ID)
@@ -213,7 +213,7 @@ func (c *Cache) More(ctx context.Context, user, id string, offset, length int) (
 	if length > 8192 {
 		length = 8192
 	}
-	data, rerr := readPayload(c.cfg.CacheDir, row.PayloadPath, offset, length)
+	data, rerr := readPayload(ctx, c.cfg.CacheDir, row.PayloadPath, offset, length)
 	if rerr != nil {
 		// File gone — clean up the row and surface NotFound.
 		_ = c.store.deleteCache(ctx, id)
@@ -330,18 +330,22 @@ func (c *Cache) Reconcile(ctx context.Context) error {
 		rel string
 	}
 	var orphans []orphan
-	rows, err := c.cfg.DB.QueryContext(ctx, `SELECT id, payload_path FROM tool_result_cache`)
-	if err == nil {
-		for rows.Next() {
-			var id, rel string
-			if err := rows.Scan(&id, &rel); err != nil {
-				continue
-			}
-			if _, err := statPayload(c.cfg.CacheDir, rel); err != nil {
-				orphans = append(orphans, orphan{id: id, rel: rel})
-			}
+	rows, qerr := c.cfg.DB.QueryContext(ctx, `SELECT id, payload_path FROM tool_result_cache`)
+	if qerr != nil {
+		return fmt.Errorf("toolcache.Reconcile query: %w", qerr)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, rel string
+		if err := rows.Scan(&id, &rel); err != nil {
+			continue
 		}
-		rows.Close()
+		if _, err := statPayload(c.cfg.CacheDir, rel); err != nil {
+			orphans = append(orphans, orphan{id: id, rel: rel})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("toolcache.Reconcile iterate: %w", err)
 	}
 	for _, o := range orphans {
 		_ = c.store.deleteCache(ctx, o.id)

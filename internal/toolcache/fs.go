@@ -39,8 +39,12 @@ func writePayload(ctx context.Context, root, user, id string, payload []byte) (s
 // readPayload reads (offset, length) bytes from <root>/<rel>. Clamps
 // negative offset/length to 0. Returns bytes actually read (may be < length
 // on EOF). EOF / ErrUnexpectedEOF are not treated as errors — short reads
-// are normal at end of file.
-func readPayload(root, rel string, offset, length int) ([]byte, error) {
+// are normal at end of file. ctx is checked before the blocking open so
+// callers can cancel slow filesystem lookups.
+func readPayload(ctx context.Context, root, rel string, offset, length int) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if offset < 0 {
 		offset = 0
 	}

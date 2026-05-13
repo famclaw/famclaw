@@ -15,7 +15,7 @@ func TestWriteAndReadPayloadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writePayload: %v", err)
 	}
-	got, err := readPayload(root, rel, 0, len(payload))
+	got, err := readPayload(context.Background(), root, rel, 0, len(payload))
 	if err != nil {
 		t.Fatalf("readPayload: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestReadPayloadWithOffset(t *testing.T) {
 	root := t.TempDir()
 	payload := []byte("0123456789ABCDEF")
 	rel, _ := writePayload(context.Background(), root, "alice", "01YYY", payload)
-	got, err := readPayload(root, rel, 5, 5)
+	got, err := readPayload(context.Background(), root, rel, 5, 5)
 	if err != nil {
 		t.Fatalf("readPayload: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestReadPayloadBeyondEOFClips(t *testing.T) {
 	root := t.TempDir()
 	payload := []byte("short")
 	rel, _ := writePayload(context.Background(), root, "alice", "01ZZZ", payload)
-	got, err := readPayload(root, rel, 0, 1000)
+	got, err := readPayload(context.Background(), root, rel, 0, 1000)
 	if err != nil {
 		t.Fatalf("readPayload: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestReadPayloadNegativeArgsClamp(t *testing.T) {
 	root := t.TempDir()
 	payload := []byte("hello")
 	rel, _ := writePayload(context.Background(), root, "alice", "01NEG", payload)
-	got, err := readPayload(root, rel, -1, -1)
+	got, err := readPayload(context.Background(), root, rel, -1, -1)
 	if err != nil {
 		t.Fatalf("readPayload: %v", err)
 	}
