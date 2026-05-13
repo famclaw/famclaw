@@ -5,170 +5,169 @@ import (
 	"strings"
 )
 
-// brTagRE matches HTML <br> variants (case-insensitive). Discord and
-// Telegram both render these as literal text, so we strip them.
-var brTagRE = regexp.MustCompile(`(?i)<br\s*/?\s*>`)
+// brTagRE matches <br> tags (case-insensitive, optional slash)
+var brTagRE = regexp.MustCompile(`(?i)<br\s*/?>`)
 
-// tableSepRowRE matches markdown table separator rows: |---|---| or |:---|---:|
-// optionally with whitespace. These appear as literal text in Discord/Telegram
-// even when the surrounding header/data rows render via pipes.
-var tableSepRowRE = regexp.MustCompile(`(?m)^\s*\|?[\s\-:|]+\|[\s\-:|]+$`)
-
-// markdownTableBlockRE matches a contiguous run of markdown table rows
-// (lines starting with `|`). Captures one block at a time so we can convert
-// each table independently.
+// markdownTableBlockRE matches one or more contiguous lines starting with |, including separator rows
 var markdownTableBlockRE = regexp.MustCompile(`(?m)(^\s*\|.*\|\s*$\n?)+`)
 
-// NormalizeReplyForChatGateway cleans a model reply for delivery to a
-// chat gateway (Discord / Telegram). It:
-//   - strips HTML <br> tags (they render as literal text)
-//   - converts markdown tables to bullet lists (they render with literal
-//     pipes and broken separators on Discord; render as plain text with
-//     pipes on Telegram)
-//   - normalizes excess blank lines
-//
-// The function is conservative: it does not touch code blocks (text inside
-// triple-backtick fences is preserved verbatim) and does not strip headers
-// or bold/italic markers — Discord renders those natively, and the per-
-// gateway adapter handles Telegram conversion.
+// blankCollapseRE collapses 3+ newlines into exactly 2
+var blankCollapseRE = regexp.MustCompile(`\n{3,}`)
+
+// NormalizeReplyForChatGateway cleans a model's reply for Discord/Telegram delivery.
+// It preserves code blocks verbatim, converts markdown tables to bullet lists,
+// replaces <br> tags with ' / ', collapses excessive newlines, and trims.
 func NormalizeReplyForChatGateway(s string) string {
-	if s == "" {
-		return s
-	}
-	// Split out fenced code blocks so we don't transform their contents.
+	// Split the input into parts: code blocks and prose
 	parts := splitOnFences(s)
-	for i, p := range parts {
-		if p.isCode {
-			continue
+
+	var result strings.Builder
+
+	for _, part := range parts {
+		if part.isCode {
+			// Preserve code blocks verbatim
+			result.WriteString(part.text)
+		} else {
+			// Process prose: convert tables, strip <br>, collapse newlines
+			// First, convert markdown tables to bullet lists
+			processed := convertMarkdownTables(part.text)
+			// Then, strip remaining <br> tags in prose
+			processed = brTagRE.ReplaceAllString(processed, " ")
+			// Collapse 3+ newlines to exactly 2
+			processed = blankCollapseRE.ReplaceAllString(processed, "\n\n")
+			// Trim final whitespace
+			result.WriteString(strings.TrimSpace(processed))
 		}
-		// Order matters: convert tables FIRST so the table converter can
-		// transform <br> inside cells into " / ". Then strip any remaining
-		// <br> in prose.
-		p.text = convertMarkdownTables(p.text)
-		p.text = brTagRE.ReplaceAllString(p.text, "")
-		parts[i] = p
 	}
-	out := joinFences(parts)
-	// Collapse 3+ blank lines down to 2.
-	out = regexp.MustCompile(`\n{3,}`).ReplaceAllString(out, "\n\n")
-	return strings.TrimSpace(out)
+
+	return result.String()
 }
 
-// fencePart represents a slice of the message — either prose or a fenced
-// code block. We preserve code-block content verbatim because the model
-// uses fences intentionally (e.g. wrapping a real table for Discord) and
-// we don't want to fight that choice.
-type fencePart struct {
-	text   string
-	isCode bool
-}
-
-// splitOnFences walks the string and emits a sequence of (prose, code,
-// prose, code, ...) segments based on triple-backtick fences. Unbalanced
-// fences are treated as prose (we never let an unterminated fence consume
-// the rest of the message).
+// splitOnFences splits a string on triple-backtick fences.
+// It returns a slice of fencePart, where isCode is true for code blocks.
+// If an opening fence has no closing one, the rest of the string is treated as prose.
 func splitOnFences(s string) []fencePart {
-	var out []fencePart
+	var parts []fencePart
+	start := 0
+
 	for {
-		start := strings.Index(s, "```")
-		if start < 0 {
-			out = append(out, fencePart{text: s})
-			return out
+		// Find the next opening fence
+		openIdx := strings.Index(s[start:], "```")
+		if openIdx == -1 {
+			// No more fences: add remaining text as prose
+			if start < len(s) {
+				parts = append(parts, fencePart{text: s[start:], isCode: false})
+			}
+			break
 		}
-		// Emit the prose before the fence.
-		if start > 0 {
-			out = append(out, fencePart{text: s[:start]})
+		openIdx += start
+
+		// Extract the text before the fence
+		if openIdx > start {
+			parts = append(parts, fencePart{text: s[start:openIdx], isCode: false})
 		}
-		// Find the closing fence on a later line.
-		rest := s[start+3:]
-		end := strings.Index(rest, "```")
-		if end < 0 {
-			// No closing fence — treat the rest as prose.
-			out = append(out, fencePart{text: s[start:]})
-			return out
+
+		// Find the closing fence
+		closeIdx := strings.Index(s[openIdx+3:], "```")
+		if closeIdx == -1 {
+			// No closing fence: treat everything after as prose
+			parts = append(parts, fencePart{text: s[openIdx+3:], isCode: false})
+			break
 		}
-		block := s[start : start+3+end+3]
-		out = append(out, fencePart{text: block, isCode: true})
-		s = rest[end+3:]
+		closeIdx += openIdx + 3
+
+		// Extract the code block content
+		codeContent := s[openIdx+3:closeIdx]
+		parts = append(parts, fencePart{text: codeContent, isCode: true})
+
+		// Move start past the closing fence
+		start = closeIdx + 3
 	}
+
+	return parts
 }
 
-// joinFences reassembles the parts produced by splitOnFences.
-func joinFences(parts []fencePart) string {
-	var b strings.Builder
-	for _, p := range parts {
-		b.WriteString(p.text)
-	}
-	return b.String()
-}
-
-// convertMarkdownTables finds contiguous runs of `|...|` lines and rewrites
-// them as bullet lists. The first row is treated as the header; subsequent
-// rows produce one bullet per row with `header: value` pairs separated by
-// "  •  " for readability. Separator rows (`|---|`) are dropped.
+// convertMarkdownTables converts markdown tables to bullet lists.
+// It uses the table block regex to find table sections.
 func convertMarkdownTables(s string) string {
 	return markdownTableBlockRE.ReplaceAllStringFunc(s, func(block string) string {
-		rows := strings.Split(strings.TrimSpace(block), "\n")
-		// Parse each row into cells (trim leading/trailing pipes + whitespace).
-		var parsed [][]string
-		for _, row := range rows {
-			if tableSepRowRE.MatchString(row) {
+		var headers []string
+		var rows [][]string
+		var headerSet bool
+
+		// Split the block into lines
+		lines := strings.Split(block, "\n")
+
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "|") {
 				continue
 			}
-			trimmed := strings.TrimSpace(row)
-			trimmed = strings.TrimPrefix(trimmed, "|")
-			trimmed = strings.TrimSuffix(trimmed, "|")
-			cells := strings.Split(trimmed, "|")
-			for i := range cells {
-				cells[i] = strings.TrimSpace(cells[i])
-				// Inside a cell, the model sometimes uses <br> for line
-				// breaks — convert to literal " / " separator.
-				cells[i] = brTagRE.ReplaceAllString(cells[i], " / ")
+
+			// Split by | and remove empty first/last
+			cells := strings.Split(line, "|")
+			cells = cells[1 : len(cells)-1]
+
+			// Skip separator rows (contain ---)
+			if strings.Contains(line, "---") {
+				continue
 			}
-			parsed = append(parsed, cells)
+
+			// First non-separator line is the header
+			if !headerSet {
+				for _, cell := range cells {
+					headers = append(headers, stripMarkers(strings.TrimSpace(cell)))
+				}
+				headerSet = true
+				continue
+			}
+
+			// Process data rows
+			var row []string
+			for _, cell := range cells {
+				cleaned := brTagRE.ReplaceAllString(strings.TrimSpace(cell), " / ")
+				row = append(row, cleaned)
+			}
+			rows = append(rows, row)
 		}
-		if len(parsed) == 0 {
-			return ""
-		}
-		// First row = headers. If only one row exists, emit it as a bullet
-		// line with no header pairing.
-		if len(parsed) == 1 {
-			return "- " + strings.Join(parsed[0], " — ") + "\n"
-		}
-		headers := parsed[0]
-		var b strings.Builder
-		b.WriteByte('\n')
-		for _, row := range parsed[1:] {
-			b.WriteString("- ")
+
+		// Build the bullet list
+		var bulletList strings.Builder
+		for _, row := range rows {
+			var parts []string
 			for i, cell := range row {
-				if i >= len(headers) {
-					break
+				if i < len(headers) {
+					parts = append(parts, "**"+headers[i]+": " + cell)
+				} else {
+					parts = append(parts, cell)
 				}
-				if i > 0 {
-					b.WriteString("  •  ")
-				}
-				if headers[i] != "" {
-					b.WriteString("**")
-					b.WriteString(stripMarkers(headers[i]))
-					b.WriteString("**: ")
-				}
-				b.WriteString(cell)
 			}
-			b.WriteByte('\n')
+			bulletList.WriteString("- " + strings.Join(parts, "  •  ") + "\n")
 		}
-		b.WriteByte('\n')
-		return b.String()
+
+		return bulletList.String()
 	})
 }
 
-// stripMarkers removes outer `**` / `__` / `*` / `_` from a header cell so
-// the converted bullet doesn't double up on bold markers.
+// stripMarkers removes outer **, __, *, or _ from a string.
 func stripMarkers(s string) string {
-	for _, pair := range []string{"**", "__", "*", "_"} {
-		if strings.HasPrefix(s, pair) && strings.HasSuffix(s, pair) && len(s) > 2*len(pair) {
-			s = strings.TrimPrefix(s, pair)
-			s = strings.TrimSuffix(s, pair)
-		}
+	// Remove outer ** or __
+	if len(s) >= 4 && s[0] == '*' && s[1] == '*' && s[len(s)-2] == '*' && s[len(s)-1] == '*' {
+		return s[2 : len(s)-2]
 	}
+	if len(s) >= 4 && s[0] == '_' && s[1] == '_' && s[len(s)-2] == '_' && s[len(s)-1] == '_' {
+		return s[2 : len(s)-2]
+	}
+
+	// Remove outer * or _
+	if len(s) >= 2 && (s[0] == '*' || s[0] == '_') && (s[len(s)-1] == '*' || s[len(s)-1] == '_') {
+		return s[1 : len(s)-1]
+	}
+
 	return s
+}
+
+type fencePart struct {
+	text   string
+	isCode bool
 }
