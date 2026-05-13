@@ -498,7 +498,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 			ToolName: "builtin__web_fetch",
 			Args: map[string]any{
 				"url":       rawURL,
-				"max_bytes": cfg.MaxBytes,
+				"max_bytes": opts.MaxBytes,
 			},
 			Payload:     []byte(result.Text),
 			ContentType: result.ContentType,
