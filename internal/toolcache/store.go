@@ -189,7 +189,7 @@ func (s *store) distinctUsers() ([]string, error) {
 	for rows.Next() {
 		var u string
 		if err := rows.Scan(&u); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("toolcache.distinctUsers scan: %w", err)
 		}
 		out = append(out, u)
 	}
