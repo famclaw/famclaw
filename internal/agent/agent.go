@@ -26,6 +26,7 @@ import (
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
+	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
@@ -58,6 +59,12 @@ type Agent struct {
 	// webfetch.Fetch in NewAgent. Tests can swap in a stub to assert the
 	// allowlist/scheme/empty-list gates without making real HTTP calls.
 	webFetcher func(ctx context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error)
+
+	// cache is the tool-result spillover store. When non-nil, large
+	// handleWebFetch (and other large-result) tool replies are written
+	// to the cache and only a budget-sized head slice is returned to the
+	// LLM. When nil, the legacy inline-everything path runs.
+	cache *toolcache.Cache
 }
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
@@ -70,7 +77,8 @@ type AgentDeps struct {
 	Scanner      skillbridge.Scanner
 	Scheduler    *subagent.Scheduler
 	BuiltinTools []agentcore.Tool
-	Gateway      string // gateway name (telegram, discord, web, etc.) for admin tool audit logs
+	Gateway      string           // gateway name (telegram, discord, web, etc.) for admin tool audit logs
+	Cache        *toolcache.Cache // tool-result spillover cache; nil disables spillover (legacy inline path)
 }
 
 // NewAgent creates an Agent for the given user. Optional dependencies
@@ -107,6 +115,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		convID:       convID,
 		gateway:      deps.Gateway,
 		webFetcher:   webfetch.Fetch,
+		cache:        deps.Cache,
 	}
 }
 
@@ -256,6 +265,18 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		turn.Output = final
 	}
 
+	// Empty-response guard. Local LLMs (Nemotron particularly) occasionally
+	// emit an empty assistant message — no text, no tool_calls — when they
+	// can't resolve a prompt cleanly. Without this guard, the gateway sends
+	// "" to Discord/Telegram and the user sees nothing, indistinguishable
+	// from Butler being down. Per roadmap §11 UX commitment "Never silent
+	// failure": surface a brief user-readable fallback instead.
+	if strings.TrimSpace(turn.Output) == "" && !turn.Streamed {
+		log.Printf("[agent][%s] empty response from LLM — substituting fallback (cat=%s)",
+			a.user.Name, turn.Category)
+		turn.Output = "I'm not sure how to answer that — could you ask again with more specifics, or rephrase what you're looking for?"
+	}
+
 	log.Printf("[agent][%s] cat=%s action=allow", a.user.Name, turn.Category)
 
 	// Save assistant response
@@ -278,6 +299,8 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			return a.handleSpawnAgent(ctx, args)
 		case "builtin__web_fetch":
 			return a.handleWebFetch(ctx, args)
+		case "builtin__tool_result_more":
+			return a.handleToolResultMore(ctx, args)
 		case "builtin__list_pending_approvals":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
 			return admin.HandleListPendingApprovals(ctx, deps, args)
@@ -493,8 +516,104 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	if err != nil {
 		return "", err
 	}
+
+	// Spillover: when the cache is configured, payloads larger than the
+	// current head budget get stored and only a budget-sized slice plus
+	// a tool_result_more invocation hint is returned to the LLM. This is
+	// the v0.5.9 overflow class fix — before this, the full ~256KB
+	// payload went straight into context and 400'd Nemotron at 16k ctx.
+	if a.cache != nil {
+		budget := computeHeadBudget(a)
+		out, cerr := a.cache.Put(ctx, toolcache.PutInput{
+			User: a.user.Name, UserRole: a.user.Role, ConvID: a.convID,
+			ToolName: "builtin__web_fetch",
+			Args: map[string]any{
+				"url":       rawURL,
+				"max_bytes": opts.MaxBytes,
+			},
+			Payload:     []byte(result.Text),
+			ContentType: result.ContentType,
+			Category:    "web_fetch",
+			HeadBudget:  budget,
+		})
+		if cerr == nil {
+			header := fmt.Sprintf("URL: %s\nStatus: %d\nContent-Type: %s\nBytes total: %d\nCache id: %s\n\n",
+				result.URL, result.StatusCode, result.ContentType, out.TotalBytes, out.ID)
+			if out.Truncated {
+				footer := fmt.Sprintf("\n\n[truncated — %d chars remaining. To read more, call:\n  tool_result_more(id=%q, offset=%d, length=8000)\n]",
+					out.TotalBytes-len(out.Head), out.ID, len(out.Head))
+				return header + string(out.Head) + footer, nil
+			}
+			return header + string(out.Head), nil
+		}
+		// Cache write failed — log and fall through to legacy inline path
+		// so the user still gets a (possibly oversize) response rather
+		// than no response at all.
+		log.Printf("[agent][%s] cache spillover failed, returning full payload inline: %v",
+			a.user.Name, cerr)
+	}
+
+	// Legacy path: no cache configured, or cache write failed.
 	return fmt.Sprintf("URL: %s\nStatus: %d\nContent-Type: %s\nTruncated: %v\n\n%s",
 		result.URL, result.StatusCode, result.ContentType, result.Truncated, result.Text), nil
+}
+
+// handleToolResultMore dispatches the builtin__tool_result_more tool.
+// Returns rendered content (or an explanatory error string suitable for the
+// LLM transcript) for the LLM. Per-user ownership is enforced inside
+// Cache.More — cross-user access surfaces as ErrNotFound here.
+func (a *Agent) handleToolResultMore(ctx context.Context, args map[string]any) (string, error) {
+	if a.cache == nil {
+		return "", fmt.Errorf("tool_result_more: cache not configured in this deployment")
+	}
+	id, _ := args["id"].(string)
+	if id == "" {
+		return "", fmt.Errorf("tool_result_more requires 'id'")
+	}
+	offset := readIntArg(args, "offset", 0)
+	length := readIntArg(args, "length", 4096)
+	if offset < 0 {
+		return "", fmt.Errorf("tool_result_more: offset must be >= 0, got %d", offset)
+	}
+	if length <= 0 {
+		return "", fmt.Errorf("tool_result_more: length must be > 0, got %d", length)
+	}
+
+	out, err := a.cache.More(ctx, a.user.Name, id, offset, length)
+	if err != nil {
+		if errors.Is(err, toolcache.ErrNotFound) {
+			return "[cache id not found or expired]", nil
+		}
+		return "", err
+	}
+	// Only stringify text-type payloads to chat. Binary types (image/*,
+	// audio/*) return a marker — vision/voice handling lands in Phase 5.
+	if !strings.HasPrefix(out.ContentType, "text/") {
+		return fmt.Sprintf("[%s; %d bytes at offset %d; binary payload not renderable to chat yet]",
+			out.ContentType, out.Length, out.Offset), nil
+	}
+	body := string(out.Data)
+	if out.Offset+out.Length < out.TotalBytes {
+		body += fmt.Sprintf("\n\n[%d bytes remaining; call tool_result_more(id=%q, offset=%d) to read more]",
+			out.TotalBytes-(out.Offset+out.Length), id, out.Offset+out.Length)
+	}
+	return body, nil
+}
+
+// readIntArg pulls an int from args, defaulting on missing / non-numeric.
+// JSON-decoded numbers arrive as float64; we accept that and plain int.
+func readIntArg(args map[string]any, key string, def int) int {
+	v, ok := args[key]
+	if !ok {
+		return def
+	}
+	switch t := v.(type) {
+	case float64:
+		return int(t)
+	case int:
+		return t
+	}
+	return def
 }
 
 // normalizeTimeoutSeconds extracts timeout_seconds from spawn_agent args.

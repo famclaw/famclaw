@@ -27,7 +27,20 @@ type Config struct {
 
 // ToolsConfig groups configuration for built-in tools registered with the LLM.
 type ToolsConfig struct {
-	WebFetch WebFetchConfig `yaml:"web_fetch,omitempty"`
+	WebFetch  WebFetchConfig  `yaml:"web_fetch,omitempty"`
+	ToolCache ToolCacheConfig `yaml:"tool_cache,omitempty"`
+}
+
+// ToolCacheConfig controls the Phase 2 tool-result spillover cache. When
+// disabled, the agent falls back to inline-everything (legacy v0.5.x
+// behavior — vulnerable to context overflow on big tool results).
+type ToolCacheConfig struct {
+	Enabled       bool              `yaml:"enabled"`          // default true when config block present; auto-enabled in main.go
+	PerUserCapMB  int64             `yaml:"per_user_cap_mb"`  // default 100
+	TotalCapMB    int64             `yaml:"total_cap_mb"`     // default 1024 (advisory; not enforced yet)
+	CacheDir      string            `yaml:"cache_dir"`        // empty = toolcache.DefaultCacheDir()
+	SweepInterval string            `yaml:"sweep_interval"`   // Go duration; default "15m"
+	TTLByRole     map[string]string `yaml:"ttl"`              // role → duration ("24h", "6h", "1h", "30m")
 }
 
 // WebFetchConfig controls the built-in web_fetch tool. Disabled by default;

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/classifier"
@@ -245,5 +246,96 @@ func TestStageToolLoop_ToolCallIDPropagation(t *testing.T) {
 				t.Errorf("turn.ToolCalls = %+v, want exactly one entry for %q", turn.ToolCalls, tc.callName)
 			}
 		})
+	}
+}
+
+// TestStageToolLoop_CompressionDropsOlderToolMessages asserts the
+// per-iteration compression path: when llmMsgs has accumulated older
+// prunable tool messages and a new tool result lands, the older tool
+// messages get evicted before the next LLM call. The newest tool reply
+// is preserved (it's in the "last 3" protected zone).
+//
+// Note: this section alone CANNOT prevent overflow when a single tool
+// result is itself larger than the budget — dropping the tool reply
+// orphans its parent assistant tool_call. That overflow class is fixed
+// by Section D's spillover cache, which puts only a head slice into
+// context. Section B's job is the plumbing for compression between
+// iterations; this test guards that plumbing.
+func TestStageToolLoop_CompressionDropsOlderToolMessages(t *testing.T) {
+	type capturedReq struct {
+		Messages []llm.Message `json:"messages"`
+	}
+
+	smallPayload := "fresh result"
+
+	var captured capturedReq
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message":       map[string]any{"role": "assistant", "content": "done"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	deps := ToolLoopDeps{
+		ClientFactory: func(*Turn) llm.Chatter {
+			return llm.NewClient(server.URL, "test", "")
+		},
+		BuiltinHandler: func(ctx context.Context, name string, args map[string]any) (string, error) {
+			return smallPayload, nil
+		},
+		MaxIterations: 2,
+		ContextWindow: 800, // small budget so older prunable tool messages must drop
+	}
+	stage := NewStageToolLoop(deps)
+
+	// Pre-populate llmMsgs with history including a big older tool message
+	// that should be droppable. The assistant tool_call ahead of it would
+	// orphan if dropped, so use a "raw" older tool message that's NOT tied
+	// to a current pending tool_call. (This is a synthetic test setup —
+	// real flows have the pairing constraint.)
+	oldBigTool := strings.Repeat("X", 4000) // ~1000 tokens, prunable
+	turn := &Turn{
+		User:  &config.UserConfig{Name: "tester"},
+		Tools: []Tool{{Name: "builtin__bigboat"}},
+	}
+	turn.SetMeta("pending_tool_calls", []llm.ToolCall{{
+		ID:       "call_new",
+		Function: llm.ToolCallFunction{Name: "builtin__bigboat", Arguments: map[string]any{}},
+	}})
+	turn.SetMeta("llm_messages", []llm.Message{
+		{Role: "system", Content: "you are helpful"},
+		{Role: "user", Content: "older question"},
+		{Role: "assistant", Content: "old reply"},
+		{Role: "tool", Content: oldBigTool, ToolCallID: "old"}, // big old prunable
+		{Role: "user", Content: "go again"},
+	})
+
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+
+	// The captured LLM call after compression should NOT contain the
+	// big old tool message — it's the only Prunable candidate and the
+	// budget forces a drop. The new tool reply (in last-3 protected
+	// zone after the loop appends it) survives.
+	for _, m := range captured.Messages {
+		if m.Role == "tool" && m.Content == oldBigTool {
+			t.Error("old big prunable tool message should have been compressed away")
+		}
+	}
+	// Sanity: the new tool reply should have made it through.
+	sawNew := false
+	for _, m := range captured.Messages {
+		if m.Role == "tool" && m.Content == smallPayload {
+			sawNew = true
+		}
+	}
+	if !sawNew {
+		t.Error("new tool reply should be present in post-compression LLM call")
 	}
 }

@@ -76,6 +76,7 @@ func FamilyPipeline(deps FamilyPipelineDeps) Pipeline {
 			ClientFactory:   deps.ClientFactory,
 			Temperature:     deps.Temperature,
 			MaxTokens:       deps.MaxTokens,
+			ContextWindow:   deps.ContextWindow,
 			BuiltinHandler:  deps.BuiltinHandler,
 			PolicyEvaluator: deps.Evaluator,
 		}))

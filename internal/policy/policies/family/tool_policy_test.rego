@@ -259,3 +259,33 @@ test_child_cannot_link_account if {
         "tool_name": "link_account"
     }
 }
+
+# tool_result_more — mirrors web_fetch age restrictions. Cross-user
+# ownership enforced at the cache layer; this is defense in depth.
+test_parent_tool_result_more if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "tool_result_more"
+    }
+}
+
+test_teen_tool_result_more if {
+    tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_13_17"},
+        "tool_name": "tool_result_more"
+    }
+}
+
+test_under8_no_tool_result_more if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "under_8"},
+        "tool_name": "tool_result_more"
+    }
+}
+
+test_age8_12_no_tool_result_more if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_8_12"},
+        "tool_name": "tool_result_more"
+    }
+}

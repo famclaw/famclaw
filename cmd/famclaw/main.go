@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,6 +38,7 @@ import (
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
+	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/web"
 	"github.com/famclaw/famclaw/internal/webfetch"
 )
@@ -215,14 +217,54 @@ func main() {
 	// Subagent scheduler for spawn_agent dispatching (max 2 concurrent)
 	agentScheduler := subagent.NewScheduler(2)
 
+	// Phase 2 — tool result spillover cache. See spec §3.
+	// Disabled fall-back: nil cache, agent runs the legacy inline-everything
+	// path (vulnerable to overflow on big tool results — the v0.5.9 bug).
+	var toolCache *toolcache.Cache
+	if cfg.Tools.ToolCache.Enabled || cfg.Tools.WebFetch.Enabled {
+		// Auto-enable when web_fetch is on — they are paired features.
+		cacheCfg := toolcache.Config{
+			DB:         db.SQL(),
+			CacheDir:   cfg.Tools.ToolCache.CacheDir,
+			TTLDefault: 6 * time.Hour,
+			PerUserCap: cfg.Tools.ToolCache.PerUserCapMB * 1024 * 1024,
+			TTLByRole:  parseTTLByRole(cfg.Tools.ToolCache.TTLByRole),
+		}
+		if cacheCfg.PerUserCap == 0 {
+			cacheCfg.PerUserCap = 100 * 1024 * 1024 // 100MB default
+		}
+		tc, err := toolcache.New(cacheCfg)
+		if err != nil {
+			log.Fatalf("toolcache: %v", err)
+		}
+		if err := tc.Reconcile(context.Background()); err != nil {
+			log.Printf("toolcache reconcile: %v", err)
+		}
+		interval := 15 * time.Minute
+		if cfg.Tools.ToolCache.SweepInterval != "" {
+			if d, err := time.ParseDuration(cfg.Tools.ToolCache.SweepInterval); err == nil {
+				interval = d
+			}
+		}
+		tc.StartSweeper(interval)
+		defer tc.StopSweeper()
+		toolCache = tc
+		log.Printf("ToolCache: enabled (per-user cap=%dMB, sweep=%s)",
+			cacheCfg.PerUserCap/(1024*1024), interval)
+	}
+
 	// Builtin tools available to the LLM
 	builtinTools := []agentcore.Tool{subagent.SpawnAgentTool()}
+	registered := []string{"spawn_agent"}
 	if cfg.Tools.WebFetch.Enabled {
 		builtinTools = append(builtinTools, webfetch.Tool(cfg.Tools.WebFetch.AllowedRoles))
-		log.Printf("Builtin tools: %d registered (spawn_agent, web_fetch)", len(builtinTools))
-	} else {
-		log.Printf("Builtin tools: %d registered (spawn_agent)", len(builtinTools))
+		registered = append(registered, "web_fetch")
+		if toolCache != nil {
+			builtinTools = append(builtinTools, toolcache.Tool(cfg.Tools.WebFetch.AllowedRoles))
+			registered = append(registered, "tool_result_more")
+		}
 	}
+	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
 	// Chat function for gateway router
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
@@ -241,6 +283,7 @@ func main() {
 			Scanner:      hbScanner,
 			Scheduler:    agentScheduler,
 			BuiltinTools: builtinTools,
+			Cache:        toolCache,
 		})
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {
@@ -465,4 +508,26 @@ func hasOnlyBuiltinPolicyNames(dir string) bool {
 		}
 	}
 	return true
+}
+
+// parseTTLByRole converts the YAML string-keyed durations to typed
+// durations. Unparseable values are skipped silently (the cache falls
+// back to Config.TTLDefault for missing roles).
+func parseTTLByRole(in map[string]string) map[string]time.Duration {
+	if len(in) == 0 {
+		// Family-bot defaults when no config block present. See spec §3.
+		return map[string]time.Duration{
+			"parent":    24 * time.Hour,
+			"age_13_17": 6 * time.Hour,
+			"age_8_12":  1 * time.Hour,
+			"under_8":   30 * time.Minute,
+		}
+	}
+	out := make(map[string]time.Duration, len(in))
+	for role, s := range in {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			out[role] = d
+		}
+	}
+	return out
 }

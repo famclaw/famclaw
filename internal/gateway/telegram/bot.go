@@ -75,17 +75,58 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				DisplayName: displayName,
 			}
 
+			// Typing indicator. Telegram's chat action expires after ~5s,
+			// so we refresh every 4s for the duration of agent processing.
+			// Per UX commitment §11: never silent failure — show the user
+			// Butler is working rather than letting a 20-30s LLM call look
+			// like a hung bot.
+			stopTyping := make(chan struct{})
+			go func(chatID int64) {
+				_ = b.sendChatAction(ctx, chatID, "typing")
+				t := time.NewTicker(4 * time.Second)
+				defer t.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-stopTyping:
+						return
+					case <-t.C:
+						_ = b.sendChatAction(ctx, chatID, "typing")
+					}
+				}
+			}(u.Message.Chat.ID)
+
 			reply := handleMsg(ctx, msg)
+			close(stopTyping)
 
 			// Skip whitespace-only replies — both platforms reject empty
 			// messages with a 4xx, leaving the user with no visible feedback.
+			// The agent layer now substitutes a fallback for empty LLM
+			// output (see internal/agent/agent.go) so this should be rare,
+			// but keep the guard as defense in depth.
 			if strings.TrimSpace(reply.Text) == "" {
 				continue
 			}
 
-			// Chunk at Telegram's 4096-byte message limit. Break on first
-			// error so we don't spam if the channel is gone or rate-limited.
-			for _, chunk := range gateway.ChunkMessage(reply.Text, 4096) {
+			// Normalize for chat-gateway rendering: strip <br> tags, convert
+			// markdown tables to bullet lists, collapse excess blank lines.
+			// Code blocks (triple-backtick fences) are preserved verbatim.
+			text := gateway.NormalizeReplyForChatGateway(reply.Text)
+
+			// Chunk BEFORE HTML conversion. Chunking on rendered HTML can
+			// split an opening tag from its closing tag across chunks (e.g.
+			// "<b>... " in chunk N and "...</b>" in chunk N+1) — Telegram's
+			// strict HTML parser rejects malformed messages with 400. By
+			// chunking on the markdown source first and converting each
+			// chunk independently, tag pairs stay within a single chunk.
+			//
+			// Chunk budget is a touch under the 4096-byte API limit so the
+			// expansion of "**" → "<b></b>" (-1 byte) and "`" → "<code>...</code>"
+			// (+10 bytes) doesn't push a chunk over.
+			const chunkBudget = 3800
+			for _, raw := range gateway.ChunkMessage(text, chunkBudget) {
+				chunk := markdownToTelegramHTML(raw)
 				if err := b.sendMessage(ctx, u.Message.Chat.ID, chunk); err != nil {
 					log.Printf("[telegram] send error: %v", err)
 					break
@@ -147,8 +188,9 @@ func (b *Bot) getUpdates(ctx context.Context, offset int) ([]tgUpdate, error) {
 func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error {
 	u := fmt.Sprintf("%s/bot%s/sendMessage", b.endpoint, b.token)
 	jsonBody, err := json.Marshal(map[string]any{
-		"chat_id": chatID,
-		"text":    text,
+		"chat_id":    chatID,
+		"text":       text,
+		"parse_mode": "HTML",
 	})
 	if err != nil {
 		return fmt.Errorf("marshaling send body: %w", err)
@@ -170,5 +212,30 @@ func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error 
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("telegram send error %d: %s", resp.StatusCode, string(body))
 	}
+	return nil
+}
+
+// sendChatAction posts a sendChatAction call to show "Butler is typing..."
+// in the Telegram client. Best-effort — errors are not surfaced (the
+// caller wants the typing UX, not a hard dependency on it).
+func (b *Bot) sendChatAction(ctx context.Context, chatID int64, action string) error {
+	u := fmt.Sprintf("%s/bot%s/sendChatAction", b.endpoint, b.token)
+	body, err := json.Marshal(map[string]any{
+		"chat_id": chatID,
+		"action":  action,
+	})
+	if err != nil {
+		return fmt.Errorf("marshaling chat action: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("creating chat action request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("sending chat action: %w", err)
+	}
+	resp.Body.Close()
 	return nil
 }

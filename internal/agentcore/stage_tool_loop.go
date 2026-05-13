@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/compress"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
@@ -32,6 +33,11 @@ type ToolLoopDeps struct {
 	Temperature   float64
 	MaxTokens     int
 	MaxIterations int // default 10
+	// ContextWindow, when > 0, enables per-iteration compression of the
+	// llmMsgs buffer before each follow-up LLM call. Tool reply messages
+	// are marked Prunable so they get evicted before user/assistant turns
+	// when over budget. This is the v0.5.9 web_fetch overflow fix.
+	ContextWindow int
 	// BuiltinHandler dispatches builtin tools (spawn_agent, etc.) that are
 	// not in the MCP pool. Keyed by tool name prefix "builtin__".
 	BuiltinHandler func(ctx context.Context, name string, args map[string]any) (string, error)
@@ -219,6 +225,25 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					Content:    toolText,
 					ToolCallID: tc.ID,
 				})
+			}
+
+			// Per-iteration compression. Tool messages are marked Prunable
+			// so they get evicted before user/assistant turns when over
+			// budget. Before this guard, a single big tool result (the
+			// v0.5.9 web_fetch overflow bug) would push the next LLM call
+			// past n_ctx with no recovery path.
+			if deps.ContextWindow > 0 {
+				prunable := make(map[int]bool, len(llmMsgs))
+				for j, m := range llmMsgs {
+					if m.Role == "tool" {
+						prunable[j] = true
+					}
+				}
+				compressed := compress.Compress(
+					llmToCompress(llmMsgs, prunable),
+					compress.Options{ContextWindow: deps.ContextWindow},
+				)
+				llmMsgs = compressToLLM(compressed, llmMsgs)
 			}
 
 			// Call LLM again with tool results
