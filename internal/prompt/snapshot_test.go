@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/familystate"
 )
 
 func TestBuild_Snapshots(t *testing.T) {
@@ -22,6 +23,14 @@ func TestBuild_Snapshots(t *testing.T) {
 
 	sam := &config.UserConfig{Name: "sam", DisplayName: "Sam", Role: "child", AgeGroup: "age_13_17"}
 
+	safetySnap := &familystate.Snapshot{
+		InjectedByCategory: map[string][]familystate.Fact{
+			"allergies": {
+				{Category: "allergies", Subject: "family", Label: "Nut allergy", Value: "severe"},
+			},
+		},
+	}
+
 	cases := []struct {
 		name string
 		file string
@@ -31,6 +40,7 @@ func TestBuild_Snapshots(t *testing.T) {
 		{"under_8", "testdata/under_8.snap", BuildContext{Cfg: cfg, User: teo, Gateway: "telegram", HardBlocked: []string{"weapons", "self_harm"}}},
 		{"age_8_12", "testdata/age_8_12.snap", BuildContext{Cfg: cfg, User: julia, Gateway: "telegram", HardBlocked: []string{"weapons"}}},
 		{"age_13_17", "testdata/age_13_17.snap", BuildContext{Cfg: cfg, User: sam, Gateway: "web"}},
+		{"age_13_17_with_safety", "testdata/age_13_17_with_safety.snap", BuildContext{Cfg: cfg, User: sam, Gateway: "web", FamilyState: safetySnap}},
 	}
 
 	for _, tc := range cases {

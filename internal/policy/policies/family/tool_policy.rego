@@ -66,4 +66,13 @@ admin_tools := {
     "set_user_role",
     "list_unknown_accounts",
     "link_account",
+    # Phase 3.3 mutations:
+    "set_family_fact",
+    "delete_family_fact",
+    "add_family_category",
+    "delete_family_category",
+    # Synthetic check fired by the propose_family_fact handler when caller is parent.
+    # Closes the "OPA hole" identified by R3 council — without this, a Go bug
+    # could let a child auto-apply via the propose_family_fact path.
+    "family_fact_proposal_auto_apply",
 }

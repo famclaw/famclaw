@@ -198,10 +198,11 @@ func TestOutputComponent_AlwaysOn(t *testing.T) {
 	}
 }
 
-func TestMemoryComponent_PlaceholderExcluded(t *testing.T) {
-	// Memory is not yet implemented — component should be excluded.
-	if _, ok := memoryComponent(BuildContext{}); ok {
-		t.Error("memory component should be excluded until memory feature lands")
+func TestMemoryComponent_NilFamilyStateExcluded(t *testing.T) {
+	// Nil FamilyState → component should be excluded (no safety block injected).
+	text, ok := memoryComponent(BuildContext{})
+	if ok || text != "" {
+		t.Errorf("memory component should be excluded when FamilyState is nil, got ok=%v text=%q", ok, text)
 	}
 }
 
