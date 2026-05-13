@@ -1,6 +1,7 @@
 package toolcache
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -44,13 +45,15 @@ type auditRow struct {
 
 // store wraps the *sql.DB with the queries this package needs. Kept as an
 // internal type so tests can swap to an in-memory sqlite without exposing
-// the DB to Cache callers.
+// the DB to Cache callers. All methods accept context.Context as the first
+// parameter per coding guideline #5 ("Context everywhere — all blocking
+// calls must take context.Context as the first argument").
 type store struct {
 	db *sql.DB
 }
 
-func (s *store) insertCache(r cacheRow) error {
-	_, err := s.db.Exec(`
+func (s *store) insertCache(ctx context.Context, r cacheRow) error {
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO tool_result_cache
 		(id, user_name, conv_id, tool_name, args_hash, payload_path, bytes,
 		 content_type, created_at, expires_at, accessed_at)
@@ -64,9 +67,9 @@ func (s *store) insertCache(r cacheRow) error {
 }
 
 // getCacheByID enforces user ownership. Cross-user lookup returns ErrNotFound.
-func (s *store) getCacheByID(user, id string) (cacheRow, error) {
+func (s *store) getCacheByID(ctx context.Context, user, id string) (cacheRow, error) {
 	var r cacheRow
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id, user_name, conv_id, tool_name, args_hash, payload_path,
 		       bytes, content_type, created_at, expires_at, accessed_at
 		  FROM tool_result_cache
@@ -85,9 +88,9 @@ func (s *store) getCacheByID(user, id string) (cacheRow, error) {
 
 // findDedup returns the most recent unexpired row matching (user, tool, args).
 // ErrNotFound when no such row exists.
-func (s *store) findDedup(user, tool, argsHash string, now int64) (cacheRow, error) {
+func (s *store) findDedup(ctx context.Context, user, tool, argsHash string, now int64) (cacheRow, error) {
 	var r cacheRow
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id, user_name, conv_id, tool_name, args_hash, payload_path,
 		       bytes, content_type, created_at, expires_at, accessed_at
 		  FROM tool_result_cache
@@ -105,24 +108,24 @@ func (s *store) findDedup(user, tool, argsHash string, now int64) (cacheRow, err
 	return r, nil
 }
 
-func (s *store) touchAccessed(id string, now int64) error {
-	_, err := s.db.Exec(`UPDATE tool_result_cache SET accessed_at = ? WHERE id = ?`, now, id)
+func (s *store) touchAccessed(ctx context.Context, id string, now int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tool_result_cache SET accessed_at = ? WHERE id = ?`, now, id)
 	if err != nil {
 		return fmt.Errorf("toolcache.touchAccessed: %w", err)
 	}
 	return nil
 }
 
-func (s *store) refreshExpiry(id string, expiresAt int64) error {
-	_, err := s.db.Exec(`UPDATE tool_result_cache SET expires_at = ? WHERE id = ?`, expiresAt, id)
+func (s *store) refreshExpiry(ctx context.Context, id string, expiresAt int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tool_result_cache SET expires_at = ? WHERE id = ?`, expiresAt, id)
 	if err != nil {
 		return fmt.Errorf("toolcache.refreshExpiry: %w", err)
 	}
 	return nil
 }
 
-func (s *store) deleteCache(id string) error {
-	_, err := s.db.Exec(`DELETE FROM tool_result_cache WHERE id = ?`, id)
+func (s *store) deleteCache(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM tool_result_cache WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("toolcache.deleteCache: %w", err)
 	}
@@ -130,8 +133,8 @@ func (s *store) deleteCache(id string) error {
 }
 
 // listExpired returns cache rows whose expires_at is past `now`.
-func (s *store) listExpired(now int64) ([]cacheRow, error) {
-	rows, err := s.db.Query(`
+func (s *store) listExpired(ctx context.Context, now int64) ([]cacheRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, user_name, conv_id, tool_name, args_hash, payload_path,
 		       bytes, content_type, created_at, expires_at, accessed_at
 		  FROM tool_result_cache
@@ -154,8 +157,8 @@ func (s *store) listExpired(now int64) ([]cacheRow, error) {
 
 // listByUserOrderByAccessed returns all rows for a user sorted by accessed_at
 // ascending (LRU = oldest accessed first). Used by per-user cap eviction.
-func (s *store) listByUserOrderByAccessed(user string) ([]cacheRow, error) {
-	rows, err := s.db.Query(`
+func (s *store) listByUserOrderByAccessed(ctx context.Context, user string) ([]cacheRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, user_name, conv_id, tool_name, args_hash, payload_path,
 		       bytes, content_type, created_at, expires_at, accessed_at
 		  FROM tool_result_cache
@@ -179,8 +182,8 @@ func (s *store) listByUserOrderByAccessed(user string) ([]cacheRow, error) {
 
 // distinctUsers returns the set of user_names currently holding cache rows.
 // Used by the sweeper's per-user cap pass to iterate without a full scan.
-func (s *store) distinctUsers() ([]string, error) {
-	rows, err := s.db.Query(`SELECT DISTINCT user_name FROM tool_result_cache`)
+func (s *store) distinctUsers(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT user_name FROM tool_result_cache`)
 	if err != nil {
 		return nil, fmt.Errorf("toolcache.distinctUsers: %w", err)
 	}
@@ -196,8 +199,8 @@ func (s *store) distinctUsers() ([]string, error) {
 	return out, rows.Err()
 }
 
-func (s *store) insertAudit(a auditRow) error {
-	_, err := s.db.Exec(`
+func (s *store) insertAudit(ctx context.Context, a auditRow) error {
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO tool_result_audit
 		(id, user_name, conv_id, tool_name, args_hash, args_summary, bytes,
 		 content_type, category, created_at, payload_id, payload_purged_at)
@@ -213,8 +216,8 @@ func (s *store) insertAudit(a auditRow) error {
 // markAuditPayloadPurged sets payload_id=NULL + payload_purged_at on audit
 // rows that referenced the given cache id. Called after a cache row is
 // deleted (TTL or LRU). The audit row persists with metadata intact.
-func (s *store) markAuditPayloadPurged(cacheID string, purgedAt int64) error {
-	_, err := s.db.Exec(`
+func (s *store) markAuditPayloadPurged(ctx context.Context, cacheID string, purgedAt int64) error {
+	_, err := s.db.ExecContext(ctx, `
 		UPDATE tool_result_audit
 		   SET payload_id = NULL, payload_purged_at = ?
 		 WHERE payload_id = ?`, purgedAt, cacheID)

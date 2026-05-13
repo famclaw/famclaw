@@ -64,6 +64,8 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			defer t.Stop()
 			for {
 				select {
+				case <-ctx.Done():
+					return
 				case <-stopTyping:
 					return
 				case <-t.C:

@@ -1,6 +1,8 @@
 package toolcache
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,7 +11,7 @@ import (
 )
 
 func TestDefaultCacheDirIsAbsoluteAndFamclaw(t *testing.T) {
-	dir, err := DefaultCacheDir()
+	dir, err := DefaultCacheDir(context.Background())
 	if err != nil {
 		t.Fatalf("DefaultCacheDir: %v", err)
 	}
@@ -21,9 +23,17 @@ func TestDefaultCacheDirIsAbsoluteAndFamclaw(t *testing.T) {
 	}
 }
 
+func TestDefaultCacheDirHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := DefaultCacheDir(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
 func TestEnsureUserDirCreatesWithCorrectMode(t *testing.T) {
 	tmp := t.TempDir()
-	dir, err := EnsureUserDir(tmp, "alice")
+	dir, err := EnsureUserDir(context.Background(), tmp, "alice")
 	if err != nil {
 		t.Fatalf("EnsureUserDir: %v", err)
 	}
@@ -44,11 +54,19 @@ func TestEnsureUserDirCreatesWithCorrectMode(t *testing.T) {
 
 func TestEnsureUserDirIdempotent(t *testing.T) {
 	tmp := t.TempDir()
-	if _, err := EnsureUserDir(tmp, "bob"); err != nil {
+	if _, err := EnsureUserDir(context.Background(), tmp, "bob"); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	if _, err := EnsureUserDir(tmp, "bob"); err != nil {
+	if _, err := EnsureUserDir(context.Background(), tmp, "bob"); err != nil {
 		t.Fatalf("second call should be idempotent: %v", err)
+	}
+}
+
+func TestEnsureUserDirHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := EnsureUserDir(ctx, t.TempDir(), "alice"); !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
 

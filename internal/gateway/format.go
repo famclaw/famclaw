@@ -8,6 +8,11 @@ import (
 // brTagRE matches <br> tags (case-insensitive, optional slash)
 var brTagRE = regexp.MustCompile(`(?i)<br\s*/?>`)
 
+// tableSepRowRE matches a markdown table separator row anchored to line
+// boundaries: |---|---| or |:---|---:| with optional surrounding whitespace.
+// Anchored so a data cell containing a literal "---" can't false-positive.
+var tableSepRowRE = regexp.MustCompile(`^\s*\|?[\s\-:|]+\|[\s\-:|]+\s*$`)
+
 // markdownTableBlockRE matches one or more contiguous lines starting with |, including separator rows
 var markdownTableBlockRE = regexp.MustCompile(`(?m)(^\s*\|.*\|\s*$\n?)+`)
 
@@ -15,8 +20,11 @@ var markdownTableBlockRE = regexp.MustCompile(`(?m)(^\s*\|.*\|\s*$\n?)+`)
 var blankCollapseRE = regexp.MustCompile(`\n{3,}`)
 
 // NormalizeReplyForChatGateway cleans a model's reply for Discord/Telegram delivery.
-// It preserves code blocks verbatim, converts markdown tables to bullet lists,
-// replaces <br> tags with ' / ', collapses excessive newlines, and trims.
+// It preserves fenced code blocks verbatim (including the ``` fences so
+// downstream code-fence-aware chunking still works), converts markdown
+// tables to bullet lists, replaces <br> tags, collapses excessive newlines,
+// and trims the final result. Inter-chunk whitespace between code blocks
+// and surrounding prose is preserved so boundaries don't collapse.
 func NormalizeReplyForChatGateway(s string) string {
 	// Split the input into parts: code blocks and prose
 	parts := splitOnFences(s)
@@ -25,62 +33,65 @@ func NormalizeReplyForChatGateway(s string) string {
 
 	for _, part := range parts {
 		if part.isCode {
-			// Preserve code blocks verbatim
+			// Preserve code blocks verbatim, fences included
 			result.WriteString(part.text)
 		} else {
-			// Process prose: convert tables, strip <br>, collapse newlines
-			// First, convert markdown tables to bullet lists
+			// Process prose: convert tables, strip <br>, collapse newlines.
+			// Do NOT TrimSpace per-chunk — that erases the space between
+			// adjacent prose / code-block segments and collapses boundaries.
 			processed := convertMarkdownTables(part.text)
-			// Then, strip remaining <br> tags in prose
 			processed = brTagRE.ReplaceAllString(processed, " ")
-			// Collapse 3+ newlines to exactly 2
 			processed = blankCollapseRE.ReplaceAllString(processed, "\n\n")
-			// Trim final whitespace
-			result.WriteString(strings.TrimSpace(processed))
+			result.WriteString(processed)
 		}
 	}
 
-	return result.String()
+	// Trim once at the end so leading/trailing whitespace on the whole
+	// reply is normalized without smearing inter-part boundaries.
+	return strings.TrimSpace(result.String())
 }
 
-// splitOnFences splits a string on triple-backtick fences.
-// It returns a slice of fencePart, where isCode is true for code blocks.
-// If an opening fence has no closing one, the rest of the string is treated as prose.
+// splitOnFences splits a string on triple-backtick fences. It returns a
+// slice of fencePart, where isCode is true for code blocks. The fences
+// themselves are included in the code-block text so downstream chunkers
+// can detect code boundaries. If an opening fence has no closing one, the
+// rest of the string (fence included) is treated as prose so no characters
+// are silently dropped.
 func splitOnFences(s string) []fencePart {
 	var parts []fencePart
 	start := 0
 
 	for {
 		// Find the next opening fence
-		openIdx := strings.Index(s[start:], "```")
-		if openIdx == -1 {
+		rel := strings.Index(s[start:], "```")
+		if rel == -1 {
 			// No more fences: add remaining text as prose
 			if start < len(s) {
 				parts = append(parts, fencePart{text: s[start:], isCode: false})
 			}
 			break
 		}
-		openIdx += start
+		openIdx := start + rel
 
-		// Extract the text before the fence
+		// Emit prose before the fence
 		if openIdx > start {
 			parts = append(parts, fencePart{text: s[start:openIdx], isCode: false})
 		}
 
 		// Find the closing fence
-		closeIdx := strings.Index(s[openIdx+3:], "```")
-		if closeIdx == -1 {
-			// No closing fence: treat everything after as prose
-			parts = append(parts, fencePart{text: s[openIdx+3:], isCode: false})
+		closeRel := strings.Index(s[openIdx+3:], "```")
+		if closeRel == -1 {
+			// No closing fence: keep the rest (fence included) as prose so
+			// the raw text isn't silently mutated.
+			parts = append(parts, fencePart{text: s[openIdx:], isCode: false})
 			break
 		}
-		closeIdx += openIdx + 3
+		closeIdx := openIdx + 3 + closeRel
 
-		// Extract the code block content
-		codeContent := s[openIdx+3:closeIdx]
-		parts = append(parts, fencePart{text: codeContent, isCode: true})
+		// Include the fences in the captured code block so chunkers / round-
+		// trip serializers see a syntactically intact fenced block.
+		parts = append(parts, fencePart{text: s[openIdx : closeIdx+3], isCode: true})
 
-		// Move start past the closing fence
 		start = closeIdx + 3
 	}
 
@@ -104,14 +115,15 @@ func convertMarkdownTables(s string) string {
 				continue
 			}
 
+			// Skip separator rows (line-anchored regex so a real data cell
+			// containing "---" can't be misclassified).
+			if tableSepRowRE.MatchString(line) {
+				continue
+			}
+
 			// Split by | and remove empty first/last
 			cells := strings.Split(line, "|")
 			cells = cells[1 : len(cells)-1]
-
-			// Skip separator rows (contain ---)
-			if strings.Contains(line, "---") {
-				continue
-			}
 
 			// First non-separator line is the header
 			if !headerSet {
@@ -137,7 +149,7 @@ func convertMarkdownTables(s string) string {
 			var parts []string
 			for i, cell := range row {
 				if i < len(headers) {
-					parts = append(parts, "**"+headers[i]+": " + cell)
+					parts = append(parts, "**"+headers[i]+"**: "+cell)
 				} else {
 					parts = append(parts, cell)
 				}

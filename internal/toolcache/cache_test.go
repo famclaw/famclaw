@@ -70,7 +70,7 @@ func TestPutSmallPayloadReturnsInlineNoCacheRow(t *testing.T) {
 		t.Error("ID should be assigned even for inline path")
 	}
 	// Inline path: no cache row should exist (only audit).
-	if _, err := c.store.getCacheByID("alice", out.ID); err != ErrNotFound {
+	if _, err := c.store.getCacheByID(context.Background(), "alice", out.ID); err != ErrNotFound {
 		t.Errorf("expected no cache row for inline put, got err=%v", err)
 	}
 }
@@ -99,7 +99,7 @@ func TestPutLargePayloadTruncatesAndCaches(t *testing.T) {
 		t.Errorf("TotalBytes = %d, want 5000", out.TotalBytes)
 	}
 	// Cache row should exist.
-	row, err := c.store.getCacheByID("alice", out.ID)
+	row, err := c.store.getCacheByID(context.Background(), "alice", out.ID)
 	if err != nil {
 		t.Fatalf("cache row missing: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestReconcileDeletesOrphanRows(t *testing.T) {
 	c, _ := New(Config{DB: db, CacheDir: root, TTLDefault: time.Hour})
 	// Insert a row whose file doesn't exist.
 	now := time.Now().UnixMilli()
-	_ = c.store.insertCache(cacheRow{
+	_ = c.store.insertCache(context.Background(), cacheRow{
 		ID: "01PHANTOM", UserName: "alice", ConvID: "c", ToolName: "t",
 		ArgsHash: "x", PayloadPath: "alice/01PHANTOM.bin", Bytes: 100,
 		ContentType: "text/plain",
@@ -247,7 +247,7 @@ func TestReconcileDeletesOrphanRows(t *testing.T) {
 	if err := c.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if _, err := c.store.getCacheByID("alice", "01PHANTOM"); err != ErrNotFound {
+	if _, err := c.store.getCacheByID(context.Background(), "alice", "01PHANTOM"); err != ErrNotFound {
 		t.Errorf("phantom row should be deleted, err=%v", err)
 	}
 }

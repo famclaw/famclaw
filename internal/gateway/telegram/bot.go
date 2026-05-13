@@ -86,15 +86,15 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				t := time.NewTicker(4 * time.Second)
 				defer t.Stop()
 				for {
-				select {
-				case <-ctx.Done():
-				return
-				case <-stopTyping:
-				return
-				case <-t.C:
-				        _ = b.sendChatAction(ctx, chatID, "typing")
-                            }
-                        }
+					select {
+					case <-ctx.Done():
+						return
+					case <-stopTyping:
+						return
+					case <-t.C:
+						_ = b.sendChatAction(ctx, chatID, "typing")
+					}
+				}
 			}(u.Message.Chat.ID)
 
 			reply := handleMsg(ctx, msg)
@@ -114,14 +114,19 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			// Code blocks (triple-backtick fences) are preserved verbatim.
 			text := gateway.NormalizeReplyForChatGateway(reply.Text)
 
-			// Convert remaining markdown bold/italic/code to HTML so
-			// Telegram's parse_mode="HTML" renders them. Plain text falls
-			// through unchanged.
-			text = markdownToTelegramHTML(text)
-
-			// Chunk at Telegram's 4096-byte message limit. Break on first
-			// error so we don't spam if the channel is gone or rate-limited.
-			for _, chunk := range gateway.ChunkMessage(text, 4096) {
+			// Chunk BEFORE HTML conversion. Chunking on rendered HTML can
+			// split an opening tag from its closing tag across chunks (e.g.
+			// "<b>... " in chunk N and "...</b>" in chunk N+1) — Telegram's
+			// strict HTML parser rejects malformed messages with 400. By
+			// chunking on the markdown source first and converting each
+			// chunk independently, tag pairs stay within a single chunk.
+			//
+			// Chunk budget is a touch under the 4096-byte API limit so the
+			// expansion of "**" → "<b></b>" (-1 byte) and "`" → "<code>...</code>"
+			// (+10 bytes) doesn't push a chunk over.
+			const chunkBudget = 3800
+			for _, raw := range gateway.ChunkMessage(text, chunkBudget) {
+				chunk := markdownToTelegramHTML(raw)
 				if err := b.sendMessage(ctx, u.Message.Chat.ID, chunk); err != nil {
 					log.Printf("[telegram] send error: %v", err)
 					break
@@ -220,16 +225,16 @@ func (b *Bot) sendChatAction(ctx context.Context, chatID int64, action string) e
 		"action":  action,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling chat action: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return fmt.Errorf("creating chat action request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := b.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("sending chat action: %w", err)
 	}
 	resp.Body.Close()
 	return nil

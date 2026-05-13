@@ -25,6 +25,7 @@ type Config struct {
 type Cache struct {
 	cfg   Config
 	store *store
+	idgen *IDGenerator
 
 	sweepMu   sync.Mutex
 	sweepStop chan struct{}
@@ -32,13 +33,14 @@ type Cache struct {
 
 // New initializes the cache: ensures cache_dir exists, sets defaults, builds
 // the store. Does NOT start the sweeper — call StartSweeper explicitly so
-// tests can run Sweep deterministically.
+// tests can run Sweep deterministically. Called once at process boot; uses
+// context.Background for the one-shot DefaultCacheDir lookup.
 func New(cfg Config) (*Cache, error) {
 	if cfg.DB == nil {
 		return nil, fmt.Errorf("toolcache.New: DB is required")
 	}
 	if cfg.CacheDir == "" {
-		dir, err := DefaultCacheDir()
+		dir, err := DefaultCacheDir(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("toolcache.New: default dir: %w", err)
 		}
@@ -53,6 +55,7 @@ func New(cfg Config) (*Cache, error) {
 	return &Cache{
 		cfg:   cfg,
 		store: &store{db: cfg.DB},
+		idgen: NewIDGenerator(),
 	}, nil
 }
 
@@ -92,13 +95,13 @@ func (c *Cache) Put(ctx context.Context, in PutInput) (PutOutput, error) {
 	ttl := c.ttlFor(in.UserRole)
 
 	// Dedup
-	if existing, derr := c.store.findDedup(in.User, in.ToolName, argsHash, now); derr == nil {
-		_ = c.store.touchAccessed(existing.ID, now)
-		_ = c.store.refreshExpiry(existing.ID, now+ttl.Milliseconds())
+	if existing, derr := c.store.findDedup(ctx, in.User, in.ToolName, argsHash, now); derr == nil {
+		_ = c.store.touchAccessed(ctx, existing.ID, now)
+		_ = c.store.refreshExpiry(ctx, existing.ID, now+ttl.Milliseconds())
 		full, rerr := readPayload(c.cfg.CacheDir, existing.PayloadPath, 0, int(existing.Bytes))
 		if rerr != nil {
 			// Row exists but file is missing — proceed to a fresh write below.
-			_ = c.store.deleteCache(existing.ID)
+			_ = c.store.deleteCache(ctx, existing.ID)
 		} else {
 			head, truncated := buildHead(full, in.HeadBudget)
 			return PutOutput{
@@ -111,7 +114,10 @@ func (c *Cache) Put(ctx context.Context, in PutInput) (PutOutput, error) {
 	// Inline path: payload fits within budget. No file, no cache row — only
 	// an audit row for parent oversight. Returns the payload unchanged with
 	// a freshly minted id so callers can reference it consistently.
-	id := NewID()
+	id, err := c.idgen.Generate()
+	if err != nil {
+		return PutOutput{}, fmt.Errorf("toolcache.Put mint id: %w", err)
+	}
 	if in.HeadBudget > 0 && len(in.Payload) <= in.HeadBudget {
 		audit := auditRow{
 			ID: id, UserName: in.User, ConvID: in.ConvID, ToolName: in.ToolName,
@@ -122,7 +128,7 @@ func (c *Cache) Put(ctx context.Context, in PutInput) (PutOutput, error) {
 		if in.Category != "" {
 			audit.Category = sql.NullString{String: in.Category, Valid: true}
 		}
-		if aerr := c.store.insertAudit(audit); aerr != nil {
+		if aerr := c.store.insertAudit(ctx, audit); aerr != nil {
 			log.Printf("[toolcache] audit insert failed (non-fatal): %v", aerr)
 		}
 		return PutOutput{
@@ -133,7 +139,7 @@ func (c *Cache) Put(ctx context.Context, in PutInput) (PutOutput, error) {
 
 	// Spillover path: write file, then cache row, then audit. If the row
 	// insert fails, delete the file to avoid orphaning.
-	rel, werr := writePayload(c.cfg.CacheDir, in.User, id, in.Payload)
+	rel, werr := writePayload(ctx, c.cfg.CacheDir, in.User, id, in.Payload)
 	if werr != nil {
 		return PutOutput{}, werr
 	}
@@ -143,22 +149,29 @@ func (c *Cache) Put(ctx context.Context, in PutInput) (PutOutput, error) {
 		ContentType: in.ContentType, CreatedAt: now,
 		ExpiresAt: now + ttl.Milliseconds(), AccessedAt: now,
 	}
-	if ierr := c.store.insertCache(row); ierr != nil {
+	if ierr := c.store.insertCache(ctx, row); ierr != nil {
 		_ = deletePayload(c.cfg.CacheDir, rel)
 		return PutOutput{}, ierr
 	}
-	audit := auditRow{
-		ID: NewID(), UserName: in.User, ConvID: in.ConvID, ToolName: in.ToolName,
-		ArgsHash: argsHash, ArgsSummary: summarizeArgs(in.Args),
-		Bytes: int64(len(in.Payload)), ContentType: in.ContentType,
-		CreatedAt: now,
-		PayloadID: sql.NullString{String: id, Valid: true},
-	}
-	if in.Category != "" {
-		audit.Category = sql.NullString{String: in.Category, Valid: true}
-	}
-	if aerr := c.store.insertAudit(audit); aerr != nil {
-		log.Printf("[toolcache] audit insert failed (non-fatal): %v", aerr)
+	auditID, aierr := c.idgen.Generate()
+	if aierr != nil {
+		// Audit ID failure is non-fatal — the cache row + payload are already
+		// written. Log and skip the audit row; the cache remains consistent.
+		log.Printf("[toolcache] audit id mint failed (non-fatal): %v", aierr)
+	} else {
+		audit := auditRow{
+			ID: auditID, UserName: in.User, ConvID: in.ConvID, ToolName: in.ToolName,
+			ArgsHash: argsHash, ArgsSummary: summarizeArgs(in.Args),
+			Bytes: int64(len(in.Payload)), ContentType: in.ContentType,
+			CreatedAt: now,
+			PayloadID: sql.NullString{String: id, Valid: true},
+		}
+		if in.Category != "" {
+			audit.Category = sql.NullString{String: in.Category, Valid: true}
+		}
+		if aerr := c.store.insertAudit(ctx, audit); aerr != nil {
+			log.Printf("[toolcache] audit insert failed (non-fatal): %v", aerr)
+		}
 	}
 
 	head, truncated := buildHead(in.Payload, in.HeadBudget)
@@ -184,7 +197,7 @@ type MoreOutput struct {
 // ErrForbidden) to avoid leaking cross-user row existence. Length is
 // clamped to [1, 8192]. Updates accessed_at on success.
 func (c *Cache) More(ctx context.Context, user, id string, offset, length int) (MoreOutput, error) {
-	row, err := c.store.getCacheByID(user, id)
+	row, err := c.store.getCacheByID(ctx, user, id)
 	if err != nil {
 		return MoreOutput{}, err
 	}
@@ -203,11 +216,11 @@ func (c *Cache) More(ctx context.Context, user, id string, offset, length int) (
 	data, rerr := readPayload(c.cfg.CacheDir, row.PayloadPath, offset, length)
 	if rerr != nil {
 		// File gone — clean up the row and surface NotFound.
-		_ = c.store.deleteCache(id)
+		_ = c.store.deleteCache(ctx, id)
 		return MoreOutput{}, ErrNotFound
 	}
 	now := time.Now().UnixMilli()
-	_ = c.store.touchAccessed(id, now)
+	_ = c.store.touchAccessed(ctx, id, now)
 	log.Printf("[toolcache] more user=%s id=%s offset=%d returned=%d", user, id, offset, len(data))
 	return MoreOutput{
 		Data: data, ContentType: row.ContentType, TotalBytes: int(row.Bytes),
@@ -228,24 +241,24 @@ func (c *Cache) Sweep(ctx context.Context) (SweepResult, error) {
 	var res SweepResult
 
 	// Pass 1: TTL
-	expired, err := c.store.listExpired(now)
+	expired, err := c.store.listExpired(ctx, now)
 	if err != nil {
 		return res, err
 	}
 	for _, r := range expired {
 		_ = deletePayload(c.cfg.CacheDir, r.PayloadPath)
-		_ = c.store.deleteCache(r.ID)
-		_ = c.store.markAuditPayloadPurged(r.ID, now)
+		_ = c.store.deleteCache(ctx, r.ID)
+		_ = c.store.markAuditPayloadPurged(ctx, r.ID, now)
 		res.TTLDeleted++
 		res.FreedBytes += r.Bytes
 	}
 
 	// Pass 2: per-user LRU cap
 	if c.cfg.PerUserCap > 0 {
-		users, uerr := c.store.distinctUsers()
+		users, uerr := c.store.distinctUsers(ctx)
 		if uerr == nil {
 			for _, user := range users {
-				rows, err := c.store.listByUserOrderByAccessed(user)
+				rows, err := c.store.listByUserOrderByAccessed(ctx, user)
 				if err != nil {
 					continue
 				}
@@ -258,8 +271,8 @@ func (c *Cache) Sweep(ctx context.Context) (SweepResult, error) {
 						break
 					}
 					_ = deletePayload(c.cfg.CacheDir, r.PayloadPath)
-					_ = c.store.deleteCache(r.ID)
-					_ = c.store.markAuditPayloadPurged(r.ID, now)
+					_ = c.store.deleteCache(ctx, r.ID)
+					_ = c.store.markAuditPayloadPurged(ctx, r.ID, now)
 					res.LRUEvicted++
 					res.FreedBytes += r.Bytes
 					total -= r.Bytes
@@ -302,7 +315,7 @@ func (c *Cache) Reconcile(ctx context.Context) error {
 					continue
 				}
 				id := strings.TrimSuffix(name, ".bin")
-				if _, err := c.store.getCacheByID(user, id); err == ErrNotFound {
+				if _, err := c.store.getCacheByID(ctx, user, id); err == ErrNotFound {
 					_ = os.Remove(filepath.Join(userDir, name))
 					orphanFiles++
 				}
@@ -317,7 +330,7 @@ func (c *Cache) Reconcile(ctx context.Context) error {
 		rel string
 	}
 	var orphans []orphan
-	rows, err := c.cfg.DB.Query(`SELECT id, payload_path FROM tool_result_cache`)
+	rows, err := c.cfg.DB.QueryContext(ctx, `SELECT id, payload_path FROM tool_result_cache`)
 	if err == nil {
 		for rows.Next() {
 			var id, rel string
@@ -331,7 +344,7 @@ func (c *Cache) Reconcile(ctx context.Context) error {
 		rows.Close()
 	}
 	for _, o := range orphans {
-		_ = c.store.deleteCache(o.id)
+		_ = c.store.deleteCache(ctx, o.id)
 		orphanRows++
 	}
 

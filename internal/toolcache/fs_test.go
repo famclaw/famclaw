@@ -2,6 +2,7 @@ package toolcache
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,7 +11,7 @@ import (
 func TestWriteAndReadPayloadRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	payload := []byte("hello world")
-	rel, err := writePayload(root, "alice", "01XYZ", payload)
+	rel, err := writePayload(context.Background(), root, "alice", "01XYZ", payload)
 	if err != nil {
 		t.Fatalf("writePayload: %v", err)
 	}
@@ -25,7 +26,7 @@ func TestWriteAndReadPayloadRoundTrip(t *testing.T) {
 
 func TestWritePayloadUsesForwardSlashes(t *testing.T) {
 	root := t.TempDir()
-	rel, err := writePayload(root, "alice", "01ABC", []byte("x"))
+	rel, err := writePayload(context.Background(), root, "alice", "01ABC", []byte("x"))
 	if err != nil {
 		t.Fatalf("writePayload: %v", err)
 	}
@@ -37,7 +38,7 @@ func TestWritePayloadUsesForwardSlashes(t *testing.T) {
 func TestReadPayloadWithOffset(t *testing.T) {
 	root := t.TempDir()
 	payload := []byte("0123456789ABCDEF")
-	rel, _ := writePayload(root, "alice", "01YYY", payload)
+	rel, _ := writePayload(context.Background(), root, "alice", "01YYY", payload)
 	got, err := readPayload(root, rel, 5, 5)
 	if err != nil {
 		t.Fatalf("readPayload: %v", err)
@@ -51,7 +52,7 @@ func TestReadPayloadWithOffset(t *testing.T) {
 func TestReadPayloadBeyondEOFClips(t *testing.T) {
 	root := t.TempDir()
 	payload := []byte("short")
-	rel, _ := writePayload(root, "alice", "01ZZZ", payload)
+	rel, _ := writePayload(context.Background(), root, "alice", "01ZZZ", payload)
 	got, err := readPayload(root, rel, 0, 1000)
 	if err != nil {
 		t.Fatalf("readPayload: %v", err)
@@ -64,7 +65,7 @@ func TestReadPayloadBeyondEOFClips(t *testing.T) {
 func TestReadPayloadNegativeArgsClamp(t *testing.T) {
 	root := t.TempDir()
 	payload := []byte("hello")
-	rel, _ := writePayload(root, "alice", "01NEG", payload)
+	rel, _ := writePayload(context.Background(), root, "alice", "01NEG", payload)
 	got, err := readPayload(root, rel, -1, -1)
 	if err != nil {
 		t.Fatalf("readPayload: %v", err)
@@ -76,7 +77,7 @@ func TestReadPayloadNegativeArgsClamp(t *testing.T) {
 
 func TestDeletePayload(t *testing.T) {
 	root := t.TempDir()
-	rel, _ := writePayload(root, "alice", "01DEL", []byte("bye"))
+	rel, _ := writePayload(context.Background(), root, "alice", "01DEL", []byte("bye"))
 	if err := deletePayload(root, rel); err != nil {
 		t.Fatalf("deletePayload: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestDeletePayload(t *testing.T) {
 
 func TestDeletePayloadIdempotent(t *testing.T) {
 	root := t.TempDir()
-	rel, _ := writePayload(root, "alice", "01TWICE", []byte("x"))
+	rel, _ := writePayload(context.Background(), root, "alice", "01TWICE", []byte("x"))
 	if err := deletePayload(root, rel); err != nil {
 		t.Fatalf("first delete: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestDeletePayloadIdempotent(t *testing.T) {
 func TestStatPayload(t *testing.T) {
 	root := t.TempDir()
 	payload := []byte("hello world")
-	rel, _ := writePayload(root, "alice", "01STAT", payload)
+	rel, _ := writePayload(context.Background(), root, "alice", "01STAT", payload)
 	size, err := statPayload(root, rel)
 	if err != nil {
 		t.Fatalf("statPayload: %v", err)

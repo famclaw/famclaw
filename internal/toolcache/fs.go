@@ -1,6 +1,7 @@
 package toolcache
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -8,9 +9,11 @@ import (
 )
 
 // writePayload writes payload to <root>/<user>/<id>.bin with 0600 mode.
-// Returns the relative path (forward slashes for sqlite portability).
-func writePayload(root, user, id string, payload []byte) (string, error) {
-	userDir, err := EnsureUserDir(root, user)
+// Returns the relative path (forward slashes for sqlite portability). ctx
+// is forwarded to EnsureUserDir so callers can cancel before the first
+// filesystem syscall.
+func writePayload(ctx context.Context, root, user, id string, payload []byte) (string, error) {
+	userDir, err := EnsureUserDir(ctx, root, user)
 	if err != nil {
 		return "", fmt.Errorf("ensure user dir: %w", err)
 	}

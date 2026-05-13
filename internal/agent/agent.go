@@ -77,7 +77,7 @@ type AgentDeps struct {
 	Scanner      skillbridge.Scanner
 	Scheduler    *subagent.Scheduler
 	BuiltinTools []agentcore.Tool
-	Gateway      string // gateway name (telegram, discord, web, etc.) for admin tool audit logs
+	Gateway      string           // gateway name (telegram, discord, web, etc.) for admin tool audit logs
 	Cache        *toolcache.Cache // tool-result spillover cache; nil disables spillover (legacy inline path)
 }
 
@@ -541,6 +541,12 @@ func (a *Agent) handleToolResultMore(ctx context.Context, args map[string]any) (
 	}
 	offset := readIntArg(args, "offset", 0)
 	length := readIntArg(args, "length", 4096)
+	if offset < 0 {
+		return "", fmt.Errorf("tool_result_more: offset must be >= 0, got %d", offset)
+	}
+	if length <= 0 {
+		return "", fmt.Errorf("tool_result_more: length must be > 0, got %d", length)
+	}
 
 	out, err := a.cache.More(ctx, a.user.Name, id, offset, length)
 	if err != nil {

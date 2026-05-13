@@ -3,6 +3,7 @@
 package toolcache
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +16,14 @@ import (
 //	Mac / Linux / Termux: $HOME/.famclaw/cache/tool-results
 //	Windows:              %LOCALAPPDATA%\famclaw\cache\tool-results (falls
 //	                      back to %APPDATA% if LOCALAPPDATA is unset)
-func DefaultCacheDir() (string, error) {
+//
+// The ctx argument is honored before each blocking syscall so callers can
+// cancel a slow os.UserHomeDir lookup (rare, but possible on networked
+// home dirs).
+func DefaultCacheDir(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if runtime.GOOS == "windows" {
 		base := os.Getenv("LOCALAPPDATA")
 		if base == "" {
@@ -34,12 +42,19 @@ func DefaultCacheDir() (string, error) {
 }
 
 // EnsureUserDir creates (idempotently) the per-user subdir under root and
-// returns its absolute path. On non-Windows, enforces mode 0700.
-func EnsureUserDir(root, user string) (string, error) {
+// returns its absolute path. On non-Windows, enforces mode 0700. ctx is
+// checked before each blocking syscall.
+func EnsureUserDir(ctx context.Context, root, user string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	clean := sanitizeUserName(user)
 	dir := filepath.Join(root, clean)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("toolcache: mkdir %s: %w", dir, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	if runtime.GOOS != "windows" {
 		// MkdirAll honors umask — re-chmod to guarantee 0700.

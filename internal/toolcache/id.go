@@ -2,6 +2,7 @@ package toolcache
 
 import (
 	"crypto/rand"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -9,28 +10,37 @@ import (
 // Crockford base32: 32 chars, omitting I, L, O, U (commonly confused).
 const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-var (
-	idMu       sync.Mutex
+// IDGenerator mints 26-char ULID-like identifiers. State (last millisecond +
+// last randomness) is encapsulated to avoid package-level globals and to make
+// generation independently testable per coding guideline #4.
+type IDGenerator struct {
+	mu         sync.Mutex
 	lastMillis uint64
 	lastRand   [10]byte
-)
+}
 
-// NewID returns a 26-char ULID-like identifier. 48 bits of millisecond
+// NewIDGenerator constructs an empty IDGenerator. Goroutine-safe.
+func NewIDGenerator() *IDGenerator {
+	return &IDGenerator{}
+}
+
+// Generate returns a 26-char ULID-like identifier. 48 bits of millisecond
 // timestamp (10 chars) + 80 bits of randomness (16 chars). Lexicographically
 // time-orderable. Within the same millisecond, the random component is
 // incremented monotonically (uint80++ with carry) so IDs minted in rapid
-// succession still sort correctly.
-func NewID() string {
-	idMu.Lock()
-	defer idMu.Unlock()
+// succession still sort correctly. Returns an error if crypto/rand fails
+// to produce fresh entropy (rare — entropy exhaustion, permission issues).
+func (g *IDGenerator) Generate() (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 
 	now := uint64(time.Now().UnixMilli())
 	var randBytes [10]byte
 
-	if now == lastMillis {
+	if now == g.lastMillis {
 		// Same ms — bump the prior randomness by 1 (treated as uint80,
 		// big-endian) to preserve lex ordering of rapid mints.
-		copy(randBytes[:], lastRand[:])
+		copy(randBytes[:], g.lastRand[:])
 		for i := 9; i >= 0; i-- {
 			randBytes[i]++
 			if randBytes[i] != 0 {
@@ -38,15 +48,12 @@ func NewID() string {
 			}
 		}
 	} else {
-		// New ms — fresh randomness.
 		if _, err := rand.Read(randBytes[:]); err != nil {
-			// crypto/rand failure is exceptional; preserve the err but
-			// don't drag in fmt just for the panic message.
-			panic(err)
+			return "", fmt.Errorf("toolcache: crypto/rand read: %w", err)
 		}
-		lastMillis = now
+		g.lastMillis = now
 	}
-	copy(lastRand[:], randBytes[:])
+	copy(g.lastRand[:], randBytes[:])
 
 	var out [26]byte
 	// Encode 48-bit timestamp MSB-first as 10 base32 chars (5 bits each).
@@ -56,7 +63,7 @@ func NewID() string {
 	// Encode 80-bit randomness as 16 base32 chars.
 	encodeBase32(out[10:], randBytes[:])
 
-	return string(out[:])
+	return string(out[:]), nil
 }
 
 // encodeBase32 writes 16 base32 chars from 10 input bytes (80 bits → 16×5).
