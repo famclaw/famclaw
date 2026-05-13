@@ -2,7 +2,7 @@
 
 **Phase 3.3** of `docs/superpowers/2026-05-12-roadmap.md`. Shared family memory: pets, dietary restrictions, important dates, allergies — plus user-defined custom categories. Safety-critical entries reach the LLM via prompt injection; the rest are tool-fetched on demand. Precedes Phase 3.1 (cron/reminders), which uses the `important_dates` rows as its source data (see Section 10 for the hook spec).
 
-Author: brainstormed 2026-05-13.
+Author: brainstormed 2026-05-13. **Council-revised 2026-05-13** after a 3-way R1→R2→R3 debate (Sonnet · Nemotron-30B · qwen3-30b-instruct) reached FIX_NEEDED consensus with six locked changes folded into this revision: Q5 2-branch fail-stance with system-level unavailable notice; OPA gate on `propose_family_fact` auto-apply; `recurrence` column in v1; `<family_safety>` tag-wrapped prompt block; subject↔config drift validation with orphan-row exclusion; expanded integration test suite. Notify-copy mis-shape for the proposal flow is the one v2 punt (TODO comment marker).
 
 ## 1. Motivation
 
@@ -57,6 +57,9 @@ CREATE TABLE family_facts (
     subject    TEXT NOT NULL,        -- username from config.Users OR the literal 'family'
     label      TEXT NOT NULL,        -- e.g. 'peanuts', 'Stella', 'Saturday'
     value      TEXT NOT NULL,        -- e.g. 'severe — EpiPen in Mom's purse'
+    recurrence TEXT NULL DEFAULT NULL, -- e.g. 'yearly' | 'weekly' | 'monthly' | NULL.
+                                       -- Reserved for Phase 3.1 reminders consuming important_dates rows.
+                                       -- v1 only sets it for important_dates rows; other categories leave NULL.
     created_by TEXT NOT NULL,        -- user who created this row
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -88,9 +91,14 @@ Length caps (handler-side validation; not a CHECK constraint to keep migration s
 
 ```
 internal/familystate/
-    store.go           // Store wrapping *store.DB; CRUD on categories + facts
+    store.go           // Store wrapping *store.DB; CRUD on categories + facts.
+                       // AlwaysInjectedSnapshot also validates subject vs config.Users
+                       // and emits slog.Warn for orphaned rows (R3 drift lock).
     store_test.go
-    snapshot.go        // Snapshot + IsEmpty() + Render() for prompt injection
+    snapshot.go        // Snapshot + IsEmpty() + Render() for prompt injection.
+                       // UnavailableSnapshot() returns the sentinel that renders
+                       // the "safety context temporarily unavailable" notice
+                       // wrapped in <family_safety> tags (R3 2-branch lock).
     snapshot_test.go
     proposal.go        // helpers to encode/decode proposal payloads in approvals.query_text
     proposal_test.go
@@ -129,19 +137,33 @@ func memoryComponent(c BuildContext) (string, bool) {
 `Snapshot.Render()` produces (example):
 
 ```
-Family safety facts:
+<family_safety>
 - Allergies: Teo — peanuts (severe, EpiPen in Mom's purse).
 - Dietary restrictions: Family — kosher. Julia — vegetarian.
+</family_safety>
 ```
 
-Deterministic ordering: categories alphabetized, then subjects alphabetized within each (`family` sorts first within its category for readability), then labels alphabetized within each subject. Snapshot tests pin this format exactly.
+The `<family_safety>...</family_safety>` wrapper is mandatory and chosen deliberately: small local models (Nemotron-30B, qwen3-30b) attend to tagged sections more reliably than prose for safety-critical context. Per the 2026-05-13 council debate (R1–R3): 5 of 6 reviewers explicitly recommended tagged blocks over prose; none preferred prose.
+
+Deterministic ordering inside the block: categories alphabetized, then subjects alphabetized within each (`family` sorts first within its category for readability), then labels alphabetized within each subject. Snapshot tests pin the exact rendered string, tag wrapper and all.
 
 ### 3.4 Agent integration
 
 `internal/agent/agent.go`:
 
 - New field on the Agent struct: `familyState *familystate.Store`
-- Before each `prompt.Build` call: `snap, err := a.familyState.AlwaysInjectedSnapshot(ctx)`. On error, log and continue with `snap = nil` (fail-open per Section 3 decision).
+- Before each `prompt.Build` call:
+  ```go
+  snap, err := a.familyState.AlwaysInjectedSnapshot(ctx)
+  if err != nil {
+      slog.Error("family-state snapshot failed; injecting unavailable notice", "err", err)
+      snap = familystate.UnavailableSnapshot()  // produces "<family_safety>safety context temporarily unavailable — operating with reduced family context</family_safety>"
+  }
+  // snap == nil-error-empty (no rows): proceed normally; memoryComponent renders "", false
+  // snap == UnavailableSnapshot: memoryComponent renders the unavailable notice
+  // snap with rows: memoryComponent renders the full safety block
+  ```
+  This is the **2-branch fail-stance** locked by R3 consensus (Sonnet + qwen3-30b: no retry; Nemotron held retry-once but was outvoted 2-1). Rationale: distinguishing transient from permanent SQLite errors reliably at the call site is hard; the underlying driver handles transient retries via WAL+busy_timeout. The system-level notice ensures the model knows it is operating without safety context rather than silently dropping the safety block.
 - Builtin tool dispatch additions:
   - `get_family_state` and `propose_family_fact` are wired into the main `internal/agent/agent.go` dispatch switch alongside `web_fetch`, `spawn_agent`, `tool_result_more` (the all-roles tools).
   - `set_family_fact`, `delete_family_fact`, `add_family_category`, `delete_family_category` follow the existing admin-tool pattern: one file per tool under `internal/agent/tools/admin/` (mirrors `internal/agent/tools/admin/approve_request.go` etc.).
@@ -168,7 +190,17 @@ admin_tools := {
 }
 ```
 
-`get_family_state` and `propose_family_fact` are NOT in `admin_tools` — all roles can call them. No new explicit allow rule is needed; the default allow-non-admin-for-children path covers them.
+`get_family_state` is NOT in `admin_tools` — all roles can call it.
+
+**`propose_family_fact` is special** (per R3 consensus, "OPA hole" item): it has two code paths — kid-propose-creates-approval-row vs parent-auto-apply-direct-write. The auto-apply branch must NOT decide authorization in Go alone; it must call OPA with a synthetic decision input (`tool_name: "family_fact_proposal_auto_apply"`, `user.role: <caller>`) and only proceed on `allow`. A new OPA rule in this file gates that synthetic name:
+
+```rego
+# Synthetic check fired by the propose_family_fact handler when caller is parent.
+# Without this gate, a bug in handler-side role logic could let a child auto-apply.
+admin_tools := admin_tools | {"family_fact_proposal_auto_apply"}
+```
+
+(Equivalent: add `family_fact_proposal_auto_apply` to the existing `admin_tools` set.) This means: tool itself (`propose_family_fact`) remains callable by all roles, but the auto-apply branch inside the handler is policy-gated by OPA, not by Go.
 
 OPA test additions in `tool_policy_test.rego`: one test per new tool × {parent, child age_13_17, child age_8_12, child under_8}.
 
@@ -278,9 +310,10 @@ When a parent approves, the existing approval handler in `internal/agent/tools/a
 | `delete_family_category` for `is_builtin=1` | `ErrBuiltinCategory`; tool returns `"can't delete a built-in category"` |
 | `delete_family_category` when facts exist | FK RESTRICT → `ErrCategoryNotEmpty`; tool returns `"category has N facts; delete them first"` |
 | `add_family_category` for name that already exists | Idempotent — updates description + always_inject if caller is parent |
-| `propose_family_fact` from a parent | Auto-applies (no approval round-trip), audit row tagged `auto_apply_parent=true` |
-| `AlwaysInjectedSnapshot` with empty tables | `Snapshot.IsEmpty()` returns true; `memoryComponent` returns `("", false)` |
-| Snapshot DB read fails | Log via `slog`; `FamilyState=nil` passed to BuildContext; `memoryComponent` returns `("", false)`; prompt still builds. Conservative fail-open. |
+| `propose_family_fact` from a parent | Handler calls OPA with synthetic tool name `family_fact_proposal_auto_apply`; on `allow` → auto-applies, audit row tagged `auto_apply_parent=true`. Authorization is in OPA, NOT in Go (R3 council lock — closes the "OPA hole"). |
+| `AlwaysInjectedSnapshot` with empty tables (nil error) | `Snapshot.IsEmpty()` returns true; `memoryComponent` returns `("", false)`. Legitimate empty state. |
+| Snapshot DB read fails (any non-nil error) | Log via `slog`; `familystate.UnavailableSnapshot()` returned; `memoryComponent` renders `<family_safety>safety context temporarily unavailable — operating with reduced family context</family_safety>`. Model sees the notice and can hedge. R3 council 2-branch lock (2-1 against retry-once; SQLite WAL+busy_timeout handles transient retries at the driver level). |
+| Subject↔config drift on snapshot load | Each row's `subject` validated against current `config.Users[].Name` ∪ `{"family"}`. Unknown subjects: row excluded from snapshot AND logged (`slog.Warn`). Web dashboard surfaces these as "orphaned facts" with re-attribute / delete action. R3 council lock: subject drift is a silent correctness failure (parent sees misattributed context), not data hygiene. |
 | Concurrent writes from two parents | `UNIQUE(category, subject, label)` constraint + UPSERT semantics; last write wins; `updated_at` reflects latest |
 | Over-length input | Handler-side validation returns `"label too long (max 64 chars)"` etc. before DB call |
 | Subagent invokes a mutation tool | Tool not in `ExecutorDeps.BuiltinDefs` for subagents; LLM gets unknown-tool error |
@@ -327,9 +360,19 @@ Per new tool × {parent, age_13_17, age_8_12, under_8} → expected allow/deny. 
 - `TestDeleteBuiltinCategory_400`
 - `TestDeleteCategoryWithFacts_400`
 
-### Integration test (`integration_test.go`, build tag `integration`)
+### Integration tests (`integration_test.go`, build tag `integration`)
 
-One scenario: parent on mock-Discord → router → policy → agent → `set_family_fact` tool call → DB row written → next agent turn loads `AlwaysInjectedSnapshot` → memoryComponent emits the new fact in the prompt sent to the mock LLM server. Validates the loop without mocking the package boundary.
+R3 council lock: one scenario is insufficient. Add the following five end-to-end paths, each going through the real router → policy → agent → DB stack with mocked Discord/LLM at the edges:
+
+1. **Parent set-via-chat → next-turn-sees-fact** — parent emits `set_family_fact`; DB row appears; next user turn loads `AlwaysInjectedSnapshot` and the rendered safety block (with `<family_safety>` tag wrapper) reaches the mock LLM server.
+2. **Kid proposal → parent approval → fact-in-prompt** — child emits `propose_family_fact`; approvals row created with payload kind `family_fact_proposal`; parent calls `approve_request` → fact is upserted → next child turn sees it in prompt.
+3. **Child blocked from mutation** — child emits `set_family_fact`; OPA returns deny via the `admin_tools` gate; no DB write; tool result is the OPA reason string.
+4. **OPA hole closed — auto-apply branch policy-gated** — parent calls `propose_family_fact`; handler fires synthetic `family_fact_proposal_auto_apply` OPA check; verify the OPA call is observable in test output (not just the Go role check).
+5. **Web CRUD → next-turn-sees-update** — parent POSTs to `/api/family-state/facts` via the dashboard endpoint; next user turn (via gateway) reflects the new fact. Closes the loop between dashboard mutations and live prompt context.
+
+Plus one explicit failure-mode test:
+
+6. **Snapshot DB error → unavailable notice in prompt** — inject a forced DB error on `AlwaysInjectedSnapshot`; verify the rendered prompt contains `<family_safety>safety context temporarily unavailable — operating with reduced family context</family_safety>` rather than dropping the block silently. Guards the R3 council 2-branch fail-stance.
 
 ### Coverage target
 
@@ -340,10 +383,12 @@ One scenario: parent on mock-Discord → router → policy → agent → `set_fa
 `important_dates` is the shared substrate. Schema fits both v1 read-on-demand AND future Phase 3.1 cron:
 
 - Phase 3.1 will add a `reminders` table referencing `family_facts.id` for date-bound rows
-- `value` field for an `important_dates` row contains an ISO date (`YYYY-MM-DD`) + optional time; recurrence noted in the `label` or as a `recurrence` extension column (future)
-- v1 stores the data; Phase 3.1 wires the cron and the delivery
+- `value` field for an `important_dates` row contains an ISO date (`YYYY-MM-DD`) + optional time
+- **`recurrence` column ships in v1** — `recurrence TEXT NULL DEFAULT NULL` on `family_facts`. v1 only writes it for `important_dates` rows (`yearly` for birthdays/anniversaries, `weekly`/`monthly` for recurring events, `NULL` for one-shot). Other categories leave it NULL.
 
-Explicit non-decision: v1 does NOT add a `recurrence` column. Phase 3.1 will decide whether to (a) parse it out of the `value` text, (b) add a column then, or (c) introduce a separate `recurring_dates` category. Whatever Phase 3.1 picks, v1's `important_dates` rows remain valid.
+R3 council lock: 3/3 agreed that adding `recurrence` in v1 (one schema line) prevents a Phase 3.1 mid-cron migration. Sonnet's earlier framing ("cheap to add now") was upheld by Nemotron and qwen3-30b at R2 as load-bearing for the Phase 3.1 hook.
+
+Phase 3.1's `reminders` table will reference `family_facts(id)` with a FK; the cron scanner reads `family_facts WHERE category='important_dates' AND value::date <= today + lead_time` and resolves recurrence by interpreting the column. v1 stores; Phase 3.1 wires the cron + delivery.
 
 ## 11. Open questions / explicit non-goals
 
@@ -351,16 +396,19 @@ Explicit non-decision: v1 does NOT add a `recurrence` column. Phase 3.1 will dec
 - **Multilingual `label`/`value`**: not specially handled; stored as UTF-8 like all other text fields.
 - **Backup/export**: not a v1 feature. Standard `~/.famclaw/famclaw.db` backup covers it; specific JSON export is v2 if asked.
 - **Bulk import from existing `config.yaml`**: nothing in config to import. If `config.UserConfig` ever gains a `birth_date` field, a one-shot migration into `important_dates` is a v1.1 add.
+- **`family_fact_proposal` notification copy**: the existing `internal/notify` formatter assumes a topic-category approval shape ("child asked about X, approve?"). For `family_fact_proposal` it will display garbage text. R3 council lock: punt to v2 — add a `// TODO(famclaw/issue-XXX): family_fact_proposal notification copy` in the notify dispatch site. v1 ships with the parent receiving a structurally correct but stylistically wrong approval notification. The kid-proposal flow still works end-to-end (parent can approve), it just reads awkwardly.
 
 ## 12. Acceptance criteria
 
 - `go test ./internal/familystate/... ./internal/prompt/... ./internal/agent/... ./internal/web/...` passes
-- `opa test internal/policy/policies/family/ internal/policy/policies/data/` passes
+- `opa test internal/policy/policies/family/ internal/policy/policies/data/` passes, including the new `family_fact_proposal_auto_apply` rule
 - `make cross` builds all 6 targets cleanly (`CGO_ENABLED=0`)
-- Integration scenario passes
+- All 6 integration scenarios from §9 pass (incl. the snapshot-error-→-unavailable-notice failure-mode test)
 - Manual smoke on a fresh DB: open dashboard, add a `pets` row, ask Discord bot "what's our cat's name", get correct answer
-- Manual smoke on a populated DB with `allergies`: ask Discord "what should we make for dinner", model reply references the allergies it saw in the prompt
+- Manual smoke on a populated DB with `allergies`: ask Discord "what should we make for dinner", model reply references the allergies it saw in the `<family_safety>` block
+- Manual smoke for drift: rename a user in `config.yaml` after writing some facts for that subject; restart the bot; verify (a) orphaned rows are excluded from the snapshot, (b) `slog.Warn` lines appear, (c) the dashboard "orphaned facts" UI shows them
 - Tools appear in the agent's tool list with descriptions concrete enough that Nemotron-30B calls them when relevant (per the Phase 2 / spawn_agent lesson)
+- Snapshot tests pin the exact `<family_safety>...</family_safety>` tag-wrapped render output
 
 ## 13. Implementation plan
 
