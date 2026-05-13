@@ -86,13 +86,15 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				t := time.NewTicker(4 * time.Second)
 				defer t.Stop()
 				for {
-					select {
-					case <-stopTyping:
-						return
-					case <-t.C:
-						_ = b.sendChatAction(ctx, chatID, "typing")
-					}
-				}
+				select {
+				case <-ctx.Done():
+				return
+				case <-stopTyping:
+				return
+				case <-t.C:
+				        _ = b.sendChatAction(ctx, chatID, "typing")
+                            }
+                        }
 			}(u.Message.Chat.ID)
 
 			reply := handleMsg(ctx, msg)
