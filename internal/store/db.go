@@ -262,32 +262,6 @@ func (d *DB) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_tool_audit_user_conv ON tool_result_audit (user_name, conv_id);
 	CREATE INDEX IF NOT EXISTS idx_tool_audit_created   ON tool_result_audit (created_at);
-
-	-- Phase 3.3 — family state (shared family memory).
-	-- See docs/superpowers/specs/2026-05-13-family-state-design.md.
-	CREATE TABLE IF NOT EXISTS family_fact_categories (
-		name          TEXT PRIMARY KEY,
-		description   TEXT NOT NULL,
-		always_inject INTEGER NOT NULL DEFAULT 0,
-		is_builtin    INTEGER NOT NULL DEFAULT 0,
-		created_at    INTEGER NOT NULL,
-		updated_at    INTEGER NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS family_facts (
-		id         INTEGER PRIMARY KEY AUTOINCREMENT,
-		category   TEXT NOT NULL REFERENCES family_fact_categories(name) ON DELETE RESTRICT,
-		subject    TEXT NOT NULL,
-		label      TEXT NOT NULL,
-		value      TEXT NOT NULL,
-		recurrence TEXT DEFAULT NULL,
-		created_by TEXT NOT NULL,
-		created_at INTEGER NOT NULL,
-		updated_at INTEGER NOT NULL,
-		UNIQUE(category, subject, label)
-	);
-	CREATE INDEX IF NOT EXISTS idx_family_facts_subject  ON family_facts(subject);
-	CREATE INDEX IF NOT EXISTS idx_family_facts_category ON family_facts(category);
 	`)
 	if err != nil {
 		return err
@@ -300,20 +274,6 @@ func (d *DB) migrate() error {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate add decision_note: %w", err)
 		}
-	}
-
-	// Phase 3.3 seed: built-in family_fact_categories. Idempotent.
-	now := time.Now().Unix()
-	if _, err := d.sql.ExecContext(context.Background(), `
-		INSERT INTO family_fact_categories (name, description, always_inject, is_builtin, created_at, updated_at)
-		VALUES
-		  ('allergies', 'Per-person allergies and severity. Always visible to the assistant for safety.', 1, 1, ?, ?),
-		  ('dietary_restrictions', 'Per-person or family dietary patterns (vegetarian, kosher, halal, gluten-free, etc.). Always visible to the assistant.', 1, 1, ?, ?),
-		  ('important_dates', 'Birthdays, anniversaries, recurring family events. Read on demand. Phase 3.1 reminders read this table.', 0, 1, ?, ?),
-		  ('pets', 'Family pets — names, species, notes. Read on demand.', 0, 1, ?, ?)
-		ON CONFLICT(name) DO NOTHING`,
-		now, now, now, now, now, now, now, now); err != nil {
-		return fmt.Errorf("migrate seed family_fact_categories: %w", err)
 	}
 
 	return nil

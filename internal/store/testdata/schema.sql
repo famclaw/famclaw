@@ -6,10 +6,6 @@ CREATE INDEX idx_audit_log_actor ON audit_log(actor_name);
 
 CREATE INDEX idx_audit_log_ts ON audit_log(ts);
 
-CREATE INDEX idx_family_facts_category ON family_facts(category);
-
-CREATE INDEX idx_family_facts_subject  ON family_facts(subject);
-
 CREATE INDEX idx_gateway_accounts_lookup ON gateway_accounts(gateway, external_id);
 
 CREATE INDEX idx_messages_conv ON messages(conversation_id);
@@ -59,28 +55,6 @@ CREATE TABLE conversations (
 		user_name   TEXT NOT NULL,
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-	);
-
-CREATE TABLE family_fact_categories (
-		name          TEXT PRIMARY KEY,
-		description   TEXT NOT NULL,
-		always_inject INTEGER NOT NULL DEFAULT 0,
-		is_builtin    INTEGER NOT NULL DEFAULT 0,
-		created_at    INTEGER NOT NULL,
-		updated_at    INTEGER NOT NULL
-	);
-
-CREATE TABLE family_facts (
-		id         INTEGER PRIMARY KEY AUTOINCREMENT,
-		category   TEXT NOT NULL REFERENCES family_fact_categories(name) ON DELETE RESTRICT,
-		subject    TEXT NOT NULL,
-		label      TEXT NOT NULL,
-		value      TEXT NOT NULL,
-		recurrence TEXT DEFAULT NULL,
-		created_by TEXT NOT NULL,
-		created_at INTEGER NOT NULL,
-		updated_at INTEGER NOT NULL,
-		UNIQUE(category, subject, label)
 	);
 
 CREATE TABLE gateway_accounts (

@@ -206,12 +206,8 @@ func outputComponent(_ BuildContext) (string, bool) {
 		"Match the user's energy — short questions get short answers.", true
 }
 
-// memoryComponent renders the always-injected family-state safety block,
-// or the "safety context unavailable" notice if the snapshot read failed.
-// Phase 3.3 flip — was a placeholder returning ("", false) until now.
-func memoryComponent(c BuildContext) (string, bool) {
-	if c.FamilyState == nil || c.FamilyState.IsEmpty() {
-		return "", false
-	}
-	return c.FamilyState.Render(), true
+// memoryComponent — placeholder for the future memory/compaction feature.
+// Currently always excluded; flipped on by a later PR that adds the feature.
+func memoryComponent(_ BuildContext) (string, bool) {
+	return "", false
 }
