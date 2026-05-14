@@ -407,12 +407,11 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	// Build the subagent's builtin tool view from this parent's builtins.
 	// The parent's makeBuiltinHandler dispatches by namespaced name and
 	// already shares state (config, db, user, pool) with the subagent.
+	// Subagents inherit the parent's identity but stay read-only: any tool
+	// that mutates shared family state is filtered out here.
 	builtinDefs := make([]llm.ToolDef, 0, len(a.builtinTools))
 	for _, t := range a.builtinTools {
-		// Don't let a subagent spawn another subagent — easy way to wedge
-		// the scheduler. The parent's own spawn_agent is still available
-		// to the user; only the subagent's view excludes it.
-		if t.Name == "builtin__spawn_agent" {
+		if isSubagentExcludedTool(t.Name) {
 			continue
 		}
 		builtinDefs = append(builtinDefs, llm.ToolDef{
@@ -976,6 +975,30 @@ func ApprovalID(userName, category string) string {
 	day := time.Now().UTC().Format("2006-01-02")
 	h := sha256.Sum256([]byte(userName + ":" + category + ":" + day))
 	return hex.EncodeToString(h[:8])
+}
+
+// isSubagentExcludedTool reports whether the named builtin tool must NOT be
+// exposed to subagents. Subagents inherit the parent's identity but stay
+// read-only: they can read family state (get_family_state) and fetch URLs
+// (web_fetch) but cannot mutate shared state, cannot spawn further agents,
+// and cannot perform admin actions.
+func isSubagentExcludedTool(name string) bool {
+	switch name {
+	case "builtin__spawn_agent",
+		// Phase 3.3 family-state mutations:
+		"builtin__set_family_fact",
+		"builtin__delete_family_fact",
+		"builtin__add_family_category",
+		"builtin__delete_family_category",
+		"builtin__propose_family_fact",
+		// Admin tools:
+		"builtin__approve_request",
+		"builtin__deny_request",
+		"builtin__set_user_role",
+		"builtin__link_account":
+		return true
+	}
+	return false
 }
 
 // knownSubjects builds the set of valid subjects for family-state rows:

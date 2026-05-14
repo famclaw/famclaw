@@ -723,3 +723,33 @@ func TestHandleProposeFamilyFact_Rejects(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSubagentExcludedTool(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{name: "builtin__spawn_agent", want: true},
+		{name: "builtin__set_family_fact", want: true},
+		{name: "builtin__delete_family_fact", want: true},
+		{name: "builtin__add_family_category", want: true},
+		{name: "builtin__delete_family_category", want: true},
+		{name: "builtin__propose_family_fact", want: true},
+		{name: "builtin__approve_request", want: true},
+		{name: "builtin__deny_request", want: true},
+		{name: "builtin__set_user_role", want: true},
+		{name: "builtin__link_account", want: true},
+		// Read tools and unprivileged calls are NOT excluded.
+		{name: "builtin__web_fetch", want: false},
+		{name: "builtin__tool_result_more", want: false},
+		{name: "builtin__get_family_state", want: false},
+		{name: "builtin__list_pending_approvals", want: false}, // read-only
+		{name: "mcp__weather__forecast", want: false},
+		{name: "", want: false},
+	}
+	for _, tc := range cases {
+		if got := isSubagentExcludedTool(tc.name); got != tc.want {
+			t.Errorf("isSubagentExcludedTool(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
