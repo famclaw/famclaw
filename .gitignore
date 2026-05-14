@@ -32,3 +32,6 @@ go.work.sum
 # .vscode/
 .claude/
 dispatches/
+
+# Private planning docs — never commit
+docs/superpowers/
