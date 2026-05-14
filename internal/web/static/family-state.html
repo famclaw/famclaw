@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Family state — FamClaw</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; color: #222; }
+    h1 { margin-bottom: 0.2em; }
+    nav a { margin-right: 1em; color: #2a6; text-decoration: none; }
+    section { margin-top: 2em; }
+    table { border-collapse: collapse; width: 100%; margin-top: 0.5em; }
+    th, td { padding: 0.4em 0.6em; border-bottom: 1px solid #eee; text-align: left; }
+    th { background: #fafafa; }
+    button { padding: 0.4em 0.8em; cursor: pointer; }
+    .danger { color: #c33; }
+    .builtin { color: #888; font-size: 0.9em; }
+    .err { color: #c33; margin: 0.5em 0; }
+    input, select { padding: 0.3em; }
+    form { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5em; margin-top: 0.5em; }
+    form input[name="value"] { grid-column: 1 / 3; }
+    form button { grid-column: 1 / 3; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Family state</h1>
+    <nav><a href="/">← Dashboard</a></nav>
+  </header>
+
+  <section id="categories">
+    <h2>Categories</h2>
+    <div id="cat-err" class="err"></div>
+    <table id="cat-table">
+      <thead><tr><th>Name</th><th>Description</th><th>Always inject</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <h3>Add custom category</h3>
+    <form id="cat-form">
+      <input name="name" placeholder="category_name (lowercase, [a-z0-9_]+)" required>
+      <label><input type="checkbox" name="always_inject"> always inject</label>
+      <input name="description" placeholder="description" required style="grid-column:1/3">
+      <button type="submit">Add</button>
+    </form>
+  </section>
+
+  <section id="facts">
+    <h2>Facts</h2>
+    <div id="fact-err" class="err"></div>
+    <table id="fact-table">
+      <thead><tr><th>Category</th><th>Subject</th><th>Label</th><th>Value</th><th>By</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <h3>Add fact</h3>
+    <form id="fact-form">
+      <input name="category" placeholder="category" required>
+      <input name="subject" placeholder="subject (member name or 'family')" required>
+      <input name="label" placeholder="label" required>
+      <input name="value" placeholder="value" required>
+      <button type="submit">Add / update</button>
+    </form>
+  </section>
+
+<script>
+async function api(path, init) {
+  const r = await fetch(path, Object.assign({ credentials: 'same-origin' }, init || {}));
+  if (!r.ok) {
+    const body = await r.text();
+    throw new Error(body || ('http ' + r.status));
+  }
+  if (r.status === 204) return null;
+  return r.json();
+}
+
+// cell creates a <td> with a text node — safe against any user-supplied value.
+function cell(text) {
+  const td = document.createElement('td');
+  td.textContent = text == null ? '' : String(text);
+  return td;
+}
+
+function makeDeleteButton(label, dataAttr, dataValue) {
+  const b = document.createElement('button');
+  b.className = 'danger';
+  b.textContent = label;
+  b.setAttribute(dataAttr, dataValue);
+  return b;
+}
+
+async function refreshCategories() {
+  document.getElementById('cat-err').textContent = '';
+  try {
+    const cats = await api('/api/family-state/categories');
+    const tbody = document.querySelector('#cat-table tbody');
+    while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+    for (const c of cats || []) {
+      const tr = document.createElement('tr');
+      tr.appendChild(cell(c.Name));
+      tr.appendChild(cell(c.Description));
+      tr.appendChild(cell(c.AlwaysInject ? 'yes' : 'no'));
+      const actionCell = document.createElement('td');
+      if (c.IsBuiltin) {
+        const span = document.createElement('span');
+        span.className = 'builtin';
+        span.textContent = 'built-in';
+        actionCell.appendChild(span);
+      } else {
+        actionCell.appendChild(makeDeleteButton('delete', 'data-name', c.Name));
+      }
+      tr.appendChild(actionCell);
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    document.getElementById('cat-err').textContent = 'failed to load: ' + e.message;
+  }
+}
+
+async function refreshFacts() {
+  document.getElementById('fact-err').textContent = '';
+  try {
+    const facts = await api('/api/family-state/facts');
+    const tbody = document.querySelector('#fact-table tbody');
+    while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+    for (const f of facts || []) {
+      const tr = document.createElement('tr');
+      tr.appendChild(cell(f.Category));
+      tr.appendChild(cell(f.Subject));
+      tr.appendChild(cell(f.Label));
+      tr.appendChild(cell(f.Value));
+      tr.appendChild(cell(f.CreatedBy));
+      const actionCell = document.createElement('td');
+      actionCell.appendChild(makeDeleteButton('delete', 'data-id', String(f.ID)));
+      tr.appendChild(actionCell);
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    document.getElementById('fact-err').textContent = 'failed to load: ' + e.message;
+  }
+}
+
+document.getElementById('cat-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  try {
+    await api('/api/family-state/categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: fd.get('name'),
+        description: fd.get('description'),
+        always_inject: fd.get('always_inject') === 'on',
+      }),
+    });
+    e.target.reset();
+    refreshCategories();
+  } catch (err) {
+    document.getElementById('cat-err').textContent = err.message;
+  }
+});
+
+document.getElementById('fact-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  try {
+    await api('/api/family-state/facts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        category: fd.get('category'),
+        subject: fd.get('subject'),
+        label: fd.get('label'),
+        value: fd.get('value'),
+      }),
+    });
+    e.target.reset();
+    refreshFacts();
+  } catch (err) {
+    document.getElementById('fact-err').textContent = err.message;
+  }
+});
+
+document.querySelector('#cat-table').addEventListener('click', async e => {
+  if (e.target.tagName !== 'BUTTON') return;
+  const name = e.target.getAttribute('data-name');
+  if (!name) return;
+  if (!confirm('Delete category ' + name + '?')) return;
+  try {
+    await api('/api/family-state/categories/' + encodeURIComponent(name), { method: 'DELETE' });
+    refreshCategories();
+  } catch (err) {
+    document.getElementById('cat-err').textContent = err.message;
+  }
+});
+
+document.querySelector('#fact-table').addEventListener('click', async e => {
+  if (e.target.tagName !== 'BUTTON') return;
+  const id = e.target.getAttribute('data-id');
+  if (!id) return;
+  if (!confirm('Delete fact #' + id + '?')) return;
+  try {
+    await api('/api/family-state/facts/' + encodeURIComponent(id), { method: 'DELETE' });
+    refreshFacts();
+  } catch (err) {
+    document.getElementById('fact-err').textContent = err.message;
+  }
+});
+
+refreshCategories();
+refreshFacts();
+</script>
+</body>
+</html>

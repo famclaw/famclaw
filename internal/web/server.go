@@ -23,6 +23,7 @@ import (
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/credstore"
+	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/llm/claudecli"
@@ -47,9 +48,10 @@ type Server struct {
 	clf        *classifier.Classifier
 	notifier   *notify.MultiNotifier
 	skills        []*skillbridge.Skill  // injected into agent system prompt
-	skillRegistry *skillbridge.Registry // backs POST /api/skills/install + /remove
-	pool          *mcp.Pool             // MCP tool pool for agent tool calls
-	staticHandler http.Handler          // embedded static file server
+	skillRegistry *skillbridge.Registry  // backs POST /api/skills/install + /remove
+	pool          *mcp.Pool              // MCP tool pool for agent tool calls
+	familyState   *familystate.Store     // Phase 3.3 — nil disables /api/family-state/*
+	staticHandler http.Handler           // embedded static file server
 	upgrader      websocket.Upgrader
 	cfgMu      sync.RWMutex               // guards cfg during settings reads/writes
 	clients    map[*websocket.Conn]string // conn → userName
@@ -72,6 +74,10 @@ type wsMessage struct {
 func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store.SessionStore, vault *credstore.Vault,
 	identStore *identity.Store, evaluator *policy.Evaluator, clf *classifier.Classifier, notifier *notify.MultiNotifier,
 	skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool) *Server {
+	var fs *familystate.Store
+	if db != nil {
+		fs = familystate.NewStore(db)
+	}
 	s := &Server{
 		cfg:           cfg,
 		cfgPath:       cfgPath,
@@ -85,6 +91,7 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store
 		pool:          pool,
 		skills:        skills,
 		skillRegistry: skillRegistry,
+		familyState:   fs,
 		clients:       make(map[*websocket.Conn]string),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
@@ -159,6 +166,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/unknown-accounts/link", s.protect(s.handleUnknownAccountLink))
 	mux.Handle("/api/unknown-accounts/dismiss", s.protect(s.handleUnknownAccountDismiss))
 	mux.Handle("/api/conversations", s.protect(s.handleConversations))
+	mux.Handle("/api/family-state/facts", s.protect(s.handleFamilyStateFacts))
+	mux.Handle("/api/family-state/facts/", s.protect(s.handleFamilyStateFact))
+	mux.Handle("/api/family-state/categories", s.protect(s.handleFamilyStateCategories))
+	mux.Handle("/api/family-state/categories/", s.protect(s.handleFamilyStateCategory))
 	mux.Handle("/api/settings", s.protect(s.handleSettings))
 	mux.Handle("/api/setup/test-telegram", s.conditionalProtect(s.handleTestTelegram))
 	mux.Handle("/api/setup/test-discord", s.conditionalProtect(s.handleTestDiscord))
