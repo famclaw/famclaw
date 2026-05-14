@@ -28,6 +28,24 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // present when LLM requests tool use
 	ToolCallID string     `json:"tool_call_id,omitempty"` // required on role=tool replies (OpenAI)
+
+	// ReasoningContent is the non-standard field reasoning models (qwen3,
+	// nemotron, gpt-oss harmony) sometimes use to ship the final response
+	// while leaving Content empty. We DO NOT include it when sending the
+	// message back (omitempty), and at receive time the client merges it
+	// into Content when Content is empty — see mergeReasoning() below.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+}
+
+// mergeReasoning hoists ReasoningContent into Content when Content is
+// empty. Local reasoning models (qwen3-30b on Mac, nemotron-30b, gpt-oss)
+// frequently emit the final answer in reasoning_content with content="".
+// Consumers reading only .Content would see empty replies otherwise.
+func (m *Message) mergeReasoning() {
+	if m.Content == "" && m.ReasoningContent != "" {
+		m.Content = m.ReasoningContent
+	}
+	m.ReasoningContent = ""
 }
 
 // ToolCall represents a tool invocation requested by the LLM.
@@ -191,9 +209,10 @@ type openaiStreamChoice struct {
 }
 
 type openaiDelta struct {
-	Role      string     `json:"role,omitempty"`
-	Content   string     `json:"content,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role             string     `json:"role,omitempty"`
+	Content          string     `json:"content,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // Chat sends a conversation to the LLM and streams the response token by token.
@@ -259,6 +278,11 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, e
 
 		for _, choice := range chunk.Choices {
 			token := choice.Delta.Content
+			if token == "" {
+				// Reasoning-content fallback: qwen3/nemotron/gpt-oss stream
+				// some final answers via reasoning_content with Content="".
+				token = choice.Delta.ReasoningContent
+			}
 			if token != "" {
 				full.WriteString(token)
 				if onToken != nil {
@@ -329,6 +353,11 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 	}
 
 	msg := &result.Choices[0].Message
+	// Reasoning models (qwen3, nemotron, gpt-oss harmony) sometimes ship
+	// the final answer in reasoning_content with content="". Merge before
+	// any further processing so the rest of the pipeline sees a populated
+	// Content field.
+	msg.mergeReasoning()
 	// Rescue inline <tool_call> XML blocks that small local models emit
 	// when they violate the trained "tool call comes BEFORE prose, not
 	// after" instruction. Without this, the raw XML leaks to the user as

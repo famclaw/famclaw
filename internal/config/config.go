@@ -28,7 +28,33 @@ type Config struct {
 // ToolsConfig groups configuration for built-in tools registered with the LLM.
 type ToolsConfig struct {
 	WebFetch  WebFetchConfig  `yaml:"web_fetch,omitempty"`
+	WebSearch WebSearchConfig `yaml:"web_search,omitempty"`
+	Browser   BrowserConfig   `yaml:"browser,omitempty"`
 	ToolCache ToolCacheConfig `yaml:"tool_cache,omitempty"`
+}
+
+// BrowserConfig controls the built-in browser_* tools (real browser nav via
+// a remote Playwright server). Disabled by default; when enabled the LLM
+// can navigate, click, fill, extract on real pages. Host gate reuses
+// tools.web_fetch.url_allowlist.
+type BrowserConfig struct {
+	Enabled      bool     `yaml:"enabled"`
+	Endpoint     string   `yaml:"endpoint,omitempty"`         // e.g. "ws://localhost:3000/"; required when Enabled
+	AllowedRoles []string `yaml:"allowed_roles,omitempty"`    // default ["parent"]
+	IdleSec      int      `yaml:"idle_seconds,omitempty"`     // per-user session idle close; default 300
+}
+
+// WebSearchConfig controls the built-in web_search tool. Disabled by default;
+// when enabled the LLM may query a SearXNG (or compatible) JSON endpoint
+// and receive structured title/url/snippet results. The endpoint host is
+// still gated by tools.web_fetch.url_allowlist — add the search host
+// (e.g. "localhost") to that list to use this tool.
+type WebSearchConfig struct {
+	Enabled      bool     `yaml:"enabled"`
+	Endpoint     string   `yaml:"endpoint,omitempty"`        // e.g. "http://localhost:8888"; required when Enabled
+	AllowedRoles []string `yaml:"allowed_roles,omitempty"`   // default ["parent"]
+	MaxResults   int      `yaml:"max_results,omitempty"`     // default 8, hard-capped at 16
+	TimeoutSec   int      `yaml:"timeout_seconds,omitempty"` // default 10
 }
 
 // ToolCacheConfig controls the Phase 2 tool-result spillover cache. When
@@ -352,6 +378,23 @@ func applyDefaults(c *Config) {
 	if len(c.Tools.WebFetch.AllowedRoles) == 0 {
 		c.Tools.WebFetch.AllowedRoles = []string{"parent"}
 	}
+	// web_search defaults
+	if c.Tools.WebSearch.MaxResults == 0 {
+		c.Tools.WebSearch.MaxResults = 8
+	}
+	if c.Tools.WebSearch.TimeoutSec == 0 {
+		c.Tools.WebSearch.TimeoutSec = 10
+	}
+	if len(c.Tools.WebSearch.AllowedRoles) == 0 {
+		c.Tools.WebSearch.AllowedRoles = []string{"parent"}
+	}
+	// browser defaults
+	if c.Tools.Browser.IdleSec == 0 {
+		c.Tools.Browser.IdleSec = 300
+	}
+	if len(c.Tools.Browser.AllowedRoles) == 0 {
+		c.Tools.Browser.AllowedRoles = []string{"parent"}
+	}
 }
 
 // Validate checks that critical config values are set and safe.
@@ -398,6 +441,31 @@ func (c *Config) Validate() error {
 		}
 		if !hasHost {
 			return fmt.Errorf("tools.web_fetch.url_allowlist must list at least one non-empty host when enabled (empty list denies all fetches as an SSRF guard)")
+		}
+	}
+	if c.Tools.WebSearch.Enabled {
+		if strings.TrimSpace(c.Tools.WebSearch.Endpoint) == "" {
+			return fmt.Errorf("tools.web_search.endpoint must be set when enabled (e.g. http://localhost:8888)")
+		}
+		if !c.Tools.WebFetch.Enabled {
+			return fmt.Errorf("tools.web_search requires tools.web_fetch.enabled=true (it reuses the web_fetch URL allowlist as its host gate)")
+		}
+		if c.Tools.WebSearch.MaxResults < 0 {
+			return fmt.Errorf("tools.web_search.max_results must be >= 0 (got %d)", c.Tools.WebSearch.MaxResults)
+		}
+		if c.Tools.WebSearch.TimeoutSec <= 0 {
+			return fmt.Errorf("tools.web_search.timeout_seconds must be > 0 (got %d)", c.Tools.WebSearch.TimeoutSec)
+		}
+	}
+	if c.Tools.Browser.Enabled {
+		if strings.TrimSpace(c.Tools.Browser.Endpoint) == "" {
+			return fmt.Errorf("tools.browser.endpoint must be set when enabled (e.g. ws://localhost:3000/)")
+		}
+		if !c.Tools.WebFetch.Enabled {
+			return fmt.Errorf("tools.browser requires tools.web_fetch.enabled=true (browser_navigate reuses the web_fetch URL allowlist as its host gate)")
+		}
+		if c.Tools.Browser.IdleSec <= 0 {
+			return fmt.Errorf("tools.browser.idle_seconds must be > 0 (got %d)", c.Tools.Browser.IdleSec)
 		}
 	}
 	return nil
