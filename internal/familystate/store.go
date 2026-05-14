@@ -80,36 +80,78 @@ type FilterOpts struct {
 	Subject  string // exact match if set
 }
 
-// UpsertCategory inserts or updates a row in family_fact_categories. is_builtin
-// cannot be changed by callers — the seed migration is the only authoritative
-// source. Description and always_inject ARE overwritten on conflict (this is
-// the "parent edits a custom category" path).
+// UpsertCategory inserts a new custom category or updates an existing custom
+// category. Built-in categories (is_builtin=1) are immutable from this entry
+// point — attempting to upsert one returns ErrBuiltinCategory so the
+// always_inject safety contract on `allergies` / `dietary_restrictions`
+// cannot be flipped off by a caller. The seed migration is the only
+// authoritative source for built-in rows.
+//
+// Atomic: the existence-and-builtin check and the upsert run in a single
+// transaction so a concurrent writer cannot promote a row to is_builtin=1
+// between the two statements.
 func (s *Store) UpsertCategory(ctx context.Context, c *Category) error {
 	now := time.Now().Unix()
 	alwaysInject := 0
 	if c.AlwaysInject {
 		alwaysInject = 1
 	}
-	// New rows always get is_builtin=0; existing rows keep their current value.
-	if _, err := s.db.SQL().ExecContext(ctx,
+
+	tx, err := s.db.SQL().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("upsert category begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var isBuiltin int
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT is_builtin FROM family_fact_categories WHERE name = ?`, c.Name).Scan(&isBuiltin); {
+	case err == sql.ErrNoRows:
+		// new row — insert below
+	case err != nil:
+		return fmt.Errorf("upsert category lookup: %w", err)
+	default:
+		if isBuiltin == 1 {
+			return ErrBuiltinCategory
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO family_fact_categories (name, description, always_inject, is_builtin, created_at, updated_at)
 		 VALUES (?, ?, ?, 0, ?, ?)
 		 ON CONFLICT(name) DO UPDATE SET
 		   description   = excluded.description,
 		   always_inject = excluded.always_inject,
-		   updated_at    = excluded.updated_at`,
+		   updated_at    = excluded.updated_at
+		 WHERE family_fact_categories.is_builtin = 0`,
 		c.Name, c.Description, alwaysInject, now, now); err != nil {
 		return fmt.Errorf("upsert category: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("upsert category commit: %w", err)
 	}
 	return nil
 }
 
 // DeleteCategory removes a custom category. Built-in categories cannot be
 // deleted (ErrBuiltinCategory). A category with at least one referencing
-// fact cannot be deleted (ErrCategoryNotEmpty — FK RESTRICT).
+// fact cannot be deleted (ErrCategoryNotEmpty). The schema declares
+// FK RESTRICT, but modernc.org/sqlite does not honor _fk=true in the DSN
+// (project-wide foreign_keys pragma is 0), so the constraint is enforced
+// in the application layer here.
+//
+// Atomic: lookup, reference count, and DELETE all run in a single
+// transaction so a concurrent UpsertFact cannot slip a referencing row in
+// between the count and the delete.
 func (s *Store) DeleteCategory(ctx context.Context, name string) error {
+	tx, err := s.db.SQL().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete category begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var isBuiltin int
-	err := s.db.SQL().QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT is_builtin FROM family_fact_categories WHERE name = ?`, name).Scan(&isBuiltin)
 	if err == sql.ErrNoRows {
 		return ErrUnknownCategory
@@ -120,18 +162,17 @@ func (s *Store) DeleteCategory(ctx context.Context, name string) error {
 	if isBuiltin == 1 {
 		return ErrBuiltinCategory
 	}
-	// Explicit count check: the schema declares FK RESTRICT, but modernc.org/sqlite
-	// does not honor _fk=true in the DSN (the project-wide foreign_keys pragma is 0),
-	// so we enforce the constraint at the application layer.
+
 	var refs int
-	if err := s.db.SQL().QueryRowContext(ctx,
+	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(1) FROM family_facts WHERE category = ?`, name).Scan(&refs); err != nil {
 		return fmt.Errorf("delete category ref count: %w", err)
 	}
 	if refs > 0 {
 		return ErrCategoryNotEmpty
 	}
-	res, err := s.db.SQL().ExecContext(ctx,
+
+	res, err := tx.ExecContext(ctx,
 		`DELETE FROM family_fact_categories WHERE name = ? AND is_builtin = 0`, name)
 	if err != nil {
 		return fmt.Errorf("delete category: %w", err)
@@ -140,17 +181,33 @@ func (s *Store) DeleteCategory(ctx context.Context, name string) error {
 	if n == 0 {
 		return ErrUnknownCategory
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete category commit: %w", err)
+	}
 	return nil
 }
 
-// UpsertFact inserts or updates a fact row. The category must exist (FK).
-// UNIQUE(category, subject, label) determines upsert key; value/recurrence/
-// updated_at overwritten on conflict. CreatedBy is set only on insert; it is
-// preserved across updates.
+// UpsertFact inserts or updates a fact row. The category must exist
+// (ErrUnknownCategory if not). UNIQUE(category, subject, label) determines
+// upsert key; value/recurrence/updated_at overwritten on conflict.
+// created_by and created_at are set on insert and preserved on update.
+//
+// On return, *f is fully reloaded from the persisted row — so on the
+// conflict-update path, f.CreatedAt and f.CreatedBy reflect the original
+// insert (not the caller's input or `now`).
+//
+// Atomic: the category existence check and the upsert+reload run in a
+// single transaction so a concurrent DeleteCategory cannot remove the
+// parent row between the check and the insert.
 func (s *Store) UpsertFact(ctx context.Context, f *Fact) error {
-	// Pre-flight: better error message than the FK driver text.
+	tx, err := s.db.SQL().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("upsert fact begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var exists int
-	if err := s.db.SQL().QueryRowContext(ctx,
+	if err := tx.QueryRowContext(ctx,
 		`SELECT 1 FROM family_fact_categories WHERE name = ?`, f.Category).Scan(&exists); err == sql.ErrNoRows {
 		return ErrUnknownCategory
 	} else if err != nil {
@@ -162,28 +219,50 @@ func (s *Store) UpsertFact(ctx context.Context, f *Fact) error {
 	if f.Recurrence != "" {
 		rec = sql.NullString{String: f.Recurrence, Valid: true}
 	}
-	res, err := s.db.SQL().ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO family_facts (category, subject, label, value, recurrence, created_by, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(category, subject, label) DO UPDATE SET
 		   value      = excluded.value,
 		   recurrence = excluded.recurrence,
 		   updated_at = excluded.updated_at`,
-		f.Category, f.Subject, f.Label, f.Value, rec, f.CreatedBy, now, now)
-	if err != nil {
+		f.Category, f.Subject, f.Label, f.Value, rec, f.CreatedBy, now, now); err != nil {
 		return fmt.Errorf("upsert fact: %w", err)
 	}
-	if id, _ := res.LastInsertId(); id != 0 {
-		f.ID = id
-	} else {
-		if err := s.db.SQL().QueryRowContext(ctx,
-			`SELECT id FROM family_facts WHERE category=? AND subject=? AND label=?`,
-			f.Category, f.Subject, f.Label).Scan(&f.ID); err != nil {
-			return fmt.Errorf("upsert fact reselect: %w", err)
-		}
+
+	// Reload the persisted row so callers see exactly what's in the DB —
+	// on the conflict-update path, created_at and created_by come from
+	// the original insert, not the input or `now`.
+	var (
+		recurrence              sql.NullString
+		createdAt, updatedAt    int64
+		id                      int64
+		category, subject, label, value, createdBy string
+	)
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id, category, subject, label, value, recurrence, created_by, created_at, updated_at
+		 FROM family_facts WHERE category = ? AND subject = ? AND label = ?`,
+		f.Category, f.Subject, f.Label).Scan(
+		&id, &category, &subject, &label, &value, &recurrence, &createdBy, &createdAt, &updatedAt); err != nil {
+		return fmt.Errorf("upsert fact reload: %w", err)
 	}
-	f.CreatedAt = time.Unix(now, 0)
-	f.UpdatedAt = time.Unix(now, 0)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("upsert fact commit: %w", err)
+	}
+
+	f.ID = id
+	f.Category = category
+	f.Subject = subject
+	f.Label = label
+	f.Value = value
+	if recurrence.Valid {
+		f.Recurrence = recurrence.String
+	} else {
+		f.Recurrence = ""
+	}
+	f.CreatedBy = createdBy
+	f.CreatedAt = time.Unix(createdAt, 0)
+	f.UpdatedAt = time.Unix(updatedAt, 0)
 	return nil
 }
 
