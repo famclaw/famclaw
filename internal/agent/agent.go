@@ -338,6 +338,18 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		case "builtin__link_account":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
 			return admin.HandleLinkAccount(ctx, deps, args)
+		case "builtin__set_family_fact":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			return admin.HandleSetFamilyFact(ctx, deps, args)
+		case "builtin__delete_family_fact":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			return admin.HandleDeleteFamilyFact(ctx, deps, args)
+		case "builtin__add_family_category":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			return admin.HandleAddFamilyCategory(ctx, deps, args)
+		case "builtin__delete_family_category":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			return admin.HandleDeleteFamilyCategory(ctx, deps, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
