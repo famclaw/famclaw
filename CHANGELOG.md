@@ -6,6 +6,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
 ### Added
+- **Phase 3.3 family state.** Shared per-family memory (allergies, dietary
+  restrictions, important dates, pets, plus parent-extensible custom
+  categories). Safety-critical entries auto-injected into every system
+  prompt via a `<family_safety>` block; rest read on-demand by the model.
+  - New `internal/familystate/` package: store, snapshot, JSON proposal
+    envelope, sentinel errors. Built-in categories are immutable: the
+    `always_inject` flag on `allergies` / `dietary_restrictions` cannot
+    be flipped off via upsert.
+  - 6 new builtin tools: `get_family_state` (all roles), `set_family_fact`,
+    `delete_family_fact`, `add_family_category`, `delete_family_category`
+    (parent-only), `propose_family_fact` (all roles — parents auto-apply
+    via the synthetic `family_fact_proposal_auto_apply` OPA rule; kids
+    queue an approval row).
+  - OPA gates: 4 admin mutations + 1 synthetic auto-apply name in
+    `tool_policy.rego`; 14 new tests, 90/90 OPA total.
+  - Web dashboard: `/api/family-state/{facts,categories}` JSON API and
+    `family-state.html` static page (vanilla JS, no framework).
+  - Snapshot read failure renders an `UnavailableSnapshot()` notice so the
+    model knows it's operating without safety context (R3 council
+    locked-fail-stance).
+  - Subagents excluded from every family-state mutation: read tools
+    (`get_family_state`, `web_fetch`) still available; mutations and
+    `propose_family_fact` filtered out of subagent BuiltinDefs.
+  - `internal/store/db.go` migration adds `family_fact_categories` +
+    `family_facts` with an idempotent seed of the 4 built-ins.
 - Cookie-based web sessions (HttpOnly, SameSite=Strict, Secure-when-TLS, 7-day TTL)
 - `internal/credstore` package — AES-256-GCM credential vault keyed to machine ID via HKDF-SHA256
 - `POST /login`, `POST /logout`, `GET /session` auth endpoints

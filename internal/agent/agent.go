@@ -7,11 +7,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"math"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
@@ -54,6 +58,11 @@ type Agent struct {
 	builtinTools []agentcore.Tool // tools to inject onto every Turn
 	convID       string
 	gateway      string // gateway name (telegram, discord, web, etc.) for audit logs
+
+	// familyState is the always-injected family-state store used at
+	// prompt-build time. Phase 3.3 — nil disables family-state injection
+	// (tests / legacy callers).
+	familyState *familystate.Store
 
 	// webFetcher is the function used by handleWebFetch. Defaults to
 	// webfetch.Fetch in NewAgent. Tests can swap in a stub to assert the
@@ -99,6 +108,11 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		builtins = append(builtins, admin.AllDefinitions()...)
 	}
 
+	var fs *familystate.Store
+	if db != nil {
+		fs = familystate.NewStore(db)
+	}
+
 	return &Agent{
 		user:         user,
 		cfg:          cfg,
@@ -114,6 +128,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		builtinTools: builtins,
 		convID:       convID,
 		gateway:      deps.Gateway,
+		familyState:  fs,
 		webFetcher:   webfetch.Fetch,
 		cache:        deps.Cache,
 	}
@@ -301,6 +316,10 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			return a.handleWebFetch(ctx, args)
 		case "builtin__tool_result_more":
 			return a.handleToolResultMore(ctx, args)
+		case "builtin__get_family_state":
+			return a.handleGetFamilyState(ctx, args)
+		case "builtin__propose_family_fact":
+			return a.handleProposeFamilyFact(ctx, args)
 		case "builtin__list_pending_approvals":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
 			return admin.HandleListPendingApprovals(ctx, deps, args)
@@ -311,7 +330,7 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
 			return admin.HandleListUnknownAccounts(ctx, deps, args)
 		case "builtin__approve_request":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
 			return admin.HandleApproveRequest(ctx, deps, args)
 		case "builtin__deny_request":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
@@ -322,6 +341,18 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		case "builtin__link_account":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
 			return admin.HandleLinkAccount(ctx, deps, args)
+		case "builtin__set_family_fact":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			return admin.HandleSetFamilyFact(ctx, deps, args)
+		case "builtin__delete_family_fact":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			return admin.HandleDeleteFamilyFact(ctx, deps, args)
+		case "builtin__add_family_category":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			return admin.HandleAddFamilyCategory(ctx, deps, args)
+		case "builtin__delete_family_category":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			return admin.HandleDeleteFamilyCategory(ctx, deps, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
@@ -376,12 +407,11 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	// Build the subagent's builtin tool view from this parent's builtins.
 	// The parent's makeBuiltinHandler dispatches by namespaced name and
 	// already shares state (config, db, user, pool) with the subagent.
+	// Subagents inherit the parent's identity but stay read-only: any tool
+	// that mutates shared family state is filtered out here.
 	builtinDefs := make([]llm.ToolDef, 0, len(a.builtinTools))
 	for _, t := range a.builtinTools {
-		// Don't let a subagent spawn another subagent — easy way to wedge
-		// the scheduler. The parent's own spawn_agent is still available
-		// to the user; only the subagent's view excludes it.
-		if t.Name == "builtin__spawn_agent" {
+		if isSubagentExcludedTool(t.Name) {
 			continue
 		}
 		builtinDefs = append(builtinDefs, llm.ToolDef{
@@ -600,6 +630,156 @@ func (a *Agent) handleToolResultMore(ctx context.Context, args map[string]any) (
 	return body, nil
 }
 
+// handleProposeFamilyFact accepts a fact proposal from any role.
+//
+// PARENT path: an OPA tool-call check against the synthetic name
+// "family_fact_proposal_auto_apply" decides whether to apply directly.
+// This is intentional defense in depth — without it a Go bug could let a
+// non-parent slip through this branch (R3 council "OPA hole" closure).
+//
+// CHILD path: the proposal is JSON-encoded and written into approvals.
+// query_text with Category=ProposalKind. A parent then calls
+// approve_request, which dispatches on Category and applies the fact.
+func (a *Agent) handleProposeFamilyFact(ctx context.Context, args map[string]any) (string, error) {
+	if a.familyState == nil {
+		return "", fmt.Errorf("propose_family_fact: family state is not configured")
+	}
+	category, _ := args["category"].(string)
+	subject, _ := args["subject"].(string)
+	label, _ := args["label"].(string)
+	value, _ := args["value"].(string)
+	reason, _ := args["reason"].(string)
+
+	if category == "" || subject == "" || label == "" || value == "" {
+		return "", fmt.Errorf("propose_family_fact: category, subject, label, and value are all required")
+	}
+	if len(label) > 64 {
+		return "label too long (max 64 chars)", nil
+	}
+	if len(value) > 512 {
+		return "value too long (max 512 chars)", nil
+	}
+	if !knownSubjects(a.cfg)[subject] {
+		return fmt.Sprintf("subject %q is not a family member", subject), nil
+	}
+
+	if a.user.Role == "parent" {
+		if a.evaluator != nil {
+			dec, err := a.evaluator.EvaluateToolCall(ctx, policy.ToolCallInput{
+				User:     policy.UserInput{Role: a.user.Role, AgeGroup: a.user.AgeGroup, Name: a.user.Name},
+				ToolName: "family_fact_proposal_auto_apply",
+			})
+			if err != nil {
+				return "", fmt.Errorf("propose_family_fact opa: %w", err)
+			}
+			if !dec.Allow {
+				return "Not authorized to auto-apply this proposal.", nil
+			}
+		}
+		f := familystate.Fact{
+			Category: category, Subject: subject, Label: label, Value: value,
+			CreatedBy: a.user.Name,
+		}
+		if err := a.familyState.UpsertFact(ctx, &f); err != nil {
+			if errors.Is(err, familystate.ErrUnknownCategory) {
+				return fmt.Sprintf("unknown category %q — create it with add_family_category first", category), nil
+			}
+			return "", fmt.Errorf("propose_family_fact upsert: %w", err)
+		}
+		auditArgs, _ := json.Marshal(map[string]any{
+			"category": category, "subject": subject, "label": label, "value": value,
+			"id": f.ID, "auto_apply_parent": true,
+		})
+		if a.db != nil {
+			_ = a.db.LogAudit(ctx, a.user.Name, a.gateway, "builtin__propose_family_fact", auditArgs)
+		}
+		return fmt.Sprintf("ok — fact #%d applied directly (parent auto-apply)", f.ID), nil
+	}
+
+	envelope, err := familystate.EncodeProposal(familystate.Proposal{
+		Category: category, Subject: subject, Label: label, Value: value,
+		Reason: reason, ProposedBy: a.user.Name,
+	})
+	if err != nil {
+		return "", fmt.Errorf("propose_family_fact encode: %w", err)
+	}
+	approval := &store.Approval{
+		ID:          proposalApprovalID(a.user.Name, subject, label),
+		UserName:    a.user.Name,
+		UserDisplay: a.user.DisplayName,
+		AgeGroup:    a.user.AgeGroup,
+		Category:    familystate.ProposalKind,
+		QueryText:   string(envelope),
+	}
+	if a.db == nil {
+		return "", fmt.Errorf("propose_family_fact: db not configured")
+	}
+	if _, err := a.db.UpsertApproval(approval); err != nil {
+		return "", fmt.Errorf("propose_family_fact approval: %w", err)
+	}
+	return "Proposal sent to parents.", nil
+}
+
+// proposalApprovalID makes a stable, per-proposal id derived from the
+// proposing user, subject, label, and the current day. Re-proposing the
+// exact same triple within a day deduplicates onto the existing pending
+// row (UpsertApproval is idempotent on id collision).
+func proposalApprovalID(userName, subject, label string) string {
+	day := time.Now().UTC().Format("2006-01-02")
+	h := sha256.Sum256([]byte("family_fact_proposal:" + userName + ":" + subject + ":" + label + ":" + day))
+	return hex.EncodeToString(h[:8])
+}
+
+// handleGetFamilyState dispatches builtin__get_family_state. Reads family_facts
+// (optionally filtered to one category) and returns a rendered text block
+// grouped by category. Open to all roles — no admin gate; OPA tool_policy
+// already permits the bare name. The render format mirrors Snapshot.Render's
+// style but is NOT wrapped in <family_safety> tags — that wrapper is reserved
+// for the always-injected path so the model can distinguish "safety context"
+// from "tool result".
+func (a *Agent) handleGetFamilyState(ctx context.Context, args map[string]any) (string, error) {
+	if a.familyState == nil {
+		return "Family state is not configured.", nil
+	}
+	category, _ := args["category"].(string)
+
+	facts, err := a.familyState.ListFacts(ctx, familystate.FilterOpts{Category: category})
+	if err != nil {
+		return "", fmt.Errorf("get_family_state: %w", err)
+	}
+	if len(facts) == 0 {
+		if category != "" {
+			return fmt.Sprintf("No facts in category %q.", category), nil
+		}
+		return "No family facts have been recorded yet.", nil
+	}
+
+	known := knownSubjects(a.cfg)
+	byCat := map[string][]familystate.Fact{}
+	for _, f := range facts {
+		if !known[f.Subject] {
+			// Skip orphans — same rule as the snapshot reader. The
+			// dashboard surfaces them separately for parent cleanup.
+			continue
+		}
+		byCat[f.Category] = append(byCat[f.Category], f)
+	}
+	cats := make([]string, 0, len(byCat))
+	for c := range byCat {
+		cats = append(cats, c)
+	}
+	sort.Strings(cats)
+
+	var b strings.Builder
+	for _, c := range cats {
+		fmt.Fprintf(&b, "%s:\n", c)
+		for _, f := range byCat[c] {
+			fmt.Fprintf(&b, "  - %s — %s: %s\n", f.Subject, f.Label, f.Value)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
 // readIntArg pulls an int from args, defaulting on missing / non-numeric.
 // JSON-decoded numbers arrive as float64; we accept that and plain int.
 func readIntArg(args map[string]any, key string, def int) int {
@@ -710,11 +890,29 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 			builtinNames = append(builtinNames, bare)
 		}
 
+		// Phase 3.3 — load the always-injected family-state snapshot.
+		// On any non-nil error, use the UnavailableSnapshot sentinel so
+		// the model gets a "safety context temporarily unavailable"
+		// notice rather than silently dropping the block (R3 council
+		// 2-branch fail-stance).
+		var snap *familystate.Snapshot
+		if a.familyState != nil {
+			s, err := a.familyState.AlwaysInjectedSnapshot(ctx, knownSubjects(a.cfg))
+			if err != nil {
+				slog.ErrorContext(ctx, "family-state snapshot failed; injecting unavailable notice",
+					"err", err, "user", a.user.Name)
+				snap = familystate.UnavailableSnapshot()
+			} else {
+				snap = s
+			}
+		}
+
 		systemPrompt = prompt.Build(prompt.BuildContext{
 			Cfg:          a.cfg,
 			User:         a.user,
 			Skills:       skillNames,
 			BuiltinTools: builtinNames,
+			FamilyState:  snap,
 			// Gateway and HardBlocked left empty for now — wired by future PRs
 			// that thread gateway and policy info through Agent.
 		})
@@ -777,4 +975,43 @@ func ApprovalID(userName, category string) string {
 	day := time.Now().UTC().Format("2006-01-02")
 	h := sha256.Sum256([]byte(userName + ":" + category + ":" + day))
 	return hex.EncodeToString(h[:8])
+}
+
+// isSubagentExcludedTool reports whether the named builtin tool must NOT be
+// exposed to subagents. Subagents inherit the parent's identity but stay
+// read-only: they can read family state (get_family_state) and fetch URLs
+// (web_fetch) but cannot mutate shared state, cannot spawn further agents,
+// and cannot perform admin actions.
+func isSubagentExcludedTool(name string) bool {
+	switch name {
+	case "builtin__spawn_agent",
+		// Phase 3.3 family-state mutations:
+		"builtin__set_family_fact",
+		"builtin__delete_family_fact",
+		"builtin__add_family_category",
+		"builtin__delete_family_category",
+		"builtin__propose_family_fact",
+		// Admin tools:
+		"builtin__approve_request",
+		"builtin__deny_request",
+		"builtin__set_user_role",
+		"builtin__link_account":
+		return true
+	}
+	return false
+}
+
+// knownSubjects builds the set of valid subjects for family-state rows:
+// every config.Users[].Name plus the literal "family". The familystate
+// snapshot reader uses this set to skip orphan rows whose subject no
+// longer matches a configured user (e.g. after a rename).
+func knownSubjects(cfg *config.Config) map[string]bool {
+	out := map[string]bool{"family": true}
+	if cfg == nil {
+		return out
+	}
+	for _, u := range cfg.Users {
+		out[u.Name] = true
+	}
+	return out
 }

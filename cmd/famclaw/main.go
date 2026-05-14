@@ -23,6 +23,7 @@ import (
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/credstore"
+	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/gateway/discord"
 	"github.com/famclaw/famclaw/internal/gateway/telegram"
@@ -264,6 +265,11 @@ func main() {
 			registered = append(registered, "tool_result_more")
 		}
 	}
+	// Phase 3.3 — get_family_state + propose_family_fact are always
+	// available; OPA policy already permits them for every role, and the
+	// handlers degrade gracefully when the store is nil (tests).
+	builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
+	registered = append(registered, "get_family_state", "propose_family_fact")
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
 	// Chat function for gateway router

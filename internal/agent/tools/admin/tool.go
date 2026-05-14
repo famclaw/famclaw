@@ -10,6 +10,7 @@ import (
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -23,11 +24,30 @@ type GatewaySender interface {
 // Deps holds the dependencies injected into every admin tool handler.
 // It is constructed inline in agent.go's makeBuiltinHandler() switch cases.
 type Deps struct {
-	DB       *store.DB
-	Cfg      *config.Config
-	Actor    string // the user name of the parent invoking the tool
-	Gateway  string // the gateway they're calling from (telegram, discord, web, etc.)
-	Gateways map[string]GatewaySender // keyed by gateway name; may be nil
+	DB          *store.DB
+	Cfg         *config.Config
+	Actor       string                   // the user name of the parent invoking the tool
+	Gateway     string                   // the gateway they're calling from (telegram, discord, web, etc.)
+	Gateways    map[string]GatewaySender // keyed by gateway name; may be nil
+	FamilyState *familystate.Store       // Phase 3.3 — required for family_* admin tools; nil disables them
+}
+
+// isKnownSubject reports whether subject is one of the configured user
+// names or the literal "family". Shared by every family_* admin tool
+// that accepts a subject argument.
+func isKnownSubject(cfg *config.Config, subject string) bool {
+	if subject == "family" {
+		return true
+	}
+	if cfg == nil {
+		return false
+	}
+	for _, u := range cfg.Users {
+		if u.Name == subject {
+			return true
+		}
+	}
+	return false
 }
 
 // logAudit writes an audit record. args must be JSON-marshalable.
@@ -50,13 +70,18 @@ func AllReadOnlyDefinitions() []agentcore.Tool {
 }
 
 // AllMutatingDefinitions returns agentcore.Tool definitions for all mutating
-// admin tools (approve, deny, set role, link account).
+// admin tools (approve, deny, set role, link account, family_* mutations).
 func AllMutatingDefinitions() []agentcore.Tool {
 	return []agentcore.Tool{
 		ApproveRequestDefinition(),
 		DenyRequestDefinition(),
 		SetUserRoleDefinition(),
 		LinkAccountDefinition(),
+		// Phase 3.3:
+		SetFamilyFactDefinition(),
+		DeleteFamilyFactDefinition(),
+		AddFamilyCategoryDefinition(),
+		DeleteFamilyCategoryDefinition(),
 	}
 }
 
