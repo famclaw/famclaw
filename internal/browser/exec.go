@@ -29,6 +29,12 @@ func (p *Pool) Exec(ctx context.Context, in ExecInput) (string, error) {
 	if strings.TrimSpace(in.User) == "" {
 		return "", fmt.Errorf("browser: user is required")
 	}
+	// browser_done does not require an active page session — handle before
+	// getOrCreateSession to avoid spinning up a Playwright tab for a signal
+	// that carries no page interaction.
+	if in.ToolName == "builtin__browser_done" {
+		return p.doDone(in.Args)
+	}
 	sess, err := p.getOrCreateSession(in.User)
 	if err != nil {
 		return "", err
@@ -52,6 +58,8 @@ func (p *Pool) Exec(ctx context.Context, in ExecInput) (string, error) {
 		return p.doWaitFor(sess, in.Args)
 	case "builtin__browser_screenshot":
 		return p.doScreenshot(sess, in.Args)
+	case "builtin__browser_fill_form":
+		return p.doFillForm(sess, in.Args)
 	default:
 		return "", fmt.Errorf("browser: unknown tool %q", in.ToolName)
 	}
@@ -309,4 +317,48 @@ func (p *Pool) doScreenshot(sess *userSession, args map[string]any) (string, err
 		return "", fmt.Errorf("browser_screenshot: %w", err)
 	}
 	return fmt.Sprintf("screenshot %d bytes (PNG; full_page=%v) — binary not rendered to chat", len(buf), fullPage), nil
+}
+
+// doFillForm fills multiple form fields in a single call, then returns one
+// fresh snapshot at the end. Validation errors stop processing immediately
+// and return the offending ref/field index so the LLM can self-correct.
+func (p *Pool) doFillForm(sess *userSession, args map[string]any) (string, error) {
+	rawFields := args["fields"]
+	fields, _ := rawFields.([]any)
+	if len(fields) == 0 {
+		return "", fmt.Errorf("browser_fill_form: 'fields' must be a non-empty array")
+	}
+	timeout := argInt(args, "timeout_ms", 8000)
+	for i, f := range fields {
+		entry, ok := f.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("browser_fill_form: field[%d] is not an object", i)
+		}
+		ref, ok := entry["ref"].(string)
+		if !ok || ref == "" {
+			return "", fmt.Errorf("browser_fill_form: field[%d] missing 'ref'", i)
+		}
+		if _, valuePresent := entry["value"]; !valuePresent {
+			return "", fmt.Errorf("browser_fill_form: field[%d] missing 'value'", i)
+		}
+		value, _ := entry["value"].(string)
+		loc, err := resolveRef(sess.page, sess.refs, ref)
+		if err != nil {
+			return "", fmt.Errorf("browser_fill_form ref %s: %w", ref, err)
+		}
+		if err := loc.Fill(value, playwright.LocatorFillOptions{Timeout: playwright.Float(float64(timeout))}); err != nil {
+			return "", fmt.Errorf("browser_fill_form ref %s: %w", ref, err)
+		}
+	}
+	return p.snapshotReply(sess)
+}
+
+// doDone signals the end of the tool loop. It returns the summary verbatim
+// without touching the page — no snapshot is generated.
+func (p *Pool) doDone(args map[string]any) (string, error) {
+	summary := argString(args, "summary")
+	if strings.TrimSpace(summary) == "" {
+		return "", fmt.Errorf("browser_done: summary must not be empty")
+	}
+	return summary, nil
 }

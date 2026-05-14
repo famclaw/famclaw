@@ -332,7 +332,9 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			"builtin__browser_extract",
 			"builtin__browser_wait_for",
 			"builtin__browser_screenshot",
-			"builtin__browser_snapshot":
+			"builtin__browser_snapshot",
+			"builtin__browser_fill_form",
+			"builtin__browser_done":
 			return a.handleBrowser(ctx, name, args)
 		case "builtin__tool_result_more":
 			return a.handleToolResultMore(ctx, args)

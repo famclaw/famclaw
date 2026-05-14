@@ -110,6 +110,32 @@ func Tools(allowedRoles []string) []agentcore.Tool {
 			},
 			nil,
 		),
+		mk("fill_form", // builtin__browser_fill_form
+			"Fill multiple form fields in one call. ALWAYS prefer this tool over multiple individual browser_fill or browser_click calls when interacting with forms — it is significantly faster, more reliable, and reduces turn count.",
+			map[string]any{
+				"fields": map[string]any{
+					"type":        "array",
+					"description": "Array of {ref, value} pairs to fill",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"ref":   str("Ref id from the latest snapshot, e.g. \"e3\"."),
+							"value": str("Text to type into the field."),
+						},
+						"required": []string{"ref", "value"},
+					},
+				},
+				"timeout_ms": intp("Optional per-field wait timeout in ms (default 8000)."),
+			},
+			[]string{"fields"},
+		),
+		mk("done", // builtin__browser_done
+			"Signal that you have the answer for the user and the tool loop should terminate. Pass your final answer as summary. After calling this you MUST NOT call any more tools — emit a final text response (it can mirror the summary) on the next turn.",
+			map[string]any{
+				"summary": str("The final answer for the user."),
+			},
+			[]string{"summary"},
+		),
 	}
 }
 
