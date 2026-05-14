@@ -198,7 +198,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 
 ## Status
 
-**v0.5.0 — first deployed family release.** v0.5.1 in flight (closes the bugs surfaced by the first real-world install).
+**v0.5.0 — first deployed family release.** v0.5.1 in flight (closes the bugs surfaced by the first real-world install). Phase 3.3 family state shipped (PR #149).
 
 ### What works
 
@@ -217,6 +217,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 | **Security scanning** | Honeybadger runtime stage, install-time + stale scan gates |
 | **Web UI** | Chat, parent dashboard, 5-step wizard with AI profiles, PIN-gated skill install/remove |
 | **Web auth** | Cookie-based web sessions + machine-bound credential vault (`internal/credstore`, `internal/web/middleware`); see [docs/SECURITY.md](docs/SECURITY.md) |
+| **Family state** | Shared per-family memory (`internal/familystate`): allergies, dietary restrictions, important dates, pets + custom parent-managed categories. Safety-critical entries auto-injected into every system prompt via `<family_safety>` block; rest read on-demand via `get_family_state` tool. Kid proposals queue parent approval; parents auto-apply (OPA-gated). Web dashboard at `/family-state.html` + JSON API at `/api/family-state/*`. |
 | **Telegram + Discord** | Fully wired gateway bots, message chunking past per-platform limits (4096/2000 chars) |
 | **Unknown-account backend** | Strangers messaging the bot are recorded against a parent-controlled queue, never auto-promoted to a user (issue #111 backend) |
 | **MCP tools** | Multi-transport (stdio/HTTP/SSE), unified tool registry |
