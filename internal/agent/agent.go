@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -317,6 +318,8 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			return a.handleToolResultMore(ctx, args)
 		case "builtin__get_family_state":
 			return a.handleGetFamilyState(ctx, args)
+		case "builtin__propose_family_fact":
+			return a.handleProposeFamilyFact(ctx, args)
 		case "builtin__list_pending_approvals":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
 			return admin.HandleListPendingApprovals(ctx, deps, args)
@@ -327,7 +330,7 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
 			return admin.HandleListUnknownAccounts(ctx, deps, args)
 		case "builtin__approve_request":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
 			return admin.HandleApproveRequest(ctx, deps, args)
 		case "builtin__deny_request":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
@@ -626,6 +629,106 @@ func (a *Agent) handleToolResultMore(ctx context.Context, args map[string]any) (
 			out.TotalBytes-(out.Offset+out.Length), id, out.Offset+out.Length)
 	}
 	return body, nil
+}
+
+// handleProposeFamilyFact accepts a fact proposal from any role.
+//
+// PARENT path: an OPA tool-call check against the synthetic name
+// "family_fact_proposal_auto_apply" decides whether to apply directly.
+// This is intentional defense in depth — without it a Go bug could let a
+// non-parent slip through this branch (R3 council "OPA hole" closure).
+//
+// CHILD path: the proposal is JSON-encoded and written into approvals.
+// query_text with Category=ProposalKind. A parent then calls
+// approve_request, which dispatches on Category and applies the fact.
+func (a *Agent) handleProposeFamilyFact(ctx context.Context, args map[string]any) (string, error) {
+	if a.familyState == nil {
+		return "", fmt.Errorf("propose_family_fact: family state is not configured")
+	}
+	category, _ := args["category"].(string)
+	subject, _ := args["subject"].(string)
+	label, _ := args["label"].(string)
+	value, _ := args["value"].(string)
+	reason, _ := args["reason"].(string)
+
+	if category == "" || subject == "" || label == "" || value == "" {
+		return "", fmt.Errorf("propose_family_fact: category, subject, label, and value are all required")
+	}
+	if len(label) > 64 {
+		return "label too long (max 64 chars)", nil
+	}
+	if len(value) > 512 {
+		return "value too long (max 512 chars)", nil
+	}
+	if !knownSubjects(a.cfg)[subject] {
+		return fmt.Sprintf("subject %q is not a family member", subject), nil
+	}
+
+	if a.user.Role == "parent" {
+		if a.evaluator != nil {
+			dec, err := a.evaluator.EvaluateToolCall(ctx, policy.ToolCallInput{
+				User:     policy.UserInput{Role: a.user.Role, AgeGroup: a.user.AgeGroup, Name: a.user.Name},
+				ToolName: "family_fact_proposal_auto_apply",
+			})
+			if err != nil {
+				return "", fmt.Errorf("propose_family_fact opa: %w", err)
+			}
+			if !dec.Allow {
+				return "Not authorized to auto-apply this proposal.", nil
+			}
+		}
+		f := familystate.Fact{
+			Category: category, Subject: subject, Label: label, Value: value,
+			CreatedBy: a.user.Name,
+		}
+		if err := a.familyState.UpsertFact(ctx, &f); err != nil {
+			if errors.Is(err, familystate.ErrUnknownCategory) {
+				return fmt.Sprintf("unknown category %q — create it with add_family_category first", category), nil
+			}
+			return "", fmt.Errorf("propose_family_fact upsert: %w", err)
+		}
+		auditArgs, _ := json.Marshal(map[string]any{
+			"category": category, "subject": subject, "label": label, "value": value,
+			"id": f.ID, "auto_apply_parent": true,
+		})
+		if a.db != nil {
+			_ = a.db.LogAudit(ctx, a.user.Name, a.gateway, "builtin__propose_family_fact", auditArgs)
+		}
+		return fmt.Sprintf("ok — fact #%d applied directly (parent auto-apply)", f.ID), nil
+	}
+
+	envelope, err := familystate.EncodeProposal(familystate.Proposal{
+		Category: category, Subject: subject, Label: label, Value: value,
+		Reason: reason, ProposedBy: a.user.Name,
+	})
+	if err != nil {
+		return "", fmt.Errorf("propose_family_fact encode: %w", err)
+	}
+	approval := &store.Approval{
+		ID:          proposalApprovalID(a.user.Name, subject, label),
+		UserName:    a.user.Name,
+		UserDisplay: a.user.DisplayName,
+		AgeGroup:    a.user.AgeGroup,
+		Category:    familystate.ProposalKind,
+		QueryText:   string(envelope),
+	}
+	if a.db == nil {
+		return "", fmt.Errorf("propose_family_fact: db not configured")
+	}
+	if _, err := a.db.UpsertApproval(approval); err != nil {
+		return "", fmt.Errorf("propose_family_fact approval: %w", err)
+	}
+	return "Proposal sent to parents.", nil
+}
+
+// proposalApprovalID makes a stable, per-proposal id derived from the
+// proposing user, subject, label, and the current day. Re-proposing the
+// exact same triple within a day deduplicates onto the existing pending
+// row (UpsertApproval is idempotent on id collision).
+func proposalApprovalID(userName, subject, label string) string {
+	day := time.Now().UTC().Format("2006-01-02")
+	h := sha256.Sum256([]byte("family_fact_proposal:" + userName + ":" + subject + ":" + label + ":" + day))
+	return hex.EncodeToString(h[:8])
 }
 
 // handleGetFamilyState dispatches builtin__get_family_state. Reads family_facts

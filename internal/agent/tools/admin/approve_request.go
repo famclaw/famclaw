@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
+	"github.com/famclaw/famclaw/internal/familystate"
 )
 
 const toolNameApproveRequest = "builtin__approve_request"
@@ -54,6 +55,31 @@ func HandleApproveRequest(ctx context.Context, deps Deps, args map[string]any) (
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[admin] approve_request: fetch approval %s after decide: %v\n", requestID, err)
 		approval = nil
+	}
+
+	// Phase 3.3 — dispatch on approval kind. family_fact_proposal rows carry
+	// a JSON envelope in QueryText; on approve, decode + apply to the
+	// familystate store. Best-effort: a decode/upsert failure here must not
+	// re-open the approval (already committed) but should surface in stderr
+	// so a parent can diagnose.
+	if approval != nil && approval.Category == familystate.ProposalKind {
+		switch {
+		case deps.FamilyState == nil:
+			fmt.Fprintf(os.Stderr, "[admin] approve_request: family_fact_proposal %s but FamilyState dep is nil\n", requestID)
+		default:
+			p, err := familystate.DecodeProposal([]byte(approval.QueryText))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[admin] approve_request: decode proposal %s: %v\n", requestID, err)
+			} else {
+				f := familystate.Fact{
+					Category: p.Category, Subject: p.Subject, Label: p.Label, Value: p.Value,
+					CreatedBy: p.ProposedBy,
+				}
+				if err := deps.FamilyState.UpsertFact(ctx, &f); err != nil {
+					fmt.Fprintf(os.Stderr, "[admin] approve_request: upsert family fact %s: %v\n", requestID, err)
+				}
+			}
+		}
 	}
 
 	// Aggregate per-gateway send results so users with multiple linked

@@ -611,3 +611,115 @@ func TestHandleGetFamilyState_NoStoreDegrades(t *testing.T) {
 		t.Errorf("nil-store path should return graceful string, got %q", out)
 	}
 }
+
+func TestHandleProposeFamilyFact_Parent_AutoApply(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	fs := familystate.NewStore(db)
+
+	cfg := &config.Config{Users: []config.UserConfig{
+		{Name: "dep", Role: "parent"},
+		{Name: "teo", Role: "child", AgeGroup: "age_13_17"},
+	}}
+
+	// Real evaluator so the OPA gate fires (uses embedded policies).
+	ev, err := policy.NewEvaluator("", "")
+	if err != nil {
+		t.Fatalf("evaluator: %v", err)
+	}
+
+	a := &Agent{cfg: cfg, db: db, familyState: fs, evaluator: ev, user: &cfg.Users[0], gateway: "test"}
+
+	out, err := a.handleProposeFamilyFact(context.Background(), map[string]any{
+		"category": "pets", "subject": "family", "label": "Stella", "value": "cat",
+	})
+	if err != nil {
+		t.Fatalf("propose: %v", err)
+	}
+	if !strings.Contains(out, "auto-apply") {
+		t.Errorf("expected auto-apply message, got %q", out)
+	}
+
+	got, err := fs.ListFacts(context.Background(), familystate.FilterOpts{Category: "pets"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 || got[0].Label != "Stella" {
+		t.Errorf("fact not applied: %+v", got)
+	}
+}
+
+func TestHandleProposeFamilyFact_Child_QueuesApproval(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	fs := familystate.NewStore(db)
+
+	cfg := &config.Config{Users: []config.UserConfig{
+		{Name: "dep", Role: "parent"},
+		{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "age_13_17"},
+	}}
+	a := &Agent{cfg: cfg, db: db, familyState: fs, user: &cfg.Users[1], gateway: "test"}
+
+	out, err := a.handleProposeFamilyFact(context.Background(), map[string]any{
+		"category": "pets", "subject": "family", "label": "Rex", "value": "dog",
+		"reason": "found a stray",
+	})
+	if err != nil {
+		t.Fatalf("propose: %v", err)
+	}
+	if !strings.Contains(out, "Proposal sent") {
+		t.Errorf("expected proposal message, got %q", out)
+	}
+
+	// Fact should NOT exist yet.
+	got, _ := fs.ListFacts(context.Background(), familystate.FilterOpts{Category: "pets"})
+	if len(got) != 0 {
+		t.Errorf("child proposal should not have applied fact: %+v", got)
+	}
+	// An approval row should exist with the proposal envelope.
+	pending, err := db.PendingApprovals(context.Background())
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 1 || pending[0].Category != familystate.ProposalKind {
+		t.Errorf("expected one ProposalKind approval, got %+v", pending)
+	}
+	p, err := familystate.DecodeProposal([]byte(pending[0].QueryText))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if p.Label != "Rex" || p.ProposedBy != "teo" {
+		t.Errorf("decoded proposal wrong: %+v", p)
+	}
+}
+
+func TestHandleProposeFamilyFact_Rejects(t *testing.T) {
+	a := &Agent{cfg: &config.Config{Users: []config.UserConfig{{Name: "dep", Role: "parent"}}}, familyState: &familystate.Store{}, user: &config.UserConfig{Name: "dep", Role: "parent"}}
+
+	cases := []struct {
+		name string
+		args map[string]any
+		want string // substring expected in returned string
+	}{
+		{name: "unknown subject", args: map[string]any{"category": "pets", "subject": "ghost", "label": "x", "value": "y"}, want: "not a family member"},
+		{name: "label too long", args: map[string]any{"category": "pets", "subject": "family", "label": strings.Repeat("L", 65), "value": "y"}, want: "label too long"},
+		{name: "value too long", args: map[string]any{"category": "pets", "subject": "family", "label": "x", "value": strings.Repeat("V", 513)}, want: "value too long"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := a.handleProposeFamilyFact(context.Background(), tc.args)
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("out=%q want substring %q", out, tc.want)
+			}
+		})
+	}
+}
