@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -314,6 +315,8 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			return a.handleWebFetch(ctx, args)
 		case "builtin__tool_result_more":
 			return a.handleToolResultMore(ctx, args)
+		case "builtin__get_family_state":
+			return a.handleGetFamilyState(ctx, args)
 		case "builtin__list_pending_approvals":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
 			return admin.HandleListPendingApprovals(ctx, deps, args)
@@ -611,6 +614,56 @@ func (a *Agent) handleToolResultMore(ctx context.Context, args map[string]any) (
 			out.TotalBytes-(out.Offset+out.Length), id, out.Offset+out.Length)
 	}
 	return body, nil
+}
+
+// handleGetFamilyState dispatches builtin__get_family_state. Reads family_facts
+// (optionally filtered to one category) and returns a rendered text block
+// grouped by category. Open to all roles — no admin gate; OPA tool_policy
+// already permits the bare name. The render format mirrors Snapshot.Render's
+// style but is NOT wrapped in <family_safety> tags — that wrapper is reserved
+// for the always-injected path so the model can distinguish "safety context"
+// from "tool result".
+func (a *Agent) handleGetFamilyState(ctx context.Context, args map[string]any) (string, error) {
+	if a.familyState == nil {
+		return "Family state is not configured.", nil
+	}
+	category, _ := args["category"].(string)
+
+	facts, err := a.familyState.ListFacts(ctx, familystate.FilterOpts{Category: category})
+	if err != nil {
+		return "", fmt.Errorf("get_family_state: %w", err)
+	}
+	if len(facts) == 0 {
+		if category != "" {
+			return fmt.Sprintf("No facts in category %q.", category), nil
+		}
+		return "No family facts have been recorded yet.", nil
+	}
+
+	known := knownSubjects(a.cfg)
+	byCat := map[string][]familystate.Fact{}
+	for _, f := range facts {
+		if !known[f.Subject] {
+			// Skip orphans — same rule as the snapshot reader. The
+			// dashboard surfaces them separately for parent cleanup.
+			continue
+		}
+		byCat[f.Category] = append(byCat[f.Category], f)
+	}
+	cats := make([]string, 0, len(byCat))
+	for c := range byCat {
+		cats = append(cats, c)
+	}
+	sort.Strings(cats)
+
+	var b strings.Builder
+	for _, c := range cats {
+		fmt.Fprintf(&b, "%s:\n", c)
+		for _, f := range byCat[c] {
+			fmt.Fprintf(&b, "  - %s — %s: %s\n", f.Subject, f.Label, f.Value)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
 }
 
 // readIntArg pulls an int from args, defaulting on missing / non-numeric.

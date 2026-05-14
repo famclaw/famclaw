@@ -14,6 +14,7 @@ import (
 
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
@@ -527,3 +528,86 @@ func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
 	}
 }
 
+
+func TestHandleGetFamilyState(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	fs := familystate.NewStore(db)
+	ctx := context.Background()
+	for _, f := range []familystate.Fact{
+		{Category: "pets", Subject: "family", Label: "Stella", Value: "cat, age 5", CreatedBy: "dep"},
+		{Category: "pets", Subject: "family", Label: "Rex", Value: "dog, age 3", CreatedBy: "dep"},
+		{Category: "allergies", Subject: "teo", Label: "peanuts", Value: "severe", CreatedBy: "dep"},
+		// Orphan — should be filtered out of the rendered output.
+		{Category: "pets", Subject: "ghost", Label: "x", Value: "y", CreatedBy: "dep"},
+	} {
+		f := f
+		if err := fs.UpsertFact(ctx, &f); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	cfg := &config.Config{Users: []config.UserConfig{
+		{Name: "dep", Role: "parent"},
+		{Name: "teo", Role: "child", AgeGroup: "age_13_17"},
+	}}
+	a := &Agent{cfg: cfg, familyState: fs, user: &cfg.Users[0]}
+
+	cases := []struct {
+		name      string
+		args      map[string]any
+		wantSub   []string // substrings the output must contain
+		wantNoSub []string // substrings the output must NOT contain
+	}{
+		{
+			name:      "category filter returns only pets, orphan excluded",
+			args:      map[string]any{"category": "pets"},
+			wantSub:   []string{"Stella", "Rex"},
+			wantNoSub: []string{"peanuts", "ghost"},
+		},
+		{
+			name:    "no filter returns every category",
+			args:    map[string]any{},
+			wantSub: []string{"Stella", "peanuts"},
+		},
+		{
+			name:    "unknown category returns explanatory string, no error",
+			args:    map[string]any{"category": "nope"},
+			wantSub: []string{"No facts in category"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := a.handleGetFamilyState(ctx, tc.args)
+			if err != nil {
+				t.Fatalf("handle: %v", err)
+			}
+			for _, s := range tc.wantSub {
+				if !strings.Contains(out, s) {
+					t.Errorf("output missing %q:\n%s", s, out)
+				}
+			}
+			for _, s := range tc.wantNoSub {
+				if strings.Contains(out, s) {
+					t.Errorf("output contains unwanted %q:\n%s", s, out)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleGetFamilyState_NoStoreDegrades(t *testing.T) {
+	a := &Agent{cfg: &config.Config{}, familyState: nil, user: &config.UserConfig{Name: "x", Role: "parent"}}
+	out, err := a.handleGetFamilyState(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "not configured") {
+		t.Errorf("nil-store path should return graceful string, got %q", out)
+	}
+}
