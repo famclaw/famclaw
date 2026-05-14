@@ -1,8 +1,16 @@
+// Package browser drives a remote Playwright server to give famclaw real
+// browser navigation. Refs assigned to interactive elements are stable across
+// snapshots of the same page: each element is keyed by (role, name, nth) so
+// the same DOM node keeps its ref id between turns. Elements that are new
+// since the previous snapshot are rendered with a leading "*" in the formatted
+// output (e.g. "*e7") so the model can spot autocomplete dropdowns and freshly
+// rendered modals at a glance.
 package browser
 
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/playwright-community/playwright-go"
@@ -55,16 +63,32 @@ type RefEntry struct {
 	Nth  int // 0-based index among same (Role, Name) on the page
 }
 
-// buildSnapshot calls AriaSnapshot on the page body, parses the result,
-// assigns sequential refs (e1, e2, …) to interactive roles, and returns
-// both the formatted LLM-facing string AND the ref→entry map for
-// later locator resolution. Refs are stable only within the snapshot;
-// callers must re-snapshot after any action that mutates the page.
-func buildSnapshot(page playwright.Page) (formatted string, refs map[string]RefEntry, err error) {
+// buildSnapshot calls AriaSnapshot on the page body, parses the result, and
+// assigns refs (e1, e2, …) to interactive roles. prevRefs maps the stable
+// (role, name, nth) triple to the ref id assigned in the previous snapshot.
+// Elements whose triple appears in prevRefs keep their old ref id unchanged.
+// Elements that are new (not in prevRefs) receive a fresh sequential id AND
+// their rendered line is prefixed with "*" so the model can spot new content.
+//
+// newPrevRefs contains the triples → ids for exactly the elements present in
+// this snapshot; the caller stores it for the next call. Elements that
+// disappeared are not carried forward (garbage-collected).
+func buildSnapshot(page playwright.Page, prevRefs map[string]string) (formatted string, refs map[string]RefEntry, newPrevRefs map[string]string, err error) {
 	body := page.Locator("body")
 	raw, err := body.AriaSnapshot()
 	if err != nil {
-		return "", nil, fmt.Errorf("AriaSnapshot: %w", err)
+		return "", nil, nil, fmt.Errorf("AriaSnapshot: %w", err)
+	}
+
+	// Compute the next available sequential number from the previous ref ids
+	// so that reused refs keep their numbers and new elements always get a
+	// number beyond anything previously assigned.
+	nextSeq := 1
+	for _, refID := range prevRefs {
+		var n int
+		if _, e := fmt.Sscanf(refID, "e%d", &n); e == nil && n >= nextSeq {
+			nextSeq = n + 1
+		}
 	}
 
 	type counted struct {
@@ -72,9 +96,9 @@ func buildSnapshot(page playwright.Page) (formatted string, refs map[string]RefE
 	}
 	roleNameCount := make(map[string]*counted)
 	refs = make(map[string]RefEntry)
+	newPrevRefs = make(map[string]string)
 
 	var b strings.Builder
-	var refSeq int
 
 	for _, line := range strings.Split(raw, "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -98,17 +122,36 @@ func buildSnapshot(page playwright.Page) (formatted string, refs map[string]RefE
 
 		var prefix string
 		if interactiveRoles[role] {
-			refSeq++
-			ref := fmt.Sprintf("e%d", refSeq)
-			key := role + "\x00" + name
-			c, ok := roleNameCount[key]
+			// Compute the nth occurrence of this (role, name) pair so far.
+			rnKey := role + "\x00" + name
+			c, ok := roleNameCount[rnKey]
 			if !ok {
 				c = &counted{}
-				roleNameCount[key] = c
+				roleNameCount[rnKey] = c
 			}
-			refs[ref] = RefEntry{Role: role, Name: name, Nth: c.count}
+			nth := c.count
 			c.count++
-			prefix = ref + "  "
+
+			refKey := role + "\x00" + name + "\x00" + strconv.Itoa(nth)
+
+			var ref string
+			var isNew bool
+			if existing, seen := prevRefs[refKey]; seen {
+				ref = existing
+			} else {
+				ref = fmt.Sprintf("e%d", nextSeq)
+				nextSeq++
+				isNew = true
+			}
+
+			refs[ref] = RefEntry{Role: role, Name: name, Nth: nth}
+			newPrevRefs[refKey] = ref
+
+			if isNew {
+				prefix = "*" + ref + "  "
+			} else {
+				prefix = ref + "  "
+			}
 		} else {
 			prefix = "    "
 		}
@@ -128,7 +171,7 @@ func buildSnapshot(page playwright.Page) (formatted string, refs map[string]RefE
 		b.WriteByte(0x0a)
 	}
 
-	return b.String(), refs, nil
+	return b.String(), refs, newPrevRefs, nil
 }
 
 // resolveRef returns a Locator usable for click/fill/etc. based on the

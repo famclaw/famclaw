@@ -36,6 +36,7 @@ type userSession struct {
 	bctx     playwright.BrowserContext
 	page     playwright.Page
 	refs     map[string]RefEntry
+	prevRefs map[string]string // refKey → ref id; survives across snapshots, reset on navigate
 	lastUsed time.Time
 }
 
@@ -108,7 +109,7 @@ func (p *Pool) getOrCreatePage(user string) (playwright.Page, error) {
 		_ = bctx.Close()
 		return nil, fmt.Errorf("browser: NewPage: %w", err)
 	}
-	p.sessions[user] = &userSession{bctx: bctx, page: page, lastUsed: time.Now()}
+	p.sessions[user] = &userSession{bctx: bctx, page: page, prevRefs: make(map[string]string), lastUsed: time.Now()}
 	return page, nil
 }
 

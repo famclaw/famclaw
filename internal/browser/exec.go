@@ -86,7 +86,7 @@ func (p *Pool) getOrCreateSession(user string) (*userSession, error) {
 		_ = bctx.Close()
 		return nil, fmt.Errorf("browser: NewPage: %w", err)
 	}
-	s := &userSession{bctx: bctx, page: page, lastUsed: time.Now()}
+	s := &userSession{bctx: bctx, page: page, prevRefs: make(map[string]string), lastUsed: time.Now()}
 	p.sessions[user] = s
 	return s, nil
 }
@@ -127,11 +127,12 @@ const snapshotMaxChars = 5000
 // snapshotReply re-runs the snapshot on the current page and stores the new
 // ref table on the session. Returns the formatted-for-LLM text (truncated).
 func (p *Pool) snapshotReply(sess *userSession) (string, error) {
-	formatted, refs, err := buildSnapshot(sess.page)
+	formatted, refs, newPrevRefs, err := buildSnapshot(sess.page, sess.prevRefs)
 	if err != nil {
 		return "", err
 	}
 	sess.refs = refs
+	sess.prevRefs = newPrevRefs
 	title, _ := sess.page.Title()
 
 	body := formatted
@@ -180,6 +181,7 @@ func (p *Pool) doNavigate(_ context.Context, sess *userSession, args map[string]
 	if err != nil {
 		return "", fmt.Errorf("browser_navigate: %w", err)
 	}
+	sess.prevRefs = nil // page navigation invalidates ref continuity
 	return p.snapshotReply(sess)
 }
 
