@@ -8,10 +8,13 @@ package e2e
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/famclaw/famclaw/internal/agent/tools/admin"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/notify"
@@ -302,5 +305,152 @@ func TestIntegration_Parent_AllowedViaAllGateways(t *testing.T) {
 				t.Errorf("parent via %s should be allowed, got %q", gw.name, reply.PolicyAction)
 			}
 		})
+	}
+}
+
+// ── Phase 3.3 family state ────────────────────────────────────────────────────
+
+// TestIntegration_FamilyState_KidProposalApprovedAppliesFact wires together
+// the three layers that make the kid-proposal flow work end-to-end:
+//   1. familystate.EncodeProposal → approvals.query_text (kid path)
+//   2. parent calls admin.HandleApproveRequest
+//   3. approve_request dispatches on Category == ProposalKind and applies
+//      the fact via familystate.UpsertFact.
+//
+// Wires through real store, real familystate.Store, real admin handler — no
+// mocks. Proves the OPA hole closure for the auto-apply path is irrelevant
+// for the kid flow (kid path bypasses auto-apply and queues approval).
+func TestIntegration_FamilyState_KidProposalApprovedAppliesFact(t *testing.T) {
+	env := setupIntegration(t)
+
+	fs := familystate.NewStore(env.db)
+	ctx := context.Background()
+
+	// 1. Kid (sofia) proposes a fact — encode envelope, write approval row.
+	envelope, err := familystate.EncodeProposal(familystate.Proposal{
+		Category: "user_preferences", Subject: "sofia", Label: "favorite_color", Value: "purple",
+		Reason: "asked in chat", ProposedBy: "sofia",
+	})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	approvalID := "kid-proposal-test-1"
+	approval := &store.Approval{
+		ID: approvalID, UserName: "sofia", UserDisplay: "Sofia", AgeGroup: "age_13_17",
+		Category: familystate.ProposalKind, QueryText: string(envelope),
+	}
+	if _, err := env.db.UpsertApproval(approval); err != nil {
+		t.Fatalf("upsert approval: %v", err)
+	}
+
+	// First create the user_preferences category — the kid path doesn't auto-create.
+	if err := fs.UpsertCategory(ctx, &familystate.Category{Name: "user_preferences", Description: "kid-supplied preferences"}); err != nil {
+		t.Fatalf("seed category: %v", err)
+	}
+
+	// 2. Parent approves.
+	deps := admin.Deps{DB: env.db, Cfg: env.cfg, Actor: "parent", Gateway: "test", FamilyState: fs}
+	if _, err := admin.HandleApproveRequest(ctx, deps, map[string]any{"request_id": approvalID}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	// 3. Fact is now in the store.
+	got, err := fs.ListFacts(ctx, familystate.FilterOpts{Category: "user_preferences"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 || got[0].Label != "favorite_color" || got[0].Value != "purple" {
+		t.Errorf("approved fact not persisted: %+v", got)
+	}
+	if got[0].CreatedBy != "sofia" {
+		t.Errorf("CreatedBy = %q, want 'sofia' (preserved from proposal envelope)", got[0].CreatedBy)
+	}
+}
+
+// TestIntegration_FamilyState_SnapshotInjection covers the safety-critical
+// happy path: facts whose category has always_inject=1 surface in
+// Snapshot.Render's <family_safety> block; orphan rows (subject not in
+// config) are silently filtered.
+func TestIntegration_FamilyState_SnapshotInjection(t *testing.T) {
+	env := setupIntegration(t)
+	fs := familystate.NewStore(env.db)
+	ctx := context.Background()
+
+	for _, f := range []familystate.Fact{
+		{Category: "allergies", Subject: "emma", Label: "peanuts", Value: "severe", CreatedBy: "parent"},
+		{Category: "dietary_restrictions", Subject: "family", Label: "kosher", Value: "kosher household", CreatedBy: "parent"},
+		// Orphan — "ghost" is not in env.cfg.Users.
+		{Category: "allergies", Subject: "ghost", Label: "x", Value: "y", CreatedBy: "parent"},
+	} {
+		f := f
+		if err := fs.UpsertFact(ctx, &f); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	known := map[string]bool{"family": true}
+	for _, u := range env.cfg.Users {
+		known[u.Name] = true
+	}
+	snap, err := fs.AlwaysInjectedSnapshot(ctx, known)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	rendered := snap.Render()
+	if !strings.Contains(rendered, "<family_safety>") {
+		t.Errorf("snapshot missing tag wrapper: %q", rendered)
+	}
+	if !strings.Contains(rendered, "peanuts") {
+		t.Errorf("snapshot missing emma's allergy: %q", rendered)
+	}
+	if !strings.Contains(rendered, "kosher") {
+		t.Errorf("snapshot missing family dietary fact: %q", rendered)
+	}
+	if strings.Contains(rendered, "ghost") {
+		t.Errorf("snapshot leaked orphan row: %q", rendered)
+	}
+
+	// UnavailableSnapshot covers the failure mode — proves that branch
+	// renders the locked-fail-stance notice.
+	notice := familystate.UnavailableSnapshot().Render()
+	if !strings.Contains(notice, "temporarily unavailable") {
+		t.Errorf("unavailable snapshot missing notice: %q", notice)
+	}
+}
+
+// TestIntegration_FamilyState_BuiltinImmutability locks in the contract
+// that admin tools cannot turn off always_inject on the seeded built-in
+// rows — the prompt-injection safety contract.
+func TestIntegration_FamilyState_BuiltinImmutability(t *testing.T) {
+	env := setupIntegration(t)
+	fs := familystate.NewStore(env.db)
+
+	deps := admin.Deps{DB: env.db, Cfg: env.cfg, Actor: "parent", Gateway: "test", FamilyState: fs}
+	out, err := admin.HandleAddFamilyCategory(context.Background(), deps, map[string]any{
+		"name": "allergies", "description": "evil", "always_inject": false,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !strings.Contains(out, "built-in") {
+		t.Errorf("expected built-in refusal message, got %q", out)
+	}
+
+	// Verify the seeded always_inject flag is unchanged.
+	cats, err := fs.ListCategories(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var allergies *familystate.Category
+	for i := range cats {
+		if cats[i].Name == "allergies" {
+			allergies = &cats[i]
+		}
+	}
+	if allergies == nil {
+		t.Fatal("allergies category vanished")
+	}
+	if !allergies.AlwaysInject {
+		t.Error("allergies.AlwaysInject flipped to false despite refusal")
 	}
 }
