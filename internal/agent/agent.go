@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"math"
 	"net/url"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
@@ -54,6 +56,11 @@ type Agent struct {
 	builtinTools []agentcore.Tool // tools to inject onto every Turn
 	convID       string
 	gateway      string // gateway name (telegram, discord, web, etc.) for audit logs
+
+	// familyState is the always-injected family-state store used at
+	// prompt-build time. Phase 3.3 — nil disables family-state injection
+	// (tests / legacy callers).
+	familyState *familystate.Store
 
 	// webFetcher is the function used by handleWebFetch. Defaults to
 	// webfetch.Fetch in NewAgent. Tests can swap in a stub to assert the
@@ -99,6 +106,11 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		builtins = append(builtins, admin.AllDefinitions()...)
 	}
 
+	var fs *familystate.Store
+	if db != nil {
+		fs = familystate.NewStore(db)
+	}
+
 	return &Agent{
 		user:         user,
 		cfg:          cfg,
@@ -114,6 +126,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		builtinTools: builtins,
 		convID:       convID,
 		gateway:      deps.Gateway,
+		familyState:  fs,
 		webFetcher:   webfetch.Fetch,
 		cache:        deps.Cache,
 	}
@@ -710,11 +723,29 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 			builtinNames = append(builtinNames, bare)
 		}
 
+		// Phase 3.3 — load the always-injected family-state snapshot.
+		// On any non-nil error, use the UnavailableSnapshot sentinel so
+		// the model gets a "safety context temporarily unavailable"
+		// notice rather than silently dropping the block (R3 council
+		// 2-branch fail-stance).
+		var snap *familystate.Snapshot
+		if a.familyState != nil {
+			s, err := a.familyState.AlwaysInjectedSnapshot(ctx, knownSubjects(a.cfg))
+			if err != nil {
+				slog.ErrorContext(ctx, "family-state snapshot failed; injecting unavailable notice",
+					"err", err, "user", a.user.Name)
+				snap = familystate.UnavailableSnapshot()
+			} else {
+				snap = s
+			}
+		}
+
 		systemPrompt = prompt.Build(prompt.BuildContext{
 			Cfg:          a.cfg,
 			User:         a.user,
 			Skills:       skillNames,
 			BuiltinTools: builtinNames,
+			FamilyState:  snap,
 			// Gateway and HardBlocked left empty for now — wired by future PRs
 			// that thread gateway and policy info through Agent.
 		})
@@ -777,4 +808,19 @@ func ApprovalID(userName, category string) string {
 	day := time.Now().UTC().Format("2006-01-02")
 	h := sha256.Sum256([]byte(userName + ":" + category + ":" + day))
 	return hex.EncodeToString(h[:8])
+}
+
+// knownSubjects builds the set of valid subjects for family-state rows:
+// every config.Users[].Name plus the literal "family". The familystate
+// snapshot reader uses this set to skip orphan rows whose subject no
+// longer matches a configured user (e.g. after a rename).
+func knownSubjects(cfg *config.Config) map[string]bool {
+	out := map[string]bool{"family": true}
+	if cfg == nil {
+		return out
+	}
+	for _, u := range cfg.Users {
+		out[u.Name] = true
+	}
+	return out
 }
