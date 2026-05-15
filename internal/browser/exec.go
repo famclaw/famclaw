@@ -135,13 +135,18 @@ func (p *Pool) snapshotReply(sess *userSession) (string, error) {
 	sess.prevRefs = newPrevRefs
 	title, _ := sess.page.Title()
 
+	limit := p.cfg.SnapshotMaxChars
+	if limit <= 0 {
+		limit = snapshotMaxChars // default
+	}
+
 	body := formatted
 	truncated := false
-	if len(body) > snapshotMaxChars {
+	if len(body) > limit {
 		// Cut at last newline before the cap to keep entries intact.
-		cut := strings.LastIndex(body[:snapshotMaxChars], "\n")
+		cut := strings.LastIndex(body[:limit], "\n")
 		if cut < 0 {
-			cut = snapshotMaxChars
+			cut = limit
 		}
 		body = body[:cut]
 		truncated = true
@@ -151,7 +156,7 @@ func (p *Pool) snapshotReply(sess *userSession) (string, error) {
 		sess.page.URL(), title)
 	out := header + body
 	if truncated {
-		out += fmt.Sprintf("\n\n[snapshot truncated at %d chars; %d total refs available. Call browser_snapshot again if you need a fresh view, or just use a ref you've already seen.]", snapshotMaxChars, len(refs))
+		out += fmt.Sprintf("\n\n[snapshot truncated at %d chars; %d total refs available. Call browser_snapshot again if you need a fresh view, or just use a ref you've already seen.]", limit, len(refs))
 	}
 	return out, nil
 }

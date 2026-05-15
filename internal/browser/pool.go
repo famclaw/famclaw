@@ -18,8 +18,9 @@ import (
 
 // Config controls a Pool.
 type Config struct {
-	Endpoint    string
-	IdleTimeout time.Duration
+	Endpoint         string
+	IdleTimeout      time.Duration
+	SnapshotMaxChars int // 0 means use the package default (5000).
 }
 
 // Pool owns a single connection to the Playwright server and per-user pages.

@@ -38,10 +38,11 @@ type ToolsConfig struct {
 // can navigate, click, fill, extract on real pages. Host gate reuses
 // tools.web_fetch.url_allowlist.
 type BrowserConfig struct {
-	Enabled      bool     `yaml:"enabled"`
-	Endpoint     string   `yaml:"endpoint,omitempty"`         // e.g. "ws://localhost:3000/"; required when Enabled
-	AllowedRoles []string `yaml:"allowed_roles,omitempty"`    // default ["parent"]
-	IdleSec      int      `yaml:"idle_seconds,omitempty"`     // per-user session idle close; default 300
+	Enabled          bool     `yaml:"enabled"`
+	Endpoint         string   `yaml:"endpoint,omitempty"`           // e.g. "ws://localhost:3000/"; required when Enabled
+	AllowedRoles     []string `yaml:"allowed_roles,omitempty"`      // default ["parent"]
+	IdleSec          int      `yaml:"idle_seconds,omitempty"`       // per-user session idle close; default 300
+	SnapshotMaxChars int      `yaml:"snapshot_max_chars,omitempty"` // cap on browser_navigate/snapshot output; 0 = package default (5000)
 }
 
 // WebSearchConfig controls the built-in web_search tool. Disabled by default;
@@ -467,6 +468,9 @@ func (c *Config) Validate() error {
 		if c.Tools.Browser.IdleSec <= 0 {
 			return fmt.Errorf("tools.browser.idle_seconds must be > 0 (got %d)", c.Tools.Browser.IdleSec)
 		}
+	}
+	if c.Tools.Browser.SnapshotMaxChars < 0 {
+		return fmt.Errorf("tools.browser.snapshot_max_chars must be >= 0 (got %d)", c.Tools.Browser.SnapshotMaxChars)
 	}
 	return nil
 }
