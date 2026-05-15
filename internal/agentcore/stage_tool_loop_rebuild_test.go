@@ -188,6 +188,97 @@ func TestToolLoop_RebuildHistory_PreservesUserRequest(t *testing.T) {
 	}
 }
 
+// stubChatterWithContent is a minimal llm.Chatter whose first ChatWithTools
+// call returns both text content (with self-summary tags) and a tool_call;
+// subsequent calls return a plain "done" message with no tool calls.
+type stubChatterWithContent struct {
+	mu           sync.Mutex
+	callCount    int
+	firstContent string
+	captured     [][]llm.Message
+}
+
+func (s *stubChatterWithContent) Chat(_ context.Context, _ []llm.Message, _ float64, _ int, _ func(string)) (string, error) {
+	return "done", nil
+}
+
+func (s *stubChatterWithContent) ChatMessage(_ context.Context, _ []llm.Message, _ float64, _ int) (*llm.Message, error) {
+	return &llm.Message{Role: "assistant", Content: "done"}, nil
+}
+
+func (s *stubChatterWithContent) ChatSync(_ context.Context, _ []llm.Message, _ float64, _ int) (string, error) {
+	return "done", nil
+}
+
+func (s *stubChatterWithContent) ChatWithTools(_ context.Context, msgs []llm.Message, _ float64, _ int, _ []llm.ToolDef) (*llm.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.callCount++
+	call := s.callCount
+
+	captured := make([]llm.Message, len(msgs))
+	copy(captured, msgs)
+	s.captured = append(s.captured, captured)
+
+	if call == 1 {
+		return &llm.Message{
+			Role:    "assistant",
+			Content: s.firstContent,
+			ToolCalls: []llm.ToolCall{{
+				ID:       fmt.Sprintf("call_%d", call),
+				Function: llm.ToolCallFunction{Name: "builtin__echo", Arguments: map[string]any{}},
+			}},
+		}, nil
+	}
+	return &llm.Message{Role: "assistant", Content: "done"}, nil
+}
+
+// TestToolLoop_RebuildHistory_PopulatesEvalFromModelOutput verifies that when
+// the LLM returns <eval>filled origin OK</eval> alongside its tool_call, the
+// next rebuilt user message contains "eval: filled origin OK" rather than the
+// "(n/a)" placeholder.
+func TestToolLoop_RebuildHistory_PopulatesEvalFromModelOutput(t *testing.T) {
+	stub := &stubChatterWithContent{firstContent: "<eval>filled origin OK</eval>"}
+	deps := ToolLoopDeps{
+		ClientFactory:  func(*Turn) llm.Chatter { return stub },
+		BuiltinHandler: echoBuiltin,
+		MaxIterations:  10,
+		RebuildHistory: true,
+	}
+	stage := NewStageToolLoop(deps)
+	turn := newRebuildTurn("fill the origin field")
+
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatalf("stage error: %v", err)
+	}
+
+	if len(stub.captured) < 2 {
+		t.Fatalf("expected at least 2 LLM calls, got %d", len(stub.captured))
+	}
+
+	// The second LLM call receives the rebuilt user message for step 2.
+	// It should contain the eval text from the first LLM response, not "(n/a)".
+	iter2 := stub.captured[1]
+	if len(iter2) < 2 {
+		t.Fatalf("iter2 too short (%d messages)", len(iter2))
+	}
+	userContent := iter2[1].Content
+	if !strings.Contains(userContent, "eval: filled origin OK") {
+		t.Errorf("iter2 user message should contain populated eval, got:\n%s", userContent)
+	}
+	// step_2 must carry the parsed eval value, not the placeholder.
+	// step_1 legitimately has "(n/a)" because turn.Output was empty before the loop.
+	step2Start := strings.Index(userContent, "<step_2>")
+	if step2Start == -1 {
+		t.Fatalf("iter2 user message missing <step_2> tag")
+	}
+	step2Slice := userContent[step2Start:]
+	if strings.HasPrefix(step2Slice, "eval: (n/a)") {
+		t.Errorf("step_2 eval should not be '(n/a)' when model emitted eval tag, got:\n%s", step2Slice)
+	}
+}
+
 // TestToolLoop_RebuildHistory_StepNumIncrements verifies that running three
 // tool-call iterations produces a rebuilt message on the third LLM call that
 // contains both <step_1> and <step_2>, confirming the step counter increments

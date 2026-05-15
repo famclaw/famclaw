@@ -166,3 +166,88 @@ func TestRebuildUserMessage_TrailingNewline(t *testing.T) {
 		t.Errorf("expected exactly one trailing newline, got double newline at end")
 	}
 }
+
+func TestParseSelfSummary_AllThreePresent(t *testing.T) {
+	input := `<eval>navigated OK</eval>
+<memory>user wants TPA→MSY</memory>
+<next_goal>fill origin field</next_goal>`
+	eval, memory, nextGoal := ParseSelfSummary(input)
+	if eval != "navigated OK" {
+		t.Errorf("eval: got %q, want %q", eval, "navigated OK")
+	}
+	if memory != "user wants TPA→MSY" {
+		t.Errorf("memory: got %q, want %q", memory, "user wants TPA→MSY")
+	}
+	if nextGoal != "fill origin field" {
+		t.Errorf("next_goal: got %q, want %q", nextGoal, "fill origin field")
+	}
+}
+
+func TestParseSelfSummary_NoTags(t *testing.T) {
+	eval, memory, nextGoal := ParseSelfSummary("no tags here at all")
+	if eval != "" {
+		t.Errorf("eval: got %q, want empty", eval)
+	}
+	if memory != "" {
+		t.Errorf("memory: got %q, want empty", memory)
+	}
+	if nextGoal != "" {
+		t.Errorf("next_goal: got %q, want empty", nextGoal)
+	}
+}
+
+func TestParseSelfSummary_OnlyEval(t *testing.T) {
+	eval, memory, nextGoal := ParseSelfSummary("<eval>clicked button</eval>")
+	if eval != "clicked button" {
+		t.Errorf("eval: got %q, want %q", eval, "clicked button")
+	}
+	if memory != "" {
+		t.Errorf("memory: got %q, want empty", memory)
+	}
+	if nextGoal != "" {
+		t.Errorf("next_goal: got %q, want empty", nextGoal)
+	}
+}
+
+func TestParseSelfSummary_CaseInsensitive(t *testing.T) {
+	input := `<EVAL>uppercase eval</EVAL><Memory>mixed memory</Memory>`
+	eval, memory, nextGoal := ParseSelfSummary(input)
+	if eval != "uppercase eval" {
+		t.Errorf("eval: got %q, want %q", eval, "uppercase eval")
+	}
+	if memory != "mixed memory" {
+		t.Errorf("memory: got %q, want %q", memory, "mixed memory")
+	}
+	if nextGoal != "" {
+		t.Errorf("next_goal: got %q, want empty", nextGoal)
+	}
+}
+
+func TestParseSelfSummary_MultilineBody(t *testing.T) {
+	input := "<eval>line one\nline two\nline three</eval>"
+	eval, _, _ := ParseSelfSummary(input)
+	if eval != "line one\nline two\nline three" {
+		t.Errorf("eval: got %q, want multiline body", eval)
+	}
+}
+
+func TestParseSelfSummary_MultipleOccurrencesFirstWins(t *testing.T) {
+	input := `<eval>first eval</eval> some text <eval>second eval</eval>`
+	eval, _, _ := ParseSelfSummary(input)
+	if eval != "first eval" {
+		t.Errorf("eval: got %q, want %q", eval, "first eval")
+	}
+}
+
+func TestParseSelfSummary_EmptyBody(t *testing.T) {
+	eval, memory, nextGoal := ParseSelfSummary("<eval></eval>")
+	if eval != "" {
+		t.Errorf("eval: got %q, want empty string", eval)
+	}
+	if memory != "" {
+		t.Errorf("memory: got %q, want empty", memory)
+	}
+	if nextGoal != "" {
+		t.Errorf("next_goal: got %q, want empty", nextGoal)
+	}
+}

@@ -109,6 +109,12 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			}
 		}
 
+		// lastModelText is the text portion of the most recent LLM response —
+		// emitted alongside the tool_calls now in pendingCalls. Initialized
+		// from turn.Output (the pre-loop assistant response); updated at the
+		// end of each iteration after ChatWithTools returns.
+		lastModelText := turn.Output
+
 		// Execute tool calls
 		for i := 0; i < deps.MaxIterations; i++ {
 			if len(pendingCalls) == 0 {
@@ -277,11 +283,21 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				for _, tr := range iterResults {
 					resultStrs = append(resultStrs, rebuildResultLine(tr))
 				}
+				eval, memory, nextGoal := ParseSelfSummary(lastModelText)
+				if eval == "" {
+					eval = "(n/a)"
+				}
+				if memory == "" {
+					memory = "(n/a)"
+				}
+				if nextGoal == "" {
+					nextGoal = "(n/a)"
+				}
 				history = append(history, HistoryItem{
 					StepNum:  i + 1,
-					Eval:     "(n/a)",
-					Memory:   "(n/a)",
-					NextGoal: "(n/a)",
+					Eval:     eval,
+					Memory:   memory,
+					NextGoal: nextGoal,
 					Results:  resultStrs,
 				})
 				// Rebuild the full message slice from accumulated history so
@@ -321,6 +337,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 			turn.Output = msg.Content
 			pendingCalls = msg.ToolCalls
+			lastModelText = msg.Content
 
 			if !deps.RebuildHistory && len(pendingCalls) > 0 {
 				llmMsgs = append(llmMsgs, *msg)
