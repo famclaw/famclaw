@@ -6,12 +6,6 @@ import (
 	"strings"
 )
 
-var (
-	reEval     = regexp.MustCompile(`(?is)<eval>(.*?)</eval>`)
-	reMemory   = regexp.MustCompile(`(?is)<memory>(.*?)</memory>`)
-	reNextGoal = regexp.MustCompile(`(?is)<next_goal>(.*?)</next_goal>`)
-)
-
 // ParseSelfSummary extracts the model's self-summary tags from a free-text
 // response. The model is instructed (via system prompt — out of scope for this
 // phase) to emit three optional XML-like tags before its tool_calls:
@@ -28,6 +22,13 @@ var (
 // The function does NOT mutate the input; it returns the three field values.
 // Pure function, no side effects.
 func ParseSelfSummary(modelOutput string) (eval, memory, nextGoal string) {
+	// Regexes are compiled locally rather than held as package-level globals
+	// to keep the parser free of global state (repo rule). ParseSelfSummary
+	// runs once per tool-loop iteration, so the per-call compile cost is
+	// negligible.
+	reEval := regexp.MustCompile(`(?is)<eval>(.*?)</eval>`)
+	reMemory := regexp.MustCompile(`(?is)<memory>(.*?)</memory>`)
+	reNextGoal := regexp.MustCompile(`(?is)<next_goal>(.*?)</next_goal>`)
 	if m := reEval.FindStringSubmatch(modelOutput); len(m) > 1 {
 		eval = strings.TrimSpace(m[1])
 	}

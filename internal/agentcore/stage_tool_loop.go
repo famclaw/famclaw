@@ -303,10 +303,17 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				// Rebuild the full message slice from accumulated history so
 				// the next LLM call sees [system, fresh_user_message_block]
 				// instead of the ever-growing append of raw tool messages.
-				llmMsgs = []llm.Message{
-					{Role: "system", Content: rbSystemPrompt},
-					{Role: "user", Content: RebuildUserMessage(history, AgentState{UserRequest: rbUserRequest}, nil)},
+				// Only prepend a system message if the original conversation
+				// had one — forcing an empty system message changes the
+				// prompt shape and can alter model behavior.
+				llmMsgs = llmMsgs[:0]
+				if rbSystemPrompt != "" {
+					llmMsgs = append(llmMsgs, llm.Message{Role: "system", Content: rbSystemPrompt})
 				}
+				llmMsgs = append(llmMsgs, llm.Message{
+					Role:    "user",
+					Content: RebuildUserMessage(history, AgentState{UserRequest: rbUserRequest}, nil),
+				})
 			} else {
 				// Per-iteration compression. Tool messages are marked Prunable
 				// so they get evicted before user/assistant turns when over
@@ -387,7 +394,11 @@ func rebuildResultLine(tr ToolResult) string {
 
 	var line string
 	if tr.Error != nil {
-		line = fmt.Sprintf("[%s args=%s err=%s]", tr.ToolName, argsJSON, tr.Error.Error())
+		// Sanitize the error text: collapse newlines/tabs/CR to spaces so a
+		// multiline error cannot break the one-line-per-result history
+		// contract and pollute the rebuilt prompt block.
+		errText := sanitizeHistoryText(tr.Error.Error())
+		line = fmt.Sprintf("[%s args=%s err=%s]", tr.ToolName, argsJSON, errText)
 	} else {
 		line = fmt.Sprintf("[%s args=%s ok bytes=%d]", tr.ToolName, argsJSON, len(tr.Output))
 	}
@@ -396,4 +407,11 @@ func rebuildResultLine(tr ToolResult) string {
 		line = line[:lineMax]
 	}
 	return line
+}
+
+// sanitizeHistoryText collapses CR, LF, and tab characters into single
+// spaces so a value embedded in a one-line history result cannot break
+// the line-per-result contract of the rebuilt prompt block.
+func sanitizeHistoryText(s string) string {
+	return strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(s)
 }
