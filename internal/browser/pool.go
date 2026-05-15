@@ -6,6 +6,7 @@
 package browser
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -27,6 +28,13 @@ type Pool struct {
 	pw      *playwright.Playwright
 	browser playwright.Browser
 
+	// ctx + cancel scope the idleSweeper goroutine. Cancelling ctx (or
+	// calling Close) stops the sweeper. playwright-go does not currently
+	// expose context-aware Run/Connect, so the initial blocking init in
+	// NewPool is not yet ctx-aware — see the note there.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu       sync.Mutex
 	sessions map[string]*userSession
 	closed   bool
@@ -40,8 +48,15 @@ type userSession struct {
 	lastUsed time.Time
 }
 
-// NewPool boots playwright-go and connects to cfg.Endpoint.
-func NewPool(cfg Config) (*Pool, error) {
+// NewPool boots playwright-go and connects to cfg.Endpoint. ctx scopes
+// the per-pool idleSweeper goroutine; cancelling ctx (or calling Close)
+// stops the sweeper. The blocking playwright.Run() and Chromium.Connect()
+// are NOT yet ctx-aware — playwright-go v0.5700.x does not expose
+// context-aware initialization. ctx is accepted now so callers can pass
+// a cancellable scope and the sweeper picks it up immediately; future
+// playwright-go versions can wire ctx into Run/Connect without an API
+// change here.
+func NewPool(ctx context.Context, cfg Config) (*Pool, error) {
 	if strings.TrimSpace(cfg.Endpoint) == "" {
 		return nil, fmt.Errorf("browser: endpoint not configured")
 	}
@@ -57,10 +72,13 @@ func NewPool(cfg Config) (*Pool, error) {
 		_ = pw.Stop()
 		return nil, fmt.Errorf("browser: connect %s: %w", cfg.Endpoint, err)
 	}
+	pctx, cancel := context.WithCancel(ctx)
 	p := &Pool{
 		cfg:      cfg,
 		pw:       pw,
 		browser:  br,
+		ctx:      pctx,
+		cancel:   cancel,
 		sessions: make(map[string]*userSession),
 	}
 	go p.idleSweeper()
@@ -77,6 +95,9 @@ func (p *Pool) Close() error {
 	p.closed = true
 	sessions := p.sessions
 	p.sessions = nil
+	if p.cancel != nil {
+		p.cancel()
+	}
 	p.mu.Unlock()
 
 	for name, s := range sessions {
@@ -88,29 +109,6 @@ func (p *Pool) Close() error {
 		log.Printf("[browser] close browser: %v", err)
 	}
 	return p.pw.Stop()
-}
-
-func (p *Pool) getOrCreatePage(user string) (playwright.Page, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
-		return nil, fmt.Errorf("browser: pool closed")
-	}
-	if s, ok := p.sessions[user]; ok {
-		s.lastUsed = time.Now()
-		return s.page, nil
-	}
-	bctx, err := p.browser.NewContext()
-	if err != nil {
-		return nil, fmt.Errorf("browser: NewContext: %w", err)
-	}
-	page, err := bctx.NewPage()
-	if err != nil {
-		_ = bctx.Close()
-		return nil, fmt.Errorf("browser: NewPage: %w", err)
-	}
-	p.sessions[user] = &userSession{bctx: bctx, page: page, prevRefs: make(map[string]string), lastUsed: time.Now()}
-	return page, nil
 }
 
 func (p *Pool) dropSession(user string) {
@@ -132,7 +130,12 @@ func (p *Pool) idleSweeper() {
 	}
 	t := time.NewTicker(period)
 	defer t.Stop()
-	for range t.C {
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-t.C:
+		}
 		p.mu.Lock()
 		if p.closed {
 			p.mu.Unlock()

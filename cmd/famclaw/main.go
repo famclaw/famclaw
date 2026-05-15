@@ -278,7 +278,10 @@ func main() {
 	}
 	var browserPool *browser.Pool
 	if cfg.Tools.Browser.Enabled {
-		pool, err := browser.NewPool(browser.Config{
+		// Pool owns its idle-sweeper goroutine; pass Background and rely on
+		// Close (deferred below) to cancel it. A process-wide cancellable
+		// ctx exists later in main but Pool boots before the gateway ctx.
+		pool, err := browser.NewPool(context.Background(), browser.Config{
 			Endpoint:    cfg.Tools.Browser.Endpoint,
 			IdleTimeout: time.Duration(cfg.Tools.Browser.IdleSec) * time.Second,
 		})
