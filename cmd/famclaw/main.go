@@ -41,7 +41,9 @@ import (
 	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/web"
+	"github.com/famclaw/famclaw/internal/browser"
 	"github.com/famclaw/famclaw/internal/webfetch"
+	"github.com/famclaw/famclaw/internal/websearch"
 )
 
 var Version = "dev"
@@ -270,6 +272,30 @@ func main() {
 	// handlers degrade gracefully when the store is nil (tests).
 	builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
 	registered = append(registered, "get_family_state", "propose_family_fact")
+	if cfg.Tools.WebSearch.Enabled {
+		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
+		registered = append(registered, "web_search")
+	}
+	var browserPool *browser.Pool
+	if cfg.Tools.Browser.Enabled {
+		// Pool owns its idle-sweeper goroutine; pass Background and rely on
+		// Close (deferred below) to cancel it. A process-wide cancellable
+		// ctx exists later in main but Pool boots before the gateway ctx.
+		pool, err := browser.NewPool(context.Background(), browser.Config{
+			Endpoint:    cfg.Tools.Browser.Endpoint,
+			IdleTimeout: time.Duration(cfg.Tools.Browser.IdleSec) * time.Second,
+		})
+		if err != nil {
+			log.Fatalf("Browser pool: %v", err)
+		}
+		defer pool.Close()
+		browserPool = pool
+		for _, t := range browser.Tools(cfg.Tools.Browser.AllowedRoles) {
+			builtinTools = append(builtinTools, t)
+			registered = append(registered, strings.TrimPrefix(t.Name, "builtin__"))
+		}
+		log.Printf("Browser: enabled (endpoint=%s, idle=%ds)", cfg.Tools.Browser.Endpoint, cfg.Tools.Browser.IdleSec)
+	}
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
 	// Chat function for gateway router
@@ -290,6 +316,7 @@ func main() {
 			Scheduler:    agentScheduler,
 			BuiltinTools: builtinTools,
 			Cache:        toolCache,
+			BrowserPool:  browserPool,
 		})
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {

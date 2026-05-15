@@ -49,7 +49,7 @@ type ToolLoopDeps struct {
 // NewStageToolLoop returns a stage that executes MCP tool calls from LLM responses.
 func NewStageToolLoop(deps ToolLoopDeps) Stage {
 	if deps.MaxIterations == 0 {
-		deps.MaxIterations = 10
+		deps.MaxIterations = 25
 	}
 
 	return func(ctx context.Context, turn *Turn) error {
@@ -100,7 +100,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			}
 
 			for _, tc := range pendingCalls {
-				log.Printf("[agentcore][%s] tool_call: %s", turn.User.Name, tc.Function.Name)
+				log.Printf("[agentcore][%s] tool_call: %s args=%s", turn.User.Name, tc.Function.Name, summarizeArgs(tc.Function.Arguments))
 				start := time.Now()
 
 				// Local LLMs occasionally emit the bare tool name
@@ -167,6 +167,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					result, err := deps.BuiltinHandler(ctx, tc.Function.Name, tc.Function.Arguments)
 					duration := time.Since(start)
 					if err != nil {
+						log.Printf("[agentcore][%s] tool_err: %s err=%v (%s)", turn.User.Name, tc.Function.Name, err, duration)
 						llmMsgs = append(llmMsgs, llm.Message{
 							Role:       "tool",
 							Content:    fmt.Sprintf("Error: %v", err),
@@ -179,6 +180,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							Duration: duration,
 						})
 					} else {
+						log.Printf("[agentcore][%s] tool_ok: %s bytes=%d (%s)", turn.User.Name, tc.Function.Name, len(result), duration)
 						llmMsgs = append(llmMsgs, llm.Message{
 							Role:       "tool",
 							Content:    result,
@@ -261,7 +263,8 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			}
 
 			// Call LLM again with tool results
-			msg, err := client.ChatMessage(ctx, llmMsgs, deps.Temperature, deps.MaxTokens)
+			toolDefs := toolsToLLMDefs(turn.Tools)
+			msg, err := client.ChatWithTools(ctx, llmMsgs, deps.Temperature, deps.MaxTokens, toolDefs)
 			if err != nil {
 				return fmt.Errorf("LLM error in tool loop iteration %d: %w", i+1, err)
 			}
@@ -276,4 +279,22 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 		return nil
 	}
+}
+
+// summarizeArgs renders tool-call arguments as a single-line JSON string for
+// the tool_call log line. Long payloads are truncated to keep one log entry
+// per call. A nil/empty map renders as "{}".
+func summarizeArgs(args map[string]any) string {
+	if len(args) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(args)
+	if err != nil {
+		return fmt.Sprintf("<%v>", err)
+	}
+	const max = 240
+	if len(b) > max {
+		return string(b[:max]) + "…"
+	}
+	return string(b)
 }

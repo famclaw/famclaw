@@ -340,6 +340,7 @@ func TestBuildMessages_OperatorOverrideKept(t *testing.T) {
 func TestHandleWebFetch(t *testing.T) {
 	newAgent := func(allowlist []string, fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
 		return &Agent{
+			user: &config.UserConfig{Name: "testuser", Role: "parent"},
 			cfg: &config.Config{
 				Tools: config.ToolsConfig{
 					WebFetch: config.WebFetchConfig{
@@ -495,6 +496,7 @@ func TestHandleWebFetch(t *testing.T) {
 func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
 	var capturedValidator func(string) error
 	a := &Agent{
+		user: &config.UserConfig{Name: "testuser", Role: "parent"},
 		cfg: &config.Config{
 			Tools: config.ToolsConfig{
 				WebFetch: config.WebFetchConfig{

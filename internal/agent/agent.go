@@ -20,6 +20,7 @@ import (
 
 	"github.com/famclaw/famclaw/internal/agent/tools/admin"
 	"github.com/famclaw/famclaw/internal/agentcore"
+	"github.com/famclaw/famclaw/internal/browser"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
@@ -32,6 +33,7 @@ import (
 	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/webfetch"
+	"github.com/famclaw/famclaw/internal/websearch"
 )
 
 // Response is the result of a single agent turn.
@@ -74,6 +76,10 @@ type Agent struct {
 	// to the cache and only a budget-sized head slice is returned to the
 	// LLM. When nil, the legacy inline-everything path runs.
 	cache *toolcache.Cache
+
+	// browserPool drives the builtin__browser_* tools when configured.
+	// nil = browser tools disabled.
+	browserPool *browser.Pool
 }
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
@@ -88,6 +94,7 @@ type AgentDeps struct {
 	BuiltinTools []agentcore.Tool
 	Gateway      string           // gateway name (telegram, discord, web, etc.) for admin tool audit logs
 	Cache        *toolcache.Cache // tool-result spillover cache; nil disables spillover (legacy inline path)
+	BrowserPool  *browser.Pool    // backs builtin__browser_*; nil disables browser tools
 }
 
 // NewAgent creates an Agent for the given user. Optional dependencies
@@ -131,6 +138,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		familyState:  fs,
 		webFetcher:   webfetch.Fetch,
 		cache:        deps.Cache,
+		browserPool:  deps.BrowserPool,
 	}
 }
 
@@ -314,6 +322,20 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			return a.handleSpawnAgent(ctx, args)
 		case "builtin__web_fetch":
 			return a.handleWebFetch(ctx, args)
+		case "builtin__web_search":
+			return a.handleWebSearch(ctx, args)
+		case "builtin__browser_navigate",
+			"builtin__browser_click",
+			"builtin__browser_fill",
+			"builtin__browser_select",
+			"builtin__browser_press_key",
+			"builtin__browser_extract",
+			"builtin__browser_wait_for",
+			"builtin__browser_screenshot",
+			"builtin__browser_snapshot",
+			"builtin__browser_fill_form",
+			"builtin__browser_done":
+			return a.handleBrowser(ctx, name, args)
 		case "builtin__tool_result_more":
 			return a.handleToolResultMore(ctx, args)
 		case "builtin__get_family_state":
@@ -544,7 +566,12 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 
 	result, err := a.webFetcher(ctx, rawURL, opts)
 	if err != nil {
+		log.Printf("[agent][%s] web_fetch url=%q err=%v", a.user.Name, rawURL, err)
 		return "", err
+	}
+	if result != nil {
+		log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v",
+			a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
 	}
 
 	// Spillover: when the cache is configured, payloads larger than the
@@ -586,6 +613,104 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// Legacy path: no cache configured, or cache write failed.
 	return fmt.Sprintf("URL: %s\nStatus: %d\nContent-Type: %s\nTruncated: %v\n\n%s",
 		result.URL, result.StatusCode, result.ContentType, result.Truncated, result.Text), nil
+}
+
+// handleWebSearch dispatches the builtin__web_search tool. Auth boundary:
+// reuses the same per-host URL allowlist as web_fetch (the search endpoint
+// host must be in tools.web_fetch.url_allowlist) and the same private-net
+// policy. The model gets a compact title/url/snippet listing instead of
+// the raw 4-16KB SearXNG JSON.
+func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (string, error) {
+	cfg := a.cfg.Tools.WebSearch
+	if !cfg.Enabled {
+		return "", fmt.Errorf("web_search is disabled in this deployment")
+	}
+	query, _ := args["query"].(string)
+	if strings.TrimSpace(query) == "" {
+		return "", fmt.Errorf("web_search requires a 'query' argument")
+	}
+
+	maxResults := readIntArg(args, "max_results", cfg.MaxResults)
+
+	fcfg := a.cfg.Tools.WebFetch
+	canonicalHost := func(h string) string {
+		return strings.TrimSuffix(strings.ToLower(h), ".")
+	}
+	hostAllowed := func(host string) bool {
+		host = canonicalHost(host)
+		for _, allowed := range fcfg.URLAllowlist {
+			allowed = canonicalHost(strings.TrimSpace(allowed))
+			if allowed == "" {
+				continue
+			}
+			if host == allowed || strings.HasSuffix(host, "."+allowed) {
+				return true
+			}
+		}
+		return false
+	}
+
+	hits, err := websearch.Search(ctx, query, websearch.Options{
+		Endpoint:   cfg.Endpoint,
+		MaxResults: maxResults,
+		Timeout:    time.Duration(cfg.TimeoutSec) * time.Second,
+		HostValidator: func(host string) error {
+			if !hostAllowed(host) {
+				return fmt.Errorf("host %q not in url_allowlist", host)
+			}
+			return nil
+		},
+		AllowPrivateNetworks: !fcfg.BlockPrivateNetworks,
+	})
+	if err != nil {
+		return "", err
+	}
+	log.Printf("[agent][%s] web_search query=%q hits=%d", a.user.Name, query, len(hits))
+	return websearch.FormatHits(hits), nil
+}
+
+// handleBrowser dispatches all builtin__browser_* tools. Auth boundary:
+// reuses tools.web_fetch.url_allowlist as the navigation host gate (only
+// browser_navigate consults it; subsequent click/fill/extract act on the
+// current page so they inherit the validated host).
+func (a *Agent) handleBrowser(ctx context.Context, toolName string, args map[string]any) (string, error) {
+	if a.browserPool == nil {
+		return "", fmt.Errorf("%s: browser tools are disabled in this deployment", toolName)
+	}
+	fcfg := a.cfg.Tools.WebFetch
+	canonicalHost := func(h string) string {
+		return strings.TrimSuffix(strings.ToLower(h), ".")
+	}
+	hostAllowed := func(host string) bool {
+		host = canonicalHost(host)
+		for _, allowed := range fcfg.URLAllowlist {
+			allowed = canonicalHost(strings.TrimSpace(allowed))
+			if allowed == "" {
+				continue
+			}
+			if host == allowed || strings.HasSuffix(host, "."+allowed) {
+				return true
+			}
+		}
+		return false
+	}
+	out, err := a.browserPool.Exec(ctx, browser.ExecInput{
+		User:     a.user.Name,
+		ToolName: toolName,
+		Args:     args,
+		HostCheck: func(host string) error {
+			if !hostAllowed(host) {
+				return fmt.Errorf("host %q not in url_allowlist", host)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		log.Printf("[agent][%s] %s err=%v", a.user.Name, toolName, err)
+		return "", err
+	}
+	log.Printf("[agent][%s] %s ok bytes=%d", a.user.Name, toolName, len(out))
+	return out, nil
 }
 
 // handleToolResultMore dispatches the builtin__tool_result_more tool.
