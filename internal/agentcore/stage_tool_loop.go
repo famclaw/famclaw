@@ -52,6 +52,17 @@ type ToolLoopDeps struct {
 	// runs. This flag will become the default in a follow-up phase
 	// after Phase 1c populates eval/memory/next_goal from model output.
 	RebuildHistory bool
+	// AbortQueueOnPageChange aborts remaining tool calls in a single LLM
+	// response when an earlier mutating call changed the page state (URL or
+	// active element). Without this guard, queued actions execute against the
+	// stale ref table from before the change. Default false.
+	AbortQueueOnPageChange bool
+	// EnableLoopDetector enables the per-turn ActionLoopDetector. The detector
+	// surfaces escalating prose nudges via the rebuilt user_message when the
+	// agent repeats the same action 5/8/12 times in a 20-action window. Has no
+	// effect unless RebuildHistory is also true (the nudge is injected into the
+	// rebuilt user message). Default false.
+	EnableLoopDetector bool
 }
 
 // NewStageToolLoop returns a stage that executes MCP tool calls from LLM responses.
@@ -85,6 +96,17 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		if client == nil {
 			return nil
 		}
+
+		// Per-turn loop detector — tracks action hashes in a rolling window
+		// and surfaces prose nudges when the same action repeats.
+		var detector *ActionLoopDetector
+		if deps.EnableLoopDetector {
+			detector = NewActionLoopDetector(0)
+		}
+
+		// prevURL tracks the most recent URL seen in any mutating tool result.
+		// Used by AbortQueueOnPageChange across all iterations of the turn.
+		var prevURL string
 
 		// Build the assistant message with tool calls
 		assistantMsg := llm.Message{
@@ -132,7 +154,28 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				turnAllowed[t.Name] = true
 			}
 
+			// pageChanged is reset per-batch: set when a mutating tool call
+			// produces a different URL than the last known one.
+			pageChanged := false
+
 			for _, tc := range pendingCalls {
+				// Abort remaining queued calls if an earlier mutating action
+				// changed the page — those refs are now stale.
+				if pageChanged && deps.AbortQueueOnPageChange {
+					const skipMsg = "[skipped: page changed earlier in batch — re-evaluate]"
+					llmMsgs = append(llmMsgs, llm.Message{
+						Role:       "tool",
+						Content:    skipMsg,
+						ToolCallID: tc.ID,
+					})
+					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
+						ToolName: tc.Function.Name,
+						Args:     tc.Function.Arguments,
+						Output:   skipMsg,
+						Duration: 0,
+					})
+					continue
+				}
 				log.Printf("[agentcore][%s] tool_call: %s args=%s", turn.User.Name, tc.Function.Name, summarizeArgs(tc.Function.Arguments))
 				start := time.Now()
 
@@ -225,6 +268,17 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							Output:   result,
 							Duration: duration,
 						})
+						if deps.AbortQueueOnPageChange && isMutatingBrowserAction(tc.Function.Name) {
+							if u := extractFirstURL(result); u != "" {
+								if prevURL != "" && u != prevURL {
+									pageChanged = true
+								}
+								prevURL = u
+							}
+						}
+					}
+					if detector != nil {
+						detector.Push(tc.Function.Name, tc.Function.Arguments)
 					}
 					continue
 				}
@@ -274,6 +328,17 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					Content:    toolText,
 					ToolCallID: tc.ID,
 				})
+				if detector != nil {
+					detector.Push(tc.Function.Name, tc.Function.Arguments)
+				}
+				if err == nil && deps.AbortQueueOnPageChange && isMutatingBrowserAction(tc.Function.Name) {
+					if u := extractFirstURL(toolText); u != "" {
+						if prevURL != "" && u != prevURL {
+							pageChanged = true
+						}
+						prevURL = u
+					}
+				}
 			}
 
 			if deps.RebuildHistory {
@@ -306,13 +371,19 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				// Only prepend a system message if the original conversation
 				// had one — forcing an empty system message changes the
 				// prompt shape and can alter model behavior.
+				stepInfo := ""
+				if detector != nil {
+					if nudge := detector.Nudge(); nudge != "" {
+						stepInfo = nudge
+					}
+				}
 				llmMsgs = llmMsgs[:0]
 				if rbSystemPrompt != "" {
 					llmMsgs = append(llmMsgs, llm.Message{Role: "system", Content: rbSystemPrompt})
 				}
 				llmMsgs = append(llmMsgs, llm.Message{
 					Role:    "user",
-					Content: RebuildUserMessage(history, AgentState{UserRequest: rbUserRequest}, nil),
+					Content: RebuildUserMessage(history, AgentState{UserRequest: rbUserRequest, StepInfo: stepInfo}, nil),
 				})
 			} else {
 				// Per-iteration compression. Tool messages are marked Prunable
@@ -371,6 +442,36 @@ func summarizeArgs(args map[string]any) string {
 		return string(b[:max]) + "…"
 	}
 	return string(b)
+}
+
+// isMutatingBrowserAction reports whether name is a browser action that can
+// change the current page (navigate, click, fill, select, press_key). These
+// are the actions checked for URL changes by the AbortQueueOnPageChange guard.
+func isMutatingBrowserAction(name string) bool {
+	switch name {
+	case "builtin__browser_navigate",
+		"builtin__browser_click",
+		"builtin__browser_fill",
+		"builtin__browser_select",
+		"builtin__browser_press_key":
+		return true
+	}
+	return false
+}
+
+// extractFirstURL parses the URL from a tool result that starts with
+// "URL: <url>\n". Returns "" when the text does not start with that prefix.
+// This mirrors the snapshotReply format used by the browser handlers.
+func extractFirstURL(text string) string {
+	const prefix = "URL: "
+	if !strings.HasPrefix(text, prefix) {
+		return ""
+	}
+	rest := text[len(prefix):]
+	if idx := strings.IndexByte(rest, '\n'); idx >= 0 {
+		return rest[:idx]
+	}
+	return rest
 }
 
 // rebuildResultLine formats one ToolResult into the bracketed history string
