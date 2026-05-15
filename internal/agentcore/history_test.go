@@ -166,3 +166,64 @@ func TestRebuildUserMessage_TrailingNewline(t *testing.T) {
 		t.Errorf("expected exactly one trailing newline, got double newline at end")
 	}
 }
+
+func TestParseSelfSummary(t *testing.T) {
+	cases := []struct {
+		name                       string
+		input                      string
+		wantEval, wantMem, wantNext string
+	}{
+		{
+			name: "all three present",
+			input: "<eval>navigated OK</eval>\n" +
+				"<memory>user wants TPA→MSY</memory>\n" +
+				"<next_goal>fill origin field</next_goal>",
+			wantEval: "navigated OK",
+			wantMem:  "user wants TPA→MSY",
+			wantNext: "fill origin field",
+		},
+		{
+			name:  "no tags",
+			input: "no tags here at all",
+		},
+		{
+			name:     "only eval",
+			input:    "<eval>clicked button</eval>",
+			wantEval: "clicked button",
+		},
+		{
+			name:     "case insensitive tags",
+			input:    `<EVAL>uppercase eval</EVAL><Memory>mixed memory</Memory>`,
+			wantEval: "uppercase eval",
+			wantMem:  "mixed memory",
+		},
+		{
+			name:     "multiline body",
+			input:    "<eval>line one\nline two\nline three</eval>",
+			wantEval: "line one\nline two\nline three",
+		},
+		{
+			name:     "multiple occurrences first wins",
+			input:    `<eval>first eval</eval> some text <eval>second eval</eval>`,
+			wantEval: "first eval",
+		},
+		{
+			name:  "empty body",
+			input: "<eval></eval>",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eval, memory, nextGoal := ParseSelfSummary(tc.input)
+			if eval != tc.wantEval {
+				t.Errorf("eval: got %q, want %q", eval, tc.wantEval)
+			}
+			if memory != tc.wantMem {
+				t.Errorf("memory: got %q, want %q", memory, tc.wantMem)
+			}
+			if nextGoal != tc.wantNext {
+				t.Errorf("next_goal: got %q, want %q", nextGoal, tc.wantNext)
+			}
+		})
+	}
+}

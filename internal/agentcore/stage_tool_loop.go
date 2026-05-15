@@ -44,6 +44,14 @@ type ToolLoopDeps struct {
 	// PolicyEvaluator gates each tool call through the OPA tool_policy rules.
 	// When nil, no per-call policy enforcement is applied (useful for tests).
 	PolicyEvaluator ToolPolicyEvaluator
+	// RebuildHistory toggles the model-authored history rebuild path.
+	// When true, each LLM call inside the tool loop is sent
+	// [system, rebuilt_user_message] where rebuilt_user_message is
+	// produced by RebuildUserMessage from the accumulated HistoryItem
+	// slice. When false (default), the legacy append-tool-result path
+	// runs. This flag will become the default in a follow-up phase
+	// after Phase 1c populates eval/memory/next_goal from model output.
+	RebuildHistory bool
 }
 
 // NewStageToolLoop returns a stage that executes MCP tool calls from LLM responses.
@@ -86,11 +94,36 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		}
 		llmMsgs = append(llmMsgs, assistantMsg)
 
+		// Capture system prompt and user request for rebuild mode before
+		// the loop mutates llmMsgs.
+		var history []HistoryItem
+		var rbSystemPrompt, rbUserRequest string
+		if deps.RebuildHistory {
+			for _, m := range llmMsgs {
+				if rbSystemPrompt == "" && m.Role == "system" {
+					rbSystemPrompt = m.Content
+				}
+				if m.Role == "user" {
+					rbUserRequest = m.Content
+				}
+			}
+		}
+
+		// lastModelText is the text portion of the most recent LLM response —
+		// emitted alongside the tool_calls now in pendingCalls. Initialized
+		// from turn.Output (the pre-loop assistant response); updated at the
+		// end of each iteration after ChatWithTools returns.
+		lastModelText := turn.Output
+
 		// Execute tool calls
 		for i := 0; i < deps.MaxIterations; i++ {
 			if len(pendingCalls) == 0 {
 				break
 			}
+
+			// Record the turn.ToolCalls length before this iteration so we
+			// can collect only this iteration's results for the history item.
+			tcStart := len(turn.ToolCalls)
 
 			// Build allowlist from turn.Tools — only tools offered to the LLM
 			// can be called, even if the pool or handler would accept them.
@@ -243,23 +276,63 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				})
 			}
 
-			// Per-iteration compression. Tool messages are marked Prunable
-			// so they get evicted before user/assistant turns when over
-			// budget. Before this guard, a single big tool result (the
-			// v0.5.9 web_fetch overflow bug) would push the next LLM call
-			// past n_ctx with no recovery path.
-			if deps.ContextWindow > 0 {
-				prunable := make(map[int]bool, len(llmMsgs))
-				for j, m := range llmMsgs {
-					if m.Role == "tool" {
-						prunable[j] = true
-					}
+			if deps.RebuildHistory {
+				// Collect tool results from this iteration and append a history item.
+				iterResults := turn.ToolCalls[tcStart:]
+				resultStrs := make([]string, 0, len(iterResults))
+				for _, tr := range iterResults {
+					resultStrs = append(resultStrs, rebuildResultLine(tr))
 				}
-				compressed := compress.Compress(
-					llmToCompress(llmMsgs, prunable),
-					compress.Options{ContextWindow: deps.ContextWindow},
-				)
-				llmMsgs = compressToLLM(compressed, llmMsgs)
+				eval, memory, nextGoal := ParseSelfSummary(lastModelText)
+				if eval == "" {
+					eval = "(n/a)"
+				}
+				if memory == "" {
+					memory = "(n/a)"
+				}
+				if nextGoal == "" {
+					nextGoal = "(n/a)"
+				}
+				history = append(history, HistoryItem{
+					StepNum:  i + 1,
+					Eval:     eval,
+					Memory:   memory,
+					NextGoal: nextGoal,
+					Results:  resultStrs,
+				})
+				// Rebuild the full message slice from accumulated history so
+				// the next LLM call sees [system, fresh_user_message_block]
+				// instead of the ever-growing append of raw tool messages.
+				// Only prepend a system message if the original conversation
+				// had one — forcing an empty system message changes the
+				// prompt shape and can alter model behavior.
+				llmMsgs = llmMsgs[:0]
+				if rbSystemPrompt != "" {
+					llmMsgs = append(llmMsgs, llm.Message{Role: "system", Content: rbSystemPrompt})
+				}
+				llmMsgs = append(llmMsgs, llm.Message{
+					Role:    "user",
+					Content: RebuildUserMessage(history, AgentState{UserRequest: rbUserRequest}, nil),
+				})
+			} else {
+				// Per-iteration compression. Tool messages are marked Prunable
+				// so they get evicted before user/assistant turns when over
+				// budget. Before this guard, a single big tool result (the
+				// v0.5.9 web_fetch overflow bug) would push the next LLM call
+				// past n_ctx with no recovery path.
+				if deps.ContextWindow > 0 {
+					prunable := make(map[int]bool, len(llmMsgs))
+					for j, m := range llmMsgs {
+						if m.Role == "tool" {
+							prunable[j] = true
+						}
+					}
+					compressed := compress.Compress(
+						llmToCompress(llmMsgs, prunable),
+						compress.Options{ContextWindow: deps.ContextWindow},
+					)
+					llmMsgs = compressToLLM(compressed, llmMsgs)
+				}
 			}
 
 			// Call LLM again with tool results
@@ -271,8 +344,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 			turn.Output = msg.Content
 			pendingCalls = msg.ToolCalls
+			lastModelText = msg.Content
 
-			if len(pendingCalls) > 0 {
+			if !deps.RebuildHistory && len(pendingCalls) > 0 {
 				llmMsgs = append(llmMsgs, *msg)
 			}
 		}
@@ -297,4 +371,47 @@ func summarizeArgs(args map[string]any) string {
 		return string(b[:max]) + "…"
 	}
 	return string(b)
+}
+
+// rebuildResultLine formats one ToolResult into the bracketed history string
+// used by the RebuildHistory path. Format:
+//
+//	[toolname args=<json,120char> ok bytes=N]
+//	[toolname args=<json,120char> err=message]
+//
+// The whole line is truncated to 240 characters.
+func rebuildResultLine(tr ToolResult) string {
+	argsJSON := "{}"
+	if len(tr.Args) > 0 {
+		if b, err := json.Marshal(tr.Args); err == nil {
+			argsJSON = string(b)
+		}
+	}
+	const argsMax = 120
+	if len(argsJSON) > argsMax {
+		argsJSON = argsJSON[:argsMax]
+	}
+
+	var line string
+	if tr.Error != nil {
+		// Sanitize the error text: collapse newlines/tabs/CR to spaces so a
+		// multiline error cannot break the one-line-per-result history
+		// contract and pollute the rebuilt prompt block.
+		errText := sanitizeHistoryText(tr.Error.Error())
+		line = fmt.Sprintf("[%s args=%s err=%s]", tr.ToolName, argsJSON, errText)
+	} else {
+		line = fmt.Sprintf("[%s args=%s ok bytes=%d]", tr.ToolName, argsJSON, len(tr.Output))
+	}
+	const lineMax = 240
+	if len(line) > lineMax {
+		line = line[:lineMax]
+	}
+	return line
+}
+
+// sanitizeHistoryText collapses CR, LF, and tab characters into single
+// spaces so a value embedded in a one-line history result cannot break
+// the line-per-result contract of the rebuilt prompt block.
+func sanitizeHistoryText(s string) string {
+	return strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(s)
 }

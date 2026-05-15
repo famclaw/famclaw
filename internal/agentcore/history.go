@@ -2,8 +2,44 @@ package agentcore
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// ParseSelfSummary extracts the model's self-summary tags from a free-text
+// response. The model is instructed (via system prompt — out of scope for this
+// phase) to emit three optional XML-like tags before its tool_calls:
+//
+//	<eval>...</eval>           — what happened with the previous goal
+//	<memory>...</memory>       — facts to carry forward about the user request
+//	<next_goal>...</next_goal> — what the model intends to do this turn
+//
+// All three tags are OPTIONAL. Missing tags return "" for that field.
+// Tag matching is case-insensitive and tolerant of leading/trailing whitespace
+// inside the tag body. Multiple occurrences: only the FIRST occurrence of
+// each tag is captured (extra tags ignored).
+//
+// The function does NOT mutate the input; it returns the three field values.
+// Pure function, no side effects.
+func ParseSelfSummary(modelOutput string) (eval, memory, nextGoal string) {
+	// Regexes are compiled locally rather than held as package-level globals
+	// to keep the parser free of global state (repo rule). ParseSelfSummary
+	// runs once per tool-loop iteration, so the per-call compile cost is
+	// negligible.
+	reEval := regexp.MustCompile(`(?is)<eval>(.*?)</eval>`)
+	reMemory := regexp.MustCompile(`(?is)<memory>(.*?)</memory>`)
+	reNextGoal := regexp.MustCompile(`(?is)<next_goal>(.*?)</next_goal>`)
+	if m := reEval.FindStringSubmatch(modelOutput); len(m) > 1 {
+		eval = strings.TrimSpace(m[1])
+	}
+	if m := reMemory.FindStringSubmatch(modelOutput); len(m) > 1 {
+		memory = strings.TrimSpace(m[1])
+	}
+	if m := reNextGoal.FindStringSubmatch(modelOutput); len(m) > 1 {
+		nextGoal = strings.TrimSpace(m[1])
+	}
+	return
+}
 
 // HistoryItem is one prior turn in the agent loop, captured as the
 // model's OWN short summary (not the raw tool_call / tool_result JSON).
