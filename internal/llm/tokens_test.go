@@ -82,6 +82,23 @@ func TestComputeMaxResponseTokens_FloorAt256(t *testing.T) {
 			margin:        512,
 			want:          256, // raw=0, floored to 256; ceiling=1024 > 256
 		},
+		{
+			name:          "ceiling below floor — floor still wins",
+			contextWindow: 500,
+			promptTokens:  0,
+			margin:        0,
+			// ceiling=250 (< 256). raw=500 → clamped to ceiling 250 →
+			// then floored UP to 256. The 256 floor is a hard minimum and
+			// must win even though 256 > contextWindow/2.
+			want: 256,
+		},
+		{
+			name:          "tiny ctx, ceiling far below floor",
+			contextWindow: 300,
+			promptTokens:  0,
+			margin:        0,
+			want:          256, // ceiling=150 → floored up to 256
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

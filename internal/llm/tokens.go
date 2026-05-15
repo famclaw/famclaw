@@ -15,10 +15,11 @@ package llm
 //
 //	promptTokens + max_tokens + safetyMargin <= contextWindow
 //
-// Floor: 256 (so a tiny ctx never starves the model entirely).
-// Ceiling: contextWindow / 2 (don't let response budget exceed half of ctx —
-//
-//	that's a spec hint, not a hard rule, but enforces sane balance).
+// Floor: 256 — a HARD minimum so a tiny ctx never starves the model.
+// Ceiling: contextWindow / 2 — a balance heuristic, NOT a hard cap.
+// The ceiling is applied first, then the floor, so the floor always
+// wins: on a tiny context where contextWindow/2 < 256, the returned
+// budget is 256 even though that exceeds half the context window.
 //
 // If contextWindow <= 0, returns 2048 (the previous static default).
 func ComputeMaxResponseTokens(contextWindow, promptTokens, reservedSafetyMargin int) int {
@@ -27,11 +28,13 @@ func ComputeMaxResponseTokens(contextWindow, promptTokens, reservedSafetyMargin 
 	}
 	raw := contextWindow - promptTokens - reservedSafetyMargin
 	ceiling := contextWindow / 2
-	if raw < 256 {
-		raw = 256
-	}
+	// Ceiling first, floor second — the 256 floor is the hard guarantee
+	// and must not be overridden by the heuristic ceiling.
 	if raw > ceiling {
 		raw = ceiling
+	}
+	if raw < 256 {
+		raw = 256
 	}
 	return raw
 }
