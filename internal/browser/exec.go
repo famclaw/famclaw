@@ -86,7 +86,7 @@ func (p *Pool) getOrCreateSession(user string) (*userSession, error) {
 		_ = bctx.Close()
 		return nil, fmt.Errorf("browser: NewPage: %w", err)
 	}
-	s := &userSession{bctx: bctx, page: page, prevRefs: make(map[string]string), lastUsed: time.Now()}
+	s := &userSession{bctx: bctx, page: page, refs: make(map[string]RefEntry), prevRefs: make(map[string]string), lastUsed: time.Now()}
 	p.sessions[user] = s
 	return s, nil
 }
