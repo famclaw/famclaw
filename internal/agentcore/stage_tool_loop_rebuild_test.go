@@ -274,7 +274,7 @@ func TestToolLoop_RebuildHistory_PopulatesEvalFromModelOutput(t *testing.T) {
 		t.Fatalf("iter2 user message missing <step_2> tag")
 	}
 	step2Slice := userContent[step2Start:]
-	if strings.HasPrefix(step2Slice, "eval: (n/a)") {
+	if strings.Contains(step2Slice, "eval: (n/a)") {
 		t.Errorf("step_2 eval should not be '(n/a)' when model emitted eval tag, got:\n%s", step2Slice)
 	}
 }
