@@ -279,6 +279,203 @@ func TestToolLoop_RebuildHistory_PopulatesEvalFromModelOutput(t *testing.T) {
 	}
 }
 
+// stubChatterClickLoop is a Chatter that returns browser_click(ref=e1) for
+// the first toolCallRounds calls then returns a plain "done" message. Used to
+// simulate a stuck agent that repeats the same click indefinitely.
+type stubChatterClickLoop struct {
+	mu             sync.Mutex
+	callCount      int
+	toolCallRounds int
+	captured       [][]llm.Message
+}
+
+func newStubChatterClickLoop(toolCallRounds int) *stubChatterClickLoop {
+	return &stubChatterClickLoop{toolCallRounds: toolCallRounds}
+}
+
+func (s *stubChatterClickLoop) Chat(_ context.Context, _ []llm.Message, _ float64, _ int, _ func(string)) (string, error) {
+	return "done", nil
+}
+func (s *stubChatterClickLoop) ChatMessage(_ context.Context, _ []llm.Message, _ float64, _ int) (*llm.Message, error) {
+	return &llm.Message{Role: "assistant", Content: "done"}, nil
+}
+func (s *stubChatterClickLoop) ChatSync(_ context.Context, _ []llm.Message, _ float64, _ int) (string, error) {
+	return "done", nil
+}
+func (s *stubChatterClickLoop) ChatWithTools(_ context.Context, msgs []llm.Message, _ float64, _ int, _ []llm.ToolDef) (*llm.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callCount++
+	call := s.callCount
+	captured := make([]llm.Message, len(msgs))
+	copy(captured, msgs)
+	s.captured = append(s.captured, captured)
+	if call <= s.toolCallRounds {
+		return &llm.Message{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:       fmt.Sprintf("click_%d", call),
+				Function: llm.ToolCallFunction{Name: "builtin__browser_click", Arguments: map[string]any{"ref": "e1"}},
+			}},
+		}, nil
+	}
+	return &llm.Message{Role: "assistant", Content: "done"}, nil
+}
+
+// stubChatterMultiCall returns a batch of 3 specific tool calls on the first
+// ChatWithTools invocation, then returns "done" on subsequent calls.
+type stubChatterMultiCall struct {
+	mu        sync.Mutex
+	callCount int
+	captured  [][]llm.Message
+	firstBatch []llm.ToolCall
+}
+
+func (s *stubChatterMultiCall) Chat(_ context.Context, _ []llm.Message, _ float64, _ int, _ func(string)) (string, error) {
+	return "done", nil
+}
+func (s *stubChatterMultiCall) ChatMessage(_ context.Context, _ []llm.Message, _ float64, _ int) (*llm.Message, error) {
+	return &llm.Message{Role: "assistant", Content: "done"}, nil
+}
+func (s *stubChatterMultiCall) ChatSync(_ context.Context, _ []llm.Message, _ float64, _ int) (string, error) {
+	return "done", nil
+}
+func (s *stubChatterMultiCall) ChatWithTools(_ context.Context, msgs []llm.Message, _ float64, _ int, _ []llm.ToolDef) (*llm.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callCount++
+	captured := make([]llm.Message, len(msgs))
+	copy(captured, msgs)
+	s.captured = append(s.captured, captured)
+	if s.callCount == 1 {
+		return &llm.Message{Role: "assistant", ToolCalls: s.firstBatch}, nil
+	}
+	return &llm.Message{Role: "assistant", Content: "done"}, nil
+}
+
+// TestToolLoop_LoopDetector_InjectsNudgeAt5 verifies that when EnableLoopDetector
+// is true and the same browser_click(ref=e1) repeats enough times, the rebuilt
+// user message injected into the LLM call contains the 5-threshold nudge.
+func TestToolLoop_LoopDetector_InjectsNudgeAt5(t *testing.T) {
+	stub := newStubChatterClickLoop(6) // 6 LLM calls return browser_click; call 7 → done
+	deps := ToolLoopDeps{
+		ClientFactory:      func(*Turn) llm.Chatter { return stub },
+		BuiltinHandler:     func(_ context.Context, _ string, _ map[string]any) (string, error) { return "ok", nil },
+		MaxIterations:      20,
+		RebuildHistory:     true,
+		EnableLoopDetector: true,
+	}
+	stage := NewStageToolLoop(deps)
+
+	turn := &Turn{
+		User:  &config.UserConfig{Name: "tester"},
+		Tools: []Tool{{Name: "builtin__browser_click"}},
+	}
+	turn.SetMeta("pending_tool_calls", []llm.ToolCall{{
+		ID:       "click_0",
+		Function: llm.ToolCallFunction{Name: "builtin__browser_click", Arguments: map[string]any{"ref": "e1"}},
+	}})
+	turn.SetMeta("llm_messages", []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "keep clicking"},
+	})
+
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatalf("stage error: %v", err)
+	}
+
+	// 7 LLM calls total (6 tool-call rounds + 1 done). captured[6] is call 7.
+	if len(stub.captured) < 7 {
+		t.Fatalf("expected at least 7 LLM calls, got %d", len(stub.captured))
+	}
+	iter7 := stub.captured[6]
+	if len(iter7) < 2 {
+		t.Fatalf("iter7 message slice too short: %d", len(iter7))
+	}
+	userContent := iter7[1].Content
+	const nudge5 = "If this repetition is intentional"
+	if !strings.Contains(userContent, nudge5) {
+		t.Errorf("iteration-7 user message missing 5-threshold nudge\nwant substring: %q\ncontent: %s", nudge5, userContent)
+	}
+}
+
+// TestToolLoop_AbortQueueOnPageChange_AbortsAfterURLChange verifies that when
+// AbortQueueOnPageChange is true and a mutating action changes the URL, the
+// remaining queued tool calls in the same batch are synthesized as skipped.
+func TestToolLoop_AbortQueueOnPageChange_AbortsAfterURLChange(t *testing.T) {
+	extractCalled := false
+	handler := func(_ context.Context, name string, _ map[string]any) (string, error) {
+		switch name {
+		case "builtin__browser_navigate":
+			return "URL: https://a.example/\nTitle: A", nil
+		case "builtin__browser_click":
+			return "URL: https://b.example/\nTitle: B", nil
+		case "builtin__browser_extract":
+			extractCalled = true
+			return "extracted text", nil
+		}
+		return "ok", nil
+	}
+
+	stub := &stubChatterMultiCall{
+		firstBatch: []llm.ToolCall{
+			{ID: "c1", Function: llm.ToolCallFunction{Name: "builtin__browser_navigate", Arguments: map[string]any{"url": "https://a.example/"}}},
+			{ID: "c2", Function: llm.ToolCallFunction{Name: "builtin__browser_click", Arguments: map[string]any{"ref": "e1"}}},
+			{ID: "c3", Function: llm.ToolCallFunction{Name: "builtin__browser_extract", Arguments: map[string]any{"mode": "text"}}},
+		},
+	}
+
+	deps := ToolLoopDeps{
+		ClientFactory:          func(*Turn) llm.Chatter { return stub },
+		BuiltinHandler:         handler,
+		MaxIterations:          10,
+		RebuildHistory:         true,
+		AbortQueueOnPageChange: true,
+	}
+	stage := NewStageToolLoop(deps)
+
+	turn := &Turn{
+		User: &config.UserConfig{Name: "tester"},
+		Tools: []Tool{
+			{Name: "builtin__browser_navigate"},
+			{Name: "builtin__browser_click"},
+			{Name: "builtin__browser_extract"},
+		},
+	}
+	// The initial pending tool call is navigate; the stub returns the full
+	// 3-call batch on the FIRST LLM call. We seed a navigate as the initial
+	// pending call so the outer loop enters and calls the LLM immediately.
+	turn.SetMeta("pending_tool_calls", []llm.ToolCall{{
+		ID:       "seed",
+		Function: llm.ToolCallFunction{Name: "builtin__browser_navigate", Arguments: map[string]any{"url": "https://seed.example/"}},
+	}})
+	turn.SetMeta("llm_messages", []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "go to a then click"},
+	})
+
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatalf("stage error: %v", err)
+	}
+
+	if extractCalled {
+		t.Error("browser_extract handler was called but should have been skipped")
+	}
+
+	// Find the batch iteration with 3 results (navigate + click + synthesized extract).
+	// turn.ToolCalls has the seed navigate result + the batch results.
+	const skipMsg = "[skipped: page changed earlier in batch — re-evaluate]"
+	found := false
+	for _, tr := range turn.ToolCalls {
+		if tr.ToolName == "builtin__browser_extract" && tr.Output == skipMsg {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a skipped browser_extract with output %q; turn.ToolCalls: %+v", skipMsg, turn.ToolCalls)
+	}
+}
+
 // TestToolLoop_RebuildHistory_StepNumIncrements verifies that running three
 // tool-call iterations produces a rebuilt message on the third LLM call that
 // contains both <step_1> and <step_2>, confirming the step counter increments
