@@ -33,6 +33,12 @@ func NewActionLoopDetector(cap int) *ActionLoopDetector {
 // raw argument map. The detector hashes (action, normalized-args) and pushes
 // to the rolling window, evicting the oldest when full.
 func (d *ActionLoopDetector) Push(action string, args map[string]any) {
+	// Defensive default: a zero-value ActionLoopDetector (cap == 0) used
+	// without NewActionLoopDetector would otherwise panic here — with
+	// cap 0, the eviction branch slices an empty window. Default to 20.
+	if d.cap <= 0 {
+		d.cap = 20
+	}
 	jsonArgs, err := json.Marshal(args)
 	if err != nil {
 		jsonArgs = []byte(fmt.Sprintf("%v", args))

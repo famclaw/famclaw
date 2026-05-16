@@ -5,106 +5,136 @@ import (
 	"testing"
 )
 
-func TestActionLoopDetector_NoRepetition(t *testing.T) {
-	d := NewActionLoopDetector(20)
-	for i, name := range []string{"navigate", "click", "fill", "extract", "snapshot"} {
-		d.Push(name, map[string]any{"i": i})
+// TestActionLoopDetector_Nudge is a table-driven suite over the detector's
+// repetition-detection behavior: each case pushes a sequence of actions onto
+// a fresh detector and asserts on the resulting Nudge() output.
+func TestActionLoopDetector_Nudge(t *testing.T) {
+	cases := []struct {
+		name        string
+		push        func(d *ActionLoopDetector)
+		wantInNudge string // "" means expect an empty nudge
+	}{
+		{
+			name: "no repetition",
+			push: func(d *ActionLoopDetector) {
+				for i, name := range []string{"navigate", "click", "fill", "extract", "snapshot"} {
+					d.Push(name, map[string]any{"i": i})
+				}
+			},
+			wantInNudge: "",
+		},
+		{
+			name: "five same triggers 5-threshold",
+			push: func(d *ActionLoopDetector) {
+				for range 5 {
+					d.Push("builtin__browser_click", map[string]any{"ref": "e1"})
+				}
+			},
+			wantInNudge: "If this repetition is intentional",
+		},
+		{
+			name: "eight same triggers 8-threshold",
+			push: func(d *ActionLoopDetector) {
+				for range 8 {
+					d.Push("builtin__browser_click", map[string]any{"ref": "e1"})
+				}
+			},
+			wantInNudge: "Reconsider — call browser_extract",
+		},
+		{
+			name: "twelve same triggers STOP",
+			push: func(d *ActionLoopDetector) {
+				for range 12 {
+					d.Push("builtin__browser_click", map[string]any{"ref": "e1"})
+				}
+			},
+			wantInNudge: "STOP",
+		},
+		{
+			name: "alternating unique actions — no nudge",
+			push: func(d *ActionLoopDetector) {
+				// Each push has a distinct args map ({"i": i}) so every hash
+				// is unique — no action accumulates a repetition count.
+				for i := range 30 {
+					name := "action_a"
+					if i%2 == 1 {
+						name = "action_b"
+					}
+					d.Push(name, map[string]any{"i": i})
+				}
+			},
+			wantInNudge: "",
+		},
+		{
+			name: "key-order-normalized args hash identically",
+			push: func(d *ActionLoopDetector) {
+				// {a,b} and {b,a} must produce the same hash — 10 identical
+				// hashes total, enough for the 8-threshold.
+				for range 5 {
+					d.Push("builtin__browser_fill", map[string]any{"a": 1, "b": 2})
+				}
+				for range 5 {
+					d.Push("builtin__browser_fill", map[string]any{"b": 2, "a": 1})
+				}
+			},
+			wantInNudge: "Reconsider — call browser_extract",
+		},
 	}
-	if got := d.Nudge(); got != "" {
-		t.Errorf("expected empty nudge, got %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewActionLoopDetector(20)
+			tc.push(d)
+			got := d.Nudge()
+			if tc.wantInNudge == "" {
+				if got != "" {
+					t.Errorf("expected empty nudge, got %q", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.wantInNudge) {
+				t.Errorf("expected nudge containing %q, got %q", tc.wantInNudge, got)
+			}
+		})
 	}
 }
 
-func TestActionLoopDetector_FiveSameTriggers5Threshold(t *testing.T) {
-	d := NewActionLoopDetector(20)
-	for range 5 {
-		d.Push("builtin__browser_click", map[string]any{"ref": "e1"})
-	}
-	got := d.Nudge()
-	if !strings.Contains(got, "If this repetition is intentional") {
-		t.Errorf("expected 5-threshold nudge, got %q", got)
-	}
-}
-
-func TestActionLoopDetector_EightTriggers8Threshold(t *testing.T) {
-	d := NewActionLoopDetector(20)
-	for range 8 {
-		d.Push("builtin__browser_click", map[string]any{"ref": "e1"})
-	}
-	got := d.Nudge()
-	if !strings.Contains(got, "Reconsider — call browser_extract") {
-		t.Errorf("expected 8-threshold nudge, got %q", got)
-	}
-}
-
-func TestActionLoopDetector_TwelveTriggersStop(t *testing.T) {
-	d := NewActionLoopDetector(20)
-	for range 12 {
-		d.Push("builtin__browser_click", map[string]any{"ref": "e1"})
-	}
-	got := d.Nudge()
-	if !strings.Contains(got, "STOP") {
-		t.Errorf("expected STOP nudge, got %q", got)
-	}
-}
-
-func TestActionLoopDetector_WindowEvictsOldest(t *testing.T) {
-	d := NewActionLoopDetector(20)
-	// Push 30 alternating actions — no single action accumulates 5 in a 20-wide window.
-	for i := range 30 {
-		name := "action_a"
-		if i%2 == 1 {
-			name = "action_b"
-		}
-		d.Push(name, map[string]any{"i": i})
-	}
-	// Window holds the last 20 entries: indices 10..29.
-	// action_a appears at even indices: 10,12,14,16,18,20,22,24,26,28 → 10 times.
-	// Oops — that's > 5, so the nudge WOULD fire. But wait, each push uses a
-	// different args map ({"i": i}), so each hash is unique. No repetition.
-	if got := d.Nudge(); got != "" {
-		t.Errorf("alternating unique actions: expected empty nudge, got %q", got)
-	}
-}
-
+// TestActionLoopDetector_DefaultCap verifies that a non-positive cap passed to
+// NewActionLoopDetector defaults to 20: the rolling window must evict at 20
+// entries and the >=12 STOP threshold must still fire. Kept separate from the
+// Nudge table because it asserts on the internal window length.
 func TestActionLoopDetector_DefaultCap(t *testing.T) {
-	d0 := NewActionLoopDetector(0)
-	dm := NewActionLoopDetector(-1)
-
-	// Fill past 20 with the same action: window should evict at 20, so only
-	// 20 entries at most. Nudge at >=12 should still fire (20 >= 12).
-	for range 25 {
-		d0.Push("act", map[string]any{})
-		dm.Push("act", map[string]any{})
+	cases := []struct {
+		name string
+		cap  int
+	}{
+		{"zero cap defaults to 20", 0},
+		{"negative cap defaults to 20", -1},
 	}
-	if !strings.Contains(d0.Nudge(), "STOP") {
-		t.Error("cap=0 (default 20): expected STOP nudge after 25 same-action pushes")
-	}
-	if !strings.Contains(dm.Nudge(), "STOP") {
-		t.Error("cap=-1 (default 20): expected STOP nudge after 25 same-action pushes")
-	}
-	// Verify cap is 20 not larger: after 25 pushes the window must be exactly 20.
-	if len(d0.window) != 20 {
-		t.Errorf("cap=0: expected window size 20, got %d", len(d0.window))
-	}
-	if len(dm.window) != 20 {
-		t.Errorf("cap=-1: expected window size 20, got %d", len(dm.window))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewActionLoopDetector(tc.cap)
+			for range 25 {
+				d.Push("act", map[string]any{})
+			}
+			if !strings.Contains(d.Nudge(), "STOP") {
+				t.Errorf("cap=%d: expected STOP nudge after 25 same-action pushes", tc.cap)
+			}
+			if len(d.window) != 20 {
+				t.Errorf("cap=%d: expected window size 20, got %d", tc.cap, len(d.window))
+			}
+		})
 	}
 }
 
-func TestActionLoopDetector_NormalizesArgs(t *testing.T) {
-	d := NewActionLoopDetector(20)
-	// Both orderings must produce the same hash. Push each 5 times and expect
-	// Nudge to fire the 5-threshold (total 10 identical hashes in window).
-	for range 5 {
-		d.Push("builtin__browser_fill", map[string]any{"a": 1, "b": 2})
+// TestActionLoopDetector_ZeroValuePushNoPanic verifies that a zero-value
+// detector (constructed without NewActionLoopDetector) does not panic on
+// Push — Push applies a defensive cap default.
+func TestActionLoopDetector_ZeroValuePushNoPanic(t *testing.T) {
+	var d ActionLoopDetector // zero value: cap == 0
+	for range 25 {
+		d.Push("act", map[string]any{})
 	}
-	for range 5 {
-		d.Push("builtin__browser_fill", map[string]any{"b": 2, "a": 1})
-	}
-	got := d.Nudge()
-	// 10 identical hashes → should be at least 8-threshold.
-	if !strings.Contains(got, "Reconsider — call browser_extract") {
-		t.Errorf("expected 8-threshold nudge when args are key-order-normalized, got %q", got)
+	if len(d.window) != 20 {
+		t.Errorf("zero-value detector: expected window size 20 after default, got %d", len(d.window))
 	}
 }
