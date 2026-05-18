@@ -4,14 +4,14 @@ go 1.26.0
 
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/open-policy-agent/opa v1.16.1
+	github.com/open-policy-agent/opa v1.16.2
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.50.0 // pure Go SQLite — no CGO, cross-compiles to arm/arm64
+	modernc.org/sqlite v1.50.1 // pure Go SQLite — no CGO, cross-compiles to arm/arm64
 )
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
-	github.com/mark3labs/mcp-go v0.52.0
+	github.com/mark3labs/mcp-go v0.54.0
 	github.com/playwright-community/playwright-go v0.5700.1
 	golang.org/x/crypto v0.51.0
 	golang.org/x/net v0.54.0
@@ -56,7 +56,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
-	modernc.org/libc v1.72.0 // indirect
+	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
