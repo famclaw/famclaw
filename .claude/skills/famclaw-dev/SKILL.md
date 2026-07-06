@@ -10,7 +10,7 @@ description: FamClaw test gates, coverage targets, and cross-compile/release ste
 - Policy (OPA): `opa test internal/policy/policies/family/ internal/policy/policies/data/ -v`
 - Integration: `go test -tags integration ./...`
 - Coverage target: >80% on policy, identity, classifier, gateway/router.
-- CI blocks merge if tests fail or the binary doesn't cross-compile to arm64.
+- CI blocks merge if tests fail or the full cross-compile matrix (`make cross`: rpi3, rpi4, android, mac-arm, mac-intel, linux64) doesn't complete cleanly.
 
 ## Cross-compile (all `CGO_ENABLED=0`)
 `make build` · `make cross-rpi3` (linux/arm/v7) · `make cross-rpi4` (linux/arm64, also rpi5) · `make cross-android` · `make cross-mac-arm` · `make cross-mac-intel` · `make cross-linux64` · `make cross` (all targets).
