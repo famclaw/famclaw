@@ -15,11 +15,7 @@ Run FamClaw on an old Android phone using Termux. The phone acts as the gateway 
 ## Installation
 
 ```bash
-# Open Termux and run:
-curl -fsSL https://raw.githubusercontent.com/famclaw/famclaw/main/scripts/install-termux.sh | bash
-```
-
-Or manually:
+# Download the binary directly
 
 ```bash
 pkg update && pkg upgrade -y
@@ -42,7 +38,7 @@ mv "$BINARY" "$PREFIX/bin/famclaw"
 
 ## Configuration
 
-FamClaw on Android needs an external LLM backend. The install script will ask you to choose:
+FamClaw on Android needs an external LLM backend. Choose:
 
 ### Option 1: Another device's Ollama on LAN
 
@@ -80,7 +76,7 @@ To run in the background:
 nohup famclaw --config ~/famclaw/config.yaml > ~/famclaw/famclaw.log 2>&1 &
 ```
 
-To auto-start on device boot, install [Termux:Boot](https://f-droid.org/packages/com.termux.boot/) from F-Droid. The install script creates `~/.termux/boot/famclaw.sh` automatically.
+To auto-start on device boot, install [Termux:Boot](https://f-droid.org/packages/com.termux.boot/) from F-Droid. Create `~/.termux/boot/famclaw.sh` manually:
 
 If Termux:Boot is not available, you can start manually each time you open Termux:
 ```bash

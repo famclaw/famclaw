@@ -264,7 +264,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 - **OPA policies embedded in binary.** Previous releases crashed at
-  startup without a repo clone for the `policies/` directory. Policies
+  startup without a repo clone for the `internal/policy/policies/` directory. Policies
   now ship inside the binary via `go:embed`. Custom overrides still
   supported via `policies.dir` and `policies.data_dir` in config.yaml.
 - **Half-overridden policy bundles rejected.** Setting only
