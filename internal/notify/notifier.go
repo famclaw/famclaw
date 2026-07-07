@@ -31,6 +31,11 @@ type MultiNotifier struct {
 	channels []Notifier
 }
 
+// Len returns the number of enabled notification channels.
+func (m *MultiNotifier) Len() int {
+	return len(m.channels)
+}
+
 // NewMultiNotifier creates a MultiNotifier from the notification config.
 func NewMultiNotifier(cfg config.NotificationsConfig, secret string) *MultiNotifier {
 	var channels []Notifier

@@ -177,3 +177,17 @@ func TestNewMultiNotifierWithChannels(t *testing.T) {
 		t.Errorf("expected 2 channels, got %d", len(mn.channels))
 	}
 }
+
+func TestMultiNotifierLen(t *testing.T) {
+	empty := NewMultiNotifier(config.NotificationsConfig{}, "secret")
+	if empty.Len() != 0 {
+		t.Errorf("expected 0 channels on empty config, got %d", empty.Len())
+	}
+
+	oneChannel := NewMultiNotifier(config.NotificationsConfig{
+		Ntfy: config.NtfyConfig{Enabled: true, URL: "http://localhost:2586", Topic: "test"},
+	}, "secret")
+	if oneChannel.Len() != 1 {
+		t.Errorf("expected 1 channel when Ntfy enabled, got %d", oneChannel.Len())
+	}
+}
