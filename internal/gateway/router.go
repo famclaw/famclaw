@@ -73,7 +73,7 @@ func NewRouter(
 		pendingRegs: make(map[string]*pendingRegistration),
 	}
 	// Session pool dispatches heavy work (classify → policy → LLM) per-user
-	r.pool = NewSessionPool(r.process)
+	r.pool = NewSessionPool(context.Background(), r.process)
 	return r
 }
 
@@ -251,6 +251,11 @@ func runGateway(ctx context.Context, gw Gateway, handler func(ctx context.Contex
 				}
 			}()
 			log.Printf("[gateway] starting %s", gw.Name())
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			if err := gw.Start(ctx, handler); err != nil {
 				if ctx.Err() != nil {
 					return // context cancelled, normal shutdown
