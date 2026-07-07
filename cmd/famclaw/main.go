@@ -20,6 +20,7 @@ import (
 
 	"github.com/famclaw/famclaw/internal/agent"
 	"github.com/famclaw/famclaw/internal/agentcore"
+	"github.com/famclaw/famclaw/internal/browser"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/credstore"
@@ -41,7 +42,6 @@ import (
 	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/web"
-	"github.com/famclaw/famclaw/internal/browser"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
 )
@@ -57,7 +57,7 @@ func main() {
 		return
 	}
 
-	cfgPath  := flag.String("config", "config.yaml", "Config file path")
+	cfgPath := flag.String("config", "config.yaml", "Config file path")
 	// seccheck CLI removed — use `honeybadger scan <url>` directly
 	_ = flag.String("seccheck", "", "Deprecated: use honeybadger scan instead")
 	showVersion := flag.Bool("version", false, "Print version and exit")
