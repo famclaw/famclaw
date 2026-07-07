@@ -190,6 +190,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   Strangers no longer auto-create users.
 
 ### Fixed
+- **"Sign in as parent" link exposed on the landing page.** The SPA's
+  "Who's asking?" user-selection screen previously dead-ended for
+  unauthenticated parents whose avatar was not visible — there was no
+  affordance to reach `/login`. Adds a subtle link beneath the user
+  grid so parents can authenticate and reach the admin dashboard where
+  the gateway account-linking UI lives. Fixes #111.
 - **Wizard "Finish setup" no longer fails with 403 on re-run.** Wizard now
   sends the parent PIN from the family-member step. PIN-mismatch shows a
   clear error ("Incorrect parent PIN. If re-running setup, use the PIN
