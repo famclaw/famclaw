@@ -200,12 +200,16 @@ func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, ca
 		return
 	}
 	if isNew && r.notifier != nil {
-		baseURL := r.cfg.Server.BaseURL()
-		approveURL := fmt.Sprintf("%s/decide?id=%s&action=approve&token=%s",
-			baseURL, a.ID, notify.GenerateToken(a.ID, "approve", r.cfg.Server.Secret))
-		denyURL := fmt.Sprintf("%s/decide?id=%s&action=deny&token=%s",
-			baseURL, a.ID, notify.GenerateToken(a.ID, "deny", r.cfg.Server.Secret))
-		r.notifier.Notify(ctx, a, approveURL, denyURL)
+		if user.Role == "parent" {
+			log.Printf("[router] approval %s from parent %s — skipping notify (kid-only policy)", a.ID, user.Name)
+		} else {
+			baseURL := r.cfg.Server.BaseURL()
+			approveURL := fmt.Sprintf("%s/decide?id=%s&action=approve&token=%s",
+				baseURL, a.ID, notify.GenerateToken(a.ID, "approve", r.cfg.Server.Secret))
+			denyURL := fmt.Sprintf("%s/decide?id=%s&action=deny&token=%s",
+				baseURL, a.ID, notify.GenerateToken(a.ID, "deny", r.cfg.Server.Secret))
+			r.notifier.Notify(ctx, a, approveURL, denyURL)
+		}
 	}
 }
 
