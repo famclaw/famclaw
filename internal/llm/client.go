@@ -240,6 +240,10 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 		return "", err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	httpReq = httpReq.WithContext(ctx)
+
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("LLM request failed: %w", err)
@@ -247,7 +251,10 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", fmt.Errorf("LLM returned %d: reading error body: %w", resp.StatusCode, err)
+		}
 		return "", fmt.Errorf("LLM returned %d: %s", resp.StatusCode, string(b))
 	}
 
@@ -332,6 +339,10 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 		return nil, err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	httpReq = httpReq.WithContext(ctx)
+
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("LLM request failed: %w", err)
@@ -339,7 +350,10 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("LLM returned %d: reading error body: %w", resp.StatusCode, err)
+		}
 		return nil, fmt.Errorf("LLM returned %d: %s", resp.StatusCode, string(b))
 	}
 
