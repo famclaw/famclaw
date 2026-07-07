@@ -190,6 +190,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   Strangers no longer auto-create users.
 
 ### Fixed
+- **Parent-triggered approvals no longer send a notification.** When a
+  parent's own message resolves to `request_approval`, `createApproval`
+  now skips the notify (kid-only policy) and logs the skip instead of
+  pinging the parent about their own request. Child-triggered approvals
+  still notify as before.
 - **"Sign in as parent" link exposed on the landing page.** The SPA's
   "Who's asking?" user-selection screen previously dead-ended for
   unauthenticated parents whose avatar was not visible — there was no
