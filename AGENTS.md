@@ -6,15 +6,15 @@ FamClaw is a secure, local-first family AI gateway that connects family members 
 
 ### Runtime shape
 
-The process starts with `cmd/famclaw/main.go`, which loads configuration from `config.yaml`, initializes the database, and starts gateways (Telegram, Discord, WhatsApp) and the web server. The gateway router (`internal/gateway/router.go`) handles incoming messages, resolves identities, and routes them through the policy pipeline. The web server (`internal/web/server.go`) serves the UI and REST/WebSocket API. All components are wired through dependency injection, with the `main.go` file orchestrating startup and shutdown.
+The process starts with `cmd/famclaw/main.go`, which loads configuration from the path specified by `--config` (default `config.yaml`), initializes the database, and starts gateways (Telegram, Discord, WhatsApp) and the web server. The gateway router (`internal/gateway/router.go`) handles incoming messages, resolves identities, and routes them through the policy pipeline. The web server (`internal/web/server.go`) serves the UI and REST/WebSocket API. All components are wired through dependency injection, with the `main.go` file orchestrating startup and shutdown.
 
 ### Package map (internal/)
 
 | Package | Responsibility | Key types / entry points | Depends on (other internal/) |
 |---|---|---|---|
 | config | Configuration loading and validation | `Config`, `Load`, `Validate` | - |
-| gateway | Message routing and identity resolution | `Router`, `Handle`, `NewRouter` | config, identity, policy, store, notify |
-| web | HTTP server, web UI, WebSocket API | `Server`, `Handler`, `NewServer` | config, store, identity, policy, notify, skillbridge, mcp |
+| gateway | Message routing and identity resolution | `Router`, `Handle`, `NewRouter` | config, identity, policy, store, notify, classifier |
+| web | HTTP server, web UI, WebSocket API | `Server`, `Handler`, `NewServer` | config, store, identity, policy, notify, skillbridge, mcp, classifier |
 | store | SQLite database access and migrations | `DB`, `Open`, `migrate` | - |
 | policy | OPA policy evaluation for input, tool calls, and output | `Evaluator`, `Evaluate`, `EvaluateOutput` | - |
 | notify | Multi-channel notification system | `MultiNotifier`, `Notify`, `GenerateToken` | store |
@@ -104,14 +104,14 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from `c
 - Interfaces are used at boundaries (gateway, notifier, llm client).
 - The policy engine is the gate — LLM is never called before `policy.Evaluate()` returns allow.
 - Logs go to stderr, stdout is reserved for MCP JSON-RPC.
-- One binary — no separate processes except MCP skill servers.
+- One binary — no separate processes except MCP skill servers and the optional llama-server inference sidecar.
 - The `web_fetch` tool requires an `url_allowlist` to be set to prevent SSRF attacks.
 - The `tools.web_fetch.enabled` field is a hard requirement — empty allowlist denies all fetches.
 - The `tools.browser` tool reuses the `tools.web_fetch.url_allowlist` as its host gate.
-- The `tools.web_search` tool requires `tools.web_fetch.enabled=true`.
+- The `tools.web_search` tool is enabled independently via `cfg.Tools.WebSearch.Enabled` in its own config block.
 - The `approvalID` function uses `sha256` hashing for uniqueness.
 - The `notify.GenerateToken` function creates time-limited HMAC tokens.
-- The `toolcache` cache is auto-enabled when `tools.web_fetch.enabled=true`.
+- The `toolcache` cache tool is only attached when it already exists (auto-created when `cfg.Tools.ToolCache.Enabled` or `cfg.Tools.WebFetch.Enabled` is true).
 - The `subagent` scheduler has a concurrency cap of 2.
 - The `inference` sidecar only starts if `cfg.Inference.Backend == "llama-server"`.
 - The `mcp` pool only starts if `cfg.Skills.MCPServers` is not empty.
