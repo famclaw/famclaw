@@ -3,9 +3,12 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -764,11 +767,31 @@ func TestCleanExpiredPending(t *testing.T) {
 	}
 }
 
-// TestCreateApprovalSkipsParentNotify tests that createApproval skips
-// notifying for parent-triggered approvals.
+// TestCreateApprovalSkipsParentNotify verifies createApproval fires a
+// notification for a child-triggered approval but skips it entirely for a
+// parent-triggered one.
 func TestCreateApprovalSkipsParentNotify(t *testing.T) {
-	// Test is just for compilation - the actual behavior is tested 
-	// in the integration tests that cover the parent-child approval flow
-	// We're just ensuring our logic change doesn't break anything
-	_ = "test compilation"
+	var notifyCalls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&notifyCalls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	router, _ := setupRouter(t, panicChat)
+	router.notifier = notify.NewMultiNotifier(config.NotificationsConfig{
+		Ntfy: config.NtfyConfig{Enabled: true, URL: srv.URL, Topic: "test"},
+	}, "test-secret")
+
+	child := &config.UserConfig{Name: "emma", DisplayName: "Emma", Role: "child", AgeGroup: "age_8_12"}
+	router.createApproval(context.Background(), child, "violence", "why do wars happen", "req-child")
+	if got := atomic.LoadInt32(&notifyCalls); got != 1 {
+		t.Fatalf("child approval should notify once, got %d calls", got)
+	}
+
+	parent := &config.UserConfig{Name: "parent", DisplayName: "Parent", Role: "parent"}
+	router.createApproval(context.Background(), parent, "violence", "why do wars happen", "req-parent")
+	if got := atomic.LoadInt32(&notifyCalls); got != 1 {
+		t.Fatalf("parent approval must not notify, but total calls rose to %d", got)
+	}
 }
