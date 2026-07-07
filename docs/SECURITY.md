@@ -106,3 +106,64 @@ Both `/login` and `/api/setup/unlock` share the same in-memory rate limiter
 (5 attempts per 15-minute window per IP, then 1-minute lockout). The limiter
 resets on process restart — for persistent brute-force protection, place the
 device behind a network firewall.
+
+## Credential vault: cryptographic scope (v0.5.x)
+
+The vault is a **UX boundary**, not a confidentiality boundary against a
+local attacker. This has been raised on review (see
+[CodeRabbit thread on PR #129](https://github.com/famclaw/famclaw/pull/129)
+and [issue #130](https://github.com/famclaw/famclaw/issues/130)) and is
+accepted as a v0.5.x trade-off.
+
+### What "machine-derived key" means concretely
+
+The vault key derivation lives at `internal/credstore/vault.go:57` in
+`deriveKey()`. It calls HKDF-SHA256 with:
+
+- **IKM** = the machine ID string returned by the platform-specific
+  `MachineID()` implementation (Linux: `internal/credstore/machineid_linux.go:15`,
+  macOS: `internal/credstore/machineid_darwin.go:14`,
+  Windows: `internal/credstore/machineid_windows.go:15`,
+  other: `internal/credstore/machineid_other.go:8` returns an error).
+- **Salt** = literal bytes `famclaw-cred-v1`.
+- **Info** = literal bytes `vault`.
+
+HKDF does not add entropy. Anyone who can read the machine ID source
+(`/etc/machine-id`, `IOPlatformUUID`, or `HKLM\...\MachineGuid`) and the
+SQLite `vault_secrets` table can reconstruct the vault key.
+
+### Why v0.5.x ships it this way
+
+The design goal is a specific UX: **if the binary moves to a new machine,
+the parent sees an unlock screen instead of a crash**. Machine-binding
+delivers that: the machine ID changes → `Decrypt` returns
+`ErrMachineMismatch` → the unlock flow prompts for PIN re-entry.
+
+The threat model deliberately excludes "attacker has local shell on the
+same host". At that trust level, the attacker can also read the SQLite
+database, the source, and the running binary's memory — the vault would
+not be the weakest link.
+
+### v0.6+ considerations (not shipping in v0.5.x)
+
+Real cryptographic secrecy requires binding the key to something an
+attacker with local read access cannot see. Options and why each is
+deferred:
+
+1. **Machine-derived KEK + persisted random DEK** — file-access still =
+   key-access, so this does not actually improve the threat model. Not
+   worth the code churn.
+2. **Platform keystore** (macOS Keychain via Security framework, Linux
+   secret-service via libsecret, Windows DPAPI) — real secrecy against a
+   non-root local attacker on macOS and Windows; on Linux it depends on
+   the desktop keyring being unlocked. **Requires CGO**, which conflicts
+   with the project's `CGO_ENABLED=0` cross-compile rule. Adopting it
+   means splitting the release into a CGO-enabled desktop build and a
+   pure-Go headless/server build — a larger architectural decision, not
+   just a swap.
+3. **TPM / Secure Enclave** — hardware-bound secrecy plus availability
+   constraints (not every FamClaw target has a TPM). CGO + platform
+   detection + fallback logic. Almost certainly out of scope for v0.6.
+
+Until the CGO trade-off decision is made, the vault stays as it is and
+this section stays honest about what it does and does not defend against.
