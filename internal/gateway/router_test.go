@@ -3,9 +3,12 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -413,7 +416,7 @@ func TestHandleUnknownAccount_AutoLinkExactName(t *testing.T) {
 		t.Errorf("PolicyAction = %q, want onboarding", reply.PolicyAction)
 	}
 
-	user, err := identStore.Resolve(context.Background(),"telegram", "tg-emma-123")
+	user, err := identStore.Resolve(context.Background(), "telegram", "tg-emma-123")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -437,7 +440,7 @@ func TestHandleUnknownAccount_AutoLinkFirstWord(t *testing.T) {
 		t.Errorf("PolicyAction = %q, want onboarding", reply.PolicyAction)
 	}
 
-	user, err := identStore.Resolve(context.Background(),"telegram", "tg-emma-456")
+	user, err := identStore.Resolve(context.Background(), "telegram", "tg-emma-456")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -532,7 +535,7 @@ func TestHandleRegistrationReply_ValidChoice(t *testing.T) {
 		t.Errorf("expected Welcome message, got: %s", reply.Text)
 	}
 
-	user, err := identStore.Resolve(context.Background(),"telegram", "tg-anon-1")
+	user, err := identStore.Resolve(context.Background(), "telegram", "tg-anon-1")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -593,7 +596,7 @@ func TestHandleRegistrationReply_TypoKeepsPending(t *testing.T) {
 		Gateway: "telegram", ExternalID: "tg-typo-1",
 		Text: "1", DisplayName: "Anonymous",
 	})
-	user, err := identStore.Resolve(context.Background(),"telegram", "tg-typo-1")
+	user, err := identStore.Resolve(context.Background(), "telegram", "tg-typo-1")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -626,7 +629,7 @@ func TestHandleUnknownAccount_ParentNeverAutoLinked(t *testing.T) {
 		DisplayName: "Parent",
 	})
 	// Must NOT be linked to the parent user.
-	user, err := identStore.Resolve(context.Background(),"telegram", "tg-impostor-1")
+	user, err := identStore.Resolve(context.Background(), "telegram", "tg-impostor-1")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -761,5 +764,34 @@ func TestCleanExpiredPending(t *testing.T) {
 	}
 	if _, ok := router.pendingRegs["telegram:fresh-1"]; !ok {
 		t.Error("fresh entry should have been preserved")
+	}
+}
+
+// TestCreateApprovalSkipsParentNotify verifies createApproval fires a
+// notification for a child-triggered approval but skips it entirely for a
+// parent-triggered one.
+func TestCreateApprovalSkipsParentNotify(t *testing.T) {
+	var notifyCalls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&notifyCalls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	router, _ := setupRouter(t, panicChat)
+	router.notifier = notify.NewMultiNotifier(config.NotificationsConfig{
+		Ntfy: config.NtfyConfig{Enabled: true, URL: srv.URL, Topic: "test"},
+	}, "test-secret")
+
+	child := &config.UserConfig{Name: "emma", DisplayName: "Emma", Role: "child", AgeGroup: "age_8_12"}
+	router.createApproval(context.Background(), child, "violence", "why do wars happen", "req-child")
+	if got := atomic.LoadInt32(&notifyCalls); got != 1 {
+		t.Fatalf("child approval should notify once, got %d calls", got)
+	}
+
+	parent := &config.UserConfig{Name: "parent", DisplayName: "Parent", Role: "parent"}
+	router.createApproval(context.Background(), parent, "violence", "why do wars happen", "req-parent")
+	if got := atomic.LoadInt32(&notifyCalls); got != 1 {
+		t.Fatalf("parent approval must not notify, but total calls rose to %d", got)
 	}
 }
