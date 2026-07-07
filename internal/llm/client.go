@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -273,6 +274,7 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, e
 
 		var chunk openaiStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.Printf("[llm] sstream: skipping malformed chunk: %v", err)
 			continue
 		}
 
