@@ -163,7 +163,10 @@ func main() {
 
 	// Notifications
 	notifier := notify.NewMultiNotifier(cfg.Notifications, cfg.Server.Secret)
-	log.Printf("Notifications: configured")
+	if notifier.Len() == 0 && cfg.SecCheck.NotifyOnQuarantine {
+		log.Printf("[notify] WARNING: no notification channels enabled but seccheck.notify_on_quarantine=true; parental approvals will fire into the void — add an enabled channel under `notifications:` in your config.yaml (email, slack, discord, sms, ntfy)")
+	}
+	log.Printf("Notifications: configured (%d channel(s))", notifier.Len())
 
 	// Identity store
 	identStore := identity.NewStore(db)
