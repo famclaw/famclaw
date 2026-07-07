@@ -217,6 +217,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Database write errors (`SaveMessage`) are now logged instead of silently
   swallowed. Disk-full and schema corruption surface in the logs instead
   of being lost.
+- **Silent notification void warned at startup.** When
+  `seccheck.notify_on_quarantine=true` but no channel under
+  `notifications:` is enabled, startup now logs a `[notify] WARNING` that
+  parental approvals would fire into the void, instead of misleadingly
+  logging `Notifications: configured`. The startup line now reports the
+  enabled channel count (`Notifications: configured (N channel(s))`).
+  Closes #167.
 
 ### Removed
 - `verifyParentPIN` and `verifyParentPINConstantTime` functions

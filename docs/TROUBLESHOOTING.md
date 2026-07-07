@@ -52,7 +52,9 @@
 **What happened:** The approval notification didn't reach you.
 
 **What to check:**
-1. Are notifications configured? Open Settings → Notifications
+1. Are notifications configured? Open Settings → Notifications. If FamClaw
+   logged a `[notify] WARNING` at startup, no channel is enabled — add one
+   under `notifications:` in `config.yaml` (email, slack, discord, sms, ntfy).
 2. If using Telegram: is the bot still connected?
 3. Check the dashboard directly — pending approvals are always shown there
 
