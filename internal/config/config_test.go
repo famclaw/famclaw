@@ -138,7 +138,14 @@ func TestLoadYAMLKeyWhenNoEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Unset env var
+	// Save and restore original env var
+	origEnv, envSet := os.LookupEnv("FAMCLAW_LLM_API_KEY")
+	if envSet {
+		defer os.Setenv("FAMCLAW_LLM_API_KEY", origEnv)
+	} else {
+		defer os.Unsetenv("FAMCLAW_LLM_API_KEY")
+	}
+
 	os.Unsetenv("FAMCLAW_LLM_API_KEY")
 
 	cfg, err := Load(cfgPath)
