@@ -516,7 +516,15 @@ func (c *Config) LLMEndpointFor(user *UserConfig) LLMEndpoint {
 		log.Printf("[config] warning: default LLM profile %q not found, using legacy config", c.LLM.Default)
 	}
 	// Fall back to legacy single-endpoint config
-	return LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.ModelFor(user), APIKey: c.LLM.APIKey}
+	ep := LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.ModelFor(user), APIKey: c.LLM.APIKey}
+	if ep.BaseURL == "" {
+		userName := "<nil>"
+		if user != nil {
+			userName = user.Name
+		}
+		log.Printf("[config] warning: LLM endpoint is empty for user %q — check llm.base_url in config", userName)
+	}
+	return ep
 }
 
 // LLMEndpointForProfile resolves an LLM endpoint by profile name directly.
@@ -529,7 +537,11 @@ func (c *Config) LLMEndpointForProfile(profileName string) LLMEndpoint {
 		return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey}
 	}
 	log.Printf("[config] warning: LLM profile %q not found", profileName)
-	return LLMEndpoint{}
+	ep := LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.LLM.Model, APIKey: c.LLM.APIKey}
+	if ep.BaseURL == "" {
+		log.Printf("[config] warning: LLM endpoint is empty for profile %q — check llm.base_url in config", profileName)
+	}
+	return ep
 }
 
 // ValidateProvider checks that the configured LLM provider is valid.

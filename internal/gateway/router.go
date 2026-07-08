@@ -104,7 +104,11 @@ func (r *Router) Handle(ctx context.Context, msg Message) Reply {
 // Called by the SessionPool — one at a time per user, concurrent across users.
 func (r *Router) process(ctx context.Context, msg Message) Reply {
 	// Re-resolve identity (needed for userCfg in this goroutine)
-	user, _ := r.identStore.Resolve(ctx, msg.Gateway, msg.ExternalID)
+	user, err := r.identStore.Resolve(ctx, msg.Gateway, msg.ExternalID)
+	if err != nil {
+		log.Printf("[router] identity re-resolve error: %v", err)
+		return Reply{Text: "Something went wrong. Please try again.", PolicyAction: "error"}
+	}
 	if user == nil {
 		return Reply{Text: identity.OnboardingMessage(), PolicyAction: "onboarding"}
 	}
@@ -149,7 +153,10 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		return Reply{Text: text, PolicyAction: "block"}
 
 	case "request_approval":
-		r.createApproval(ctx, userCfg, string(cat), msg.Text, requestID)
+		if err := r.createApproval(ctx, userCfg, string(cat), msg.Text, requestID); err != nil {
+			log.Printf("[gateway][%s] approval request failed: %v", user.Name, err)
+			return Reply{Text: "I was unable to submit your request for approval. Please try again.", PolicyAction: "error"}
+		}
 		text := "I've asked a parent to approve this topic for you. They'll get a notification — once they approve, just ask me again!"
 		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "user", msg.Text, string(cat), "request_approval"); err != nil {
 			log.Printf("[gateway][%s] save approval-pending user message: %v", user.Name, err)
@@ -185,7 +192,7 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 	return Reply{Text: response, PolicyAction: "allow"}
 }
 
-func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, category, queryText, requestID string) {
+func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, category, queryText, requestID string) error {
 	a := &store.Approval{
 		ID:          requestID,
 		UserName:    user.Name,
@@ -197,7 +204,7 @@ func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, ca
 	isNew, err := r.db.UpsertApproval(a)
 	if err != nil {
 		log.Printf("[router] approval upsert: %v", err)
-		return
+		return fmt.Errorf("upserting approval %q: %w", requestID, err)
 	}
 	if isNew && r.notifier != nil {
 		if user.Role == "parent" {
@@ -211,6 +218,7 @@ func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, ca
 			r.notifier.Notify(ctx, a, approveURL, denyURL)
 		}
 	}
+	return nil
 }
 
 func approvalID(userName, category string) string {
