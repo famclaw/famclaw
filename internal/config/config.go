@@ -518,7 +518,11 @@ func (c *Config) LLMEndpointFor(user *UserConfig) LLMEndpoint {
 	// Fall back to legacy single-endpoint config
 	ep := LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.ModelFor(user), APIKey: c.LLM.APIKey}
 	if ep.BaseURL == "" {
-		log.Printf("[config] warning: LLM endpoint is empty for user %q — check llm.base_url in config", user.Name)
+		userName := "<nil>"
+		if user != nil {
+			userName = user.Name
+		}
+		log.Printf("[config] warning: LLM endpoint is empty for user %q — check llm.base_url in config", userName)
 	}
 	return ep
 }
