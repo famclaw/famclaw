@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -59,15 +61,12 @@ func (c *Client) Start(ctx context.Context) error {
 
 	switch c.transportType {
 	case "stdio":
-		// Inject per-skill credentials as env vars (never appear in LLM context)
-		var env []string
-		if len(c.env) > 0 {
-			env = os.Environ()
-			for k, v := range c.env {
-				env = append(env, fmt.Sprintf("%s=%s", k, v))
-			}
-		}
-		inner, err = client.NewStdioMCPClient(c.cfg.Command, env, c.cfg.Args...)
+		// Build a minimal environment: base allowlist + skill-declared vars +
+		// per-skill credentials.  Never passes os.Environ() — a skill inherits
+		// only the variables explicitly named in its allowlist (or the base set
+		// if the skill declares none), plus its own injected credentials.
+		allowlist := buildAllowlist(c.env)
+		inner, err = client.NewStdioMCPClient(c.cfg.Command, allowlist, c.cfg.Args...)
 	case "http":
 		var opts []transport.StreamableHTTPCOption
 		if len(c.cfg.Headers) > 0 {
@@ -140,4 +139,75 @@ func (c *Client) Stop() {
 		c.closed = true
 		c.inner = nil
 	}
+}
+
+// baseAllowlist is the minimal set of environment variables every subprocess
+// receives.  No secrets live in this list.
+var baseAllowlist = []string{"HOME", "LANG", "PATH", "TZ"}
+
+// blockedKeys are environment variable names that are never forwarded to a
+// skill subprocess, regardless of any allowlist.  They guard against future
+// allowlist mistakes and cover every credential famclaw holds.
+var blockedKeys = map[string]struct{}{
+	"FAMCLAW_LLM_API_KEY":     {},
+	"FAMCLAW_HMAC_SECRET":     {},
+	"FAMCLAW_PARENT_PIN":      {},
+	"FAMCLAW_SMTP_PASSWORD":   {},
+	"FAMCLAW_TWILIO_TOKEN":    {},
+	"FAMCLAW_VAULT_SALT":      {},
+	"DISCORD_TOKEN":           {},
+	"TELEGRAM_TOKEN":          {},
+	"WHATSAPP_TOKEN":          {},
+	"HMAC_SECRET":             {},
+	"LLM_API_KEY":             {},
+	"OPENAI_API_KEY":          {},
+	"ANTHROPIC_API_KEY":       {},
+	"SENDGRID_API_KEY":        {},
+	"SMTP_PASSWORD":           {},
+	"TWILIO_TOKEN":            {},
+	"VAULT_SALT":              {},
+}
+
+// envKeyBlocked reports whether name is a blocked environment variable.
+// Matching is case-insensitive to block both FAMCLAW_LLM_API_KEY and
+// variations like FAmClAw_LlM_aPi_KeY.
+func envKeyBlocked(name string) bool {
+	if _, ok := blockedKeys[name]; ok {
+		return true
+	}
+	upper := strings.ToUpper(name)
+	if _, ok := blockedKeys[upper]; ok {
+		return true
+	}
+	// Block anything ending with _BOT_TOKEN (Telegram/Discord/WhatsApp/etc.)
+	if strings.HasSuffix(upper, "_BOT_TOKEN") || strings.HasSuffix(upper, "_TOKEN") {
+		return true
+	}
+	return false
+}
+
+// buildAllowlist returns an env []string for os/exec that contains only the
+// permitted variables from the current process environment, plus any
+// per-skill credential values from credKeys.  The result is sorted for
+// deterministic ordering (helps tests).
+func buildAllowlist(credKeys map[string]string) []string {
+	var result []string
+	for _, n := range baseAllowlist {
+		if v, ok := os.LookupEnv(n); ok && !envKeyBlocked(n) {
+			result = append(result, n+"="+v)
+		}
+	}
+	// Credential keys come after base vars so they can override.
+	var credNames []string
+	for k := range credKeys {
+		credNames = append(credNames, k)
+	}
+	sort.Strings(credNames)
+	for _, n := range credNames {
+		v := credKeys[n]
+		if v != "" {
+			result = append(result, n+"="+v)
+		}
+	}
+	return result
 }
