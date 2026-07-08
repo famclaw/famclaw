@@ -329,8 +329,13 @@ func main() {
 		return resp.Content, nil
 	}
 
+	// Gateway lifecycle context — shared between the session pool and bots.
+	// Cancelled during graceful shutdown so session goroutines exit cleanly.
+	gwCtx, gwCancel := context.WithCancel(context.Background())
+	defer gwCancel()
+
 	// Gateway router
-	router := gateway.NewRouter(cfg, identStore, clf, evaluator, db, notifier, chatFn)
+	router := gateway.NewRouter(gwCtx, cfg, identStore, clf, evaluator, db, notifier, chatFn)
 
 	// Gateway bots
 	var gateways []gateway.Gateway
@@ -347,8 +352,6 @@ func main() {
 		log.Printf("Gateway: WhatsApp enabled (placeholder)")
 	}
 
-	gwCtx, gwCancel := context.WithCancel(context.Background())
-	defer gwCancel()
 	if len(gateways) > 0 {
 		gateway.StartAll(gwCtx, gateways, router.Handle)
 		log.Printf("Gateways: %d started", len(gateways))
@@ -460,7 +463,8 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down…")
-	gwCancel()             // stop gateway bots
+	gwCancel()             // stop gateway bots + cancel session pool shutdownCtx
+	router.Shutdown()      // cancel in-flight session processing
 	sessionCleanupCancel() // stop session-cleanup goroutine
 
 	ctx, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)

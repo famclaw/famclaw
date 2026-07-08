@@ -69,7 +69,11 @@ func (p *SessionPool) Dispatch(ctx context.Context, userName string, msg Message
 		// Queue full — drop oldest with timeout, then enqueue new with timeout
 		log.Printf("[session] %s queue full (10), dropping oldest message", userName)
 		select {
-		case <-sess.queue:
+		case dropped := <-sess.queue:
+			select {
+			case dropped.reply <- Reply{Text: "Request timed out.", PolicyAction: "error"}:
+			default:
+			}
 		case <-time.After(100 * time.Millisecond):
 		}
 		select {
@@ -105,7 +109,16 @@ func (p *SessionPool) runSession(userName string, sess *userSession) {
 			if !ok {
 				return
 			}
-			reply := p.process(p.shutdownCtx, req.msg)
+			ctx, cancel := context.WithCancel(req.ctx)
+			defer cancel()
+			go func() {
+				select {
+				case <-p.shutdownCtx.Done():
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+			reply := p.process(ctx, req.msg)
 			select {
 			case req.reply <- reply:
 			default:
