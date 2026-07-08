@@ -78,7 +78,7 @@ func setupIntegration(t *testing.T) *testEnv {
 		return "LLM response to: " + text, nil
 	}
 
-	router := gateway.NewRouter(cfg, identStore, clf, ev, db, notifier, chatFn)
+	router := gateway.NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn)
 
 	// Link gateway accounts
 	identStore.LinkAccount("parent", "telegram", "parent-tg")
@@ -149,7 +149,7 @@ func TestIntegration_Child_BlockedTopic_LLMNeverCalled(t *testing.T) {
 	env := setupIntegration(t)
 
 	// Replace chat function with panic — LLM must never be called
-	panicRouter := gateway.NewRouter(env.cfg, env.identStore, env.clf, env.evaluator,
+	panicRouter := gateway.NewRouter(context.Background(), env.cfg, env.identStore, env.clf, env.evaluator,
 		env.db, env.notifier, panicChat)
 
 	tests := []struct {
@@ -185,7 +185,7 @@ func TestIntegration_Child_BlockedTopic_LLMNeverCalled(t *testing.T) {
 func TestIntegration_Child_ApprovalTopic_LLMNeverCalled(t *testing.T) {
 	env := setupIntegration(t)
 
-	panicRouter := gateway.NewRouter(env.cfg, env.identStore, env.clf, env.evaluator,
+	panicRouter := gateway.NewRouter(context.Background(), env.cfg, env.identStore, env.clf, env.evaluator,
 		env.db, env.notifier, panicChat)
 
 	tests := []struct {
@@ -252,7 +252,7 @@ func TestIntegration_Parent_AnyTopic_LLMCalled(t *testing.T) {
 func TestIntegration_SamePolicy_AcrossGateways(t *testing.T) {
 	env := setupIntegration(t)
 
-	panicRouter := gateway.NewRouter(env.cfg, env.identStore, env.clf, env.evaluator,
+	panicRouter := gateway.NewRouter(context.Background(), env.cfg, env.identStore, env.clf, env.evaluator,
 		env.db, env.notifier, panicChat)
 
 	tests := []struct {

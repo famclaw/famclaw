@@ -75,7 +75,7 @@ func setupRouter(t *testing.T, chatFn ChatFunc) (*Router, *identity.Store) {
 	clf := classifier.New()
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
 
-	router := NewRouter(cfg, identStore, clf, ev, db, notifier, chatFn)
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn)
 	return router, identStore
 }
 

@@ -53,7 +53,11 @@ type Router struct {
 }
 
 // NewRouter creates a Router with all required dependencies.
+// The ctx is used as the parent for the session pool's shutdown context;
+// passing the application lifecycle context lets session goroutines exit
+// cleanly on graceful shutdown.
 func NewRouter(
+	ctx context.Context,
 	cfg *config.Config,
 	identStore *identity.Store,
 	clf *classifier.Classifier,
@@ -73,8 +77,14 @@ func NewRouter(
 		pendingRegs: make(map[string]*pendingRegistration),
 	}
 	// Session pool dispatches heavy work (classify → policy → LLM) per-user
-	r.pool = NewSessionPool(r.process)
+	r.pool = NewSessionPool(ctx, r.process)
 	return r
+}
+
+// Shutdown cancels the session pool, signalling all session goroutines to
+// exit and cancelling in-flight processing.
+func (r *Router) Shutdown() {
+	r.pool.Shutdown()
 }
 
 // Handle resolves identity (fast), then dispatches to the per-user session pool.
@@ -259,6 +269,11 @@ func runGateway(ctx context.Context, gw Gateway, handler func(ctx context.Contex
 				}
 			}()
 			log.Printf("[gateway] starting %s", gw.Name())
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			if err := gw.Start(ctx, handler); err != nil {
 				if ctx.Err() != nil {
 					return // context cancelled, normal shutdown
