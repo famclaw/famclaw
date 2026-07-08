@@ -534,31 +534,39 @@ func TestComputeEmbeddedPolicyHash(t *testing.T) {
 	}
 }
 
-func TestNewEvaluator_HashMismatch(t *testing.T) {
-	_, err := NewEvaluator("", "", "0000000000000000000000000000000000000000000000000000000000000000")
-	if err == nil {
-		t.Fatal("expected error for hash mismatch, got nil")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "policy hash mismatch") {
-		t.Errorf("error %q should mention 'policy hash mismatch'", msg)
-	}
-}
-
-func TestNewEvaluator_HashMatch(t *testing.T) {
-	// First compute the correct hash
+func TestNewEvaluator_HashVerification(t *testing.T) {
 	correctHash, err := ComputeEmbeddedPolicyHash()
 	if err != nil {
 		t.Fatalf("ComputeEmbeddedPolicyHash: %v", err)
 	}
-
-	// Then use it to construct the evaluator
-	ev, err := NewEvaluator("", "", correctHash)
-	if err != nil {
-		t.Fatalf("NewEvaluator with correct hash: %v", err)
+	tests := []struct {
+		name          string
+		expectedHash  string
+		wantErr       bool
+		wantErrSubstr string
+	}{
+		{"correct hash succeeds", correctHash, false, ""},
+		{"wrong hash fails", "0000000000000000000000000000000000000000000000000000000000000000", true, "policy hash mismatch"},
 	}
-	if ev == nil {
-		t.Fatal("expected non-nil evaluator with correct hash")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev, err := NewEvaluator("", "", tt.expectedHash)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.wantErrSubstr) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.wantErrSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ev == nil {
+				t.Fatal("expected non-nil evaluator")
+			}
+		})
 	}
 }
 

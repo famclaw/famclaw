@@ -75,9 +75,9 @@ func NewEvaluator(policyDir, dataDir, expectedHash string) (*Evaluator, error) {
 		log.Printf("policy_hash=%s (set policies.expected_hash to pin)", hash)
 	}
 
-	// NOTE: modules map is no longer needed after hash computation;
-	// the hash was computed directly from the filesystem, not from
-	// the modules map (which converts bytes→string, losing encoding).
+	// NOTE: the hash is computed directly from the filesystem to ensure
+	// it reflects the exact bytes on disk, independent of the in-memory
+	// modules map used for parsing below.
 
 	store := inmem.NewFromObject(data)
 
