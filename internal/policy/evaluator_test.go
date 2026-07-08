@@ -10,7 +10,7 @@ import (
 
 func setupEvaluator(t *testing.T) *Evaluator {
 	t.Helper()
-	ev, err := NewEvaluator("", "")
+	ev, err := NewEvaluator("", "", "")
 	if err != nil {
 		t.Fatalf("NewEvaluator with embedded policies: %v", err)
 	}
@@ -18,7 +18,7 @@ func setupEvaluator(t *testing.T) *Evaluator {
 }
 
 func TestNewEvaluator_Embedded(t *testing.T) {
-	ev, err := NewEvaluator("", "")
+	ev, err := NewEvaluator("", "", "")
 	if err != nil {
 		t.Fatalf("embedded load: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestNewEvaluator_CustomDir(t *testing.T) {
 	policyDir := filepath.Join(cwd, "policies", "family")
 	dataDir := filepath.Join(cwd, "policies", "data")
 
-	ev, err := NewEvaluator(policyDir, dataDir)
+	ev, err := NewEvaluator(policyDir, dataDir, "")
 	if err != nil {
 		t.Fatalf("filesystem load from %q: %v", policyDir, err)
 	}
@@ -79,7 +79,7 @@ func TestNewEvaluator_HalfOverride(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ev, err := NewEvaluator(tt.policyDir, tt.dataDir)
+			ev, err := NewEvaluator(tt.policyDir, tt.dataDir, "")
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error for half-override, got nil (ev=%v)", ev)
@@ -515,5 +515,63 @@ func makeInput(role, ageGroup, category, requestID string, approvals map[string]
 		},
 		RequestID: requestID,
 		Approvals: approvals,
+	}
+}
+
+func TestComputeEmbeddedPolicyHash(t *testing.T) {
+	hash, err := ComputeEmbeddedPolicyHash()
+	if err != nil {
+		t.Fatalf("ComputeEmbeddedPolicyHash: %v", err)
+	}
+	if len(hash) != 64 {
+		t.Errorf("expected 64 hex chars, got %d: %q", len(hash), hash)
+	}
+	// Verify it's valid hex
+	for _, c := range hash {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			t.Errorf("non-hex char %q in hash", c)
+		}
+	}
+}
+
+func TestNewEvaluator_HashMismatch(t *testing.T) {
+	_, err := NewEvaluator("", "", "0000000000000000000000000000000000000000000000000000000000000000")
+	if err == nil {
+		t.Fatal("expected error for hash mismatch, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "policy hash mismatch") {
+		t.Errorf("error %q should mention 'policy hash mismatch'", msg)
+	}
+}
+
+func TestNewEvaluator_HashMatch(t *testing.T) {
+	// First compute the correct hash
+	correctHash, err := ComputeEmbeddedPolicyHash()
+	if err != nil {
+		t.Fatalf("ComputeEmbeddedPolicyHash: %v", err)
+	}
+
+	// Then use it to construct the evaluator
+	ev, err := NewEvaluator("", "", correctHash)
+	if err != nil {
+		t.Fatalf("NewEvaluator with correct hash: %v", err)
+	}
+	if ev == nil {
+		t.Fatal("expected non-nil evaluator with correct hash")
+	}
+}
+
+func TestComputePolicyHash_Deterministic(t *testing.T) {
+	hash1, err := ComputeEmbeddedPolicyHash()
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	hash2, err := ComputeEmbeddedPolicyHash()
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if hash1 != hash2 {
+		t.Errorf("hash is not deterministic: %q != %q", hash1, hash2)
 	}
 }

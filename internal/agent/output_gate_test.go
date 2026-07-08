@@ -9,7 +9,7 @@ import (
 )
 
 func TestEvaluateAndApply(t *testing.T) {
-	eval, err := policy.NewEvaluator("", "")
+	eval, err := policy.NewEvaluator("", "", "")
 	if err != nil {
 		t.Fatalf("NewEvaluator: %v", err)
 	}

@@ -56,6 +56,10 @@ func main() {
 		runSkillCommand(os.Args[2:])
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "policy" {
+		runPolicyCommand(os.Args[2:])
+		return
+	}
 
 	cfgPath  := flag.String("config", "config.yaml", "Config file path")
 	// seccheck CLI removed — use `honeybadger scan <url>` directly
@@ -100,7 +104,7 @@ func main() {
 	log.Printf("Database: %s", cfg.Storage.DBPath)
 
 	// OPA policy evaluator
-	evaluator, err := policy.NewEvaluator(cfg.Policies.Dir, cfg.Policies.DataDir)
+	evaluator, err := policy.NewEvaluator(cfg.Policies.Dir, cfg.Policies.DataDir, cfg.Policies.ExpectedHash)
 	must(err, "policy")
 	switch {
 	case cfg.Policies.Dir != "" && cfg.Policies.DataDir != "":
