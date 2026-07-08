@@ -63,6 +63,9 @@ llm:
       api_key: "${OPENAI_API_KEY}"
 ```
 
+**Security note:** `llm.api_key` is loaded from plaintext YAML by default.
+Set `FAMCLAW_LLM_API_KEY` environment variable to override — it takes precedence and avoids logging the plaintext warning.
+
 ---
 
 ## Quick start

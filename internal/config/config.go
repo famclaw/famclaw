@@ -315,8 +315,29 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	resolveLLMAPIKey(&cfg)
 	applyDefaults(&cfg)
 	return &cfg, nil
+}
+
+// resolveLLMAPIKey applies the env-var-over-YAML precedence for the LLM API key.
+// Precedence (highest wins):
+//
+//	1. FAMCLAW_LLM_API_KEY environment variable
+//	2. YAML llm.api_key field
+//
+// If the env var is set it overrides the YAML value silently.
+// If only YAML is set (and non-empty) a warning is logged — the key is
+// never logged itself.  When both are empty the config field is left
+// untouched (existing behaviour — caller validates at startup).
+func resolveLLMAPIKey(c *Config) {
+	if envKey := os.Getenv("FAMCLAW_LLM_API_KEY"); envKey != "" {
+		c.LLM.APIKey = envKey
+		return
+	}
+	if c.LLM.APIKey != "" {
+		log.Printf("[config] llm.api_key: loaded from plaintext YAML config — prefer FAMCLAW_LLM_API_KEY environment variable")
+	}
 }
 
 func applyDefaults(c *Config) {
