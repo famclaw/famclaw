@@ -53,6 +53,10 @@ When the user asks to check a skill, run `seccheck <url>`.
 
 The **frontmatter** declares metadata. The **body** is injected into the AI's system prompt as AgentSkills XML, telling the AI when and how to use the skill.
 
+### Skill name validation
+
+The `name` field becomes the skill's on-disk directory. It is validated at install time and must match `^[a-zA-Z0-9_-]{1,64}$` — alphanumerics (any case), hyphens, and underscores only, 1–64 characters. Names containing path separators (`/`, `\`), `..`, or control characters are rejected.
+
 ### Environment allowlist
 
 By default, FamClaw passes only four variables to every skill subprocess: `HOME`, `LANG`, `PATH`, `TZ`. All other process environment variables are stripped.
