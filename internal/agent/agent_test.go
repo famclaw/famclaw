@@ -32,7 +32,7 @@ func setupAgent(t *testing.T, serverURL string) *Agent {
 	t.Cleanup(func() { db.Close() })
 
 	// Policies are embedded in the binary.
-	ev, err := policy.NewEvaluator("", "")
+	ev, err := policy.NewEvaluator("", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +628,7 @@ func TestHandleProposeFamilyFact_Parent_AutoApply(t *testing.T) {
 	}}
 
 	// Real evaluator so the OPA gate fires (uses embedded policies).
-	ev, err := policy.NewEvaluator("", "")
+	ev, err := policy.NewEvaluator("", "", "")
 	if err != nil {
 		t.Fatalf("evaluator: %v", err)
 	}

@@ -36,7 +36,7 @@ func TestTelegram_UnknownAccount_AutoLink(t *testing.T) {
 	identStore := identity.NewStore(db)
 	clf := classifier.New()
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, cfg.Server.Secret)
-	ev, err := policy.NewEvaluator("", "")
+	ev, err := policy.NewEvaluator("", "", "")
 	if err != nil {
 		t.Fatalf("policy.NewEvaluator: %v", err)
 	}
