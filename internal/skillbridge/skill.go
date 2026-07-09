@@ -69,7 +69,7 @@ func ParseSKILLMDContent(content, path string) (*Skill, error) {
 	return &skill, nil
 }
 
-// nameRegex is the allowlist for valid skill names: lowercase alphanumerics,
+// nameRegex is the allowlist for valid skill names: alphanumerics (any case),
 // hyphens and underscores, 1–64 characters. No path separators, no "..",
 // no control characters.
 var nameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
