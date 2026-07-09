@@ -432,7 +432,9 @@ func TestStdioEnvIsolation(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"LEAK=0\n" +
 		"for v in FAMCLAW_LLM_API_KEY TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN HMAC_SECRET SMTP_PASSWORD; do\n" +
-		"  if [ -n \"${!v:-}\" ]; then echo \"LEAKED:$v\"; LEAK=1; fi; done\n" +
+		`  eval "val=\${$v:-}"` + "\n" +
+		`  if [ -n "$val" ]; then echo "LEAKED:$v"; LEAK=1; fi` + "\n" +
+		"done\n" +
 		"exit $LEAK\n"
 
 	scriptPath := "envcheck_test.sh"
