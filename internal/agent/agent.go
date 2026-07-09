@@ -206,6 +206,16 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		}
 	}
 
+	// Buffer tokens during streaming so the output gate can evaluate the
+	// full response before any token reaches the gateway.
+	// This closes the streamed-output-gate bypass: tokens are no longer
+	// emitted live; they are collected, gated, then emitted in one burst.
+	var bufferedTokens []string
+	var tokenCh chan string
+	if onToken != nil {
+		tokenCh = make(chan string, 256)
+	}
+
 	// Assemble and run the pipeline
 	deps := agentcore.FamilyPipelineDeps{
 		Classifier:    a.classifier,
@@ -216,7 +226,9 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		Temperature:   a.cfg.LLM.Temperature,
 		MaxTokens:     a.cfg.LLM.MaxResponseTokens,
 		ContextWindow: a.cfg.LLM.MaxContextTokens,
-		OnToken:       onToken,
+	}
+	if tokenCh != nil {
+		deps.OnToken = func(tok string) { tokenCh <- tok }
 	}
 
 	// Wire builtin tool handler (spawn_agent, web_fetch, etc.)
@@ -286,6 +298,22 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 			}, nil
 		}
 		turn.Output = final
+	}
+
+	// Drain buffered tokens after pipeline completes and gate allows.
+	// If the gate blocked (output_blocked set by NewStagePolicyOutput),
+	// we never reach here — the turn.Output is already the safe fallback.
+	if tokenCh != nil {
+		close(tokenCh)
+		for tok := range tokenCh {
+			bufferedTokens = append(bufferedTokens, tok)
+		}
+		// Only emit if the pipeline didn't block the output.
+		if blocked, ok := turn.GetMeta("output_blocked"); !ok || !blocked.(bool) {
+			for _, tok := range bufferedTokens {
+				onToken(tok)
+			}
+		}
 	}
 
 	// Empty-response guard. Local LLMs (Nemotron particularly) occasionally

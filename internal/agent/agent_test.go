@@ -755,3 +755,127 @@ func TestIsSubagentExcludedTool(t *testing.T) {
 		}
 	}
 }
+
+// TestStreamedOutputGate verifies that blocked streamed tokens never reach
+// the onToken callback — this is the regression for the streamed-output-
+// gate bypass where the LLM streamed tokens directly to the gateway before
+// EvaluateAndApply could filter them.
+func TestStreamedOutputGate(t *testing.T) {
+	t.Run("blocked response never emits tokens to onToken", func(t *testing.T) {
+		// Collect every token the callback receives.
+		var tokens []string
+		onToken := func(tok string) {
+			tokens = append(tokens, tok)
+		}
+
+		// LLM returns a response with a hard-blocked keyword.
+		server := mockLLMServer(t, []llm.Message{
+			{Role: "assistant", Content: "I don't want to live anymore, I want to suicide"},
+		})
+		defer server.Close()
+
+		db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		ev, err := policy.NewEvaluator("", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &config.Config{
+			LLM: config.LLMConfig{
+				BaseURL:           server.URL,
+				Model:             "test",
+				Temperature:       0.7,
+				MaxResponseTokens: 100,
+			},
+			Users: []config.UserConfig{
+				{Name: "child1", DisplayName: "Child", Role: "child", AgeGroup: "age_8_12"},
+			},
+		}
+		user := &cfg.Users[0]
+		client := llm.NewClient(server.URL, "test", "")
+		clf := classifier.New()
+
+		agent := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
+
+		_, err = agent.Chat(context.Background(), "hello", onToken)
+		if err != nil {
+			t.Fatalf("Chat: %v", err)
+		}
+
+		// The hard-blocked keyword means the output gate must deny.
+		// No tokens should have been emitted via onToken.
+		if len(tokens) > 0 {
+			t.Errorf("onToken was called %d times — streamed tokens leaked before the gate", len(tokens))
+			for i, tok := range tokens {
+				t.Errorf("  token[%d] = %q", i, tok)
+			}
+		}
+	})
+
+	t.Run("allowed response emits all tokens in burst after gate", func(t *testing.T) {
+		var tokens []string
+		onToken := func(tok string) {
+			tokens = append(tokens, tok)
+		}
+
+		// LLM returns a benign response.
+		server := mockLLMServer(t, []llm.Message{
+			{Role: "assistant", Content: "Hello there, how can I help?"},
+		})
+		defer server.Close()
+
+		db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		ev, err := policy.NewEvaluator("", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &config.Config{
+			LLM: config.LLMConfig{
+				BaseURL:           server.URL,
+				Model:             "test",
+				Temperature:       0.7,
+				MaxResponseTokens: 100,
+			},
+			Users: []config.UserConfig{
+				{Name: "child1", DisplayName: "Child", Role: "child", AgeGroup: "age_8_12"},
+			},
+		}
+		user := &cfg.Users[0]
+		client := llm.NewClient(server.URL, "test", "")
+		clf := classifier.New()
+
+		agent := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
+
+		resp, err := agent.Chat(context.Background(), "hi", onToken)
+		if err != nil {
+			t.Fatalf("Chat: %v", err)
+		}
+
+		// The benign response should pass the gate and emit all tokens.
+		if resp.Content != "Hello there, how can I help?" {
+			t.Errorf("Content = %q, want 'Hello there, how can I help?'", resp.Content)
+		}
+		if resp.PolicyAction != "allow" {
+			t.Errorf("PolicyAction = %q, want allow", resp.PolicyAction)
+		}
+		if len(tokens) == 0 {
+			t.Fatal("onToken was never called — tokens were not emitted for an allowed response")
+		}
+		// All tokens should be collected into one combined string.
+		got := strings.Join(tokens, "")
+		if got != "Hello there, how can I help?" {
+			t.Errorf("combined tokens = %q, want 'Hello there, how can I help?'", got)
+		}
+	})
+}
