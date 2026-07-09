@@ -82,7 +82,14 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			// like a hung bot.
 			stopTyping := make(chan struct{})
 			go func(chatID int64) {
-				_ = b.sendChatAction(ctx, chatID, "typing")
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				if err := b.sendChatAction(ctx, chatID, "typing"); err != nil {
+					log.Printf("[telegram] typing indicator: %v", err)
+				}
 				t := time.NewTicker(4 * time.Second)
 				defer t.Stop()
 				for {
@@ -92,7 +99,9 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 					case <-stopTyping:
 						return
 					case <-t.C:
-						_ = b.sendChatAction(ctx, chatID, "typing")
+						if err := b.sendChatAction(ctx, chatID, "typing"); err != nil {
+							log.Printf("[telegram] typing indicator: %v", err)
+						}
 					}
 				}
 			}(u.Message.Chat.ID)
