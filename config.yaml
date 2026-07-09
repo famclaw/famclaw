@@ -25,6 +25,7 @@ llm:
   base_url: ""
   model: ""
   # api_key: ""  # required for cloud providers, omit for Ollama
+  # Prefer: export FAMCLAW_LLM_API_KEY=<key> (env overrides YAML, no plaintext warning)
 
   # System prompt injected for all family interactions
   system_prompt: |

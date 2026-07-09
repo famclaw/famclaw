@@ -316,8 +316,29 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	resolveLLMAPIKey(&cfg)
 	applyDefaults(&cfg)
 	return &cfg, nil
+}
+
+// resolveLLMAPIKey applies the env-var-over-YAML precedence for the LLM API key.
+// Precedence (highest wins):
+//
+//	1. FAMCLAW_LLM_API_KEY environment variable
+//	2. YAML llm.api_key field
+//
+// If the env var is set it overrides the YAML value silently.
+// If only YAML is set (and non-empty) a warning is logged — the key is
+// never logged itself.  When both are empty the config field is left
+// untouched (existing behaviour — caller validates at startup).
+func resolveLLMAPIKey(c *Config) {
+	if envKey := os.Getenv("FAMCLAW_LLM_API_KEY"); envKey != "" {
+		c.LLM.APIKey = envKey
+		return
+	}
+	if c.LLM.APIKey != "" {
+		log.Printf("[config] llm.api_key: loaded from plaintext YAML config — prefer FAMCLAW_LLM_API_KEY environment variable")
+	}
 }
 
 func applyDefaults(c *Config) {
@@ -517,7 +538,15 @@ func (c *Config) LLMEndpointFor(user *UserConfig) LLMEndpoint {
 		log.Printf("[config] warning: default LLM profile %q not found, using legacy config", c.LLM.Default)
 	}
 	// Fall back to legacy single-endpoint config
-	return LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.ModelFor(user), APIKey: c.LLM.APIKey}
+	ep := LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.ModelFor(user), APIKey: c.LLM.APIKey}
+	if ep.BaseURL == "" {
+		userName := "<nil>"
+		if user != nil {
+			userName = user.Name
+		}
+		log.Printf("[config] warning: LLM endpoint is empty for user %q — check llm.base_url in config", userName)
+	}
+	return ep
 }
 
 // LLMEndpointForProfile resolves an LLM endpoint by profile name directly.
@@ -530,7 +559,11 @@ func (c *Config) LLMEndpointForProfile(profileName string) LLMEndpoint {
 		return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey}
 	}
 	log.Printf("[config] warning: LLM profile %q not found", profileName)
-	return LLMEndpoint{}
+	ep := LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.LLM.Model, APIKey: c.LLM.APIKey}
+	if ep.BaseURL == "" {
+		log.Printf("[config] warning: LLM endpoint is empty for profile %q — check llm.base_url in config", profileName)
+	}
+	return ep
 }
 
 // ValidateProvider checks that the configured LLM provider is valid.
