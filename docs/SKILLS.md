@@ -53,6 +53,26 @@ When the user asks to check a skill, run `seccheck <url>`.
 
 The **frontmatter** declares metadata. The **body** is injected into the AI's system prompt as AgentSkills XML, telling the AI when and how to use the skill.
 
+### Environment allowlist
+
+By default, FamClaw passes only four variables to every skill subprocess: `HOME`, `LANG`, `PATH`, `TZ`. All other process environment variables are stripped.
+
+If a skill needs additional credentials (API keys, tokens, etc.), it can declare them in its frontmatter:
+
+```yaml
+---
+name: my-skill
+description: What it does
+env_allowlist:
+  - MY_API_KEY
+  - CUSTOM_CONFIG_PATH
+---
+```
+
+FamClaw will then pass through any of those keys present in its process environment. The allowlist is **case-sensitive** and additive — the default four variables are always included regardless of frontmatter.
+
+A hard blocklist protects credentials that must never reach a skill subprocess, regardless of frontmatter: bot tokens, LLM API keys, HMAC secrets, SMTP passwords, and other sensitive variables are always rejected even if declared in `env_allowlist`.
+
 ---
 
 ## Writing a skill
