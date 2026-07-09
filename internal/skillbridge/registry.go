@@ -29,7 +29,7 @@ type InstallConfig struct {
 // Registry manages installed skills on disk.
 type Registry struct {
 	dir     string
-	scanner Scanner       // may be nil if scanning is disabled
+	scanner Scanner // may be nil if scanning is disabled
 	cfg     InstallConfig
 }
 
