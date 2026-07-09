@@ -92,8 +92,20 @@ func (r *Registry) Install(ctx context.Context, nameOrPath string) (*Skill, erro
 		}
 	}
 
+	// Validate skill name is safe before using it as a path component.
+	if err := ValidateName(skill.Name); err != nil {
+		return nil, fmt.Errorf("invalid skill name: %w", err)
+	}
+
 	// Copy skill file to registry dir
 	destDir := filepath.Join(r.dir, skill.Name)
+
+	// Defense-in-depth: verify the resolved directory is still inside the
+	// skills root, catching symlinks or unexpected filesystem layout.
+	if err := ValidateInstalledDir(r.dir, destDir); err != nil {
+		return nil, fmt.Errorf("skill directory path invalid: %w", err)
+	}
+
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating skill dir: %w", err)
 	}
