@@ -53,22 +53,6 @@ func New() *Client {
 // compile-time assertion that *Client implements llm.Chatter
 var _ llm.Chatter = (*Client)(nil)
 
-// claudeStreamChunk represents a single chunk from the claude CLI's --output-format stream-json.
-type claudeStreamChunk struct {
-	Type         string `json:"type"`
-	ContentBlock *struct {
-		Type  string `json:"type"`
-		Text  string `json:"text"`
-		Index int    `json:"index"`
-	} `json:"content_block,omitempty"`
-	Delta *struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"delta,omitempty"`
-	StopReason string `json:"stop_reason,omitempty"`
-	Index      int    `json:"index,omitempty"`
-}
-
 // Chat passes the full conversation to the claude CLI using stream-json I/O:
 //
 //	--system-prompt "<system prompt>"  (first system message content, if any)
