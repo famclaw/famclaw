@@ -164,7 +164,7 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		if adjustedUser.Role != "parent" {
 			return Reply{Text: "Only a parent can manage skills.", PolicyAction: "block"}
 		}
-		return r.handleSkillCommand(ctx, fields)
+		return r.handleSkillCommand(ctx, adjustedUser.Name, fields)
 	}
 
 	decision, err := r.evaluator.Evaluate(ctx, policy.Input{
@@ -495,7 +495,11 @@ func (r *Router) cleanExpiredPending() {
 }
 
 // handleSkillCommand processes parent-only skill management commands.
-func (r *Router) handleSkillCommand(ctx context.Context, fields []string) Reply {
+//
+// Mutating commands (install/enable/disable) change what executable MCP
+// skill servers run, so each is audit-logged with the invoking parent and
+// its outcome — this path bypasses the normal policy/persistence flow.
+func (r *Router) handleSkillCommand(ctx context.Context, actor string, fields []string) Reply {
 	if len(fields) < 2 {
 		return Reply{Text: "Skill management: skill list | skill install <name> | skill enable <name> | skill disable <name>", PolicyAction: "skill"}
 	}
@@ -522,8 +526,10 @@ func (r *Router) handleSkillCommand(ctx context.Context, fields []string) Reply 
 		}
 		skill, err := r.registry.Install(ctx, fields[2])
 		if err != nil {
+			log.Printf("[router][skill] parent %s: install %q failed: %v", actor, fields[2], err)
 			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
 		}
+		log.Printf("[router][skill] parent %s installed skill %q", actor, skill.Name)
 		return Reply{Text: "Installed skill: " + skill.Name, PolicyAction: "skill"}
 
 	case "enable":
@@ -531,8 +537,10 @@ func (r *Router) handleSkillCommand(ctx context.Context, fields []string) Reply 
 			return Reply{Text: "Usage: skill enable <name>", PolicyAction: "skill"}
 		}
 		if err := r.registry.Enable(fields[2]); err != nil {
+			log.Printf("[router][skill] parent %s: enable %q failed: %v", actor, fields[2], err)
 			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
 		}
+		log.Printf("[router][skill] parent %s enabled skill %q", actor, fields[2])
 		return Reply{Text: "Enabled skill: " + fields[2], PolicyAction: "skill"}
 
 	case "disable":
@@ -540,8 +548,10 @@ func (r *Router) handleSkillCommand(ctx context.Context, fields []string) Reply 
 			return Reply{Text: "Usage: skill disable <name>", PolicyAction: "skill"}
 		}
 		if err := r.registry.Disable(fields[2]); err != nil {
+			log.Printf("[router][skill] parent %s: disable %q failed: %v", actor, fields[2], err)
 			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
 		}
+		log.Printf("[router][skill] parent %s disabled skill %q", actor, fields[2])
 		return Reply{Text: "Disabled skill: " + fields[2], PolicyAction: "skill"}
 
 	default:
