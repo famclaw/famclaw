@@ -761,121 +761,161 @@ func TestIsSubagentExcludedTool(t *testing.T) {
 // gate bypass where the LLM streamed tokens directly to the gateway before
 // EvaluateAndApply could filter them.
 func TestStreamedOutputGate(t *testing.T) {
-	t.Run("blocked response never emits tokens to onToken", func(t *testing.T) {
-		// Collect every token the callback receives.
-		var tokens []string
-		onToken := func(tok string) {
-			tokens = append(tokens, tok)
-		}
+	tests := []struct {
+		name           string
+		userRole       string
+		userAgeGroup   string
+		llmResponse    string
+		expectBlocked  bool   // output gate blocked (no tokens emitted, safe content)
+		expectRedact   bool   // soft-blocked: tokens emitted but content redacted
+		expectSafeMsg  bool   // blocked: content replaced with safe fallback
+		expectTokens   int    // 0 = blocked, >0 = allowed/soft-blocked (at least one token emitted)
+	}{
+		{
+			name:         "hard-blocked self_harm child",
+			userRole:     "child",
+			userAgeGroup: "age_8_12",
+			llmResponse:  "I don't want to live anymore, I want to suicide",
+			expectBlocked: true,
+			expectSafeMsg: true,
+			expectTokens:  0,
+		},
+		{
+			name:         "hard-blocked violence parent",
+			userRole:     "parent",
+			userAgeGroup: "adult",
+			llmResponse:  "Here is how to make a bomb and kill yourself",
+			expectBlocked: true,
+			expectSafeMsg: true,
+			expectTokens:  0,
+		},
+		{
+			name:         "hard-blocked extreme_content",
+			userRole:     "child",
+			userAgeGroup: "under_8",
+			llmResponse:  "That involves pornography and explicit content",
+			expectBlocked: true,
+			expectSafeMsg: true,
+			expectTokens:  0,
+		},
+		{
+			name:         "hard-blocked illegal_harm",
+			userRole:     "child",
+			userAgeGroup: "age_13_17",
+			llmResponse:  "How to steal and how to hack a computer",
+			expectBlocked: true,
+			expectSafeMsg: true,
+			expectTokens:  0,
+		},
+		{
+			name:         "allowed_benign_child",
+			userRole:     "child",
+			userAgeGroup: "age_8_12",
+			llmResponse:  "Hello there, how can I help?",
+			expectBlocked: false,
+			expectTokens:  1,
+		},
+	{
+			name:          "allowed_benign_parent",
+			userRole:      "parent",
+			userAgeGroup:  "adult",
+			llmResponse:   "Sure, I can help with that.",
+			expectBlocked: false,
+		},
+		{
+			name:         "soft_blocked_child_violence",
+			userRole:     "child",
+			userAgeGroup: "under_8",
+			llmResponse:  "The movie had a lot of violence and death",
+			expectBlocked: false,
+			expectRedact: true,
+			expectTokens: 1,
+		},
+		{
+			name:          "allowed_parent_soft_blocked_passes",
+			userRole:      "parent",
+			userAgeGroup:  "adult",
+			llmResponse:   "The movie had a lot of violence and death",
+			expectBlocked: false,
+		},
+	}
 
-		// LLM returns a response with a hard-blocked keyword.
-		server := mockLLMServer(t, []llm.Message{
-			{Role: "assistant", Content: "I don't want to live anymore, I want to suicide"},
-		})
-		defer server.Close()
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-		db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer db.Close()
-
-		ev, err := policy.NewEvaluator("", "")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		cfg := &config.Config{
-			LLM: config.LLMConfig{
-				BaseURL:           server.URL,
-				Model:             "test",
-				Temperature:       0.7,
-				MaxResponseTokens: 100,
-			},
-			Users: []config.UserConfig{
-				{Name: "child1", DisplayName: "Child", Role: "child", AgeGroup: "age_8_12"},
-			},
-		}
-		user := &cfg.Users[0]
-		client := llm.NewClient(server.URL, "test", "")
-		clf := classifier.New()
-
-		agent := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
-
-		_, err = agent.Chat(context.Background(), "hello", onToken)
-		if err != nil {
-			t.Fatalf("Chat: %v", err)
-		}
-
-		// The hard-blocked keyword means the output gate must deny.
-		// No tokens should have been emitted via onToken.
-		if len(tokens) > 0 {
-			t.Errorf("onToken was called %d times — streamed tokens leaked before the gate", len(tokens))
-			for i, tok := range tokens {
-				t.Errorf("  token[%d] = %q", i, tok)
+			// Collect every token the callback receives.
+			var tokens []string
+			onToken := func(tok string) {
+				tokens = append(tokens, tok)
 			}
-		}
-	})
 
-	t.Run("allowed response emits all tokens in burst after gate", func(t *testing.T) {
-		var tokens []string
-		onToken := func(tok string) {
-			tokens = append(tokens, tok)
-		}
+			// LLM returns the test response.
+			server := mockLLMServer(t, []llm.Message{
+				{Role: "assistant", Content: tt.llmResponse},
+			})
+			defer server.Close()
 
-		// LLM returns a benign response.
-		server := mockLLMServer(t, []llm.Message{
-			{Role: "assistant", Content: "Hello there, how can I help?"},
+			db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			ev, err := policy.NewEvaluator("", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := &config.Config{
+				LLM: config.LLMConfig{
+					BaseURL:           server.URL,
+					Model:             "test",
+					Temperature:       0.7,
+					MaxResponseTokens: 100,
+				},
+				Users: []config.UserConfig{
+					{Name: "user1", DisplayName: "User", Role: tt.userRole, AgeGroup: tt.userAgeGroup},
+				},
+			}
+			user := &cfg.Users[0]
+			client := llm.NewClient(server.URL, "test", "")
+			clf := classifier.New()
+
+			agent := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
+
+			resp, err := agent.Chat(context.Background(), "hello", onToken)
+			if err != nil {
+				t.Fatalf("Chat: %v", err)
+			}
+
+			if tt.expectBlocked {
+				// Hard-blocked: no tokens should ever reach onToken.
+				if len(tokens) > 0 {
+					t.Errorf("onToken was called %d times — streamed tokens leaked before the gate", len(tokens))
+					for i, tok := range tokens {
+						t.Errorf("  token[%d] = %q", i, tok)
+					}
+				}
+				if tt.expectSafeMsg {
+					// Blocked responses get a safe fallback message.
+					if !strings.Contains(resp.Content, "unable to send") {
+						t.Errorf("Content = %q, expected safe fallback for blocked output", resp.Content)
+					}
+				}
+			} else {
+				// Not blocked: tokens must have been emitted after the gate.
+				if tt.expectTokens > 0 && len(tokens) == 0 {
+					t.Fatal("onToken was never called — tokens were not emitted for an allowed response")
+				}
+				if tt.expectRedact {
+					// Soft-blocked: content should have redacted keywords.
+					if !strings.Contains(resp.Content, "[redacted]") {
+						t.Errorf("Content = %q, expected redacted keywords for soft-blocked output", resp.Content)
+					}
+				}
+			}
 		})
-		defer server.Close()
-
-		db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer db.Close()
-
-		ev, err := policy.NewEvaluator("", "")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		cfg := &config.Config{
-			LLM: config.LLMConfig{
-				BaseURL:           server.URL,
-				Model:             "test",
-				Temperature:       0.7,
-				MaxResponseTokens: 100,
-			},
-			Users: []config.UserConfig{
-				{Name: "child1", DisplayName: "Child", Role: "child", AgeGroup: "age_8_12"},
-			},
-		}
-		user := &cfg.Users[0]
-		client := llm.NewClient(server.URL, "test", "")
-		clf := classifier.New()
-
-		agent := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
-
-		resp, err := agent.Chat(context.Background(), "hi", onToken)
-		if err != nil {
-			t.Fatalf("Chat: %v", err)
-		}
-
-		// The benign response should pass the gate and emit all tokens.
-		if resp.Content != "Hello there, how can I help?" {
-			t.Errorf("Content = %q, want 'Hello there, how can I help?'", resp.Content)
-		}
-		if resp.PolicyAction != "allow" {
-			t.Errorf("PolicyAction = %q, want allow", resp.PolicyAction)
-		}
-		if len(tokens) == 0 {
-			t.Fatal("onToken was never called — tokens were not emitted for an allowed response")
-		}
-		// All tokens should be collected into one combined string.
-		got := strings.Join(tokens, "")
-		if got != "Hello there, how can I help?" {
-			t.Errorf("combined tokens = %q, want 'Hello there, how can I help?'", got)
-		}
-	})
+	}
 }
