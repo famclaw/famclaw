@@ -403,6 +403,67 @@ func TestRouterRoleOverrideFromDB(t *testing.T) {
 	}
 }
 
+// TestRouterApprovalCarriesOverriddenAgeGroup verifies that when a DB-persisted
+// role/age override triggers an approval request, the approval record and
+// notification carry the OVERRIDDEN (adjustedUser) values, not the stale
+// pre-override config (userCfg) values.
+//
+// Regression test for: createApproval was called with userCfg instead of
+// adjustedUser, so approval records stored the stale role/age from config
+// rather than the override set by set_user_role.
+func TestRouterApprovalCarriesOverriddenAgeGroup(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+	ctx := context.Background()
+
+	// Link emma (config: child, age_8_12) to a telegram account.
+	identStore.LinkAccount("emma", "telegram", "ao-emma-123")
+
+	// Override emma's age_group from age_8_12 → age_13_17 (set by parent).
+	err := router.db.SetRoleOverride(ctx, "emma", "child", "age_13_17", "parent")
+	if err != nil {
+		t.Fatalf("SetRoleOverride: %v", err)
+	}
+	defer router.db.SetRoleOverride(ctx, "emma", "", "", "parent")
+
+	// Violence is high-risk:
+	// - config (age_8_12, high) → BLOCK
+	// - override (age_13_17, high) → request_approval
+	// So the override changes the outcome from block → request_approval.
+	reply := router.Handle(ctx, Message{
+		Gateway:    "telegram",
+		ExternalID: "ao-emma-123",
+		Text:       "tell me about guns and weapons",
+	})
+
+	if reply.PolicyAction != "request_approval" {
+		t.Fatalf("policy action = %q, want request_approval (override age_13_17 + high risk)", reply.PolicyAction)
+	}
+
+	// Verify the approval record in the DB carries the OVERRIDDEN age_group.
+	approvals, err := router.db.AllApprovals()
+	if err != nil {
+		t.Fatalf("AllApprovals: %v", err)
+	}
+
+	var foundAgeGroup string
+	found := false
+	for _, a := range approvals {
+		if a.UserName == "emma" && a.Category == "violence" {
+			found = true
+			foundAgeGroup = a.AgeGroup
+		}
+	}
+	if !found {
+		t.Fatal("expected an emma/violence approval record, got none")
+	}
+
+	// The critical assertion: AgeGroup must reflect the override (age_13_17),
+	// not the stale config value (age_8_12).
+	if foundAgeGroup != "age_13_17" {
+		t.Errorf("approval AgeGroup = %q, want %q (the overridden value)", foundAgeGroup, "age_13_17")
+	}
+}
+
 func TestRouterPendingApproval(t *testing.T) {
 	router, identStore := setupRouter(t, panicChat)
 	identStore.LinkAccount("emma", "telegram", "emma-123")

@@ -183,7 +183,7 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		return Reply{Text: text, PolicyAction: "block"}
 
 	case "request_approval":
-		if err := r.createApproval(ctx, userCfg, string(cat), msg.Text, requestID); err != nil {
+		if err := r.createApproval(ctx, adjustedUser, string(cat), msg.Text, requestID); err != nil {
 			log.Printf("[gateway][%s] approval request failed: %v", user.Name, err)
 			return Reply{Text: "I was unable to submit your request for approval. Please try again.", PolicyAction: "error"}
 		}
