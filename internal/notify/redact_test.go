@@ -7,14 +7,6 @@ import (
 	"testing"
 )
 
-func slackTestURL() string {
-	return "https://hooks" + ".slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
-}
-
-func slackRedactedURL() string {
-	return "https://hooks" + ".slack.com/services/T00000000/B00000000/<REDACTED>"
-}
-
 func TestRedactWebhookURLInError(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -26,6 +18,12 @@ func TestRedactWebhookURLInError(t *testing.T) {
 			name:   "nil error",
 			err:     nil,
 			want:    "",
+			redact:  false,
+		},
+		{
+			name:   "plain error without tokens",
+			err:     errors.New("some other error"),
+			want:    "some other error",
 			redact:  false,
 		},
 		{
@@ -45,12 +43,6 @@ func TestRedactWebhookURLInError(t *testing.T) {
 			err:     fmt.Errorf("posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret"),
 			want:    "posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer <REDACTED>",
 			redact:  true,
-		},
-		{
-			name:   "plain error without tokens",
-			err:     errors.New("some other error"),
-			want:    "some other error",
-			redact:  false,
 		},
 	}
 
@@ -75,4 +67,46 @@ func TestRedactWebhookURLInError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Telegram bot token appears as /bot<TOKEN>/ in the path.
+func TestRedactTelegramBotToken(t *testing.T) {
+	err := redactWebhookURLInError(errors.New(`poll: Get "https://api.telegram.org/bot123456:ABC/getUpdates": dial failed`))
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "bot<REDACTED>") {
+		t.Errorf("expected bot token redacted, got: %s", got)
+	}
+	if strings.Contains(got, "123456:ABC") {
+		t.Errorf("original bot token still present: %s", got)
+	}
+}
+
+// TestRedactMultiplePlatforms proves that a single error containing URLs from
+// two different platforms has both redacted.
+func TestRedactMultiplePlatforms(t *testing.T) {
+	slackURL := slackTestURL()
+	discordURL := "https://discord.com/api/webhooks/987654321/token_xyz"
+	msg := fmt.Sprintf("slack: Post \"%s\" discord: Post \"%s\": connection refused", slackURL, discordURL)
+	err := redactWebhookURLInError(errors.New(msg))
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "slack.com/services/T00000000/B00000000/<REDACTED>") {
+		t.Errorf("slack token not redacted: %s", got)
+	}
+	if !strings.Contains(got, "discord.com/api/webhooks/987654321/<REDACTED>") {
+		t.Errorf("discord token not redacted: %s", got)
+	}
+}
+
+func slackTestURL() string {
+	return "https://hooks" + ".slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+}
+
+func slackRedactedURL() string {
+	return "https://hooks" + ".slack.com/services/T00000000/B00000000/<REDACTED>"
 }
