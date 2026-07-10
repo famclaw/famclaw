@@ -287,21 +287,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check for a DB-persisted role/age override that supersedes the config row.
-	// Use a local copy (adjustedUser) to avoid mutating the shared config pointer.
-	adjustedUser := userCfg
-	if role, ageGroup, err := s.db.GetRoleOverride(r.Context(), userName); err == nil {
-		if role != "" || ageGroup != "" {
-			copied := *userCfg
-			if role != "" {
-				copied.Role = role
-			}
-			if ageGroup != "" {
-				copied.AgeGroup = ageGroup
-			}
-			adjustedUser = &copied
-		}
-	}
+	// Resolve the role/age override (if any) that supersedes the config row.
+	adjustedUser := s.resolveUserRole(r.Context(), userName)
 
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -703,4 +690,30 @@ func jsonErr(w http.ResponseWriter, err error, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
+}
+
+// resolveUserRole returns the effective UserConfig for userName, applying any
+// DB-persisted role/age override (set via set_user_role) that supersedes the
+// config row. Returns userCfg unchanged when no override exists.
+func (s *Server) resolveUserRole(ctx context.Context, userName string) *config.UserConfig {
+	userCfg := s.cfg.GetUser(userName)
+	if userCfg == nil {
+		return nil
+	}
+	role, ageGroup, err := s.db.GetRoleOverride(ctx, userName)
+	if err != nil {
+		log.Printf("[ws] %s: GetRoleOverride error: %v — falling back to config", userName, err)
+		return userCfg
+	}
+	if role != "" || ageGroup != "" {
+		copied := *userCfg
+		if role != "" {
+			copied.Role = role
+		}
+		if ageGroup != "" {
+			copied.AgeGroup = ageGroup
+		}
+		return &copied
+	}
+	return userCfg
 }

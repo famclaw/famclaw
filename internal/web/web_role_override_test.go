@@ -2,8 +2,6 @@ package web
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -15,11 +13,11 @@ import (
 	"github.com/famclaw/famclaw/internal/store"
 )
 
-// TestServerWebChatRoleOverrideFromDB verifies that DB-persisted role/age
-// overrides (set via set_user_role) are consulted during web-chat policy
-// evaluation, so that a child whose config role is "child" / age_8_12 is
-// blocked when the parent overrides her to "under_8".
-func TestServerWebChatRoleOverrideFromDB(t *testing.T) {
+// TestServerResolveUserRoleFromDB verifies that resolveUserRole returns the
+// overridden role/age when a DB-persisted override exists, and the config
+// role/age when no override exists.  This exercises the exact code path
+// handleChat uses to build adjustedUser before creating the agent.
+func TestServerResolveUserRoleFromDB(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, err := store.Open(filepath.Join(tmpDir, "test.db"))
 	if err != nil {
@@ -58,77 +56,69 @@ func TestServerWebChatRoleOverrideFromDB(t *testing.T) {
 		clf:        clf,
 		cfgMu:      sync.RWMutex{},
 	}
-
-	// Link emma to a telegram external ID so the identity store resolves her.
-	identStore.LinkAccount("emma", "telegram", "ro-emma-123")
-
-	// Set a DB role override: emma -> under_8 (normally she is age_8_12).
 	ctx := context.Background()
+
+	// --- No override: resolveUserRole returns config values ---
+	user := s.resolveUserRole(ctx, "emma")
+	if user == nil {
+		t.Fatal("resolveUserRole returned nil for emma")
+	}
+	if user.Role != "child" {
+		t.Errorf("no override: Role = %q, want %q", user.Role, "child")
+	}
+	if user.AgeGroup != "age_8_12" {
+		t.Errorf("no override: AgeGroup = %q, want %q", user.AgeGroup, "age_8_12")
+	}
+
+	// Verify emma (age_8_12) would request_approval for social media.
+	decision, err := ev.Evaluate(ctx, policy.Input{
+		User: policy.UserInput{Role: user.Role, AgeGroup: user.AgeGroup, Name: "emma"},
+		Query: policy.QueryInput{Category: "social_media", Text: "can I use instagram and tiktok"},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if decision.Action != "request_approval" {
+		t.Errorf("no override: PolicyAction = %q, want request_approval", decision.Action)
+	}
+
+	// --- Set override: emma → under_8 ---
 	err = db.SetRoleOverride(ctx, "emma", "child", "under_8", "parent")
 	if err != nil {
 		t.Fatalf("SetRoleOverride: %v", err)
 	}
 	defer db.SetRoleOverride(ctx, "emma", "", "", "parent")
 
-	// Verify the override is stored.
-	role, ageGroup, err := db.GetRoleOverride(ctx, "emma")
-	if err != nil {
-		t.Fatalf("GetRoleOverride: %v", err)
+	// Verify resolveUserRole picks up the override.
+	user = s.resolveUserRole(ctx, "emma")
+	if user == nil {
+		t.Fatal("resolveUserRole returned nil for emma after override")
 	}
-	if role != "child" || ageGroup != "under_8" {
-		t.Fatalf("expected override child/under_8, got %q/%q", role, ageGroup)
+	if user.Role != "child" {
+		t.Errorf("with override: Role = %q, want %q", user.Role, "child")
 	}
-
-	// Build a minimal HTTP request to exercise the handleChat path.
-	// handleChat will upgrade to WebSocket, which we can't fully test here,
-	// but we can verify the role override logic by checking that
-	// GetRoleOverride is consulted (the handler would use adjustedUser
-	// with the overridden role for agent.NewAgent).
-	//
-	// Instead of testing the full WS flow, we directly verify the
-	// override path works by calling GetRoleOverride and confirming
-	// the adjusted user logic would pick up the override.
-	req := httptest.NewRequest(http.MethodGet, "/api/users", nil)
-	rec := httptest.NewRecorder()
-	s.handleUsers(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("handleUsers status = %d", rec.Code)
+	if user.AgeGroup != "under_8" {
+		t.Errorf("with override: AgeGroup = %q, want %q", user.AgeGroup, "under_8")
 	}
 
-	// Verify: the override is in the DB and would be picked up.
-	// The key assertion: with under_8, social media should be blocked
-	// (not request_approval like age_8_12).
-	// We validate this through the evaluator directly.
-	policyRole := "child"
-	policyAgeGroup := "under_8"
-	decision, err := ev.Evaluate(ctx, policy.Input{
-		User: policy.UserInput{
-			Role:     policyRole,
-			AgeGroup: policyAgeGroup,
-			Name:     "emma",
-		},
+	// The resolved user must differ from config (proves the copy-and-override path was taken).
+	configUser := cfg.GetUser("emma")
+	if user.Role == configUser.Role && user.AgeGroup == configUser.AgeGroup {
+		t.Error("resolveUserRole returned config values despite an override being set")
+	}
+
+	// Verify emma (under_8) is blocked from social media.
+	decision, err = ev.Evaluate(ctx, policy.Input{
+		User: policy.UserInput{Role: user.Role, AgeGroup: user.AgeGroup, Name: "emma"},
 		Query: policy.QueryInput{Category: "social_media", Text: "can I use instagram and tiktok"},
 	})
 	if err != nil {
-		t.Fatalf("evaluator.Evaluate: %v", err)
+		t.Fatalf("Evaluate: %v", err)
 	}
 	if decision.Action != "block" {
-		t.Errorf("emma with under_8 override: PolicyAction = %q, want block", decision.Action)
+		t.Errorf("with under_8 override: PolicyAction = %q, want block", decision.Action)
 	}
-
-	// Without the override, emma (age_8_12) should request_approval for social media.
-	decision2, err := ev.Evaluate(ctx, policy.Input{
-		User: policy.UserInput{
-			Role:     "child",
-			AgeGroup: "age_8_12",
-			Name:     "emma",
-		},
-		Query: policy.QueryInput{Category: "social_media", Text: "can I use instagram and tiktok"},
-	})
-	if err != nil {
-		t.Fatalf("evaluator.Evaluate: %v", err)
-	}
-	if decision2.Action != "request_approval" {
-		t.Errorf("emma without override: PolicyAction = %q, want request_approval", decision2.Action)
+	if decision.Reason == "" {
+		t.Error("expected a block reason in the decision, got empty reason")
 	}
 }
