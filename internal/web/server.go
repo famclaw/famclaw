@@ -287,7 +287,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve the role/age override (if any) that supersedes the config row.
+// Resolve the role/age override (if any) that supersedes the config row.
 	adjustedUser := s.resolveUserRole(r.Context(), userName)
 
 	conn, err := s.upgrader.Upgrade(w, r, nil)
