@@ -80,14 +80,16 @@ echo "stub response: $@"
 }
 
 // TestChatPassesHistoryToCLIClient verifies that conversation history
-// (assistant + user turns) reaches the claude CLI.
+// (assistant + user turns) reaches the claude CLI via stdin as JSON.
 func TestChatPassesHistoryToCLIClient(t *testing.T) {
 	dir := t.TempDir()
 
+	// Stub captures args and stdin, returns a minimal stream-json response.
 	stubScript := `#!/bin/sh
 SCRIPT_DIR=$(dirname "$0")
 printf '%s\n' "$@" > "$SCRIPT_DIR/args.txt" 2>&1
-echo "stub response: $@"
+cat > "$SCRIPT_DIR/stdin.txt"
+echo '{"type":"message_stop","stop_reason":"end_turn"}'
 `
 	stubClaudeBin(t, dir, stubScript)
 	prependPath(t, dir)
@@ -106,16 +108,29 @@ echo "stub response: $@"
 		t.Fatalf("ChatSync failed: %v", err)
 	}
 
+	// Verify CLI was invoked with correct flags.
 	argsPath := filepath.Join(dir, "args.txt")
-	contents, err := os.ReadFile(argsPath)
+	argsContents, err := os.ReadFile(argsPath)
 	if err != nil {
 		t.Fatalf("reading args.txt: %v", err)
 	}
+	argsStr := string(argsContents)
+	assertContains(t, argsStr, "-p", "-p flag")
+	assertContains(t, argsStr, "--input-format", "--input-format flag")
+	assertContains(t, argsStr, "stream-json", "stream-json input format")
 
-	argsStr := string(contents)
-	assertContains(t, argsStr, "human: hi", "first user message")
-	assertContains(t, argsStr, "assistant: hello back", "assistant message")
-	assertContains(t, argsStr, "human: how are you", "last user message")
+	// Verify messages were sent to stdin as JSON.
+	stdinPath := filepath.Join(dir, "stdin.txt")
+	stdinContents, err := os.ReadFile(stdinPath)
+	if err != nil {
+		t.Fatalf("reading stdin.txt: %v", err)
+	}
+	stdinStr := string(stdinContents)
+	assertContains(t, stdinStr, `"role":"user"`, "user role in stdin")
+	assertContains(t, stdinStr, `"role":"assistant"`, "assistant role in stdin")
+	assertContains(t, stdinStr, "hi", "first user content in stdin")
+	assertContains(t, stdinStr, "hello back", "assistant content in stdin")
+	assertContains(t, stdinStr, "how are you", "last user content in stdin")
 }
 
 func assertContains(t *testing.T, s, sub, label string) {
@@ -137,17 +152,19 @@ func TestClient(t *testing.T) {
 		{
 			name: "normal response",
 			script: `#!/bin/sh
-echo "stub response: $@"
+cat > /dev/null
+echo '{"type":"content_block_delta","delta":{"type":"text","text":"hello from stub"}}'
+echo '{"type":"message_stop","stop_reason":"end_turn"}'
 `,
 			messages: []llm.Message{
 				{Role: "user", Content: "hello"},
 			},
-			wantContain: "stub response",
+			wantContain: "hello from stub",
 		},
 		{
 			name: "empty messages slice returns no error and empty string",
 			script: `#!/bin/sh
-echo "stub response: $@"
+echo "should not reach here"
 `,
 			messages:    []llm.Message{},
 			wantContain: "",
