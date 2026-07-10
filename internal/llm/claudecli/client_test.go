@@ -143,13 +143,23 @@ echo '{"type":"message_stop","stop_reason":"end_turn"}'
 		t.Errorf(`"role":"system" found in stdin — should be excluded\nStdin:\n%s`, stdinStr)
 	}
 
-	// Verify only non-system messages are in stdin.
+	// Verify all non-system messages are wrapped in a single NDJSON event.
 	lines := strings.Split(strings.TrimSpace(stdinStr), "\n")
-	if len(lines) != 2 {
-		t.Errorf("expected 2 NDJSON lines (non-system only), got %d", len(lines))
+	if len(lines) != 1 {
+		t.Errorf("expected 1 NDJSON line (all history in one event), got %d", len(lines))
 	}
-	assertContains(t, lines[0], `"role":"user"`, "first non-system line")
-	assertContains(t, lines[1], `"role":"assistant"`, "second non-system line")
+	if !strings.Contains(lines[0], `"type":"user"`) {
+		t.Errorf("stdin missing \"type\":\"user\"\nStdin:\n%s", stdinStr)
+	}
+	if !strings.Contains(lines[0], `"content"`) {
+		t.Errorf("stdin missing \"content\" array\nStdin:\n%s", stdinStr)
+	}
+	if !strings.Contains(lines[0], `"role":"user"`) {
+		t.Errorf("stdin missing user role in content\nStdin:\n%s", stdinStr)
+	}
+	if !strings.Contains(lines[0], `"role":"assistant"`) {
+		t.Errorf("stdin missing assistant role in content\nStdin:\n%s", stdinStr)
+	}
 }
 
 // TestChatPassesHistoryToCLIClient verifies that conversation history
@@ -192,7 +202,7 @@ echo '{"type":"message_stop","stop_reason":"end_turn"}'
 	assertContains(t, argsStr, "--input-format", "--input-format flag")
 	assertContains(t, argsStr, "stream-json", "stream-json input format")
 
-	// Verify messages were sent to stdin as NDJSON (one JSON object per line).
+	// Verify messages were sent to stdin as a single NDJSON event.
 	stdinPath := filepath.Join(dir, "stdin.txt")
 	stdinContents, err := os.ReadFile(stdinPath)
 	if err != nil {
@@ -200,20 +210,18 @@ echo '{"type":"message_stop","stop_reason":"end_turn"}'
 	}
 	stdinStr := string(stdinContents)
 	lines := strings.Split(strings.TrimSpace(stdinStr), "\n")
-	if len(lines) != 3 {
-		t.Errorf("expected 3 NDJSON lines, got %d", len(lines))
+	if len(lines) != 1 {
+		t.Errorf("expected 1 NDJSON line (all history in one event), got %d\nStdin:\n%s", len(lines), stdinStr)
 	}
-	for i, line := range lines {
-		if !strings.HasPrefix(line, "{") || strings.HasPrefix(line, "[") {
-			t.Errorf("line %d: expected JSON object (starts with {), got: %s", i, line)
-		}
+	line := lines[0]
+	if !strings.HasPrefix(line, "{") {
+		t.Errorf("expected JSON object (starts with {), got: %s", line)
 	}
-	assertContains(t, lines[0], `"role":"user"`, "first line: user role")
-	assertContains(t, lines[0], "hi", "first line: user content")
-	assertContains(t, lines[1], `"role":"assistant"`, "second line: assistant role")
-	assertContains(t, lines[1], "hello back", "second line: assistant content")
-	assertContains(t, lines[2], `"role":"user"`, "third line: user role")
-	assertContains(t, lines[2], "how are you", "third line: user content")
+	// The single event contains all history in the content array.
+	assertContains(t, line, `"type":"user"`, "event type: user")
+	assertContains(t, line, "hi", "user content: hi")
+	assertContains(t, line, "hello back", "assistant content: hello back")
+	assertContains(t, line, "how are you", "user content: how are you")
 }
 
 func assertContains(t *testing.T, s, sub, label string) {

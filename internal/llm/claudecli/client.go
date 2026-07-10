@@ -15,12 +15,15 @@ import (
 	"github.com/famclaw/famclaw/internal/llm"
 )
 
-// claudeInputEnvelope is the NDJSON envelope format expected by
-// `claude --input-format stream-json`. Each line is a user event wrapping
-// the raw message in a message field.
+// claudeInputEnvelope wraps the full conversation as a single NDJSON event.
+// The claude CLI's --input-format stream-json expects user events of this
+// form; it does not accept assistant events on stdin.
 type claudeInputEnvelope struct {
 	Type    string          `json:"type"`
-	Message json.RawMessage `json:"message"`
+	Message *struct {
+		Role    string          `json:"role"`
+		Content []llm.Message   `json:"content"`
+	} `json:"message"`
 }
 
 // claudeOutputEnvelope represents a line from `claude --output-format stream-json`.
@@ -91,28 +94,33 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, temp float64,
 		}
 	}
 
-	// Collect non-system messages as NDJSON on stdin.
+	// Collect non-system messages as a single NDJSON event.
+	// The claude CLI's --input-format stream-json expects user events on stdin.
+	// It does not accept assistant events — all conversation history is grouped
+	// into one {"type":"user","message":{"content":[...]}} envelope.
 	// The system message is excluded to avoid duplication with --system-prompt.
-	// Each line is a wrapped user event: {"type":"user","message":{"role":"user","content":"..."}}
-	var ndjson bytes.Buffer
+	var history []llm.Message
 	for _, m := range messages {
-		if m.Role == "system" {
-			continue
+		if m.Role != "system" {
+			history = append(history, m)
 		}
-		raw, err := json.Marshal(m)
-		if err != nil {
-			return "", fmt.Errorf("marshaling message for claude stdin: %w", err)
-		}
-		env, err := json.Marshal(claudeInputEnvelope{
-			Type:    "user",
-			Message: raw,
-		})
-		if err != nil {
-			return "", fmt.Errorf("wrapping message for claude stdin: %w", err)
-		}
-		ndjson.Write(env)
-		ndjson.WriteByte('\n')
 	}
+	env, err := json.Marshal(claudeInputEnvelope{
+		Type: "user",
+		Message: &struct {
+			Role    string        `json:"role"`
+			Content []llm.Message `json:"content"`
+		}{
+			Role:    "user",
+			Content: history,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshaling claude stdin event: %w", err)
+	}
+	var ndjson bytes.Buffer
+	ndjson.Write(env)
+	ndjson.WriteByte('\n')
 
 	// Build CLI arguments.
 	args := []string{
@@ -192,14 +200,21 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, temp float64,
 		return "", fmt.Errorf("reading claude output: %w", err)
 	}
 
-	// Wait for stdin writer to finish.
-	if err := <-errCh; err != nil {
-		cmd.Wait()
-		return "", fmt.Errorf("writing messages to stdin: %w", err)
-	}
+	// Wait for CLI to finish first.
+	waitErr := cmd.Wait()
 
-	if err := cmd.Wait(); err != nil {
-		return "", fmt.Errorf("claude cli: %w (%s)", err, stderrBuf.String())
+	// Wait for stdin writer to finish. If the process already exited
+	// successfully (waitErr is nil), a broken-pipe write is benign and
+	// must not discard the response we already collected.
+	writeErr := <-errCh
+	if waitErr != nil {
+		return "", fmt.Errorf("claude cli: %w (%s)", waitErr, stderrBuf.String())
+	}
+	if writeErr != nil {
+		// Process exited before reading all stdin (e.g., large history).
+		// The response is already complete — surface the warning but
+		// still return the collected text.
+		return fullResponse.String(), fmt.Errorf("writing messages to stdin after cli exit: %w", writeErr)
 	}
 
 	return fullResponse.String(), nil
