@@ -190,6 +190,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   Strangers no longer auto-create users.
 
 ### Fixed
+- **Skill install rejects unsafe names (path traversal).** `skillbridge.Registry.Install`
+  now validates `skill.Name` against a strict allowlist (`^[a-zA-Z0-9_-]{1,64}$`)
+  via `ValidateName` before using it as a path component, rejecting path
+  separators, `..`, and control characters in `SKILL.md` frontmatter. A
+  defense-in-depth `ValidateInstalledDir` check confirms the resolved
+  destination stays inside the skills root.
 - **Parent-triggered approvals no longer send a notification.** When a
   parent's own message resolves to `request_approval`, `createApproval`
   now skips the notify (kid-only policy) and logs the skip instead of

@@ -329,3 +329,166 @@ func TestBodyInjectedVerbatim(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateNameEmpty(t *testing.T) {
+	err := ValidateName("")
+	if err == nil {
+		t.Fatal("expected error for empty name")
+	}
+}
+
+func TestValidateNamePathTraversal(t *testing.T) {
+	tests := []string{
+		"../../.ssh",
+		"../../../etc/cron.d/x",
+		"../secret",
+		"./evil",
+		"foo/..",
+		"foo\\..",
+	}
+	for _, name := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateName(name)
+			if err == nil {
+				t.Fatalf("expected error for path traversal name %q", name)
+			}
+		})
+	}
+}
+
+func TestValidateNameControlChars(t *testing.T) {
+	tests := []string{
+		"foo\x00bar",
+		"foo\x01bar",
+		"foo\nbar",
+		"foo\x7fbar",
+	}
+	for _, name := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateName(name)
+			if err == nil {
+				t.Fatalf("expected error for name with control char %q", name)
+			}
+		})
+	}
+}
+
+func TestValidateNameSpecialChars(t *testing.T) {
+	tests := []string{
+		"foo/bar",
+		"foo\\bar",
+		"foo..bar",
+		"foo bar",
+		"foo@bar",
+		"foo+bar",
+		"foo#bar",
+		"foo bar.md",
+	}
+	for _, name := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateName(name)
+			if err == nil {
+				t.Fatalf("expected error for name %q", name)
+			}
+		})
+	}
+}
+
+func TestValidateNameValid(t *testing.T) {
+	valid := []string{
+		"seccheck",
+		"my-skill",
+		"my_skill",
+		"MySkill",
+		"MYSKILL",
+		"skill123",
+		"a",
+		"A",
+		"abc-def_123",
+	}
+	for _, name := range valid {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateName(name)
+			if err != nil {
+				t.Fatalf("unexpected error for valid name %q: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestValidateNameTooLong(t *testing.T) {
+	longName := strings.Repeat("a", 65)
+	err := ValidateName(longName)
+	if err == nil {
+		t.Fatal("expected error for 65-char name")
+	}
+}
+
+func TestValidateInstalledDirEscape(t *testing.T) {
+	base := "/skills"
+	candidate := "/skills/../../.ssh"
+	err := ValidateInstalledDir(base, candidate)
+	if err == nil {
+		t.Fatal("expected error for directory escaping base")
+	}
+}
+
+func TestValidateInstalledDirSafe(t *testing.T) {
+	base := "/skills"
+	candidate := "/skills/my-skill"
+	err := ValidateInstalledDir(base, candidate)
+	if err != nil {
+		t.Fatalf("unexpected error for safe directory: %v", err)
+	}
+}
+
+func TestInstallPathTraversal(t *testing.T) {
+	registryDir := t.TempDir()
+	reg := NewRegistry(registryDir, nil, InstallConfig{})
+
+	// SKILL.md with path traversal in name
+	traversalSKILLMD := `---
+name: ../../.ssh
+description: Evil skill
+---
+Evil content.
+`
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte(traversalSKILLMD), 0644)
+
+	_, err := reg.Install(context.Background(), srcDir)
+	if err == nil {
+		t.Fatal("expected error installing skill with traversal in name")
+	}
+	if !strings.Contains(err.Error(), "invalid skill name") {
+		t.Errorf("expected 'invalid skill name' in error, got: %v", err)
+	}
+
+	// Verify nothing was written outside the skills dir
+	entries, _ := os.ReadDir(registryDir)
+	if len(entries) != 0 {
+		t.Errorf("expected no files in skills dir, found: %v", entries)
+	}
+}
+
+func TestInstallValidName(t *testing.T) {
+	registryDir := t.TempDir()
+	reg := NewRegistry(registryDir, nil, InstallConfig{})
+
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte(minimalSKILLMD), 0644)
+
+	skill, err := reg.Install(context.Background(), srcDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skill.Name != "minimal" {
+		t.Errorf("name = %q, want minimal", skill.Name)
+	}
+
+	// Verify the skill was installed into its own directory
+	_, err = os.Stat(filepath.Join(registryDir, "minimal", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("SKILL.md not found at expected path: %v", err)
+	}
+}
