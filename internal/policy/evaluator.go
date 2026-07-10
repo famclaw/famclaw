@@ -4,11 +4,14 @@ package policy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path"
+	"sort"
 	"strings"
 
 	"github.com/open-policy-agent/opa/ast"
@@ -34,7 +37,9 @@ type Evaluator struct {
 // NewEvaluator builds an evaluator. When policyDir/dataDir are empty,
 // the built-in policies compiled into the binary are loaded; otherwise
 // they are read from the given filesystem paths.
-func NewEvaluator(policyDir, dataDir string) (*Evaluator, error) {
+// The optional expectedHash parameter performs an integrity check on the
+// loaded policy set; pass "" to skip verification.
+func NewEvaluator(policyDir, dataDir, expectedHash string) (*Evaluator, error) {
 	if (policyDir == "") != (dataDir == "") {
 		return nil, fmt.Errorf("policyDir and dataDir must both be set or both be empty (got policyDir=%q, dataDir=%q)", policyDir, dataDir)
 	}
@@ -54,6 +59,25 @@ func NewEvaluator(policyDir, dataDir string) (*Evaluator, error) {
 	if err := loadData(dataFS, dataRoot, data); err != nil {
 		return nil, err
 	}
+
+	// ── Policy integrity verification ─────────────────────────────────
+	if hash, err := computePolicyHash(policyFS, policyRoot); err != nil {
+		return nil, fmt.Errorf("computing policy hash: %w", err)
+	} else if expectedHash != "" {
+		if hash != expectedHash {
+			return nil, fmt.Errorf(
+				"policy hash mismatch: expected=%q computed=%q — policy files may have been tampered with",
+				expectedHash, hash,
+			)
+		}
+		log.Printf("policy_hash=%s verified", hash)
+	} else {
+		log.Printf("policy_hash=%s (set policies.expected_hash to pin)", hash)
+	}
+
+	// NOTE: the hash is computed directly from the filesystem to ensure
+	// it reflects the exact bytes on disk, independent of the in-memory
+	// modules map used for parsing below.
 
 	store := inmem.NewFromObject(data)
 
@@ -202,6 +226,44 @@ func loadModules(fsys fs.FS, dir string, modules map[string]string) error {
 		modules[name] = string(raw)
 	}
 	return nil
+}
+
+// ComputeEmbeddedPolicyHash returns the SHA-256 hex digest of the
+// embedded OPA policy files. It is exported for CLI tooling.
+func ComputeEmbeddedPolicyHash() (string, error) {
+	return computePolicyHash(embeddedPolicies, "policies/family")
+}
+
+// computePolicyHash returns a deterministic SHA-256 hex digest of all
+// .rego files (excluding *_test.rego) in the policy directory. Files are
+// sorted by name; each file's raw bytes are hashed sequentially into a
+// running SHA-256. The final digest is returned as a lowercase hex string.
+func computePolicyHash(fsys fs.FS, dir string) (string, error) {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return "", fmt.Errorf("reading policy dir %q: %w", dir, err)
+	}
+
+	var names []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".rego") || strings.HasSuffix(name, "_test.rego") {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	h := sha256.New()
+	for _, name := range names {
+		raw, err := fs.ReadFile(fsys, path.Join(dir, name))
+		if err != nil {
+			return "", fmt.Errorf("reading policy file %q: %w", name, err)
+		}
+		h.Write(raw)
+	}
+
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func loadData(fsys fs.FS, dir string, data map[string]any) error {

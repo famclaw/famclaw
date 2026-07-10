@@ -45,7 +45,7 @@ func setupIntegration(t *testing.T) *testEnv {
 	t.Cleanup(func() { db.Close() })
 
 	// Policy evaluator — uses the policies embedded in the binary.
-	ev, err := policy.NewEvaluator("", "")
+	ev, err := policy.NewEvaluator("", "", "")
 	if err != nil {
 		t.Fatalf("NewEvaluator: %v", err)
 	}

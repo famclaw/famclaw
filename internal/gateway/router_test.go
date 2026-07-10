@@ -47,7 +47,7 @@ func setupRouter(t *testing.T, chatFn ChatFunc) (*Router, *identity.Store) {
 	t.Cleanup(func() { db.Close() })
 
 	// Policy evaluator — uses policies embedded in the binary.
-	ev, err := policy.NewEvaluator("", "")
+	ev, err := policy.NewEvaluator("", "", "")
 	if err != nil {
 		t.Fatalf("NewEvaluator: %v", err)
 	}

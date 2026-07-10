@@ -100,7 +100,7 @@ func main() {
 	log.Printf("Database: %s", cfg.Storage.DBPath)
 
 	// OPA policy evaluator
-	evaluator, err := policy.NewEvaluator(cfg.Policies.Dir, cfg.Policies.DataDir)
+	evaluator, err := policy.NewEvaluator(cfg.Policies.Dir, cfg.Policies.DataDir, cfg.Policies.ExpectedHash)
 	must(err, "policy")
 	switch {
 	case cfg.Policies.Dir != "" && cfg.Policies.DataDir != "":

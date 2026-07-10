@@ -185,8 +185,9 @@ type UserConfig struct {
 // into the binary. Set Dir/DataDir to a filesystem path to load
 // custom policies from disk.
 type PoliciesConfig struct {
-	Dir     string `yaml:"dir"`
-	DataDir string `yaml:"data_dir"`
+	Dir          string `yaml:"dir"`
+	DataDir      string `yaml:"data_dir"`
+	ExpectedHash string `yaml:"expected_hash,omitempty"` // SHA-256 hex digest for integrity verification
 }
 
 type ApprovalConfig struct {
