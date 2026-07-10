@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,94 @@ func prependPath(t *testing.T, dir string) {
 			t.Errorf("restoring PATH: %v", err)
 		}
 	})
+}
+
+// TestChatPassesSystemPromptToCLIClient verifies the fix for:
+// claude_cli backend drops the system prompt.
+// The fake claude binary records all arguments to a file; the test asserts
+// that the system-prompt marker string reaches the CLI invocation.
+func TestChatPassesSystemPromptToCLIClient(t *testing.T) {
+	marker := "FAMCLAW_SYSTEM_PROMPT_MARKER_7a3b"
+
+	dir := t.TempDir()
+
+	// Use $0 (script path) to derive output location — works regardless of CWD.
+	stubScript := `#!/bin/sh
+SCRIPT_DIR=$(dirname "$0")
+printf '%s\n' "$@" > "$SCRIPT_DIR/args.txt" 2>&1
+echo "stub response: $@"
+`
+	stubClaudeBin(t, dir, stubScript)
+	prependPath(t, dir)
+
+	client := claudecli.New()
+
+	messages := []llm.Message{
+		{Role: "system", Content: marker},
+		{Role: "user", Content: "hello"},
+	}
+
+	ctx := context.Background()
+	_, err := client.ChatSync(ctx, messages, 0, 0)
+	if err != nil {
+		t.Fatalf("ChatSync failed: %v", err)
+	}
+
+	argsPath := filepath.Join(dir, "args.txt")
+	contents, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("reading args.txt: %v", err)
+	}
+
+	if !strings.Contains(string(contents), marker) {
+		t.Errorf("system prompt marker %q not found in claude invocation args\nFull args:\n%s", marker, string(contents))
+	}
+}
+
+// TestChatPassesHistoryToCLIClient verifies that conversation history
+// (assistant + user turns) reaches the claude CLI.
+func TestChatPassesHistoryToCLIClient(t *testing.T) {
+	dir := t.TempDir()
+
+	stubScript := `#!/bin/sh
+SCRIPT_DIR=$(dirname "$0")
+printf '%s\n' "$@" > "$SCRIPT_DIR/args.txt" 2>&1
+echo "stub response: $@"
+`
+	stubClaudeBin(t, dir, stubScript)
+	prependPath(t, dir)
+
+	client := claudecli.New()
+
+	messages := []llm.Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello back"},
+		{Role: "user", Content: "how are you"},
+	}
+
+	ctx := context.Background()
+	_, err := client.ChatSync(ctx, messages, 0, 0)
+	if err != nil {
+		t.Fatalf("ChatSync failed: %v", err)
+	}
+
+	argsPath := filepath.Join(dir, "args.txt")
+	contents, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("reading args.txt: %v", err)
+	}
+
+	argsStr := string(contents)
+	assertContains(t, argsStr, "human: hi", "first user message")
+	assertContains(t, argsStr, "assistant: hello back", "assistant message")
+	assertContains(t, argsStr, "human: how are you", "last user message")
+}
+
+func assertContains(t *testing.T, s, sub, label string) {
+	t.Helper()
+	if !strings.Contains(s, sub) {
+		t.Errorf("%s: expected %q in args\nFull args:\n%s", label, sub, s)
+	}
 }
 
 func TestClient(t *testing.T) {

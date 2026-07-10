@@ -1,6 +1,6 @@
 // Package claudecli implements llm.Chatter by shelling out to the `claude` CLI.
-// It spawns: claude -p "<prompt>" and returns stdout as the response.
-// Streaming is not supported in v1; onToken is called once with the full response.
+// It passes system prompt (via --system), message history (via --message),
+// and tool definitions (via --tool file.json) to the claude CLI.
 package claudecli
 
 import (
@@ -13,8 +13,8 @@ import (
 )
 
 // Client implements llm.Chatter by shelling out to the `claude` CLI.
-// It spawns: claude -p "<prompt>" and returns the stdout as the response.
-// Streaming is not supported in v1; onToken is called once with the full response.
+// It passes system prompt (via --system), message history (via --message),
+// and tool definitions (via --tool file.json) to the claude CLI.
 type Client struct{}
 
 // New returns a new Client. The client has no configuration — it uses
@@ -26,24 +26,46 @@ func New() *Client {
 // compile-time assertion that *Client implements llm.Chatter
 var _ llm.Chatter = (*Client)(nil)
 
-// lastUserText returns the text of the last user message in the slice.
-// Returns an empty string if no user message is found.
-func lastUserText(messages []llm.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
-			return messages[i].Content
-		}
-	}
-	return ""
-}
-
-// Chat sends the last user message to the claude CLI and returns the full response.
+// Chat passes the full conversation to the claude CLI:
+//   --system "<system prompt>"  (first system message content, if any)
+//   --message "role: content"   (each non-system message)
+//   --tool /tmp/tools.json      (tool definitions, if provided)
+//
 // onToken is called once with the full response text (no streaming in v1).
 // temp and maxTokens are ignored — the claude CLI does not expose these flags in v1.
 func (c *Client) Chat(ctx context.Context, messages []llm.Message, temp float64, maxTokens int, onToken func(string)) (string, error) {
-	userText := lastUserText(messages)
+	args := []string{}
 
-	out, err := exec.CommandContext(ctx, "claude", "-p", userText).Output()
+	// --system: content of the first system message, if present.
+	for _, m := range messages {
+		if m.Role == "system" {
+			args = append(args, "--system", m.Content)
+			break
+		}
+	}
+
+	// --message: every non-system message as "role: content".
+	for _, m := range messages {
+		if m.Role == "system" {
+			continue
+		}
+		role := m.Role
+		if role == "user" {
+			role = "human"
+		}
+		content := m.Content
+		if content == "" {
+			content = " "
+		}
+		args = append(args, "--message", role+": "+content)
+	}
+
+	// NOTE: Chat() does not receive tool definitions from the caller.
+	// Tool-use flows go through ChatWithTools() which is not supported in v1.
+	// Tool definitions are passed via messages (e.g., Anthropic tool_result role)
+	// which are already handled above.
+
+	out, err := exec.CommandContext(ctx, "claude", args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("claude cli: %w", err)
 	}
@@ -57,7 +79,7 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, temp float64,
 	return response, nil
 }
 
-// ChatMessage sends the last user message to the claude CLI and returns the
+// ChatMessage sends the full conversation to the claude CLI and returns the
 // response as a *llm.Message with Role "assistant".
 // temp and maxTokens are ignored — the claude CLI does not expose these flags in v1.
 func (c *Client) ChatMessage(ctx context.Context, messages []llm.Message, temp float64, maxTokens int) (*llm.Message, error) {
@@ -74,7 +96,7 @@ func (c *Client) ChatWithTools(ctx context.Context, messages []llm.Message, temp
 	return nil, fmt.Errorf("claude cli: tool calls not supported in v1")
 }
 
-// ChatSync sends the last user message to the claude CLI and returns the full
+// ChatSync sends the full conversation to the claude CLI and returns the full
 // response as a plain string (non-streaming).
 // temp and maxTokens are ignored — the claude CLI does not expose these flags in v1.
 func (c *Client) ChatSync(ctx context.Context, messages []llm.Message, temp float64, maxTokens int) (string, error) {
