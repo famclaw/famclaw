@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -74,8 +76,9 @@ func setupRouter(t *testing.T, chatFn ChatFunc) (*Router, *identity.Store) {
 	identStore := identity.NewStore(db)
 	clf := classifier.New()
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
+	reg := skillbridge.NewRegistry(t.TempDir(), nil, skillbridge.InstallConfig{})
 
-	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn)
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg)
 	return router, identStore
 }
 
@@ -919,5 +922,140 @@ func TestCreateApprovalSkipsParentNotify(t *testing.T) {
 	router.createApproval(context.Background(), parent, "violence", "why do wars happen", "req-parent")
 	if got := atomic.LoadInt32(&notifyCalls); got != 1 {
 		t.Fatalf("parent approval must not notify, but total calls rose to %d", got)
+	}
+}
+
+// TestHandleSkillCommand verifies the parent-gated skill management commands.
+func TestHandleSkillCommand(t *testing.T) {
+	dbTmpDir := t.TempDir()
+	db, err := store.Open(filepath.Join(dbTmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ev, err := policy.NewEvaluator("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:     "localhost",
+			Port:     8080,
+			Secret:   "test-secret",
+			MDNSName: "famclaw",
+		},
+		LLM: config.LLMConfig{
+			Temperature:       0.7,
+			MaxResponseTokens: 512,
+		},
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+			{Name: "child", DisplayName: "Child", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+
+	identStore := identity.NewStore(db)
+	clf := classifier.New()
+	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
+	skillTmpDir := t.TempDir()
+	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{})
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+		return "stub", nil
+	}
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg)
+
+	// Link parent and child accounts
+	identStore.LinkAccount("parent", "telegram", "parent-123")
+	identStore.LinkAccount("child", "telegram", "child-123")
+
+	// Pre-create a fake skill on disk so "list" is not empty
+	skillDir := filepath.Join(skillTmpDir, "fakeskill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	skillMD := `---
+name: fakeskill
+description: A fake test skill
+---
+This is a fake skill.
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name            string
+		gateway         string
+		externalID      string
+		text            string
+		wantPolicyAction string
+		wantTextContain  string
+	}{
+		{
+			name:            "child skill list blocked",
+			gateway:         "telegram",
+			externalID:      "child-123",
+			text:            "skill list",
+			wantPolicyAction: "block",
+			wantTextContain:  "Only a parent",
+		},
+		{
+			name:            "parent skill list",
+			gateway:         "telegram",
+			externalID:      "parent-123",
+			text:            "skill list",
+			wantPolicyAction: "skill",
+			wantTextContain:  "fakeskill",
+		},
+		{
+			name:            "parent skill no args",
+			gateway:         "telegram",
+			externalID:      "parent-123",
+			text:            "skill",
+			wantPolicyAction: "skill",
+			wantTextContain:  "Skill management",
+		},
+		{
+			name:            "parent skill unknown",
+			gateway:         "telegram",
+			externalID:      "parent-123",
+			text:            "skill uninstall myskill",
+			wantPolicyAction: "skill",
+			wantTextContain:  "Unknown skill command",
+		},
+		{
+			name:            "child skill install blocked",
+			gateway:         "telegram",
+			externalID:      "child-123",
+			text:            "skill install myskill",
+			wantPolicyAction: "block",
+			wantTextContain:  "Only a parent",
+		},
+		{
+			name:            "case insensitive skill prefix",
+			gateway:         "telegram",
+			externalID:      "parent-123",
+			text:            "SKILL list",
+			wantPolicyAction: "skill",
+			wantTextContain:  "fakeskill",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reply := router.Handle(context.Background(), Message{
+				Gateway:    tt.gateway,
+				ExternalID: tt.externalID,
+				Text:       tt.text,
+			})
+			if reply.PolicyAction != tt.wantPolicyAction {
+				t.Errorf("policy action = %q, want %q", reply.PolicyAction, tt.wantPolicyAction)
+			}
+			if !strings.Contains(reply.Text, tt.wantTextContain) {
+				t.Errorf("text = %q, want to contain %q", reply.Text, tt.wantTextContain)
+			}
+		})
 	}
 }

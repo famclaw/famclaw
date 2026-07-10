@@ -18,6 +18,7 @@ import (
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -47,6 +48,7 @@ type Router struct {
 	notifier   *notify.MultiNotifier
 	chatFn     ChatFunc
 	pool       *SessionPool
+	registry   *skillbridge.Registry
 
 	pendingMu   sync.Mutex
 	pendingRegs map[string]*pendingRegistration
@@ -65,6 +67,7 @@ func NewRouter(
 	db *store.DB,
 	notifier *notify.MultiNotifier,
 	chatFn ChatFunc,
+	registry *skillbridge.Registry,
 ) *Router {
 	r := &Router{
 		cfg:         cfg,
@@ -74,6 +77,7 @@ func NewRouter(
 		db:          db,
 		notifier:    notifier,
 		chatFn:      chatFn,
+		registry:    registry,
 		pendingRegs: make(map[string]*pendingRegistration),
 	}
 	// Session pool dispatches heavy work (classify → policy → LLM) per-user
@@ -153,6 +157,14 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		}
 	} else if err != nil {
 		log.Printf("[router] %s: GetRoleOverride error: %v — falling back to config", user.Name, err)
+	}
+
+	// ── Parent-only chat commands ────────────────────────────────────────
+	if fields := strings.Fields(msg.Text); len(fields) >= 1 && r.registry != nil && strings.EqualFold(fields[0], "skill") {
+		if adjustedUser.Role != "parent" {
+			return Reply{Text: "Only a parent can manage skills.", PolicyAction: "block"}
+		}
+		return r.handleSkillCommand(ctx, fields)
 	}
 
 	decision, err := r.evaluator.Evaluate(ctx, policy.Input{
@@ -479,5 +491,60 @@ func (r *Router) cleanExpiredPending() {
 		if now.Sub(p.askedAt) > 5*time.Minute {
 			delete(r.pendingRegs, key)
 		}
+	}
+}
+
+// handleSkillCommand processes parent-only skill management commands.
+func (r *Router) handleSkillCommand(ctx context.Context, fields []string) Reply {
+	if len(fields) < 2 {
+		return Reply{Text: "Skill management: skill list | skill install <name> | skill enable <name> | skill disable <name>", PolicyAction: "skill"}
+	}
+
+	cmd := strings.ToLower(fields[1])
+	switch cmd {
+	case "list":
+		skills, err := r.registry.List()
+		if err != nil {
+			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
+		}
+		if len(skills) == 0 {
+			return Reply{Text: "No skills installed.", PolicyAction: "skill"}
+		}
+		var parts []string
+		for _, s := range skills {
+			parts = append(parts, fmt.Sprintf("%s — %s", s.Name, s.Description))
+		}
+		return Reply{Text: "Installed skills:\n" + strings.Join(parts, "\n"), PolicyAction: "skill"}
+
+	case "install":
+		if len(fields) < 3 {
+			return Reply{Text: "Usage: skill install <nameOrPath>", PolicyAction: "skill"}
+		}
+		skill, err := r.registry.Install(ctx, fields[2])
+		if err != nil {
+			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
+		}
+		return Reply{Text: "Installed skill: " + skill.Name, PolicyAction: "skill"}
+
+	case "enable":
+		if len(fields) < 3 {
+			return Reply{Text: "Usage: skill enable <name>", PolicyAction: "skill"}
+		}
+		if err := r.registry.Enable(fields[2]); err != nil {
+			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
+		}
+		return Reply{Text: "Enabled skill: " + fields[2], PolicyAction: "skill"}
+
+	case "disable":
+		if len(fields) < 3 {
+			return Reply{Text: "Usage: skill disable <name>", PolicyAction: "skill"}
+		}
+		if err := r.registry.Disable(fields[2]); err != nil {
+			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
+		}
+		return Reply{Text: "Disabled skill: " + fields[2], PolicyAction: "skill"}
+
+	default:
+		return Reply{Text: "Unknown skill command: " + fields[1] + ". Try: list, install, enable, disable", PolicyAction: "skill"}
 	}
 }
