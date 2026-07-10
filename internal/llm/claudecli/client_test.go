@@ -50,7 +50,8 @@ func TestChatPassesSystemPromptToCLIClient(t *testing.T) {
 	stubScript := `#!/bin/sh
 SCRIPT_DIR=$(dirname "$0")
 printf '%s\n' "$@" > "$SCRIPT_DIR/args.txt" 2>&1
-echo "stub response: $@"
+cat > "$SCRIPT_DIR/stdin.txt"
+echo '{"type":"message_stop","stop_reason":"end_turn"}'
 `
 	stubClaudeBin(t, dir, stubScript)
 	prependPath(t, dir)
@@ -77,10 +78,82 @@ echo "stub response: $@"
 	if !strings.Contains(string(contents), marker) {
 		t.Errorf("system prompt marker %q not found in claude invocation args\nFull args:\n%s", marker, string(contents))
 	}
+
+	// Also verify the system message is NOT duplicated in stdin.
+	stdinPath := filepath.Join(dir, "stdin.txt")
+	stdinContents, err := os.ReadFile(stdinPath)
+	if err != nil {
+		t.Fatalf("reading stdin.txt: %v", err)
+	}
+	stdinStr := string(stdinContents)
+	if strings.Contains(stdinStr, marker) {
+		t.Errorf("system prompt marker %q found in stdin — should be excluded (sent via --system-prompt)\nStdin:\n%s", marker, stdinStr)
+	}
+}
+
+// TestChatExcludesSystemFromStdin verifies that system messages are sent
+// via --system-prompt and NOT included in the NDJSON stdin payload.
+func TestChatExcludesSystemFromStdin(t *testing.T) {
+	dir := t.TempDir()
+
+	stubScript := `#!/bin/sh
+SCRIPT_DIR=$(dirname "$0")
+printf '%s\n' "$@" > "$SCRIPT_DIR/args.txt" 2>&1
+cat > "$SCRIPT_DIR/stdin.txt"
+echo '{"type":"message_stop","stop_reason":"end_turn"}'
+`
+	stubClaudeBin(t, dir, stubScript)
+	prependPath(t, dir)
+
+	client := claudecli.New()
+
+	messages := []llm.Message{
+		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "Hi, how can I help?"},
+	}
+
+	ctx := context.Background()
+	_, err := client.ChatSync(ctx, messages, 0, 0)
+	if err != nil {
+		t.Fatalf("ChatSync failed: %v", err)
+	}
+
+	// Verify system prompt flag is present.
+	argsPath := filepath.Join(dir, "args.txt")
+	argsContents, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("reading args.txt: %v", err)
+	}
+	if !strings.Contains(string(argsContents), "--system-prompt") {
+		t.Errorf("--system-prompt flag not found in args\nFull args:\n%s", string(argsContents))
+	}
+
+	// Verify system message content is NOT in stdin.
+	stdinPath := filepath.Join(dir, "stdin.txt")
+	stdinContents, err := os.ReadFile(stdinPath)
+	if err != nil {
+		t.Fatalf("reading stdin.txt: %v", err)
+	}
+	stdinStr := string(stdinContents)
+	if strings.Contains(stdinStr, "You are a helpful assistant.") {
+		t.Errorf("system prompt found in stdin — should be excluded\nStdin:\n%s", stdinStr)
+	}
+	if strings.Contains(stdinStr, `"role":"system"`) {
+		t.Errorf(`"role":"system" found in stdin — should be excluded\nStdin:\n%s`, stdinStr)
+	}
+
+	// Verify only non-system messages are in stdin.
+	lines := strings.Split(strings.TrimSpace(stdinStr), "\n")
+	if len(lines) != 2 {
+		t.Errorf("expected 2 NDJSON lines (non-system only), got %d", len(lines))
+	}
+	assertContains(t, lines[0], `"role":"user"`, "first non-system line")
+	assertContains(t, lines[1], `"role":"assistant"`, "second non-system line")
 }
 
 // TestChatPassesHistoryToCLIClient verifies that conversation history
-// (assistant + user turns) reaches the claude CLI via stdin as JSON.
+// (assistant + user turns) reaches the claude CLI via stdin as NDJSON.
 func TestChatPassesHistoryToCLIClient(t *testing.T) {
 	dir := t.TempDir()
 
@@ -119,18 +192,28 @@ echo '{"type":"message_stop","stop_reason":"end_turn"}'
 	assertContains(t, argsStr, "--input-format", "--input-format flag")
 	assertContains(t, argsStr, "stream-json", "stream-json input format")
 
-	// Verify messages were sent to stdin as JSON.
+	// Verify messages were sent to stdin as NDJSON (one JSON object per line).
 	stdinPath := filepath.Join(dir, "stdin.txt")
 	stdinContents, err := os.ReadFile(stdinPath)
 	if err != nil {
 		t.Fatalf("reading stdin.txt: %v", err)
 	}
 	stdinStr := string(stdinContents)
-	assertContains(t, stdinStr, `"role":"user"`, "user role in stdin")
-	assertContains(t, stdinStr, `"role":"assistant"`, "assistant role in stdin")
-	assertContains(t, stdinStr, "hi", "first user content in stdin")
-	assertContains(t, stdinStr, "hello back", "assistant content in stdin")
-	assertContains(t, stdinStr, "how are you", "last user content in stdin")
+	lines := strings.Split(strings.TrimSpace(stdinStr), "\n")
+	if len(lines) != 3 {
+		t.Errorf("expected 3 NDJSON lines, got %d", len(lines))
+	}
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "{") || strings.HasPrefix(line, "[") {
+			t.Errorf("line %d: expected JSON object (starts with {), got: %s", i, line)
+		}
+	}
+	assertContains(t, lines[0], `"role":"user"`, "first line: user role")
+	assertContains(t, lines[0], "hi", "first line: user content")
+	assertContains(t, lines[1], `"role":"assistant"`, "second line: assistant role")
+	assertContains(t, lines[1], "hello back", "second line: assistant content")
+	assertContains(t, lines[2], `"role":"user"`, "third line: user role")
+	assertContains(t, lines[2], "how are you", "third line: user content")
 }
 
 func assertContains(t *testing.T, s, sub, label string) {

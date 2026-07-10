@@ -48,7 +48,7 @@ type claudeStreamChunk struct {
 // Chat passes the full conversation to the claude CLI using stream-json I/O:
 //
 //	--system-prompt "<system prompt>"  (first system message content, if any)
-//	stdin: JSON array of messages (all messages including system)
+//	stdin: NDJSON — one JSON object per line (non-system messages only)
 //	--output-format stream-json        (realtime token streaming)
 //
 // onToken is called for each content chunk as it arrives.
@@ -70,10 +70,19 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, temp float64,
 		}
 	}
 
-	// Marshal all messages as JSON for stdin.
-	msgJSON, err := json.Marshal(messages)
-	if err != nil {
-		return "", fmt.Errorf("marshaling messages for claude: %w", err)
+	// Collect non-system messages as NDJSON on stdin.
+	// The system message is excluded to avoid duplication with --system-prompt.
+	var ndjson bytes.Buffer
+	for _, m := range messages {
+		if m.Role == "system" {
+			continue
+		}
+		line, err := json.Marshal(m)
+		if err != nil {
+			return "", fmt.Errorf("marshaling message for claude stdin: %w", err)
+		}
+		ndjson.Write(line)
+		ndjson.WriteByte('\n')
 	}
 
 	// Build CLI arguments.
@@ -108,8 +117,8 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, temp float64,
 		return "", fmt.Errorf("starting claude: %w", err)
 	}
 
-	// Write messages to stdin and close.
-	if _, err := stdin.Write(msgJSON); err != nil {
+	// Write NDJSON messages to stdin and close.
+	if _, err := stdin.Write(ndjson.Bytes()); err != nil {
 		stdin.Close()
 		cmd.Wait()
 		return "", fmt.Errorf("writing messages to stdin: %w", err)
