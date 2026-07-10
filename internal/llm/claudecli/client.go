@@ -31,11 +31,11 @@ var _ llm.Chatter = (*Client)(nil)
 
 // claudeStreamChunk represents a single chunk from the claude CLI's --output-format stream-json.
 type claudeStreamChunk struct {
-	Type           string `json:"type"`
-	ContentBlock   *struct {
-		Type    string `json:"type"`
-		Text    string `json:"text"`
-		Index   int    `json:"index"`
+	Type         string `json:"type"`
+	ContentBlock *struct {
+		Type  string `json:"type"`
+		Text  string `json:"text"`
+		Index int    `json:"index"`
 	} `json:"content_block,omitempty"`
 	Delta *struct {
 		Type string `json:"type"`
@@ -46,9 +46,10 @@ type claudeStreamChunk struct {
 }
 
 // Chat passes the full conversation to the claude CLI using stream-json I/O:
-//   --system-prompt "<system prompt>"  (first system message content, if any)
-//   stdin: JSON array of messages (all messages including system)
-//   --output-format stream-json        (realtime token streaming)
+//
+//	--system-prompt "<system prompt>"  (first system message content, if any)
+//	stdin: JSON array of messages (all messages including system)
+//	--output-format stream-json        (realtime token streaming)
 //
 // onToken is called for each content chunk as it arrives.
 // temp and maxTokens are not passed — the claude CLI uses its defaults.
