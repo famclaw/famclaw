@@ -524,6 +524,16 @@ func scanApprovals(rows *sql.Rows) ([]*Approval, error) {
 	return out, rows.Err()
 }
 
+// AllApprovals returns all approval records in the database.
+func (d *DB) AllApprovals() ([]*Approval, error) {
+	rows, err := d.sql.Query(`SELECT id, user_name, user_display, age_group, category, query_text, status, created_at, updated_at, expires_at, COALESCE(decided_by,''), COALESCE(decision_note,'') FROM approvals`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanApprovals(rows)
+}
+
 // ── Conversations ─────────────────────────────────────────────────────────────
 
 type Message struct {
