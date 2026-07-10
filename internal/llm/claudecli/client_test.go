@@ -236,8 +236,7 @@ func TestClient(t *testing.T) {
 			name: "normal response",
 			script: `#!/bin/sh
 cat > /dev/null
-echo '{"type":"content_block_delta","delta":{"type":"text","text":"hello from stub"}}'
-echo '{"type":"message_stop","stop_reason":"end_turn"}'
+echo '{"type":"message","message":{"content":[{"type":"text","text":"hello from stub"}],"stop_reason":"end_turn"}}'
 `,
 			messages: []llm.Message{
 				{Role: "user", Content: "hello"},

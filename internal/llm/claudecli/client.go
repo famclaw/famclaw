@@ -15,6 +15,27 @@ import (
 	"github.com/famclaw/famclaw/internal/llm"
 )
 
+// claudeInputEnvelope is the NDJSON envelope format expected by
+// `claude --input-format stream-json`. Each line is a user event wrapping
+// the raw message in a message field.
+type claudeInputEnvelope struct {
+	Type    string          `json:"type"`
+	Message json.RawMessage `json:"message"`
+}
+
+// claudeOutputEnvelope represents a line from `claude --output-format stream-json`.
+// The CLI emits wrapped assistant message envelopes, not raw deltas.
+type claudeOutputEnvelope struct {
+	Type    string `json:"type"`
+	Message *struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		StopReason string `json:"stop_reason,omitempty"`
+	} `json:"message,omitempty"`
+}
+
 // Client implements llm.Chatter by shelling out to the `claude` CLI.
 // It passes system prompt (via --system-prompt), message history (via --input-format stream-json
 // on stdin), and supports streaming output (via --output-format stream-json).
@@ -48,7 +69,7 @@ type claudeStreamChunk struct {
 // Chat passes the full conversation to the claude CLI using stream-json I/O:
 //
 //	--system-prompt "<system prompt>"  (first system message content, if any)
-//	stdin: NDJSON — one JSON object per line (non-system messages only)
+//	stdin: NDJSON — wrapped user events {"type":"user","message":{...}}
 //	--output-format stream-json        (realtime token streaming)
 //
 // onToken is called for each content chunk as it arrives.
@@ -72,16 +93,24 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, temp float64,
 
 	// Collect non-system messages as NDJSON on stdin.
 	// The system message is excluded to avoid duplication with --system-prompt.
+	// Each line is a wrapped user event: {"type":"user","message":{"role":"user","content":"..."}}
 	var ndjson bytes.Buffer
 	for _, m := range messages {
 		if m.Role == "system" {
 			continue
 		}
-		line, err := json.Marshal(m)
+		raw, err := json.Marshal(m)
 		if err != nil {
 			return "", fmt.Errorf("marshaling message for claude stdin: %w", err)
 		}
-		ndjson.Write(line)
+		env, err := json.Marshal(claudeInputEnvelope{
+			Type:    "user",
+			Message: raw,
+		})
+		if err != nil {
+			return "", fmt.Errorf("wrapping message for claude stdin: %w", err)
+		}
+		ndjson.Write(env)
 		ndjson.WriteByte('\n')
 	}
 
@@ -117,49 +146,56 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, temp float64,
 		return "", fmt.Errorf("starting claude: %w", err)
 	}
 
-	// Write NDJSON messages to stdin and close.
-	if _, err := stdin.Write(ndjson.Bytes()); err != nil {
-		stdin.Close()
-		cmd.Wait()
-		return "", fmt.Errorf("writing messages to stdin: %w", err)
-	}
-	stdin.Close()
+	// Write NDJSON messages to stdin from a goroutine to avoid deadlock.
+	// If NDJSON exceeds the OS pipe buffer (~64KB) and the claude process
+	// starts emitting stdout before draining stdin, both sides would block.
+	errCh := make(chan error, 1)
+	go func() {
+		defer stdin.Close()
+		_, err := stdin.Write(ndjson.Bytes())
+		errCh <- err
+	}()
 
 	// Read and parse streaming output.
 	var fullResponse strings.Builder
 	scanner := bufio.NewScanner(stdout)
+	// Increase max token size to handle large stream-json lines.
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024) // 1MB max line
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
 			continue
 		}
 
-		var chunk claudeStreamChunk
-		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+		// Parse the wrapped output envelope.
+		var env claudeOutputEnvelope
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
 			// Skip lines that don't parse as JSON.
 			continue
 		}
 
-		// Extract text from content block deltas.
-		if chunk.Delta != nil {
-			if chunk.Delta.Text != "" {
-				if onToken != nil {
-					onToken(chunk.Delta.Text)
+		// Extract text from assistant message content blocks.
+		if env.Message != nil {
+			for _, block := range env.Message.Content {
+				if block.Type == "text" && block.Text != "" {
+					if onToken != nil {
+						onToken(block.Text)
+					}
+					fullResponse.WriteString(block.Text)
 				}
-				fullResponse.WriteString(chunk.Delta.Text)
-			}
-		} else if chunk.ContentBlock != nil && chunk.ContentBlock.Type == "text" {
-			if chunk.ContentBlock.Text != "" {
-				if onToken != nil {
-					onToken(chunk.ContentBlock.Text)
-				}
-				fullResponse.WriteString(chunk.ContentBlock.Text)
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		cmd.Wait()
 		return "", fmt.Errorf("reading claude output: %w", err)
+	}
+
+	// Wait for stdin writer to finish.
+	if err := <-errCh; err != nil {
+		cmd.Wait()
+		return "", fmt.Errorf("writing messages to stdin: %w", err)
 	}
 
 	if err := cmd.Wait(); err != nil {
