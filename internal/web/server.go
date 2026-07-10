@@ -287,6 +287,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the role/age override (if any) that supersedes the config row.
+	adjustedUser := s.resolveUserRole(r.Context(), userName)
+
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[ws] upgrade error: %v", err)
@@ -313,7 +316,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		ep := s.cfg.LLMEndpointFor(userCfg)
 		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 	}
-	a := agent.NewAgent(userCfg, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
+	a := agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
 		Skills: s.skills,
 		Pool:   s.pool,
 	})
@@ -687,4 +690,30 @@ func jsonErr(w http.ResponseWriter, err error, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
+}
+
+// resolveUserRole returns the effective UserConfig for userName, applying any
+// DB-persisted role/age override (set via set_user_role) that supersedes the
+// config row. Returns userCfg unchanged when no override exists.
+func (s *Server) resolveUserRole(ctx context.Context, userName string) *config.UserConfig {
+	userCfg := s.cfg.GetUser(userName)
+	if userCfg == nil {
+		return nil
+	}
+	role, ageGroup, err := s.db.GetRoleOverride(ctx, userName)
+	if err != nil {
+		log.Printf("[ws] %s: GetRoleOverride error: %v — falling back to config", userName, err)
+		return userCfg
+	}
+	if role != "" || ageGroup != "" {
+		copied := *userCfg
+		if role != "" {
+			copied.Role = role
+		}
+		if ageGroup != "" {
+			copied.AgeGroup = ageGroup
+		}
+		return &copied
+	}
+	return userCfg
 }

@@ -135,11 +135,31 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 	requestID := approvalID(user.Name, string(cat))
 	approvals, _ := r.db.AllApprovalsForOPA()
 
+	// Check for a DB-persisted role/age override that supersedes the config row.
+	// Build an adjustedUser copy so the override is applied to both policy
+	// evaluation and the downstream agent (which re-runs policy internally
+	// for output-gate, tool-call gate, and parent-auto-apply privilege).
+	adjustedUser := userCfg
+	if role, ageGroup, err := r.db.GetRoleOverride(ctx, user.Name); err == nil {
+		if role != "" || ageGroup != "" {
+			copied := *userCfg
+			if role != "" {
+				copied.Role = role
+			}
+			if ageGroup != "" {
+				copied.AgeGroup = ageGroup
+			}
+			adjustedUser = &copied
+		}
+	} else if err != nil {
+		log.Printf("[router] %s: GetRoleOverride error: %v — falling back to config", user.Name, err)
+	}
+
 	decision, err := r.evaluator.Evaluate(ctx, policy.Input{
 		User: policy.UserInput{
-			Role:     userCfg.Role,
-			AgeGroup: userCfg.AgeGroup,
-			Name:     userCfg.Name,
+			Role:     adjustedUser.Role,
+			AgeGroup: adjustedUser.AgeGroup,
+			Name:     adjustedUser.Name,
 		},
 		Query:     policy.QueryInput{Category: string(cat), Text: msg.Text},
 		RequestID: requestID,
@@ -188,7 +208,7 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 	}
 
 	// ── Step 5: LLM chat (only reached when policy returns "allow") ──────
-	response, err := r.chatFn(ctx, userCfg, msg.Text)
+	response, err := r.chatFn(ctx, adjustedUser, msg.Text)
 	if err != nil {
 		log.Printf("[router] chat error: %v", err)
 		// Surface a more actionable hint when the model truncated its tool

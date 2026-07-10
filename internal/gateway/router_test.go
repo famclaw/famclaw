@@ -338,6 +338,71 @@ func (m *mockGateway) Start(ctx context.Context, h func(context.Context, Message
 }
 func (m *mockGateway) Name() string { return m.name }
 
+// TestRouterRoleOverrideFromDB verifies that a DB-persisted role/age override
+// (set via set_user_role) is consulted during policy evaluation, so that a
+// child whose config role is "child" / age_8_12 is blocked when the parent
+// overrides her to "under_8".
+func TestRouterRoleOverrideFromDB(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+	ctx := context.Background()
+
+	// Link emma to a telegram external ID.
+	identStore.LinkAccount("emma", "telegram", "ro-emma-123")
+
+	// Set a DB role override: emma → under_8 (normally she is age_8_12).
+	err := router.db.SetRoleOverride(ctx, "emma", "child", "under_8", "parent")
+	if err != nil {
+		t.Fatalf("SetRoleOverride: %v", err)
+	}
+
+	// Verify the override is stored.
+	role, ageGroup, err := router.db.GetRoleOverride(ctx, "emma")
+	if err != nil {
+		t.Fatalf("GetRoleOverride: %v", err)
+	}
+	if role != "child" || ageGroup != "under_8" {
+		t.Fatalf("expected override child/under_8, got %q/%q", role, ageGroup)
+	}
+
+	// Query about social media — normally (age_8_12) this would request_approval,
+	// but under_8 should block it outright (same rule as lucas).
+	reply := router.Handle(ctx, Message{
+		Gateway:    "telegram",
+		ExternalID: "ro-emma-123",
+		Text:       "can I use instagram and tiktok",
+	})
+
+	if reply.PolicyAction != "block" {
+		t.Errorf("emma with under_8 override: PolicyAction = %q, want block", reply.PolicyAction)
+	}
+	if reply.Text == "" {
+		t.Error("expected a block message, got empty text")
+	}
+
+	// Clean up the override.
+	router.db.SetRoleOverride(ctx, "emma", "", "", "parent")
+
+	// Without the override, emma (age_8_12) should request_approval for social media.
+	reply = router.Handle(ctx, Message{
+		Gateway:    "telegram",
+		ExternalID: "ro-emma-123",
+		Text:       "can I use instagram and tiktok",
+	})
+
+	if reply.PolicyAction != "request_approval" {
+		t.Errorf("emma without override: PolicyAction = %q, want request_approval", reply.PolicyAction)
+	}
+
+	// Verify the override is gone.
+	role, ageGroup, err = router.db.GetRoleOverride(ctx, "emma")
+	if err != nil {
+		t.Fatalf("GetRoleOverride after cleanup: %v", err)
+	}
+	if role != "" || ageGroup != "" {
+		t.Errorf("expected empty override after cleanup, got %q/%q", role, ageGroup)
+	}
+}
+
 func TestRouterPendingApproval(t *testing.T) {
 	router, identStore := setupRouter(t, panicChat)
 	identStore.LinkAccount("emma", "telegram", "emma-123")
