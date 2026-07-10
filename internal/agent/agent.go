@@ -211,10 +211,6 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// This closes the streamed-output-gate bypass: tokens are no longer
 	// emitted live; they are collected, gated, then emitted in one burst.
 	var bufferedTokens []string
-	var tokenCh chan string
-	if onToken != nil {
-		tokenCh = make(chan string, 256)
-	}
 
 	// Assemble and run the pipeline
 	deps := agentcore.FamilyPipelineDeps{
@@ -227,8 +223,10 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		MaxTokens:     a.cfg.LLM.MaxResponseTokens,
 		ContextWindow: a.cfg.LLM.MaxContextTokens,
 	}
-	if tokenCh != nil {
-		deps.OnToken = func(tok string) { tokenCh <- tok }
+	if onToken != nil {
+		deps.OnToken = func(tok string) {
+			bufferedTokens = append(bufferedTokens, tok)
+		}
 	}
 
 	// Wire builtin tool handler (spawn_agent, web_fetch, etc.)
@@ -303,13 +301,17 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// Drain buffered tokens after pipeline completes and gate allows.
 	// If the gate blocked (output_blocked set by NewStagePolicyOutput),
 	// we never reach here — the turn.Output is already the safe fallback.
-	if tokenCh != nil {
-		close(tokenCh)
-		for tok := range tokenCh {
-			bufferedTokens = append(bufferedTokens, tok)
-		}
-		// Only emit if the pipeline didn't block the output.
-		if blocked, ok := turn.GetMeta("output_blocked"); !ok || !blocked.(bool) {
+	// For soft-blocked content that was redacted, emit the final output
+	// instead of raw tokens to prevent redaction leaks (security fix).
+	if onToken != nil && len(bufferedTokens) > 0 {
+		raw := strings.Join(bufferedTokens, "")
+		if blocked, ok := turn.GetMeta("output_blocked"); ok && blocked.(bool) {
+			// Hard-blocked: safe message already in turn.Output, no emit.
+		} else if turn.Output != raw {
+			// Redacted (soft-block): emit the final redacted output, not raw tokens.
+			onToken(turn.Output)
+		} else {
+			// Allowed (no modification): emit individual buffered tokens.
 			for _, tok := range bufferedTokens {
 				onToken(tok)
 			}
