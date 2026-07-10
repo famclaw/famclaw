@@ -287,6 +287,22 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for a DB-persisted role/age override that supersedes the config row.
+	// Use a local copy (adjustedUser) to avoid mutating the shared config pointer.
+	adjustedUser := userCfg
+	if role, ageGroup, err := s.db.GetRoleOverride(r.Context(), userName); err == nil {
+		if role != "" || ageGroup != "" {
+			copied := *userCfg
+			if role != "" {
+				copied.Role = role
+			}
+			if ageGroup != "" {
+				copied.AgeGroup = ageGroup
+			}
+			adjustedUser = &copied
+		}
+	}
+
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[ws] upgrade error: %v", err)
@@ -313,7 +329,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		ep := s.cfg.LLMEndpointFor(userCfg)
 		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 	}
-	a := agent.NewAgent(userCfg, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
+	a := agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
 		Skills: s.skills,
 		Pool:   s.pool,
 	})

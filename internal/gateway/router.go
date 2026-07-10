@@ -121,10 +121,24 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 	requestID := approvalID(user.Name, string(cat))
 	approvals, _ := r.db.AllApprovalsForOPA()
 
+	// Check for a DB-persisted role/age override that supersedes the config row.
+	// Use local variables (not userCfg) to avoid mutating the shared config pointer,
+	// which would persist across subsequent Handle() calls.
+	policyRole := userCfg.Role
+	policyAgeGroup := userCfg.AgeGroup
+	if role, ageGroup, err := r.db.GetRoleOverride(ctx, user.Name); err == nil {
+		if role != "" {
+			policyRole = role
+		}
+		if ageGroup != "" {
+			policyAgeGroup = ageGroup
+		}
+	}
+
 	decision, err := r.evaluator.Evaluate(ctx, policy.Input{
 		User: policy.UserInput{
-			Role:     userCfg.Role,
-			AgeGroup: userCfg.AgeGroup,
+			Role:     policyRole,
+			AgeGroup: policyAgeGroup,
 			Name:     userCfg.Name,
 		},
 		Query:     policy.QueryInput{Category: string(cat), Text: msg.Text},
