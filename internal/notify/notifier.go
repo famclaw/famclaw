@@ -71,7 +71,7 @@ func (m *MultiNotifier) Notify(ctx context.Context, a *store.Approval, approveUR
 		go func(n Notifier) {
 			defer wg.Done()
 			if err := n.Notify(ctx, a, approveURL, denyURL); err != nil {
-				log.Printf("[notify] channel error: %v", err)
+				log.Printf("[notify] channel error: %v", redactWebhookURLInError(err))
 			}
 		}(ch)
 	}
@@ -90,7 +90,7 @@ func (m *MultiNotifier) NotifyDecision(ctx context.Context, a *store.Approval) {
 		go func(n Notifier) {
 			defer wg.Done()
 			if err := n.NotifyDecision(ctx, a); err != nil {
-				log.Printf("[notify] decision channel error: %v", err)
+				log.Printf("[notify] decision channel error: %v", redactWebhookURLInError(err))
 			}
 		}(ch)
 	}

@@ -3,13 +3,16 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/gateway"
+	"github.com/famclaw/famclaw/internal/notify"
 )
 
 func TestTelegramBotPollAndReply(t *testing.T) {
@@ -85,5 +88,93 @@ func TestTelegramBotHandlerCalled(t *testing.T) {
 
 	if reply.Text != "hi" {
 		t.Errorf("reply.Text = %q, want hi", reply.Text)
+	}
+}
+
+// TestPollErrorRedaction ensures that *url.Error containing a bot<TOKEN> URL
+// is fully redacted before reaching any log line — mimicking what bot.go:55 does.
+func TestPollErrorRedaction(t *testing.T) {
+	baseURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=0&timeout=30", "111111:AAAA_BBBB")
+	inner := &url.Error{Op: "Get", URL: baseURL, Err: errors.New("dial tcp: no route to host")}
+	err := fmt.Errorf("polling: %w", inner)
+
+	redacted := notify.RedactWebhookURLInError(err)
+	if redacted == nil {
+		t.Fatal("expected non-nil error after redaction")
+	}
+	got := redacted.Error()
+
+	if strings.Contains(got, "111111:AAAA") {
+		t.Errorf("bot token not redacted in poll error: %s", got)
+	}
+	if !strings.Contains(got, "bot<REDACTED>") {
+		t.Errorf("expected bot<REDACTED> in poll error, got: %s", got)
+	}
+}
+
+// TestSendErrorRedaction covers the sendMessage error path at bot.go:140.
+func TestSendErrorRedaction(t *testing.T) {
+	baseURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", "222222:CCCC")
+	inner := &url.Error{Op: "Post", URL: baseURL, Err: errors.New("connection refused")}
+	err := fmt.Errorf("sending message: %w", inner)
+
+	redacted := notify.RedactWebhookURLInError(err)
+	if redacted == nil {
+		t.Fatal("expected non-nil error")
+	}
+	got := redacted.Error()
+
+	if strings.Contains(got, "222222:CCCC") {
+		t.Errorf("bot token not redacted in send error: %s", got)
+	}
+	if !strings.Contains(got, "bot<REDACTED>") {
+		t.Errorf("expected bot<REDACTED> in send error, got: %s", got)
+	}
+}
+
+// TestChatActionErrorRedaction covers the sendChatAction error path at bot.go:92/103.
+func TestChatActionErrorRedaction(t *testing.T) {
+	baseURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendChatAction", "333333:DDDD")
+	inner := &url.Error{Op: "Post", URL: baseURL, Err: errors.New("timeout")}
+	err := fmt.Errorf("sending chat action: %w", inner)
+
+	redacted := notify.RedactWebhookURLInError(err)
+	if redacted == nil {
+		t.Fatal("expected non-nil error")
+	}
+	got := redacted.Error()
+
+	if strings.Contains(got, "333333:DDDD") {
+		t.Errorf("bot token not redacted in chat action error: %s", got)
+	}
+	if !strings.Contains(got, "bot<REDACTED>") {
+		t.Errorf("expected bot<REDACTED> in chat action error, got: %s", got)
+	}
+}
+
+// TestSendMessageNetworkErrorRedaction covers the error returned by
+// sendMessage when http.DefaultClient.Do fails.
+func TestSendMessageNetworkErrorRedaction(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	bot := &Bot{
+		token:    "444444:EEEE",
+		endpoint: server.URL,
+		client:   server.Client(),
+	}
+
+	err := bot.sendMessage(context.Background(), 123, "test")
+	if err == nil {
+		t.Fatal("expected error for 503 response")
+	}
+
+	redacted := notify.RedactWebhookURLInError(err)
+	got := redacted.Error()
+
+	if strings.Contains(got, "444444:EEEE") {
+		t.Errorf("bot token not redacted in send error: %s", got)
 	}
 }

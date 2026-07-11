@@ -9,10 +9,11 @@ import (
 // urlInError matches a quoted URL inside a Go error message string.
 var urlInError = regexp.MustCompile(`"(https?://[^"]+)"`)
 
-// bearerToken matches Bearer auth tokens that appear in error messages.
+// bearerToken matches Bearer/Bot auth tokens that appear in error messages.
 // ntfy (and other services) embed credentials in Authorization headers,
-// not in the URL, so a regex is appropriate here.
-var bearerToken = regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9\-_\.]+`)
+// not in the URL, so a regex is appropriate here. Discord uses "Bot <token>"
+// in the Authorization header which can leak into error strings.
+var bearerToken = regexp.MustCompile(`(?i)(Bearer\s+|Bot\s+)[A-Za-z0-9\-_\.]+`)
 
 // redactFn is a URL-redaction function keyed by hostname.
 type redactFn func(*url.URL)
@@ -57,6 +58,13 @@ func redactTelegram(u *url.URL) {
 	}
 }
 
+// RedactWebhookURLInError replaces any webhook URL tokens visible in the error
+// chain with <REDACTED>. It only affects the string representation of errors
+// and is safe to call at the log/return boundary.
+func RedactWebhookURLInError(err error) error {
+	return redactWebhookURLInError(err)
+}
+
 // redactWebhookURLInError replaces any webhook URL tokens visible in the error
 // chain with <REDACTED>. It only affects the string representation of errors.
 func redactWebhookURLInError(err error) error {
@@ -77,7 +85,13 @@ func redactWebhookURLInError(err error) error {
 			fn(u)
 		}
 		// Reconstruct without quoting — u.String() would escape < > as %3C %3E.
-		return `"` + u.Scheme + `://` + u.Host + u.Path + `"`
+		var rebuilt string
+		if u.RawQuery != "" {
+			rebuilt = `"` + u.Scheme + `://` + u.Host + u.Path + `?` + u.RawQuery + `"`
+		} else {
+			rebuilt = `"` + u.Scheme + `://` + u.Host + u.Path + `"`
+		}
+		return rebuilt
 	})
 
 	// Redact Bearer tokens (ntfy, etc.) — these live in Authorization
@@ -85,15 +99,16 @@ func redactWebhookURLInError(err error) error {
 	msg = bearerToken.ReplaceAllString(msg, "${1}<REDACTED>")
 
 	if msg != err.Error() {
-		return &redactedError{msg: msg}
+		return &redactedError{msg: msg, orig: err}
 	}
 	return err
 }
 
 // redactedError wraps an error with a redacted message string.
 type redactedError struct {
-	msg string
+	msg  string
+	orig error
 }
 
-func (e *redactedError) Error() string   { return e.msg }
-func (e *redactedError) Unwrap() error   { return nil }
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.orig }
