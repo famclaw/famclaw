@@ -210,7 +210,17 @@ func main() {
 	}
 
 	// Skills loaded for prompt injection (independent of MCP)
-	reg := skillbridge.NewRegistry(cfg.Skills.Dir, nil, skillbridge.InstallConfig{})
+	installCfg := skillbridge.InstallConfig{
+		Enabled:      cfg.SecCheck.Enabled,
+		AutoSecCheck: cfg.SecCheck.AutoSecCheck,
+		BlockOnFail:  cfg.SecCheck.BlockOnFail,
+		Paranoia:     cfg.SecCheck.Paranoia,
+	}
+	var scanner skillbridge.Scanner
+	if installCfg.Enabled && installCfg.AutoSecCheck {
+		scanner = honeybadger.New()
+	}
+	reg := skillbridge.NewRegistry(cfg.Skills.Dir, scanner, installCfg)
 	var enabledSkills []*skillbridge.Skill
 	if skills, err := reg.List(); err == nil {
 		for _, sk := range skills {

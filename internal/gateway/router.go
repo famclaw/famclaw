@@ -159,13 +159,7 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		log.Printf("[router] %s: GetRoleOverride error: %v — falling back to config", user.Name, err)
 	}
 
-	// ── Parent-only chat commands ────────────────────────────────────────
-	if fields := strings.Fields(msg.Text); len(fields) >= 1 && r.registry != nil && strings.EqualFold(fields[0], "skill") {
-		if adjustedUser.Role != "parent" {
-			return Reply{Text: "Only a parent can manage skills.", PolicyAction: "block"}
-		}
-		return r.handleSkillCommand(ctx, adjustedUser.Name, fields)
-	}
+	
 
 	decision, err := r.evaluator.Evaluate(ctx, policy.Input{
 		User: policy.UserInput{
@@ -219,7 +213,14 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		return Reply{Text: text, PolicyAction: "pending"}
 	}
 
-	// ── Step 5: LLM chat (only reached when policy returns "allow") ──────
+	// ── Step 5: Handle skill commands or LLM chat (only reached when policy returns "allow") ──────
+	// Check if this is a parent-only skill command
+	if fields := strings.Fields(msg.Text); len(fields) >= 1 && r.registry != nil && strings.EqualFold(fields[0], "skill") {
+		if adjustedUser.Role != "parent" {
+			return Reply{Text: "Only a parent can manage skills.", PolicyAction: "block"}
+		}
+		return r.handleSkillCommand(ctx, adjustedUser.Name, fields)
+	}
 	response, err := r.chatFn(ctx, adjustedUser, msg.Text)
 	if err != nil {
 		log.Printf("[router] chat error: %v", err)
