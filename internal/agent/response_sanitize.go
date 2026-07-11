@@ -95,7 +95,7 @@ func removeParameterBlocks(s string) string {
 
 // removeToolCallSpill removes  ... ? blocks.
 func removeToolCallSpill(s string) string {
-	return regexp.MustCompile(`(?s)`).ReplaceAllString(s, "")
+	return regexp.MustCompile(`(?s)<tool_call>(.*?)</tool_call>`).ReplaceAllString(s, "")
 }
 
 // unwrapFinalBlocks repeatedly unwraps final tags.
