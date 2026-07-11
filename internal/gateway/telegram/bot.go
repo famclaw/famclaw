@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/famclaw/famclaw/internal/gateway"
+	"github.com/famclaw/famclaw/internal/notify"
 )
 
 // Bot is a Telegram gateway using the Bot API with long-polling.
@@ -52,7 +53,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 
 		updates, err := b.getUpdates(ctx, offset)
 		if err != nil {
-			log.Printf("[telegram] poll error: %v", err)
+			log.Printf("[telegram] poll error: %v", notify.RedactWebhookURLInError(err))
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -88,7 +89,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				default:
 				}
 				if err := b.sendChatAction(ctx, chatID, "typing"); err != nil {
-					log.Printf("[telegram] typing indicator: %v", err)
+					log.Printf("[telegram] typing indicator: %v", notify.RedactWebhookURLInError(err))
 				}
 				t := time.NewTicker(4 * time.Second)
 				defer t.Stop()
@@ -100,7 +101,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 						return
 					case <-t.C:
 						if err := b.sendChatAction(ctx, chatID, "typing"); err != nil {
-							log.Printf("[telegram] typing indicator: %v", err)
+							log.Printf("[telegram] typing indicator: %v", notify.RedactWebhookURLInError(err))
 						}
 					}
 				}
@@ -137,7 +138,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			for _, raw := range gateway.ChunkMessage(text, chunkBudget) {
 				chunk := markdownToTelegramHTML(raw)
 				if err := b.sendMessage(ctx, u.Message.Chat.ID, chunk); err != nil {
-					log.Printf("[telegram] send error: %v", err)
+					log.Printf("[telegram] send error: %v", notify.RedactWebhookURLInError(err))
 					break
 				}
 			}

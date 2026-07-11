@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -189,5 +190,70 @@ func TestMultiNotifierLen(t *testing.T) {
 	}, "secret")
 	if oneChannel.Len() != 1 {
 		t.Errorf("expected 1 channel when Ntfy enabled, got %d", oneChannel.Len())
+	}
+}
+
+// TestRedactWebhookURLInErrorLogPath verifies that tokens in error strings are properly
+// redacted when logged through the notifier's error logging path.
+func TestRedactWebhookURLInErrorLogPath(t *testing.T) {
+	// Test cases with tokens that should be redacted
+	tests := []struct {
+		name    string
+		err     error
+		want    string
+	}{
+		{
+			name: "Telegram bot token in URL",
+			err:  fmt.Errorf("telegram API error: Post \"https://api.telegram.org/bot123456:ABC/getUpdates\": dial tcp: lookup api.telegram.org: no such host"),
+			want: "[notify] channel error: telegram API error: Post \"https://api.telegram.org/bot<REDACTED>/getUpdates\": dial tcp: lookup api.telegram.org: no such host",
+		},
+		{
+			name: "Discord webhook token in URL",
+			err:  fmt.Errorf("failed to send message: Post \"https://discord.com/api/webhooks/123456789/abcdefg_token_here_12345\": dial tcp: lookup discord.com: no such host"),
+			want: "[notify] channel error: failed to send message: Post \"https://discord.com/api/webhooks/123456789/<REDACTED>\": dial tcp: lookup discord.com: no such host",
+		},
+		{
+			name: "Slack webhook token in URL",
+			err:  fmt.Errorf("slack webhook error: Post \"https://hooks.slack.com/services/T00000000/B00000000/FAKE_SLACK_TOKEN\": context deadline exceeded"),
+			want: "[notify] channel error: slack webhook error: Post \"https://hooks.slack.com/services/T00000000/B00000000/<REDACTED>\": context deadline exceeded",
+		},
+		{
+			name: "Bearer token in Authorization header (ntfy)",
+			err:  fmt.Errorf("posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer FAKE_BEARER_TOKEN"),
+			want: "[notify] channel error: posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer <REDACTED>",
+		},
+		{
+			name: "Bot token in Authorization header (Discord)",
+			err:  fmt.Errorf("discord API error: Post \"https://discord.com/api/v10/channels/123456789/messages\": authorization: Bot FAKE_DISCORD_BOT_TOKEN"),
+			want: "[notify] channel error: discord API error: Post \"https://discord.com/api/v10/channels/123456789/messages\": authorization: Bot <REDACTED>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Capture log output by using a mock logger or by checking the error string directly
+			// Since we're testing the redaction function's effect on logged errors,
+			// we can test the redacted error string directly
+			redactedErr := RedactWebhookURLInError(tt.err)
+			if redactedErr == nil {
+				t.Fatal("expected non-nil error from redaction")
+			}
+			
+			// Format as it would appear in the log
+			logged := fmt.Sprintf("[notify] channel error: %v", redactedErr)
+			
+			if logged != tt.want {
+				t.Errorf("TestRedactWebhookURLInErrorLogPath(%v) = %q, want %q", tt.err, logged, tt.want)
+			}
+			
+// Additionally verify that the original token is not present in the logged output
+		if strings.Contains(logged, "123456:ABC") ||
+			strings.Contains(logged, "abcdefg_token_here_12345") ||
+			strings.Contains(logged, "FAKE_SLACK_TOKEN") ||
+			strings.Contains(logged, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") ||
+			strings.Contains(logged, "FAKE_DISCORD_BOT_TOKEN") {
+			t.Errorf("original token still present in logged output: %s", logged)
+		}
+		})
 	}
 }
