@@ -13,12 +13,13 @@ when Meridian is in place.
 
 If you already have [Claude Code](https://claude.ai/code) installed and want FamClaw to
 route its LLM calls through the local `claude` binary, set `provider: claude_cli` in
-your `config.yaml` under the `llm:` section. FamClaw will shell out to `claude -p
-"<prompt>"` for each turn instead of making HTTP requests.
+your `config.yaml` under the `llm:` section. FamClaw shells out to `claude` with
+`--input-format stream-json` (full conversation history as NDJSON on stdin),
+`--output-format stream-json` (streaming output), and `--system-prompt` for the
+system message. Responses stream back in real time via `onToken` callbacks.
 
-**Limitations in v1:** streaming and tool calls are not supported — the claude CLI
-adapter calls `onToken` once with the full response and returns an error for
-`ChatWithTools`. These limitations will be lifted in a future release.
+**Limitations:** tool calls are not supported — `ChatWithTools` returns an error.
+This limitation may be lifted in a future release.
 
 ## Recommended path for most users
 
