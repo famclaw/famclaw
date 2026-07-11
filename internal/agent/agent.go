@@ -206,6 +206,12 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		}
 	}
 
+	// Buffer tokens during streaming so the output gate can evaluate the
+	// full response before any token reaches the gateway.
+	// This closes the streamed-output-gate bypass: tokens are no longer
+	// emitted live; they are collected, gated, then emitted in one burst.
+	var bufferedTokens []string
+
 	// Assemble and run the pipeline
 	deps := agentcore.FamilyPipelineDeps{
 		Classifier:    a.classifier,
@@ -216,7 +222,11 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		Temperature:   a.cfg.LLM.Temperature,
 		MaxTokens:     a.cfg.LLM.MaxResponseTokens,
 		ContextWindow: a.cfg.LLM.MaxContextTokens,
-		OnToken:       onToken,
+	}
+	if onToken != nil {
+		deps.OnToken = func(tok string) {
+			bufferedTokens = append(bufferedTokens, tok)
+		}
 	}
 
 	// Wire builtin tool handler (spawn_agent, web_fetch, etc.)
@@ -286,6 +296,27 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 			}, nil
 		}
 		turn.Output = final
+	}
+
+	// Drain buffered tokens after pipeline completes.
+	// - If the output gate hard-blocked (output_blocked=true), turn.Output
+	//   is already the safe fallback message and we emit nothing.
+	// - If the output gate soft-blocked and redacted, emit turn.Output
+	//   instead of raw tokens to prevent redaction leaks (security fix).
+	// - If the output gate allowed unchanged, emit the individual tokens.
+	if onToken != nil && len(bufferedTokens) > 0 {
+		raw := strings.Join(bufferedTokens, "")
+		if blocked, ok := turn.GetMeta("output_blocked"); ok && blocked.(bool) {
+			// Hard-blocked: safe message already in turn.Output, no emit.
+		} else if turn.Output != raw {
+			// Redacted (soft-block): emit the final redacted output, not raw tokens.
+			onToken(turn.Output)
+		} else {
+			// Allowed (no modification): emit individual buffered tokens.
+			for _, tok := range bufferedTokens {
+				onToken(tok)
+			}
+		}
 	}
 
 	// Empty-response guard. Local LLMs (Nemotron particularly) occasionally
