@@ -172,6 +172,37 @@ Skills live in `famclaw/skills` — never create a skills/ dir here.
 
 ---
 
+## Code review focus / recurring pitfalls
+
+famclaw code must be correct, efficient, tested, and idiomatic Go. The bug classes below recur in famclaw PRs (from CodeRabbit + no-mistakes review history) — avoid introducing them; reviewers should watch for them.
+
+**Correctness**
+- Brittle string comparisons for logic decisions (e.g. `turn.Output != raw`) — use structured/normalized comparison, not raw string equality. (PR #182)
+- Thread request `context` through all async paths for cancellation/timeouts — do not drop it in session handling or LLM calls. (PR #171)
+- Gate features on both the flag and the underlying system being enabled (e.g. `cfg.SecCheck.Enabled` AND the notify flag). (PR #167)
+
+**Efficiency & idiomatic Go**
+- Never `defer` inside a loop — defers accumulate until function return, leaking resources/goroutines per iteration; do cleanup explicitly each iteration or extract the loop body into a function. (PR #182: `defer cancel()` in a per-message loop)
+- Preallocate slices/maps with known capacity; avoid repeated allocations and unnecessary copies in hot paths.
+- Extract shared HTTP request flows (context timeout, error handling, body close) into helpers to eliminate duplication. (PR #172)
+- Idiomatic Go: early returns over deep nesting, wrap errors with `%w` and match via `errors.Is/As`, keep `gofmt`/`go vet`/`staticcheck` clean, no unused code.
+
+**Stability**
+- Close/`Shutdown()` all resources on graceful exit — session pools, notification channels — to avoid goroutine/resource leaks. (PR #171)
+- Never swallow errors from notifier calls (`r.notifier.Notify`) — log them, or parents miss approvals. (PR #170)
+- On queue-full, notify the caller (immediate timeout/error) instead of silently dropping and blocking goroutines. (PR #171)
+
+**Security**
+- Buffer all streamed LLM tokens before the OPA output gate evaluates — no token reaches the gateway until the full response is gated. (PR #182)
+- Evaluate each policy stage (input/tool/output) exactly once at the right point — do not skip or double-evaluate. (PR #182)
+
+**Tests**
+- Add `expectTokens` (or equivalent) assertions on allowed paths, not just blocked ones. (PR #182)
+- Use table-driven tests (project convention). (PR #167, #172)
+- Use the configurable `--config` path; never hardcode `config.yaml`. (PR #169)
+
+---
+
 ## Test commands
 - `go test ./...`  
 - `opa test internal/policy/policies/family/ internal/policy/policies/data/ -v`  
