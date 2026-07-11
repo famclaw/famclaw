@@ -287,8 +287,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-// Resolve the role/age override (if any) that supersedes the config row.
+	// Resolve the role/age override (if any) that supersedes the config row.
 	adjustedUser := s.resolveUserRole(r.Context(), userName)
+	// Initialize last known role and ageGroup from the adjustedUser for change detection.
+	lastRole := adjustedUser.Role
+	lastAgeGroup := adjustedUser.AgeGroup
 
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -328,6 +331,34 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[ws] %s disconnected", userCfg.DisplayName)
 			}
 			return
+		}
+
+		// Check for role override changes and recreate agent if needed.
+		currentRole := userCfg.Role
+		currentAgeGroup := userCfg.AgeGroup
+		if role, ageGroup, err := s.db.GetRoleOverride(r.Context(), userName); err == nil {
+			if role != "" {
+				currentRole = role
+			}
+			if ageGroup != "" {
+				currentAgeGroup = ageGroup
+			}
+		}
+		if currentRole != lastRole || currentAgeGroup != lastAgeGroup {
+			// Recreate agent with the new role/ageGroup.
+			adjustedUser := &config.UserConfig{
+				Name:     userCfg.Name,
+				DisplayName: userCfg.DisplayName,
+				Role:     currentRole,
+				AgeGroup: currentAgeGroup,
+				PIN:      userCfg.PIN,
+			}
+			a = agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
+				Skills: s.skills,
+				Pool:   s.pool,
+			})
+			lastRole = currentRole
+			lastAgeGroup = currentAgeGroup
 		}
 
 		switch msg.Type {
