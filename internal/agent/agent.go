@@ -34,6 +34,8 @@ import (
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
+	"os"
+	"path/filepath"
 )
 
 // Response is the result of a single agent turn.
@@ -375,10 +377,44 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		case "builtin__delete_family_category":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
 			return admin.HandleDeleteFamilyCategory(ctx, deps, args)
-		default:
-			return "", fmt.Errorf("unknown builtin tool: %s", name)
+case "builtin__file_read":
+		return a.handleFileRead(ctx, args)
+	case "builtin__file_write":
+		return a.handleFileWrite(ctx, args)
+	case "builtin__file_stat":
+		return a.handleFileStat(ctx, args)
+	case "builtin__file_list":
+		return a.handleFileList(ctx, args)
+	default:
+		return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
 	}
+}
+
+func (a *Agent) confinePath(path string) (string, error) {
+	if a.cfg.Tools.SandboxRoot == "" {
+		return "", fmt.Errorf("sandbox root not configured")
+	}
+	sandboxRoot := a.cfg.Tools.SandboxRoot
+	var err error
+	// Ensure sandbox root is absolute and evaluated for symlinks
+	if sandboxRoot, err = filepath.EvalSymlinks(filepath.Clean(sandboxRoot)); err != nil {
+		return "", fmt.Errorf("invalid sandbox root: %w", err)
+	}
+	var absPath string
+	if filepath.IsAbs(path) {
+		if absPath, err = filepath.EvalSymlinks(filepath.Clean(path)); err != nil {
+			return "", fmt.Errorf("failed to clean path: %w", err)
+		}
+	} else {
+		if absPath, err = filepath.EvalSymlinks(filepath.Clean(filepath.Join(sandboxRoot, path))); err != nil {
+			return "", fmt.Errorf("failed to join and clean path: %w", err)
+		}
+	}
+	if !strings.HasPrefix(absPath, sandboxRoot) {
+		return "", fmt.Errorf("path %q escapes sandbox root %q", path, sandboxRoot)
+	}
+	return absPath, nil
 }
 
 // Subagent timeout defaults / caps (in seconds).
@@ -386,6 +422,85 @@ const (
 	subagentDefaultTimeoutSec = 300  // 5 minutes
 	subagentMaxTimeoutSec     = 1800 // 30 minutes
 )
+
+func (a *Agent) handleFileRead(ctx context.Context, args map[string]any) (string, error) {
+	pathRaw, ok := args["path"].(string)
+	if !ok || pathRaw == "" {
+		return "", fmt.Errorf("file_read requires a non-empty 'path' argument")
+	}
+	absPath, err := a.confinePath(pathRaw)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", fmt.Errorf("reading file: %w", err)
+	}
+	return string(data), nil
+}
+
+func (a *Agent) handleFileWrite(ctx context.Context, args map[string]any) (string, error) {
+	pathRaw, ok := args["path"].(string)
+	if !ok || pathRaw == "" {
+		return "", fmt.Errorf("file_write requires a non-empty 'path' argument")
+	}
+	contentRaw, ok := args["content"].(string)
+	if !ok {
+		return "", fmt.Errorf("file_write requires a 'content' argument")
+	}
+	absPath, err := a.confinePath(pathRaw)
+	if err != nil {
+		return "", err
+	}
+	err = os.WriteFile(absPath, []byte(contentRaw), 0644)
+	if err != nil {
+		return "", fmt.Errorf("writing file: %w", err)
+	}
+	return fmt.Sprintf("ok — wrote %d bytes to %q", len(contentRaw), pathRaw), nil
+}
+
+func (a *Agent) handleFileStat(ctx context.Context, args map[string]any) (string, error) {
+	pathRaw, ok := args["path"].(string)
+	if !ok || pathRaw == "" {
+		return "", fmt.Errorf("file_stat requires a non-empty 'path' argument")
+	}
+	absPath, err := a.confinePath(pathRaw)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", fmt.Errorf("statting file: %w", err)
+	}
+	return fmt.Sprintf("Name: %s\nSize: %d bytes\nMode: %s\nModTime: %s", info.Name(), info.Size(), info.Mode(), info.ModTime().Format(time.RFC3339)), nil
+}
+
+func (a *Agent) handleFileList(ctx context.Context, args map[string]any) (string, error) {
+	pathRaw, ok := args["path"].(string)
+	if !ok {
+		pathRaw = "" // default to sandbox root
+	}
+	absPath, err := a.confinePath(pathRaw)
+	if err != nil {
+		return "", err
+	}
+	files, err := os.ReadDir(absPath)
+	if err != nil {
+		return "", fmt.Errorf("reading directory: %w", err)
+	}
+	var lines []string
+	for _, f := range files {
+		line := f.Name()
+		if f.IsDir() {
+			line += "/"
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return "(empty)", nil
+	}
+	return strings.Join(lines, "\n"), nil
+}
 
 func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (string, error) {
 	if a.scheduler == nil {

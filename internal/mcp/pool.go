@@ -29,6 +29,7 @@ type managedClient struct {
 	client     *Client
 	name       string
 	cfg        config.MCPServerConfig
+	env        map[string]string
 	restartCnt int
 }
 
@@ -62,6 +63,7 @@ func (p *Pool) RegisterFromConfig(servers map[string]config.MCPServerConfig, cre
 			client: c,
 			name:   name,
 			cfg:    cfg,
+			env:    c.env,
 		}
 	}
 }
@@ -126,6 +128,7 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 			mc.restartCnt++
 			mc.client.Stop()
 			mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot)
+	mc.client.env = mc.env
 			if startErr := mc.client.Start(ctx); startErr != nil {
 				return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
 			}

@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
+	"path/filepath"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -494,6 +496,25 @@ func (c *Config) Validate() error {
 	}
 	if c.Tools.Browser.SnapshotMaxChars < 0 {
 		return fmt.Errorf("tools.browser.snapshot_max_chars must be >= 0 (got %d)", c.Tools.Browser.SnapshotMaxChars)
+	}
+	// Validate sandbox root if set.
+	if c.Tools.SandboxRoot != "" {
+		// Make absolute if not already.
+		if !filepath.IsAbs(c.Tools.SandboxRoot) {
+			abs, err := filepath.Abs(c.Tools.SandboxRoot)
+			if err != nil {
+				return fmt.Errorf("tools.sandbox_root: failed to get absolute path: %w", err)
+			}
+			c.Tools.SandboxRoot = abs
+		}
+		// Clean the path (removes trailing slashes, resolves . and .. components).
+		cleaned := filepath.Clean(c.Tools.SandboxRoot)
+		// Reject unsafe values: root directory or current directory.
+		if cleaned == "/" || cleaned == "." {
+			return fmt.Errorf("tools.sandbox_root must not be the root directory (\"/\") or current directory (\".\")")
+		}
+		// Optionally, ensure the parent directory exists? Not required; we can create later.
+		c.Tools.SandboxRoot = cleaned
 	}
 	return nil
 }

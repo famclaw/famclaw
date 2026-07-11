@@ -44,6 +44,7 @@ import (
 	"github.com/famclaw/famclaw/internal/web"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
+	"github.com/famclaw/famclaw/internal/filetool"
 )
 
 var Version = "dev"
@@ -282,36 +283,44 @@ func main() {
 			registered = append(registered, "tool_result_more")
 		}
 	}
-	// Phase 3.3 — get_family_state + propose_family_fact are always
-	// available; OPA policy already permits them for every role, and the
-	// handlers degrade gracefully when the store is nil (tests).
-	builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
-	registered = append(registered, "get_family_state", "propose_family_fact")
-	if cfg.Tools.WebSearch.Enabled {
-		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
-		registered = append(registered, "web_search")
+// Phase 3.3 — get_family_state + propose_family_fact are always
+// available; OPA policy already permits them for every role, and the
+// handlers degrade gracefully when the store is nil (tests).
+builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
+registered = append(registered, "get_family_state", "propose_family_fact")
+if cfg.Tools.WebSearch.Enabled {
+	builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
+	registered = append(registered, "web_search")
+}
+// File tools are always available; access is restricted by OPA policy.
+builtinTools = append(builtinTools,
+	filetool.FileReadTool(),
+	filetool.FileWriteTool(),
+	filetool.FileStatTool(),
+	filetool.FileListTool(),
+)
+registered = append(registered, "file_read", "file_write", "file_stat", "file_list")
+var browserPool *browser.Pool
+if cfg.Tools.Browser.Enabled {
+	// Pool owns its idle-sweeper goroutine; pass Background and rely on
+	// Close (deferred below) to cancel it. A process-wide cancellable
+	// ctx exists later in main but Pool boots before the gateway ctx.
+	pool, err := browser.NewPool(context.Background(), browser.Config{
+		Endpoint:         cfg.Tools.Browser.Endpoint,
+		IdleTimeout:      time.Duration(cfg.Tools.Browser.IdleSec) * time.Second,
+		SnapshotMaxChars: cfg.Tools.Browser.SnapshotMaxChars,
+	})
+	if err != nil {
+		log.Fatalf("Browser pool: %v", err)
 	}
-	var browserPool *browser.Pool
-	if cfg.Tools.Browser.Enabled {
-		// Pool owns its idle-sweeper goroutine; pass Background and rely on
-		// Close (deferred below) to cancel it. A process-wide cancellable
-		// ctx exists later in main but Pool boots before the gateway ctx.
-		pool, err := browser.NewPool(context.Background(), browser.Config{
-			Endpoint:         cfg.Tools.Browser.Endpoint,
-			IdleTimeout:      time.Duration(cfg.Tools.Browser.IdleSec) * time.Second,
-			SnapshotMaxChars: cfg.Tools.Browser.SnapshotMaxChars,
-		})
-		if err != nil {
-			log.Fatalf("Browser pool: %v", err)
-		}
-		defer pool.Close()
-		browserPool = pool
-		for _, t := range browser.Tools(cfg.Tools.Browser.AllowedRoles) {
-			builtinTools = append(builtinTools, t)
-			registered = append(registered, strings.TrimPrefix(t.Name, "builtin__"))
-		}
-		log.Printf("Browser: enabled (endpoint=%s, idle=%ds)", cfg.Tools.Browser.Endpoint, cfg.Tools.Browser.IdleSec)
+	defer pool.Close()
+	browserPool = pool
+	for _, t := range browser.Tools(cfg.Tools.Browser.AllowedRoles) {
+		builtinTools = append(builtinTools, t)
+		registered = append(registered, strings.TrimPrefix(t.Name, "builtin__"))
 	}
+	log.Printf("Browser: enabled (endpoint=%s, idle=%ds)", cfg.Tools.Browser.Endpoint, cfg.Tools.Browser.IdleSec)
+}
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
 	// Chat function for gateway router

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -67,7 +68,16 @@ func (c *Client) Start(ctx context.Context) error {
 		// only the variables explicitly named in its allowlist (or the base set
 		// if the skill declares none), plus its own injected credentials.
 		allowlist := buildAllowlist(c.env)
-		inner, err = client.NewStdioMCPClient(c.cfg.Command, allowlist, c.cfg.Args...)
+		var opts []transport.StdioOption
+		if c.SandboxRoot != "" {
+			opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
+				cmd := exec.CommandContext(ctx, command, args...)
+				cmd.Env = env
+				cmd.Dir = c.SandboxRoot
+				return cmd, nil
+			}))
+		}
+		inner, err = client.NewStdioMCPClientWithOptions(c.cfg.Command, allowlist, c.cfg.Args, opts...)
 	case "http":
 		var opts []transport.StreamableHTTPCOption
 		if len(c.cfg.Headers) > 0 {
