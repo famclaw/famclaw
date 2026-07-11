@@ -66,7 +66,7 @@ type Server struct {
 }
 
 // wsMessage is a WebSocket protocol message.
-type wsMessage struct {
+type WsMessage struct {
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
@@ -325,7 +325,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	})
 
 	for {
-		var msg wsMessage
+		var msg WsMessage
 		if err := conn.ReadJSON(&msg); err != nil {
 			if websocket.IsUnexpectedCloseError(err) {
 				log.Printf("[ws] %s disconnected", userCfg.DisplayName)
@@ -346,13 +346,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		if currentRole != lastRole || currentAgeGroup != lastAgeGroup {
 			// Recreate agent with the new role/ageGroup.
-			adjustedUser := &config.UserConfig{
-				Name:     userCfg.Name,
-				DisplayName: userCfg.DisplayName,
-				Role:     currentRole,
-				AgeGroup: currentAgeGroup,
-				PIN:      userCfg.PIN,
-			}
+			// Copy the entire user config to preserve fields like Color, Model, LLMProfile.
+			copied := *userCfg
+			copied.Role = currentRole
+			copied.AgeGroup = currentAgeGroup
+			adjustedUser := &copied
 			a = agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
 				Skills: s.skills,
 				Pool:   s.pool,
@@ -428,7 +426,7 @@ func (s *Server) sendWS(conn *websocket.Conn, msgType string, payload any) {
 		b, _ := json.Marshal(payload)
 		raw = b
 	}
-	conn.WriteJSON(wsMessage{Type: msgType, Payload: raw}) //nolint:errcheck
+	conn.WriteJSON(WsMessage{Type: msgType, Payload: raw}) //nolint:errcheck
 }
 
 // ── REST API ──────────────────────────────────────────────────────────────────
@@ -677,7 +675,7 @@ func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 	defer s.clientsMu.RUnlock()
 	for conn, userName := range s.clients {
 		_ = userName
-		conn.WriteJSON(wsMessage{Type: "dashboard_update", Payload: payload}) //nolint:errcheck
+		conn.WriteJSON(WsMessage{Type: "dashboard_update", Payload: payload}) //nolint:errcheck
 	}
 }
 
