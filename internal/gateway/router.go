@@ -510,7 +510,8 @@ func (r *Router) handleSkillCommand(ctx context.Context, actor string, fields []
 	case "list":
 		skills, err := r.registry.List()
 		if err != nil {
-			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
+			log.Printf("[router][skill] parent %s: list failed: %v", actor, err)
+			return Reply{Text: "Skill command failed. Please try again.", PolicyAction: "error"}
 		}
 		if len(skills) == 0 {
 			return Reply{Text: "No skills installed.", PolicyAction: "skill"}
@@ -528,7 +529,7 @@ func (r *Router) handleSkillCommand(ctx context.Context, actor string, fields []
 		skill, err := r.registry.Install(ctx, fields[2])
 		if err != nil {
 			log.Printf("[router][skill] parent %s: install %q failed: %v", actor, fields[2], err)
-			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
+			return Reply{Text: "Skill command failed. Please try again.", PolicyAction: "error"}
 		}
 		log.Printf("[router][skill] parent %s installed skill %q", actor, skill.Name)
 		return Reply{Text: "Installed skill: " + skill.Name, PolicyAction: "skill"}
@@ -539,7 +540,7 @@ func (r *Router) handleSkillCommand(ctx context.Context, actor string, fields []
 		}
 		if err := r.registry.Enable(fields[2]); err != nil {
 			log.Printf("[router][skill] parent %s: enable %q failed: %v", actor, fields[2], err)
-			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
+			return Reply{Text: "Skill command failed. Please try again.", PolicyAction: "error"}
 		}
 		log.Printf("[router][skill] parent %s enabled skill %q", actor, fields[2])
 		return Reply{Text: "Enabled skill: " + fields[2], PolicyAction: "skill"}
@@ -550,7 +551,7 @@ func (r *Router) handleSkillCommand(ctx context.Context, actor string, fields []
 		}
 		if err := r.registry.Disable(fields[2]); err != nil {
 			log.Printf("[router][skill] parent %s: disable %q failed: %v", actor, fields[2], err)
-			return Reply{Text: "Skill command failed: " + err.Error(), PolicyAction: "error"}
+			return Reply{Text: "Skill command failed. Please try again.", PolicyAction: "error"}
 		}
 		log.Printf("[router][skill] parent %s disabled skill %q", actor, fields[2])
 		return Reply{Text: "Disabled skill: " + fields[2], PolicyAction: "skill"}

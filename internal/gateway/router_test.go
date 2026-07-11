@@ -1155,22 +1155,42 @@ func (l *panicLogger) Stat() (os.FileInfo, error) {
 // its context is cancelled during the backoff sleep.
 func TestRunGatewayContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
+	startFnCh := make(chan struct{})
+	gwDone := make(chan struct{})
 	gw := &mockGateway{
 		name: "cancel-gw",
 		startFn: func(ctx context.Context, h func(context.Context, Message) Reply) error {
-			// Wait for context cancellation
+			close(startFnCh) // signal that we are about to wait for ctx.Done
 			<-ctx.Done()
+			close(gwDone)
 			return ctx.Err()
 		},
 	}
 
-	StartAll(ctx, []Gateway{gw}, func(ctx context.Context, msg Message) Reply {
-		return Reply{Text: "ok"}
-	})
+	// Run the gateway in a goroutine
+	done := make(chan struct{})
+	go func() {
+		runGateway(ctx, gw, func(context.Context, Message) Reply {
+			return Reply{Text: "ok"}
+		})
+		close(done)
+	}()
 
+	// Wait for the startFn to be about to wait for ctx.Done()
+	<-startFnCh
+
+	// Now cancel the context
 	cancel()
-	time.Sleep(200 * time.Millisecond)
+
+	// Then wait for gwDone
+	select {
+	case <-gwDone:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("gateway goroutine did not exit after context cancellation")
+	}
+	<-done // wait for the runGateway goroutine to finish
 }
 
 // TestHandleSkillCommandInstallEnableDisable tests the mutating skill commands
@@ -1287,16 +1307,16 @@ Test skill content.
 		t.Errorf("install-no-args text = %q, want 'Usage'", reply.Text)
 	}
 
-	// 6. Enable a non-existent skill — registry creates empty entry, succeeds.
+	// 6. Enable a non-existent skill should fail.
 	reply = router.Handle(context.Background(), Message{
 		Gateway: "telegram", ExternalID: "parent-123",
 		Text: "skill enable nonexistent",
 	})
-	if reply.PolicyAction != "skill" {
-		t.Fatalf("enable-nonexistent action = %q, want skill", reply.PolicyAction)
+	if reply.PolicyAction != "error" {
+		t.Fatalf("enable-nonexistent action = %q, want error", reply.PolicyAction)
 	}
-	if !strings.Contains(reply.Text, "Enabled skill") {
-		t.Errorf("enable-nonexistent text = %q, want 'Enabled skill'", reply.Text)
+	if !strings.Contains(reply.Text, "Skill command failed") {
+		t.Errorf("enable-nonexistent text = %q, want to contain 'Skill command failed'", reply.Text)
 	}
 }
 
