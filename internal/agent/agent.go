@@ -298,11 +298,12 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		turn.Output = final
 	}
 
-	// Drain buffered tokens after pipeline completes and gate allows.
-	// If the gate blocked (output_blocked set by NewStagePolicyOutput),
-	// we never reach here — the turn.Output is already the safe fallback.
-	// For soft-blocked content that was redacted, emit the final output
-	// instead of raw tokens to prevent redaction leaks (security fix).
+	// Drain buffered tokens after pipeline completes.
+	// - If the output gate hard-blocked (output_blocked=true), turn.Output
+	//   is already the safe fallback message and we emit nothing.
+	// - If the output gate soft-blocked and redacted, emit turn.Output
+	//   instead of raw tokens to prevent redaction leaks (security fix).
+	// - If the output gate allowed unchanged, emit the individual tokens.
 	if onToken != nil && len(bufferedTokens) > 0 {
 		raw := strings.Join(bufferedTokens, "")
 		if blocked, ok := turn.GetMeta("output_blocked"); ok && blocked.(bool) {

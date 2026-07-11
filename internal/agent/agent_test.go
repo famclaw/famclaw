@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
@@ -815,7 +816,7 @@ func TestStreamedOutputGate(t *testing.T) {
 			expectBlocked: false,
 			expectTokens:  1,
 		},
-	{
+		{
 			name:          "allowed_benign_parent",
 			userRole:      "parent",
 			userAgeGroup:  "adult",
@@ -917,5 +918,106 @@ func TestStreamedOutputGate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// mockToolChatter is a Chatter that returns a tool call on the first
+// ChatWithTools call and a final response on the second call.
+type mockToolChatter struct {
+	callCount int
+}
+
+func (m *mockToolChatter) Chat(_ context.Context, _ []llm.Message, _ float64, _ int, _ func(string)) (string, error) {
+	return "unexpected Chat call", errors.New("Chat should not be called when tools are present")
+}
+
+func (m *mockToolChatter) ChatMessage(_ context.Context, _ []llm.Message, _ float64, _ int) (*llm.Message, error) {
+	return nil, errors.New("ChatMessage should not be called")
+}
+
+func (m *mockToolChatter) ChatSync(_ context.Context, _ []llm.Message, _ float64, _ int) (string, error) {
+	return "unexpected ChatSync call", errors.New("ChatSync should not be called")
+}
+
+func (m *mockToolChatter) ChatWithTools(_ context.Context, _ []llm.Message, _ float64, _ int, _ []llm.ToolDef) (*llm.Message, error) {
+	m.callCount++
+	if m.callCount == 1 {
+		// First call: return a tool call for builtin__get_family_state
+		return &llm.Message{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:       "call_1",
+				Function: llm.ToolCallFunction{Name: "builtin__get_family_state", Arguments: map[string]any{}},
+			}},
+		}, nil
+	}
+	// Second call: return final response
+	return &llm.Message{Role: "assistant", Content: "family state retrieved"}, nil
+}
+
+// TestToolCallDrainEmptyBufferedTokens verifies that the drain logic handles
+// the tool-call path correctly: ChatWithTools does not invoke OnToken, so
+// bufferedTokens remains empty and the drain block at agent.go:307 is skipped.
+// This is the regression guard for the review-5 finding.
+func TestToolCallDrainEmptyBufferedTokens(t *testing.T) {
+	t.Parallel()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ev, err := policy.NewEvaluator("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Temperature:       0.7,
+			MaxResponseTokens: 100,
+		},
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent"},
+		},
+	}
+	user := &cfg.Users[0]
+	clf := classifier.New()
+
+	mock := &mockToolChatter{}
+	agent := NewAgent(user, cfg, mock, ev, clf, db, AgentDeps{
+		BuiltinTools: []agentcore.Tool{{
+			Name:        "builtin__get_family_state",
+			Description: "Get family state information",
+			InputSchema: map[string]any{"type": "object"},
+			Source:      "builtin",
+		}},
+	})
+
+	var tokens []string
+	onToken := func(tok string) {
+		tokens = append(tokens, tok)
+	}
+
+	resp, err := agent.Chat(context.Background(), "say hello", onToken)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	// The tool-call path uses ChatWithTools which does not stream tokens.
+	// bufferedTokens stays empty, so the drain block is skipped.
+	if len(tokens) > 0 {
+		t.Errorf("onToken was called %d times — expected 0 for tool-call path", len(tokens))
+	}
+
+	// The final response should be the tool output.
+	if !strings.Contains(resp.Content, "family state retrieved") {
+		t.Errorf("Content = %q, expected tool output with 'family state retrieved'", resp.Content)
+	}
+
+	// Verify ChatWithTools was called (tool loop ran).
+	if mock.callCount < 2 {
+		t.Errorf("ChatWithTools was called %d times — expected at least 2 (tool call + final response)", mock.callCount)
 	}
 }
