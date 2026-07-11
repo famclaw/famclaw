@@ -13,7 +13,9 @@ var urlInError = regexp.MustCompile(`"(https?://[^"]+)"`)
 // ntfy (and other services) embed credentials in Authorization headers,
 // not in the URL, so a regex is appropriate here. Discord uses "Bot <token>"
 // in the Authorization header which can leak into error strings.
-var bearerToken = regexp.MustCompile(`(?i)(Bearer\s+|Bot\s+)[A-Za-z0-9\-_\.]+`)
+// The \b ensures we match whole words only, preventing false positives like
+// matching "bot" in "chatbot".
+var bearerToken = regexp.MustCompile(`(?i)\b(Bearer\s+|Bot\s+)[A-Za-z0-9\-_\.]+`)
 
 // redactFn is a URL-redaction function keyed by hostname.
 type redactFn func(*url.URL)
