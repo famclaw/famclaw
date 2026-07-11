@@ -182,7 +182,7 @@ famclaw code must be correct, efficient, tested, and idiomatic Go. The bug class
 - Gate features on both the flag and the underlying system being enabled (e.g. `cfg.SecCheck.Enabled` AND the notify flag). (PR #167)
 
 **Efficiency & idiomatic Go**
-- Never `defer` inside a loop — defers accumulate until function return, leaking resources/goroutines per iteration; do cleanup explicitly each iteration or extract the loop body into a function. (PR #182: `defer cancel()` in a per-message loop)
+- Never `defer` inside a loop — defers accumulate until the function returns and can exhaust resources (file handles, connections, contexts); do cleanup explicitly each iteration or extract the loop body into its own function.
 - Preallocate slices/maps with known capacity; avoid repeated allocations and unnecessary copies in hot paths.
 - Extract shared HTTP request flows (context timeout, error handling, body close) into helpers to eliminate duplication. (PR #172)
 - Idiomatic Go: early returns over deep nesting, wrap errors with `%w` and match via `errors.Is/As`, keep `gofmt`/`go vet`/`staticcheck` clean, no unused code.
