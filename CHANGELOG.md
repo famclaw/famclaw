@@ -45,7 +45,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - 7 built-in parent-only admin tools (`list_pending_approvals`, `approve_request`,
   `deny_request`, `list_users`, `set_user_role`, `list_unknown_accounts`,
   `link_account`) with OPA deny rules and `audit_log`/`user_role_overrides` DB tables
-- Optional Claude CLI backend (provider: claude_cli) for users running famclaw alongside Claude Code
+- Optional Claude CLI backend (provider: claude_cli) for users running famclaw alongside Claude Code.
+  Now uses `--input-format stream-json` (full conversation history as NDJSON on stdin),
+  `--output-format stream-json` (streaming output), and `--system-prompt` for the
+  system message. Responses stream back in real time via `onToken` callbacks.
 - OPA output policy (`output_policy.rego`): LLM draft responses are now evaluated by OPA
   before reaching the user. Hard-blocked categories (sexual_content, self_harm, hate_speech,
   illegal_activity) are blocked for all users including parents. Soft-blocked content for
@@ -145,6 +148,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - API endpoints `/api/setup/test-telegram` and `/api/setup/test-discord`.
 - `internal/web/settings_test.go` covering the four PIN scenarios that
   #109 broke (true first boot, re-run with correct PIN, wrong PIN, no PIN).
+- **Role / age override from `user_role_overrides` table in gateway and web chat.**
+  When a user has a role override row, the gateway router (`internal/gateway/router.go`)
+  and web chat handler (`internal/web/server.go`) resolve the override before
+  policy evaluation or OPA input checks. The override supersedes the user's
+  age group for policy decisions while the stored age group is unchanged.
+- **`AllApprovalsForOPA` on the DB store** returns every approval (pending
+  and decided) as JSONL so OPA policy evaluation has the full approval
+  history available as input context.
+- **Webhook token redaction in notification error logs.** When a notification
+  send fails, `internal/notify/redact.go` scrubs Slack, Discord, and Telegram
+  bot tokens from error messages before logging, preventing credential
+  leakage in log files.
 
 ### Changed
 - Parent PIN moved from plaintext `config.yaml` to encrypted `vault_secrets` SQLite row
