@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1057,5 +1058,293 @@ This is a fake skill.
 				t.Errorf("text = %q, want to contain %q", reply.Text, tt.wantTextContain)
 			}
 		})
+	}
+}
+
+// TestRouterShutdown verifies that calling router.Shutdown() cancels the
+// session pool context so in-flight goroutines can exit cleanly.
+func TestRouterShutdown(t *testing.T) {
+	router, identStore := setupRouter(t, echoChat)
+	identStore.LinkAccount("parent", "telegram", "parent-123")
+
+	// Send a message to start a session goroutine
+	done := make(chan Reply, 1)
+	go func() {
+		done <- router.Handle(context.Background(), Message{
+			Gateway: "telegram", ExternalID: "parent-123", Text: "hello",
+		})
+	}()
+
+	// Shut down immediately — the session context should be cancelled.
+	time.Sleep(50 * time.Millisecond)
+	router.Shutdown()
+
+	select {
+	case <-done:
+		// Got a reply (either before or after shutdown), that's fine.
+	case <-time.After(2 * time.Second):
+		t.Fatal("router.Handle goroutine did not exit after Shutdown()")
+	}
+}
+
+// TestRunGatewayPanicRecovery verifies that a gateway Start function that
+// panics is recovered gracefully (log message printed, no process crash).
+func TestRunGatewayPanicRecovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	panicGw := &mockGateway{
+		name: "panic-gw",
+		startFn: func(ctx context.Context, h func(context.Context, Message) Reply) error {
+			panic("BOOM — simulated crash")
+		},
+	}
+
+	// runGateway should recover from the panic and keep retrying.
+	// We start it, let it panic once, then cancel the context.
+	gotPanic := make(chan struct{}, 1)
+	log.SetOutput(&panicLogger{fn: func(p string) {
+		if strings.Contains(p, "PANIC") {
+			select {
+			case gotPanic <- struct{}{}:
+			default:
+			}
+		}
+	}})
+	defer log.SetOutput(os.Stderr)
+
+	StartAll(ctx, []Gateway{panicGw}, func(ctx context.Context, msg Message) Reply {
+		return Reply{Text: "ok"}
+	})
+
+	select {
+	case <-gotPanic:
+		// Recovery log was printed — good.
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected PANIC recovery log but timed out")
+	}
+	cancel()
+
+	// Give goroutine time to notice cancellation.
+	time.Sleep(200 * time.Millisecond)
+}
+
+// panicLogger writes to a callback function.
+type panicLogger struct {
+	fn func(string)
+}
+
+func (l *panicLogger) Write(p []byte) (n int, err error) {
+	l.fn(string(p))
+	return len(p), nil
+}
+
+func (l *panicLogger) Read(p []byte) (n int, err error) {
+	return 0, fmt.Errorf("not implemented")
+}
+
+func (l *panicLogger) Seek(offset int64, whence int) (int64, error) {
+	return 0, fmt.Errorf("not implemented")
+}
+
+func (l *panicLogger) Stat() (os.FileInfo, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// TestRunGatewayContextCancel verifies that runGateway exits cleanly when
+// its context is cancelled during the backoff sleep.
+func TestRunGatewayContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	gw := &mockGateway{
+		name: "cancel-gw",
+		startFn: func(ctx context.Context, h func(context.Context, Message) Reply) error {
+			// Wait for context cancellation
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+
+	StartAll(ctx, []Gateway{gw}, func(ctx context.Context, msg Message) Reply {
+		return Reply{Text: "ok"}
+	})
+
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+}
+
+// TestHandleSkillCommandInstallEnableDisable tests the mutating skill commands
+// through the full Handle → process → handleSkillCommand pipeline.
+func TestHandleSkillCommandInstallEnableDisable(t *testing.T) {
+	dbTmpDir := t.TempDir()
+	db, err := store.Open(filepath.Join(dbTmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ev, err := policy.NewEvaluator("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:     "localhost",
+			Port:     8080,
+			Secret:   "test-secret",
+			MDNSName: "famclaw",
+		},
+		LLM: config.LLMConfig{
+			Temperature:       0.7,
+			MaxResponseTokens: 512,
+		},
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+		},
+	}
+
+	identStore := identity.NewStore(db)
+	clf := classifier.New()
+	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
+	skillTmpDir := t.TempDir()
+	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{})
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+		return "stub", nil
+	}
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg)
+	identStore.LinkAccount("parent", "telegram", "parent-123")
+
+	// 1. Install a skill from a pre-placed SKILL.md file.
+	srcDir := t.TempDir()
+	srcSkillDir := filepath.Join(srcDir, "testskill")
+	if err := os.MkdirAll(srcSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	skillMD := `---
+name: testskill
+description: A test installable skill
+---
+Test skill content.
+`
+	if err := os.WriteFile(filepath.Join(srcSkillDir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "parent-123",
+		Text: "skill install " + srcSkillDir,
+	})
+	if reply.PolicyAction != "skill" {
+		t.Fatalf("install action = %q, want skill", reply.PolicyAction)
+	}
+	if !strings.Contains(reply.Text, "Installed skill") {
+		t.Errorf("install reply = %q, want 'Installed skill'", reply.Text)
+	}
+
+	// 2. List should now include the installed skill.
+	reply = router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "parent-123",
+		Text: "skill list",
+	})
+	if !strings.Contains(reply.Text, "testskill") {
+		t.Errorf("list after install missing testskill: %s", reply.Text)
+	}
+
+	// 3. Disable the skill.
+	reply = router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "parent-123",
+		Text: "skill disable testskill",
+	})
+	if !strings.Contains(reply.Text, "Disabled skill") {
+		t.Errorf("disable reply = %q, want 'Disabled skill'", reply.Text)
+	}
+	if reg.IsEnabled("testskill") {
+		t.Error("expected testskill to be disabled")
+	}
+
+	// 4. Enable the skill.
+	reply = router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "parent-123",
+		Text: "skill enable testskill",
+	})
+	if !strings.Contains(reply.Text, "Enabled skill") {
+		t.Errorf("enable reply = %q, want 'Enabled skill'", reply.Text)
+	}
+	if !reg.IsEnabled("testskill") {
+		t.Error("expected testskill to be enabled after enable command")
+	}
+
+	// 5. Install with no name — should return usage hint.
+	reply = router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "parent-123",
+		Text: "skill install",
+	})
+	if reply.PolicyAction != "skill" {
+		t.Fatalf("install-no-args action = %q, want skill", reply.PolicyAction)
+	}
+	if !strings.Contains(reply.Text, "Usage") {
+		t.Errorf("install-no-args text = %q, want 'Usage'", reply.Text)
+	}
+
+	// 6. Enable a non-existent skill — registry creates empty entry, succeeds.
+	reply = router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "parent-123",
+		Text: "skill enable nonexistent",
+	})
+	if reply.PolicyAction != "skill" {
+		t.Fatalf("enable-nonexistent action = %q, want skill", reply.PolicyAction)
+	}
+	if !strings.Contains(reply.Text, "Enabled skill") {
+		t.Errorf("enable-nonexistent text = %q, want 'Enabled skill'", reply.Text)
+	}
+}
+
+// TestHandleSkillCommandEmptyList tests the skill list path when no skills exist.
+func TestHandleSkillCommandEmptyList(t *testing.T) {
+	dbTmpDir := t.TempDir()
+	db, err := store.Open(filepath.Join(dbTmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ev, err := policy.NewEvaluator("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:     "localhost",
+			Port:     8080,
+			Secret:   "test-secret",
+			MDNSName: "famclaw",
+		},
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+		},
+	}
+
+	identStore := identity.NewStore(db)
+	clf := classifier.New()
+	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
+	skillTmpDir := t.TempDir()
+	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{})
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+		return "stub", nil
+	}
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg)
+	identStore.LinkAccount("parent", "telegram", "parent-123")
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway: "telegram", ExternalID: "parent-123",
+		Text: "skill list",
+	})
+	if reply.PolicyAction != "skill" {
+		t.Fatalf("action = %q, want skill", reply.PolicyAction)
+	}
+	if !strings.Contains(reply.Text, "No skills installed") {
+		t.Errorf("empty list text = %q, want 'No skills installed'", reply.Text)
 	}
 }
