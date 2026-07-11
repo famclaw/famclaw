@@ -33,6 +33,8 @@ type ToolsConfig struct {
 	WebSearch WebSearchConfig `yaml:"web_search,omitempty"`
 	Browser   BrowserConfig   `yaml:"browser,omitempty"`
 	ToolCache ToolCacheConfig `yaml:"tool_cache,omitempty"`
+	FileRead FileReadConfig `yaml:"file_read,omitempty"`
+	FileList FileListConfig `yaml:"file_list,omitempty"`
 	SandboxRoot string `yaml:"sandbox_root,omitempty"`
 }
 
@@ -483,6 +485,12 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("tools.web_search.timeout_seconds must be > 0 (got %d)", c.Tools.WebSearch.TimeoutSec)
 		}
 	}
+	if c.Tools.FileRead.MaxBytes < 0 {
+		return fmt.Errorf("tools.file_read.max_bytes must be >= 0 (got %d)", c.Tools.FileRead.MaxBytes)
+	}
+	if c.Tools.FileList.MaxEntries < 0 {
+		return fmt.Errorf("tools.file_list.max_entries must be >= 0 (got %d)", c.Tools.FileList.MaxEntries)
+	}
 	if c.Tools.Browser.Enabled {
 		if strings.TrimSpace(c.Tools.Browser.Endpoint) == "" {
 			return fmt.Errorf("tools.browser.endpoint must be set when enabled (e.g. ws://localhost:3000/)")
@@ -586,6 +594,21 @@ func (c *Config) LLMEndpointForProfile(profileName string) LLMEndpoint {
 		log.Printf("[config] warning: LLM endpoint is empty for profile %q — check llm.base_url in config", profileName)
 	}
 	return ep
+}
+
+
+// FileReadConfig controls the built-in file_read tool.
+type FileReadConfig struct {
+	// MaxBytes is the maximum number of bytes to read from a file.
+	// If 0, there is no limit.
+	MaxBytes int `yaml:"max_bytes,omitempty"`
+}
+
+// FileListConfig controls the built-in file_list tool.
+type FileListConfig struct {
+	// MaxEntries is the maximum number of directory entries to return.
+// If 0, there is no limit.
+	MaxEntries int `yaml:"max_entries,omitempty"`
 }
 
 // ValidateProvider checks that the configured LLM provider is valid.

@@ -10,10 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"math"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -34,8 +37,6 @@ import (
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
-	"os"
-	"path/filepath"
 )
 
 // Response is the result of a single agent turn.
@@ -411,7 +412,12 @@ func (a *Agent) confinePath(path string) (string, error) {
 			return "", fmt.Errorf("failed to join and clean path: %w", err)
 		}
 	}
-	if !strings.HasPrefix(absPath, sandboxRoot) {
+	// Check that the path is within the sandbox root using filepath.Rel to avoid string prefix issues.
+	rel, err := filepath.Rel(sandboxRoot, absPath)
+	if err != nil {
+		return "", fmt.Errorf("computing relative path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("path %q escapes sandbox root %q", path, sandboxRoot)
 	}
 	return absPath, nil
@@ -430,13 +436,39 @@ func (a *Agent) handleFileRead(ctx context.Context, args map[string]any) (string
 	}
 	absPath, err := a.confinePath(pathRaw)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolving file_read path: %w", err)
 	}
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return "", fmt.Errorf("reading file: %w", err)
+	maxBytes := a.cfg.Tools.FileRead.MaxBytes
+	if maxBytes > 0 {
+		file, err := os.Open(absPath)
+		if err != nil {
+			return "", fmt.Errorf("opening file: %w", err)
+		}
+		defer file.Close()
+		data := make([]byte, maxBytes)
+		n, err := file.Read(data)
+		if err != nil && err != io.EOF {
+			return "", fmt.Errorf("reading file: %w", err)
+		}
+		data = data[:n]
+		// Check if there is more data
+		var buf [1]byte
+		_, err = file.Read(buf[:])
+		if err == nil {
+			// We read an extra byte, meaning there is more data.
+			return string(data) + "\n[truncated]", nil
+		} else if err != io.EOF {
+			return "", fmt.Errorf("checking for extra data: %w", err)
+		}
+		// If err == io.EOF, then we reached the end.
+		return string(data), nil
+	} else {
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			return "", fmt.Errorf("reading file: %w", err)
+		}
+		return string(data), nil
 	}
-	return string(data), nil
 }
 
 func (a *Agent) handleFileWrite(ctx context.Context, args map[string]any) (string, error) {
@@ -448,10 +480,20 @@ func (a *Agent) handleFileWrite(ctx context.Context, args map[string]any) (strin
 	if !ok {
 		return "", fmt.Errorf("file_write requires a 'content' argument")
 	}
-	absPath, err := a.confinePath(pathRaw)
-	if err != nil {
-		return "", err
+	// Split the path into directory and base.
+	dir := filepath.Dir(pathRaw)
+	base := filepath.Base(pathRaw)
+	if dir == "" {
+		dir = "."
 	}
+	// Confine the directory (must exist).
+	confinedDir, err := a.confinePath(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolving file_write path: %w", err)
+	}
+	// Form the absolute path for the file.
+	absPath := filepath.Join(confinedDir, base)
+	// Write the file.
 	err = os.WriteFile(absPath, []byte(contentRaw), 0644)
 	if err != nil {
 		return "", fmt.Errorf("writing file: %w", err)
@@ -466,7 +508,7 @@ func (a *Agent) handleFileStat(ctx context.Context, args map[string]any) (string
 	}
 	absPath, err := a.confinePath(pathRaw)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolving file_stat path: %w", err)
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -482,13 +524,20 @@ func (a *Agent) handleFileList(ctx context.Context, args map[string]any) (string
 	}
 	absPath, err := a.confinePath(pathRaw)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolving file_list path: %w", err)
 	}
 	files, err := os.ReadDir(absPath)
 	if err != nil {
 		return "", fmt.Errorf("reading directory: %w", err)
 	}
 	var lines []string
+	var truncated bool
+	if maxEntries := a.cfg.Tools.FileList.MaxEntries; maxEntries > 0 {
+		if len(files) > maxEntries {
+			files = files[:maxEntries]
+			truncated = true
+		}
+	}
 	for _, f := range files {
 		line := f.Name()
 		if f.IsDir() {
@@ -499,7 +548,11 @@ func (a *Agent) handleFileList(ctx context.Context, args map[string]any) (string
 	if len(lines) == 0 {
 		return "(empty)", nil
 	}
-	return strings.Join(lines, "\n"), nil
+	result := strings.Join(lines, "\n")
+	if truncated {
+		result += "\n[truncated]"
+	}
+	return result, nil
 }
 
 func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (string, error) {
