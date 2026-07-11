@@ -120,15 +120,15 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 		return result, nil
 	}
 
-	// Auto-restart once on failure
-	if mc.restartCnt < 1 {
-		log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
-		mc.restartCnt++
-		mc.client.Stop()
-		mc.client = NewTransportClient(mc.name, mc.cfg)
-		if startErr := mc.client.Start(ctx); startErr != nil {
-			return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
-		}
+// Auto-restart once on failure
+		if mc.restartCnt < 1 {
+			log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
+			mc.restartCnt++
+			mc.client.Stop()
+			mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot)
+			if startErr := mc.client.Start(ctx); startErr != nil {
+				return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
+			}
 		result, err = mc.client.CallTool(ctx, name, args)
 		if err == nil {
 			mc.restartCnt = 0

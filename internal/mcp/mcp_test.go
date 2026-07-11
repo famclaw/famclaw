@@ -79,7 +79,7 @@ func newTestClient(t *testing.T) *Client {
 
 func TestNewTransportClient_Stdio(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "stdio", Command: "echo"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "")
 	if c.transportType != "stdio" {
 		t.Errorf("transport = %q, want stdio", c.transportType)
 	}
@@ -87,7 +87,7 @@ func TestNewTransportClient_Stdio(t *testing.T) {
 
 func TestNewTransportClient_HTTP(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "http", URL: "http://localhost:9999/mcp"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "")
 	if c.transportType != "http" {
 		t.Errorf("transport = %q, want http", c.transportType)
 	}
@@ -95,7 +95,7 @@ func TestNewTransportClient_HTTP(t *testing.T) {
 
 func TestNewTransportClient_SSE(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "sse", URL: "http://localhost:9999/sse"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "")
 	if c.transportType != "sse" {
 		t.Errorf("transport = %q, want sse", c.transportType)
 	}
@@ -103,7 +103,7 @@ func TestNewTransportClient_SSE(t *testing.T) {
 
 func TestNewTransportClient_DefaultStdio(t *testing.T) {
 	cfg := config.MCPServerConfig{Command: "some-cmd"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "")
 	if c.transportType != "stdio" {
 		t.Errorf("empty transport with command should default to stdio, got %q", c.transportType)
 	}
@@ -111,7 +111,7 @@ func TestNewTransportClient_DefaultStdio(t *testing.T) {
 
 func TestNewTransportClient_DefaultHTTP(t *testing.T) {
 	cfg := config.MCPServerConfig{URL: "http://example.com/mcp"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "")
 	if c.transportType != "http" {
 		t.Errorf("empty transport with url should default to http, got %q", c.transportType)
 	}
@@ -119,7 +119,7 @@ func TestNewTransportClient_DefaultHTTP(t *testing.T) {
 
 func TestNewTransportClient_UnknownTransportFails(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "grpc", URL: "localhost:50051"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "")
 	err := c.Start(context.Background())
 	if err == nil {
 		t.Error("expected error for unknown transport")
@@ -128,7 +128,7 @@ func TestNewTransportClient_UnknownTransportFails(t *testing.T) {
 
 func TestNewTransportClient_StdioFailsBadBinary(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "stdio", Command: "nonexistent-binary-xyz"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "")
 	err := c.Start(context.Background())
 	if err == nil {
 		t.Error("expected error for bad binary")
@@ -205,14 +205,14 @@ func TestClientStopNilsInner(t *testing.T) {
 // ── Pool tests ───────────────────────────────────────────────────────────────
 
 func TestPoolHasTool(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool("")
 	if pool.HasTool("nonexistent") {
 		t.Error("empty pool should not have any tools")
 	}
 }
 
 func TestPoolCallToolUnknown(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool("")
 	_, err := pool.CallTool(context.Background(), "ghost", nil)
 	if err == nil {
 		t.Error("expected error for unknown tool")
@@ -226,12 +226,12 @@ func TestMaxToolCallIterations(t *testing.T) {
 }
 
 func TestPoolStopAllEmpty(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool("")
 	pool.StopAll()
 }
 
 func TestPoolListToolsEmpty(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool("")
 	tools := pool.ListTools()
 	if len(tools) != 0 {
 		t.Errorf("expected 0 tools, got %d", len(tools))
@@ -271,7 +271,7 @@ func TestValidateMCPServer(t *testing.T) {
 }
 
 func TestPoolRegisterFromConfig(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool("")
 	servers := map[string]config.MCPServerConfig{
 		"enabled":  {Transport: "stdio", Command: "echo"},
 		"disabled": {Transport: "stdio", Command: "nope", Disabled: true},
