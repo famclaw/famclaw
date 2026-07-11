@@ -43,6 +43,7 @@ func NewStagePolicyOutput(eval *policy.Evaluator) Stage {
 			// user — keep it in logs and emit a friendly fallback.
 			log.Printf("[stage_policy_output] output blocked: %s", dec.Reason)
 			turn.Output = outputGateBlockedMessage
+			turn.SetMeta("output_blocked", true)
 			return nil
 		}
 		if len(dec.Redact) > 0 {
