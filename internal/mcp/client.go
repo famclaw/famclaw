@@ -23,6 +23,7 @@ type Client struct {
 	name          string
 	transportType string // stdio | http | sse | inprocess (test only)
 	cfg           config.MCPServerConfig
+	SandboxRoot   string // sandbox root for file operations
 	env           map[string]string // per-skill credential env vars
 	inner         client.MCPClient
 	tools         []mcp.Tool
@@ -33,7 +34,7 @@ type Client struct {
 // Transport is auto-detected from fields if not set explicitly:
 //   - command present → stdio
 //   - url present → http
-func NewTransportClient(name string, cfg config.MCPServerConfig) *Client {
+func NewTransportClient(name string, cfg config.MCPServerConfig, sandboxRoot string) *Client {
 	t := cfg.Transport
 	if t == "" {
 		if cfg.Command != "" {
@@ -42,7 +43,7 @@ func NewTransportClient(name string, cfg config.MCPServerConfig) *Client {
 			t = "http"
 		}
 	}
-	return &Client{name: name, transportType: t, cfg: cfg}
+	return &Client{name: name, transportType: t, cfg: cfg, SandboxRoot: sandboxRoot}
 }
 
 // Start connects to the MCP server and performs the initialize handshake.

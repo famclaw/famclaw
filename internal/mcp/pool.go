@@ -21,6 +21,7 @@ const MaxToolCallIterations = 10
 type Pool struct {
 	clients map[string]*managedClient // server name + tool name → client
 	mu      sync.RWMutex
+	SandboxRoot string
 }
 
 type managedClient struct {
@@ -32,9 +33,10 @@ type managedClient struct {
 }
 
 // NewPool creates an empty MCP pool.
-func NewPool() *Pool {
+func NewPool(sandboxRoot string) *Pool {
 	return &Pool{
-		clients: make(map[string]*managedClient),
+		clients:   make(map[string]*managedClient),
+		SandboxRoot: sandboxRoot,
 	}
 }
 
@@ -52,7 +54,7 @@ func (p *Pool) RegisterFromConfig(servers map[string]config.MCPServerConfig, cre
 			log.Printf("[mcp-pool] skip %s: %v", name, err)
 			continue
 		}
-		c := NewTransportClient(name, cfg)
+		c := NewTransportClient(name, cfg, p.SandboxRoot)
 		if creds, ok := credentials[name]; ok {
 			c.env = creds
 		}

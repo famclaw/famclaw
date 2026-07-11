@@ -177,7 +177,15 @@ func main() {
 	log.Printf("Identity: ready")
 
 	// MCP tool server pool (stdio, HTTP, SSE transports)
-	mcpPool := mcp.NewPool()
+	var sandboxRoot string
+	if cfg.Tools.SandboxRoot != "" {
+		sandboxRoot = cfg.Tools.SandboxRoot
+	} else {
+		// Default to a subdirectory of the directory containing the DB file
+		dbDir := filepath.Dir(cfg.Storage.DBPath)
+		sandboxRoot = filepath.Join(dbDir, "skill_sandbox")
+	}
+	mcpPool := mcp.NewPool(sandboxRoot)
 	if len(cfg.Skills.MCPServers) > 0 {
 		mcpPool.RegisterFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
 		if err := mcpPool.StartAll(context.Background()); err != nil {

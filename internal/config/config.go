@@ -31,6 +31,7 @@ type ToolsConfig struct {
 	WebSearch WebSearchConfig `yaml:"web_search,omitempty"`
 	Browser   BrowserConfig   `yaml:"browser,omitempty"`
 	ToolCache ToolCacheConfig `yaml:"tool_cache,omitempty"`
+	SandboxRoot string `yaml:"sandbox_root,omitempty"`
 }
 
 // BrowserConfig controls the built-in browser_* tools (real browser nav via
