@@ -186,6 +186,23 @@ func main() {
 		dbDir := filepath.Dir(cfg.Storage.DBPath)
 		sandboxRoot = filepath.Join(dbDir, "skill_sandbox")
 	}
+	// Reject unsafe values
+	if sandboxRoot == "." || sandboxRoot == "/" {
+		log.Fatalf("Sandbox root must not be the current or root directory")
+	}
+	// Validate and canonicalize the sandbox root
+	absBase, err := filepath.Abs(sandboxRoot)
+	if err != nil {
+		log.Fatalf("Invalid sandbox root %q: %v", sandboxRoot, err)
+	}
+	absRoot, err := filepath.EvalSymlinks(absBase)
+	if err != nil {
+		log.Fatalf("Invalid sandbox root %q: %v", sandboxRoot, err)
+	}
+	if absRoot == "/" {
+		log.Fatalf("Sandbox root must not be the root directory")
+	}
+	sandboxRoot = absRoot
 	mcpPool := mcp.NewPool(sandboxRoot)
 	if len(cfg.Skills.MCPServers) > 0 {
 		mcpPool.RegisterFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
