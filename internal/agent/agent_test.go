@@ -864,7 +864,7 @@ func TestStreamedOutputGate(t *testing.T) {
 			}
 			defer db.Close()
 
-			ev, err := policy.NewEvaluator("", "")
+			ev, err := policy.NewEvaluator("", "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
