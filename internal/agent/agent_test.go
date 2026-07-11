@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
@@ -753,5 +754,270 @@ func TestIsSubagentExcludedTool(t *testing.T) {
 		if got := isSubagentExcludedTool(tc.name); got != tc.want {
 			t.Errorf("isSubagentExcludedTool(%q) = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestStreamedOutputGate verifies that blocked streamed tokens never reach
+// the onToken callback — this is the regression for the streamed-output-
+// gate bypass where the LLM streamed tokens directly to the gateway before
+// EvaluateAndApply could filter them.
+func TestStreamedOutputGate(t *testing.T) {
+	tests := []struct {
+		name           string
+		userRole       string
+		userAgeGroup   string
+		llmResponse    string
+		expectBlocked  bool   // output gate blocked (no tokens emitted, safe content)
+		expectRedact   bool   // soft-blocked: tokens emitted but content redacted
+		expectSafeMsg  bool   // blocked: content replaced with safe fallback
+		expectTokens   int    // 0 = blocked, >0 = allowed/soft-blocked (at least one token emitted)
+	}{
+		{
+			name:         "hard-blocked self_harm child",
+			userRole:     "child",
+			userAgeGroup: "age_8_12",
+			llmResponse:  "I don't want to live anymore, I want to suicide",
+			expectBlocked: true,
+			expectSafeMsg: true,
+			expectTokens:  0,
+		},
+		{
+			name:         "hard-blocked violence parent",
+			userRole:     "parent",
+			userAgeGroup: "adult",
+			llmResponse:  "Here is how to make a bomb and kill yourself",
+			expectBlocked: true,
+			expectSafeMsg: true,
+			expectTokens:  0,
+		},
+		{
+			name:         "hard-blocked extreme_content",
+			userRole:     "child",
+			userAgeGroup: "under_8",
+			llmResponse:  "That involves pornography and explicit content",
+			expectBlocked: true,
+			expectSafeMsg: true,
+			expectTokens:  0,
+		},
+		{
+			name:         "hard-blocked illegal_harm",
+			userRole:     "child",
+			userAgeGroup: "age_13_17",
+			llmResponse:  "How to steal and how to hack a computer",
+			expectBlocked: true,
+			expectSafeMsg: true,
+			expectTokens:  0,
+		},
+		{
+			name:         "allowed_benign_child",
+			userRole:     "child",
+			userAgeGroup: "age_8_12",
+			llmResponse:  "Hello there, how can I help?",
+			expectBlocked: false,
+			expectTokens:  1,
+		},
+		{
+			name:          "allowed_benign_parent",
+			userRole:      "parent",
+			userAgeGroup:  "adult",
+			llmResponse:   "Sure, I can help with that.",
+			expectBlocked: false,
+		},
+		{
+			name:         "soft_blocked_child_violence",
+			userRole:     "child",
+			userAgeGroup: "under_8",
+			llmResponse:  "The movie had a lot of violence and death",
+			expectBlocked: false,
+			expectRedact: true,
+			expectTokens: 1,
+		},
+		{
+			name:          "allowed_parent_soft_blocked_passes",
+			userRole:      "parent",
+			userAgeGroup:  "adult",
+			llmResponse:   "The movie had a lot of violence and death",
+			expectBlocked: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Collect every token the callback receives.
+			var tokens []string
+			onToken := func(tok string) {
+				tokens = append(tokens, tok)
+			}
+
+			// LLM returns the test response.
+			server := mockLLMServer(t, []llm.Message{
+				{Role: "assistant", Content: tt.llmResponse},
+			})
+			defer server.Close()
+
+			db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			ev, err := policy.NewEvaluator("", "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := &config.Config{
+				LLM: config.LLMConfig{
+					BaseURL:           server.URL,
+					Model:             "test",
+					Temperature:       0.7,
+					MaxResponseTokens: 100,
+				},
+				Users: []config.UserConfig{
+					{Name: "user1", DisplayName: "User", Role: tt.userRole, AgeGroup: tt.userAgeGroup},
+				},
+			}
+			user := &cfg.Users[0]
+			client := llm.NewClient(server.URL, "test", "")
+			clf := classifier.New()
+
+			agent := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
+
+			resp, err := agent.Chat(context.Background(), "hello", onToken)
+			if err != nil {
+				t.Fatalf("Chat: %v", err)
+			}
+
+			if tt.expectBlocked {
+				// Hard-blocked: no tokens should ever reach onToken.
+				if len(tokens) > 0 {
+					t.Errorf("onToken was called %d times — streamed tokens leaked before the gate", len(tokens))
+					for i, tok := range tokens {
+						t.Errorf("  token[%d] = %q", i, tok)
+					}
+				}
+				if tt.expectSafeMsg {
+					// Blocked responses get a safe fallback message.
+					if !strings.Contains(resp.Content, "unable to send") {
+						t.Errorf("Content = %q, expected safe fallback for blocked output", resp.Content)
+					}
+				}
+			} else {
+				// Not blocked: tokens must have been emitted after the gate.
+				if tt.expectTokens > 0 && len(tokens) == 0 {
+					t.Fatal("onToken was never called — tokens were not emitted for an allowed response")
+				}
+				if tt.expectRedact {
+					// Soft-blocked: content should have redacted keywords.
+					if !strings.Contains(resp.Content, "[redacted]") {
+						t.Errorf("Content = %q, expected redacted keywords for soft-blocked output", resp.Content)
+					}
+				}
+			}
+		})
+	}
+}
+
+// mockToolChatter is a Chatter that returns a tool call on the first
+// ChatWithTools call and a final response on the second call.
+type mockToolChatter struct {
+	callCount int
+}
+
+func (m *mockToolChatter) Chat(_ context.Context, _ []llm.Message, _ float64, _ int, _ func(string)) (string, error) {
+	return "unexpected Chat call", errors.New("Chat should not be called when tools are present")
+}
+
+func (m *mockToolChatter) ChatMessage(_ context.Context, _ []llm.Message, _ float64, _ int) (*llm.Message, error) {
+	return nil, errors.New("ChatMessage should not be called")
+}
+
+func (m *mockToolChatter) ChatSync(_ context.Context, _ []llm.Message, _ float64, _ int) (string, error) {
+	return "unexpected ChatSync call", errors.New("ChatSync should not be called")
+}
+
+func (m *mockToolChatter) ChatWithTools(_ context.Context, _ []llm.Message, _ float64, _ int, _ []llm.ToolDef) (*llm.Message, error) {
+	m.callCount++
+	if m.callCount == 1 {
+		// First call: return a tool call for builtin__get_family_state
+		return &llm.Message{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:       "call_1",
+				Function: llm.ToolCallFunction{Name: "builtin__get_family_state", Arguments: map[string]any{}},
+			}},
+		}, nil
+	}
+	// Second call: return final response
+	return &llm.Message{Role: "assistant", Content: "family state retrieved"}, nil
+}
+
+// TestToolCallDrainEmptyBufferedTokens verifies that the drain logic handles
+// the tool-call path correctly: ChatWithTools does not invoke OnToken, so
+// bufferedTokens remains empty and the drain block at agent.go:307 is skipped.
+// This is the regression guard for the review-5 finding.
+func TestToolCallDrainEmptyBufferedTokens(t *testing.T) {
+	t.Parallel()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ev, err := policy.NewEvaluator("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Temperature:       0.7,
+			MaxResponseTokens: 100,
+		},
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent"},
+		},
+	}
+	user := &cfg.Users[0]
+	clf := classifier.New()
+
+	mock := &mockToolChatter{}
+	agent := NewAgent(user, cfg, mock, ev, clf, db, AgentDeps{
+		BuiltinTools: []agentcore.Tool{{
+			Name:        "builtin__get_family_state",
+			Description: "Get family state information",
+			InputSchema: map[string]any{"type": "object"},
+			Source:      "builtin",
+		}},
+	})
+
+	var tokens []string
+	onToken := func(tok string) {
+		tokens = append(tokens, tok)
+	}
+
+	resp, err := agent.Chat(context.Background(), "say hello", onToken)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	// The tool-call path uses ChatWithTools which does not stream tokens.
+	// bufferedTokens stays empty, so the drain block is skipped.
+	if len(tokens) > 0 {
+		t.Errorf("onToken was called %d times — expected 0 for tool-call path", len(tokens))
+	}
+
+	// The final response should be the tool output.
+	if !strings.Contains(resp.Content, "family state retrieved") {
+		t.Errorf("Content = %q, expected tool output with 'family state retrieved'", resp.Content)
+	}
+
+	// Verify ChatWithTools was called (tool loop ran).
+	if mock.callCount < 2 {
+		t.Errorf("ChatWithTools was called %d times — expected at least 2 (tool call + final response)", mock.callCount)
 	}
 }
