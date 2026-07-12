@@ -167,9 +167,24 @@ func main() {
 
 	// Notifications
 	notifier := notify.NewMultiNotifier(cfg.Notifications, cfg.Server.Secret)
-	if cfg.SecCheck.Enabled && notifier.Len() == 0 && cfg.SecCheck.NotifyOnQuarantine {
-		log.Printf("[notify] WARNING: no notification channels enabled but seccheck.notify_on_quarantine=true; parental approvals will fire into the void — add an enabled channel under `notifications:` in your config.yaml (email, slack, discord, sms, ntfy)")
+	
+	// Check for potential silent notification failures
+	if notifier.Len() == 0 {
+		// Check if any user has parent role
+		hasParent := false
+		for _, user := range cfg.Users {
+			if user.Role == "parent" {
+				hasParent = true
+				break
+			}
+		}
+		
+		// Log warning if notifications are expected but no channels are configured
+		if hasParent || cfg.SecCheck.NotifyOnQuarantine {
+			log.Printf("[notify] WARNING: no notification channels enabled but parent users or seccheck.notify_on_quarantine are configured; parental approvals will fire into the void — add an enabled channel under `notifications:` in your config.yaml (email, slack, discord, sms, ntfy)")
+		}
 	}
+	
 	log.Printf("Notifications: configured (%d channel(s))", notifier.Len())
 
 	// Identity store
