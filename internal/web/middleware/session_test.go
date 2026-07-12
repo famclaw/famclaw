@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func newTestStore(t *testing.T) (*store.SessionStore, string) {
 
 // rawDB opens a third independent handle on the same path. Tests use this
 // to UPDATE web_sessions directly when they need to simulate an expired
-// session without manipulating the SessionStore's unexported clock.
+// session without manipulating the SessionStore's unexported `now` field across package boundaries.
 func rawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", path+"?_journal=WAL&_timeout=5000&_fk=true")
@@ -234,6 +235,10 @@ func TestWithSession_TouchUpdatesLastSeen(t *testing.T) {
 	for time.Now().Before(deadline) {
 		after, err = sessions.Get(ctx, id)
 		if err != nil {
+			if strings.Contains(err.Error(), "database is locked") {
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
 			t.Fatalf("Get after: %v", err)
 		}
 		if after.LastSeen.After(originalLastSeen) {
