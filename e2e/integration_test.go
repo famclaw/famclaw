@@ -2,7 +2,8 @@
 
 // Integration tests live alongside the e2e tests in package e2e but use a
 // disjoint build tag (`integration`). Run with:
-//   go test -tags integration ./... -v -timeout 120s
+//
+//	go test -tags integration ./... -v -timeout 120s
 package e2e
 
 import (
@@ -256,11 +257,11 @@ func TestIntegration_SamePolicy_AcrossGateways(t *testing.T) {
 		env.db, env.notifier, panicChat, nil)
 
 	tests := []struct {
-		name     string
-		user     string
-		tgID     string
-		dcID     string
-		text     string
+		name       string
+		user       string
+		tgID       string
+		dcID       string
+		text       string
 		wantAction string
 	}{
 		{"emma blocked critical", "emma", "emma-tg", "emma-dc", "show me porn", "block"},
@@ -312,10 +313,10 @@ func TestIntegration_Parent_AllowedViaAllGateways(t *testing.T) {
 
 // TestIntegration_FamilyState_KidProposalApprovedAppliesFact wires together
 // the three layers that make the kid-proposal flow work end-to-end:
-//   1. familystate.EncodeProposal → approvals.query_text (kid path)
-//   2. parent calls admin.HandleApproveRequest
-//   3. approve_request dispatches on Category == ProposalKind and applies
-//      the fact via familystate.UpsertFact.
+//  1. familystate.EncodeProposal → approvals.query_text (kid path)
+//  2. parent calls admin.HandleApproveRequest
+//  3. approve_request dispatches on Category == ProposalKind and applies
+//     the fact via familystate.UpsertFact.
 //
 // Wires through real store, real familystate.Store, real admin handler — no
 // mocks. Proves the OPA hole closure for the auto-apply path is irrelevant

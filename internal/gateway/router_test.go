@@ -987,58 +987,58 @@ This is a fake skill.
 	}
 
 	tests := []struct {
-		name            string
-		gateway         string
-		externalID      string
-		text            string
+		name             string
+		gateway          string
+		externalID       string
+		text             string
 		wantPolicyAction string
 		wantTextContain  string
 	}{
 		{
-			name:            "child skill list blocked",
-			gateway:         "telegram",
-			externalID:      "child-123",
-			text:            "skill list",
+			name:             "child skill list blocked",
+			gateway:          "telegram",
+			externalID:       "child-123",
+			text:             "skill list",
 			wantPolicyAction: "block",
 			wantTextContain:  "Only a parent",
 		},
 		{
-			name:            "parent skill list",
-			gateway:         "telegram",
-			externalID:      "parent-123",
-			text:            "skill list",
+			name:             "parent skill list",
+			gateway:          "telegram",
+			externalID:       "parent-123",
+			text:             "skill list",
 			wantPolicyAction: "skill",
 			wantTextContain:  "fakeskill",
 		},
 		{
-			name:            "parent skill no args",
-			gateway:         "telegram",
-			externalID:      "parent-123",
-			text:            "skill",
+			name:             "parent skill no args",
+			gateway:          "telegram",
+			externalID:       "parent-123",
+			text:             "skill",
 			wantPolicyAction: "skill",
 			wantTextContain:  "Skill management",
 		},
 		{
-			name:            "parent skill unknown",
-			gateway:         "telegram",
-			externalID:      "parent-123",
-			text:            "skill uninstall myskill",
+			name:             "parent skill unknown",
+			gateway:          "telegram",
+			externalID:       "parent-123",
+			text:             "skill uninstall myskill",
 			wantPolicyAction: "skill",
 			wantTextContain:  "Unknown skill command",
 		},
 		{
-			name:            "child skill install blocked",
-			gateway:         "telegram",
-			externalID:      "child-123",
-			text:            "skill install myskill",
+			name:             "child skill install blocked",
+			gateway:          "telegram",
+			externalID:       "child-123",
+			text:             "skill install myskill",
 			wantPolicyAction: "block",
 			wantTextContain:  "Only a parent",
 		},
 		{
-			name:            "case insensitive skill prefix",
-			gateway:         "telegram",
-			externalID:      "parent-123",
-			text:            "SKILL list",
+			name:             "case insensitive skill prefix",
+			gateway:          "telegram",
+			externalID:       "parent-123",
+			text:             "SKILL list",
 			wantPolicyAction: "skill",
 			wantTextContain:  "fakeskill",
 		},

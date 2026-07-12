@@ -72,7 +72,7 @@ func TestServerResolveUserRoleFromDB(t *testing.T) {
 
 	// Verify emma (age_8_12) would request_approval for social media.
 	decision, err := ev.Evaluate(ctx, policy.Input{
-		User: policy.UserInput{Role: user.Role, AgeGroup: user.AgeGroup, Name: "emma"},
+		User:  policy.UserInput{Role: user.Role, AgeGroup: user.AgeGroup, Name: "emma"},
 		Query: policy.QueryInput{Category: "social_media", Text: "can I use instagram and tiktok"},
 	})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestServerResolveUserRoleFromDB(t *testing.T) {
 
 	// Verify emma (under_8) is blocked from social media.
 	decision, err = ev.Evaluate(ctx, policy.Input{
-		User: policy.UserInput{Role: user.Role, AgeGroup: user.AgeGroup, Name: "emma"},
+		User:  policy.UserInput{Role: user.Role, AgeGroup: user.AgeGroup, Name: "emma"},
 		Query: policy.QueryInput{Category: "social_media", Text: "can I use instagram and tiktok"},
 	})
 	if err != nil {

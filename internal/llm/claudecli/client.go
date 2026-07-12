@@ -19,10 +19,10 @@ import (
 // The claude CLI's --input-format stream-json expects user events of this
 // form; it does not accept assistant events on stdin.
 type claudeInputEnvelope struct {
-	Type    string          `json:"type"`
+	Type    string `json:"type"`
 	Message *struct {
-		Role    string          `json:"role"`
-		Content []llm.Message   `json:"content"`
+		Role    string        `json:"role"`
+		Content []llm.Message `json:"content"`
 	} `json:"message"`
 }
 
