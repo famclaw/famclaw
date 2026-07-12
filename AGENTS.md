@@ -211,5 +211,13 @@ famclaw code must be correct, efficient, tested, and idiomatic Go. The bug class
 ## Build
 - `make cross` (all targets, CGO_ENABLED=0)
 
+## Crew workflow discipline
+- Commit early and often; don't sit on uncommitted work.
+- One concern per PR — keep changes focused and reviewable.
+- Resolve EVERY code-review comment: either fix it, or reply on the PR with a clear rationale (out-of-scope / false-positive / accepted-tradeoff). Never leave a review comment silently unaddressed.
+- Verify before declaring something impossible — reproduce/test the claim.
+- No junk commits (no "wip"/"fix" noise in the final history; squash/clean up).
+- Quality bar: correct, efficient, well-tested, idiomatic Go (no `defer` in loops, preallocate, wrap errors with `%w`, `gofmt`/`vet`/`staticcheck` clean, early returns, no duplication). Efficiency and idiom are first-class review criteria, not just correctness.
+
 ## README rule
 After a change lands, update README status + structure; only what exists.
