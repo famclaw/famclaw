@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -20,6 +21,7 @@ type Runtime struct {
 	runtime    wazero.Runtime
 	module     api.Module
 	closeFunc  func(context.Context) error
+	mu         sync.Mutex
 }
 
 // Config holds configuration for the WASM skill runtime.
@@ -48,6 +50,11 @@ func NewRuntime(ctx context.Context, wasmModule []byte, config *Config) (*Runtim
 		config = &Config{}
 	}
 
+	// Enforce non-empty SandboxRoot for security (deny-by-default filesystem access)
+	if config.SandboxRoot == "" {
+		return nil, fmt.Errorf("SandboxRoot must be set (deny-by-default filesystem access)")
+	}
+
 	// Set default stdio streams if not provided
 	if config.Stdin == nil {
 		config.Stdin = os.Stdin
@@ -57,6 +64,11 @@ func NewRuntime(ctx context.Context, wasmModule []byte, config *Config) (*Runtim
 	}
 	if config.Stderr == nil {
 		config.Stderr = os.Stderr
+	}
+
+	// Validate Env has even number of elements (key-value pairs)
+	if len(config.Env)%2 != 0 {
+		return nil, fmt.Errorf("Env must contain key-value pairs (even number of elements), got %d", len(config.Env))
 	}
 
 	r := &Runtime{
@@ -73,6 +85,20 @@ func NewRuntime(ctx context.Context, wasmModule []byte, config *Config) (*Runtim
 		return nil, fmt.Errorf("instantiating WASI: %w", err)
 	}
 
+	// Compile the module first to validate imports
+	compiledModule, err := runtime.CompileModule(ctx, wasmModule)
+	if err != nil {
+		runtime.Close(ctx)
+		return nil, fmt.Errorf("compiling module: %w", err)
+	}
+
+	// Validate that the module only imports from WASI (deny-by-default imports)
+	if err := validateImports(compiledModule); err != nil {
+		compiledModule.Close(ctx)
+		runtime.Close(ctx)
+		return nil, fmt.Errorf("module import validation failed: %w", err)
+	}
+
 	// Create module configuration
 	moduleConfig := wazero.NewModuleConfig().
 		// Configure stdio
@@ -84,21 +110,18 @@ func NewRuntime(ctx context.Context, wasmModule []byte, config *Config) (*Runtim
 
 	// Configure environment variables (WithEnv takes key-value pairs)
 	for i := 0; i < len(config.Env); i += 2 {
-		if i+1 < len(config.Env) {
-			moduleConfig = moduleConfig.WithEnv(config.Env[i], config.Env[i+1])
-		}
+		moduleConfig = moduleConfig.WithEnv(config.Env[i], config.Env[i+1])
 	}
 
 	// Add the sandbox directory as a preopened directory
 	// This is the ONLY directory the WASM module can access
-	if config.SandboxRoot != "" {
-		moduleConfig = moduleConfig.WithFSConfig(
-			wazero.NewFSConfig().WithDirMount(config.SandboxRoot, "/"),
-		)
-	}
+	moduleConfig = moduleConfig.WithFSConfig(
+		wazero.NewFSConfig().WithDirMount(config.SandboxRoot, "/"),
+	)
 
 	// Instantiate the module with the module configuration
-	module, err := runtime.InstantiateWithConfig(ctx, wasmModule, moduleConfig)
+	module, err := runtime.InstantiateModule(ctx, compiledModule, moduleConfig)
+	compiledModule.Close(ctx)
 	if err != nil {
 		runtime.Close(ctx)
 		return nil, fmt.Errorf("instantiating module: %w", err)
@@ -119,6 +142,8 @@ func NewRuntime(ctx context.Context, wasmModule []byte, config *Config) (*Runtim
 
 // Close closes the runtime and releases all resources.
 func (r *Runtime) Close(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.closeFunc != nil {
 		return r.closeFunc(ctx)
 	}
@@ -129,6 +154,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 // the WASI command pattern: reads JSON-RPC from stdin, writes to stdout.
 // This is suitable for MCP-style skills that communicate via stdio.
 func (r *Runtime) Execute(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	// For a WASI command that communicates via stdio, we just need to
 	// start the module and let it run until completion.
 	// The module should read from WASI fd 0 (stdin) and write to fd 1 (stdout)
@@ -138,7 +166,7 @@ func (r *Runtime) Execute(ctx context.Context) error {
 	if startFunc == nil {
 		// If no _start function, look for main or other entry points
 		// For now, we'll require _start as it's the standard WASI command entry point
-		return ErrNoStartFunction
+		return fmt.Errorf("module missing _start function: WASI command modules must export _start as the entry point (required for stdio-based communication)")
 	}
 
 	// Execute the module
@@ -166,3 +194,18 @@ func (e Error) Error() string {
 // TODO: Implement the exported function ABI (skill_init/invoke/cleanup)
 // as described in the design document for a future phase.
 // For now, we focus on the stdio-based MCP-style communication path.
+
+// validateImports ensures the module only imports from allowed namespaces (WASI).
+func validateImports(module wazero.CompiledModule) error {
+	imports := module.ImportedFunctions()
+	for _, imp := range imports {
+		// Check if this is an import (not an export)
+		if modName, _, isImport := imp.Import(); isImport {
+			// Only allow imports from WASI snapshot preview1
+			if modName != "wasi_snapshot_preview1" {
+				return fmt.Errorf("module imports disallowed namespace %q (only wasi_snapshot_preview1 allowed)", modName)
+			}
+		}
+	}
+	return nil
+}
