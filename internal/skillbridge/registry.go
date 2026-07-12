@@ -162,6 +162,9 @@ func (r *Registry) List() ([]*Skill, error) {
 
 // Remove deletes an installed skill by name.
 func (r *Registry) Remove(name string) error {
+	if err := ValidateName(name); err != nil {
+		return fmt.Errorf("invalid skill name: %w", err)
+	}
 	dir := filepath.Join(r.dir, name)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return fmt.Errorf("skill %q not installed", name)
@@ -169,8 +172,15 @@ func (r *Registry) Remove(name string) error {
 	return os.RemoveAll(dir)
 }
 
-// Enable creates an "enabled" marker for a skill (default state).
+// Enable marks a skill as enabled. Returns an error if the skill is not installed.
 func (r *Registry) Enable(name string) error {
+	if err := ValidateName(name); err != nil {
+		return fmt.Errorf("invalid skill name: %w", err)
+	}
+	dir := filepath.Join(r.dir, name)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return fmt.Errorf("skill %q not installed", name)
+	}
 	disabledFile := filepath.Join(r.dir, name, ".disabled")
 	if err := os.Remove(disabledFile); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("enabling skill: %w", err)
@@ -180,6 +190,9 @@ func (r *Registry) Enable(name string) error {
 
 // Disable creates a ".disabled" marker file for a skill.
 func (r *Registry) Disable(name string) error {
+	if err := ValidateName(name); err != nil {
+		return fmt.Errorf("invalid skill name: %w", err)
+	}
 	dir := filepath.Join(r.dir, name)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return fmt.Errorf("skill %q not installed", name)

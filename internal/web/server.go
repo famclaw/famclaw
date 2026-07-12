@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/famclaw/famclaw/internal/agent"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
@@ -33,6 +32,7 @@ import (
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/web/middleware"
+	"github.com/gorilla/websocket"
 )
 
 //go:embed static
@@ -40,28 +40,28 @@ var staticFiles embed.FS
 
 // Server is the FamClaw web server.
 type Server struct {
-	cfg        *config.Config
-	cfgPath    string // path to config.yaml for settings API
-	db         *store.DB
-	identStore *identity.Store
-	evaluator  *policy.Evaluator
-	clf        *classifier.Classifier
-	notifier   *notify.MultiNotifier
+	cfg           *config.Config
+	cfgPath       string // path to config.yaml for settings API
+	db            *store.DB
+	identStore    *identity.Store
+	evaluator     *policy.Evaluator
+	clf           *classifier.Classifier
+	notifier      *notify.MultiNotifier
 	skills        []*skillbridge.Skill  // injected into agent system prompt
-	skillRegistry *skillbridge.Registry  // backs POST /api/skills/install + /remove
-	pool          *mcp.Pool              // MCP tool pool for agent tool calls
-	familyState   *familystate.Store     // Phase 3.3 — nil disables /api/family-state/*
-	staticHandler http.Handler           // embedded static file server
+	skillRegistry *skillbridge.Registry // backs POST /api/skills/install + /remove
+	pool          *mcp.Pool             // MCP tool pool for agent tool calls
+	familyState   *familystate.Store    // Phase 3.3 — nil disables /api/family-state/*
+	staticHandler http.Handler          // embedded static file server
 	upgrader      websocket.Upgrader
-	cfgMu      sync.RWMutex               // guards cfg during settings reads/writes
-	clients    map[*websocket.Conn]string // conn → userName
-	clientsMu  sync.RWMutex
+	cfgMu         sync.RWMutex               // guards cfg during settings reads/writes
+	clients       map[*websocket.Conn]string // conn → userName
+	clientsMu     sync.RWMutex
 
 	// Session-based auth wiring (Phase 6).
 	sessions      *store.SessionStore
 	vault         *credstore.Vault
 	auth          *AuthHandler
-	vaultMismatch bool         // protected by vaultMu — true once a probe finds the on-disk vault was sealed by a different machine
+	vaultMismatch bool // protected by vaultMu — true once a probe finds the on-disk vault was sealed by a different machine
 	vaultMu       sync.RWMutex
 }
 

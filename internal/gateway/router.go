@@ -18,6 +18,7 @@ import (
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -47,6 +48,7 @@ type Router struct {
 	notifier   *notify.MultiNotifier
 	chatFn     ChatFunc
 	pool       *SessionPool
+	registry   *skillbridge.Registry
 
 	pendingMu   sync.Mutex
 	pendingRegs map[string]*pendingRegistration
@@ -65,6 +67,7 @@ func NewRouter(
 	db *store.DB,
 	notifier *notify.MultiNotifier,
 	chatFn ChatFunc,
+	registry *skillbridge.Registry,
 ) *Router {
 	r := &Router{
 		cfg:         cfg,
@@ -74,6 +77,7 @@ func NewRouter(
 		db:          db,
 		notifier:    notifier,
 		chatFn:      chatFn,
+		registry:    registry,
 		pendingRegs: make(map[string]*pendingRegistration),
 	}
 	// Session pool dispatches heavy work (classify → policy → LLM) per-user
@@ -155,6 +159,8 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		log.Printf("[router] %s: GetRoleOverride error: %v — falling back to config", user.Name, err)
 	}
 
+	
+
 	decision, err := r.evaluator.Evaluate(ctx, policy.Input{
 		User: policy.UserInput{
 			Role:     adjustedUser.Role,
@@ -207,7 +213,14 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		return Reply{Text: text, PolicyAction: "pending"}
 	}
 
-	// ── Step 5: LLM chat (only reached when policy returns "allow") ──────
+	// ── Step 5: Handle skill commands or LLM chat (only reached when policy returns "allow") ──────
+	// Check if this is a parent-only skill command
+	if fields := strings.Fields(msg.Text); len(fields) >= 1 && r.registry != nil && strings.EqualFold(fields[0], "skill") {
+		if adjustedUser.Role != "parent" {
+			return Reply{Text: "Only a parent can manage skills.", PolicyAction: "block"}
+		}
+		return r.handleSkillCommand(ctx, adjustedUser.Name, fields)
+	}
 	response, err := r.chatFn(ctx, adjustedUser, msg.Text)
 	if err != nil {
 		log.Printf("[router] chat error: %v", err)
@@ -479,5 +492,71 @@ func (r *Router) cleanExpiredPending() {
 		if now.Sub(p.askedAt) > 5*time.Minute {
 			delete(r.pendingRegs, key)
 		}
+	}
+}
+
+// handleSkillCommand processes parent-only skill management commands.
+//
+// Mutating commands (install/enable/disable) change what executable MCP
+// skill servers run, so each is audit-logged with the invoking parent and
+// its outcome — this path bypasses the normal policy/persistence flow.
+func (r *Router) handleSkillCommand(ctx context.Context, actor string, fields []string) Reply {
+	if len(fields) < 2 {
+		return Reply{Text: "Skill management: skill list | skill install <name> | skill enable <name> | skill disable <name>", PolicyAction: "skill"}
+	}
+
+	cmd := strings.ToLower(fields[1])
+	switch cmd {
+	case "list":
+		skills, err := r.registry.List()
+		if err != nil {
+			log.Printf("[router][skill] parent %s: list failed: %v", actor, err)
+			return Reply{Text: "Skill command failed. Please try again.", PolicyAction: "error"}
+		}
+		if len(skills) == 0 {
+			return Reply{Text: "No skills installed.", PolicyAction: "skill"}
+		}
+		var parts []string
+		for _, s := range skills {
+			parts = append(parts, fmt.Sprintf("%s — %s", s.Name, s.Description))
+		}
+		return Reply{Text: "Installed skills:\n" + strings.Join(parts, "\n"), PolicyAction: "skill"}
+
+	case "install":
+		if len(fields) < 3 {
+			return Reply{Text: "Usage: skill install <nameOrPath>", PolicyAction: "skill"}
+		}
+		skill, err := r.registry.Install(ctx, fields[2])
+		if err != nil {
+			log.Printf("[router][skill] parent %s: install %q failed: %v", actor, fields[2], err)
+			return Reply{Text: "Skill command failed. Please try again.", PolicyAction: "error"}
+		}
+		log.Printf("[router][skill] parent %s installed skill %q", actor, skill.Name)
+		return Reply{Text: "Installed skill: " + skill.Name, PolicyAction: "skill"}
+
+	case "enable":
+		if len(fields) < 3 {
+			return Reply{Text: "Usage: skill enable <name>", PolicyAction: "skill"}
+		}
+		if err := r.registry.Enable(fields[2]); err != nil {
+			log.Printf("[router][skill] parent %s: enable %q failed: %v", actor, fields[2], err)
+			return Reply{Text: "Skill command failed. Please try again.", PolicyAction: "error"}
+		}
+		log.Printf("[router][skill] parent %s enabled skill %q", actor, fields[2])
+		return Reply{Text: "Enabled skill: " + fields[2], PolicyAction: "skill"}
+
+	case "disable":
+		if len(fields) < 3 {
+			return Reply{Text: "Usage: skill disable <name>", PolicyAction: "skill"}
+		}
+		if err := r.registry.Disable(fields[2]); err != nil {
+			log.Printf("[router][skill] parent %s: disable %q failed: %v", actor, fields[2], err)
+			return Reply{Text: "Skill command failed. Please try again.", PolicyAction: "error"}
+		}
+		log.Printf("[router][skill] parent %s disabled skill %q", actor, fields[2])
+		return Reply{Text: "Disabled skill: " + fields[2], PolicyAction: "skill"}
+
+	default:
+		return Reply{Text: "Unknown skill command: " + fields[1] + ". Try: list, install, enable, disable", PolicyAction: "skill"}
 	}
 }

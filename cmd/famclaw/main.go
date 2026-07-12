@@ -210,7 +210,12 @@ func main() {
 	}
 
 	// Skills loaded for prompt injection (independent of MCP)
-	reg := skillbridge.NewRegistry(cfg.Skills.Dir, nil, skillbridge.InstallConfig{})
+	reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallConfig{
+		Enabled:      cfg.SecCheck.Enabled,
+		AutoSecCheck: cfg.SecCheck.AutoSecCheck,
+		BlockOnFail:  cfg.SecCheck.BlockOnFail,
+		Paranoia:     cfg.SecCheck.Paranoia,
+	})
 	var enabledSkills []*skillbridge.Skill
 	if skills, err := reg.List(); err == nil {
 		for _, sk := range skills {
@@ -339,7 +344,7 @@ func main() {
 	defer gwCancel()
 
 	// Gateway router
-	router := gateway.NewRouter(gwCtx, cfg, identStore, clf, evaluator, db, notifier, chatFn)
+	router := gateway.NewRouter(gwCtx, cfg, identStore, clf, evaluator, db, notifier, chatFn, reg)
 
 	// Gateway bots
 	var gateways []gateway.Gateway

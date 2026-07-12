@@ -43,7 +43,7 @@ func TestTelegram_UnknownAccount_AutoLink(t *testing.T) {
 	chatFn := func(ctx context.Context, u *config.UserConfig, text string) (string, error) {
 		return "stub", nil
 	}
-	router := gateway.NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn)
+	router := gateway.NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, nil)
 
 	ctx := context.Background()
 	reply := router.Handle(ctx, gateway.Message{
