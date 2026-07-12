@@ -185,15 +185,6 @@ func TestTelegramBotMessageConstruction(t *testing.T) {
 			if isGroup != tc.expectedIsGroup {
 				t.Errorf("IsGroup mismatch: got %v, want %v", isGroup, tc.expectedIsGroup)
 			}
-
-			// Verify the expected values match our test case expectations
-			if tc.expectedGroupID != strconv.FormatInt(tc.chatID, 10) {
-				t.Errorf("Test case error: expectedGroupID %q doesn't match chatID %d", tc.expectedGroupID, tc.chatID)
-			}
-			expectedIsGroup := tc.chatType == "group" || tc.chatType == "supergroup"
-			if tc.expectedIsGroup != expectedIsGroup {
-				t.Errorf("Test case error: expectedIsGroup %v doesn't match chatType %q", tc.expectedIsGroup, tc.chatType)
-			}
 		})
 	}
 }

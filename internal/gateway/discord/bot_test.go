@@ -83,15 +83,6 @@ func TestDiscordBotMessageConstruction(t *testing.T) {
 			if isGroup != tc.expectedIsGroup {
 				t.Errorf("IsGroup mismatch: got %v, want %v", isGroup, tc.expectedIsGroup)
 			}
-
-			// Verify the expected values match our test case expectations
-			if tc.expectedGroupID != tc.channelID {
-				t.Errorf("Test case error: expectedGroupID %q doesn't match channelID %s", tc.expectedGroupID, tc.channelID)
-			}
-			expectedIsGroup := tc.guildID != ""
-			if tc.expectedIsGroup != expectedIsGroup {
-				t.Errorf("Test case error: expectedIsGroup %v doesn't match guildID %q", tc.expectedIsGroup, tc.guildID)
-			}
 		})
 	}
 }

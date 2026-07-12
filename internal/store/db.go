@@ -1036,6 +1036,23 @@ func (d *DB) GetRoleOverride(ctx context.Context, userName string) (role, ageGro
 	return role, ageGroup, nil
 }
 
+// GetEffectiveRoleAge returns the effective (overridden) role and age group for a user.
+// If no override exists, the returned values match the config defaults.
+// Returns ("", "", nil) when no row exists for the user.
+func (d *DB) GetEffectiveRoleAge(ctx context.Context, userName string, cfgRole, cfgAgeGroup string) (role, ageGroup string, err error) {
+	role, ageGroup, err = d.GetRoleOverride(ctx, userName)
+	if err != nil {
+		return "", "", err
+	}
+	if role == "" {
+		role = cfgRole
+	}
+	if ageGroup == "" {
+		ageGroup = cfgAgeGroup
+	}
+	return role, ageGroup, nil
+}
+
 // SetRoleOverride upserts a role override for a user.
 func (d *DB) SetRoleOverride(ctx context.Context, userName, role, ageGroup, setBy string) error {
 	_, err := d.sql.ExecContext(ctx,

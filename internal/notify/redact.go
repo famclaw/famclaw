@@ -15,7 +15,7 @@ var urlInError = regexp.MustCompile(`"(https?://[^"]+)"`)
 // in the Authorization header which can leak into error strings.
 // The \b ensures we match whole words only, preventing false positives like
 // matching "bot" in "chatbot".
-var bearerToken = regexp.MustCompile(`(?i)\b(Bearer\s+|Bot\s+)[A-Za-z0-9\-_\.]+`)
+var bearerToken = regexp.MustCompile(`(?i)\b(Bearer\s+|Bot\s+)[A-Za-z0-9\-_\.+=]+`)
 
 // redactFn is a URL-redaction function keyed by hostname.
 type redactFn func(*url.URL)

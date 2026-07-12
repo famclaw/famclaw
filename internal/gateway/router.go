@@ -144,19 +144,14 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 	// evaluation and the downstream agent (which re-runs policy internally
 	// for output-gate, tool-call gate, and parent-auto-apply privilege).
 	adjustedUser := userCfg
-	if role, ageGroup, err := r.db.GetRoleOverride(ctx, user.Name); err == nil {
-		if role != "" || ageGroup != "" {
-			copied := *userCfg
-			if role != "" {
-				copied.Role = role
-			}
-			if ageGroup != "" {
-				copied.AgeGroup = ageGroup
-			}
-			adjustedUser = &copied
-		}
-	} else if err != nil {
-		log.Printf("[router] %s: GetRoleOverride error: %v — falling back to config", user.Name, err)
+	effectiveRole, effectiveAgeGroup, err := r.db.GetEffectiveRoleAge(ctx, user.Name, userCfg.Role, userCfg.AgeGroup)
+	if err != nil {
+		log.Printf("[router] %s: GetEffectiveRoleAge error: %v — falling back to config", user.Name, err)
+	} else if effectiveRole != userCfg.Role || effectiveAgeGroup != userCfg.AgeGroup {
+		copied := *userCfg
+		copied.Role = effectiveRole
+		copied.AgeGroup = effectiveAgeGroup
+		adjustedUser = &copied
 	}
 
 	
