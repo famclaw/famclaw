@@ -3,10 +3,10 @@ package notify
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"mime"
 	"net/smtp"
 	"strings"
-	"html/template"
 
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/store"

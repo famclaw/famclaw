@@ -286,8 +286,8 @@ func TestPoolRegisterFromConfig(t *testing.T) {
 
 func TestEnvKeyBlocked(t *testing.T) {
 	tests := []struct {
-		name    string
-		want    bool
+		name string
+		want bool
 	}{
 		{"FAMCLAW_LLM_API_KEY", true},
 		{"TELEGRAM_TOKEN", true},

@@ -32,7 +32,6 @@ func TestStageClassify(t *testing.T) {
 	}
 }
 
-
 func TestStagePolicyInputBlock(t *testing.T) {
 	// We can't easily test with a real OPA evaluator without policy files,
 	// but we can verify the ErrPolicyBlock sentinel error is used correctly.
@@ -117,22 +116,22 @@ func TestToolsToLLMDefs(t *testing.T) {
 // it the second LLM round-trip 4xxes.
 //
 // We cover all four branches that synthesize a tool reply:
-//   1. Tool not in turn.Tools allowlist
-//   2. Builtin handler returns error
-//   3. Builtin handler returns success
-//   4. Unknown tool (passes allowlist but neither pool nor builtin route fires)
+//  1. Tool not in turn.Tools allowlist
+//  2. Builtin handler returns error
+//  3. Builtin handler returns success
+//  4. Unknown tool (passes allowlist but neither pool nor builtin route fires)
 func TestStageToolLoop_ToolCallIDPropagation(t *testing.T) {
 	type capturedReq struct {
 		Messages []llm.Message `json:"messages"`
 	}
 
 	cases := []struct {
-		name        string
-		turnTool    string
-		callName    string
-		callID      string
+		name         string
+		turnTool     string
+		callName     string
+		callID       string
 		buildHandler func() func(ctx context.Context, name string, args map[string]any) (string, error)
-		wantContent string
+		wantContent  string
 	}{
 		{
 			name:     "rejected by turn allowlist",

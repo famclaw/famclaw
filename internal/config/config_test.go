@@ -11,39 +11,39 @@ import (
 
 func TestResolveLLMAPIKey(t *testing.T) {
 	tests := []struct {
-		name          string
-		yamlKey       string
-		envKey        string
-		wantKey       string
-		wantWarning   bool
+		name        string
+		yamlKey     string
+		envKey      string
+		wantKey     string
+		wantWarning bool
 	}{
 		{
-			name:          "env set yaml unset → env wins",
-			yamlKey:       "",
-			envKey:        "sk-env-only",
-			wantKey:       "sk-env-only",
-			wantWarning:   false,
+			name:        "env set yaml unset → env wins",
+			yamlKey:     "",
+			envKey:      "sk-env-only",
+			wantKey:     "sk-env-only",
+			wantWarning: false,
 		},
 		{
-			name:          "env set yaml set → env wins, no warning",
-			yamlKey:       "sk-yaml-value",
-			envKey:        "sk-env-wins",
-			wantKey:       "sk-env-wins",
-			wantWarning:   false,
+			name:        "env set yaml set → env wins, no warning",
+			yamlKey:     "sk-yaml-value",
+			envKey:      "sk-env-wins",
+			wantKey:     "sk-env-wins",
+			wantWarning: false,
 		},
 		{
-			name:          "env unset yaml set → yaml used, warning logged",
-			yamlKey:       "sk-yaml-value",
-			envKey:        "",
-			wantKey:       "sk-yaml-value",
-			wantWarning:   true,
+			name:        "env unset yaml set → yaml used, warning logged",
+			yamlKey:     "sk-yaml-value",
+			envKey:      "",
+			wantKey:     "sk-yaml-value",
+			wantWarning: true,
 		},
 		{
-			name:          "env unset yaml unset → empty, no warning",
-			yamlKey:       "",
-			envKey:        "",
-			wantKey:       "",
-			wantWarning:   false,
+			name:        "env unset yaml unset → empty, no warning",
+			yamlKey:     "",
+			envKey:      "",
+			wantKey:     "",
+			wantWarning: false,
 		},
 	}
 

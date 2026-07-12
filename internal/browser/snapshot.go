@@ -48,11 +48,12 @@ var interactiveRoles = map[string]bool{
 //   - link "Sign in":
 //
 // Captures:
-//   1: leading whitespace (indent)
-//   2: role (e.g. "button", may include "/" prefixed pseudo-keys we ignore)
-//   3: optional name in quotes
-//   4: optional [attrs]
-//   5: optional trailing value after ":"
+//
+//	1: leading whitespace (indent)
+//	2: role (e.g. "button", may include "/" prefixed pseudo-keys we ignore)
+//	3: optional name in quotes
+//	4: optional [attrs]
+//	5: optional trailing value after ":"
 var snapshotLineRE = regexp.MustCompile(`^([ \t]*)-\s+(/?[A-Za-z][\w-]*)(?:\s+"([^"]*)")?(?:\s+\[([^\]]+)\])?(?::\s*(.*?))?\s*$`)
 
 // RefEntry is the resolution data we store per ref so we can rebuild a

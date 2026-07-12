@@ -77,10 +77,10 @@ func (s *SessionStore) Create(ctx context.Context, userID int64, ip, ua string) 
 // side-effect-free.
 func (s *SessionStore) Get(ctx context.Context, sessionID string) (*Session, error) {
 	var (
-		id                              string
-		userID                          int64
-		createdAt, expiresAt, lastSeen  int64
-		ip, userAgent                   string
+		id                             string
+		userID                         int64
+		createdAt, expiresAt, lastSeen int64
+		ip, userAgent                  string
 	)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, user_id, created_at, expires_at, last_seen, ip, user_agent

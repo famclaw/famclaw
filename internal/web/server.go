@@ -66,7 +66,7 @@ type Server struct {
 }
 
 // wsMessage is a WebSocket protocol message.
-type wsMessage struct {
+type WsMessage struct {
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
@@ -289,6 +289,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the role/age override (if any) that supersedes the config row.
 	adjustedUser := s.resolveUserRole(r.Context(), userName)
+	// Initialize last known role and ageGroup from the adjustedUser for change detection.
+	lastRole := adjustedUser.Role
+	lastAgeGroup := adjustedUser.AgeGroup
 
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -322,12 +325,38 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	})
 
 	for {
-		var msg wsMessage
+		var msg WsMessage
 		if err := conn.ReadJSON(&msg); err != nil {
 			if websocket.IsUnexpectedCloseError(err) {
 				log.Printf("[ws] %s disconnected", userCfg.DisplayName)
 			}
 			return
+		}
+
+		// Check for role override changes and recreate agent if needed.
+		currentRole := userCfg.Role
+		currentAgeGroup := userCfg.AgeGroup
+		if role, ageGroup, err := s.db.GetRoleOverride(r.Context(), userName); err == nil {
+			if role != "" {
+				currentRole = role
+			}
+			if ageGroup != "" {
+				currentAgeGroup = ageGroup
+			}
+		}
+		if currentRole != lastRole || currentAgeGroup != lastAgeGroup {
+			// Recreate agent with the new role/ageGroup.
+			// Copy the entire user config to preserve fields like Color, Model, LLMProfile.
+			copied := *userCfg
+			copied.Role = currentRole
+			copied.AgeGroup = currentAgeGroup
+			adjustedUser := &copied
+			a = agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
+				Skills: s.skills,
+				Pool:   s.pool,
+			})
+			lastRole = currentRole
+			lastAgeGroup = currentAgeGroup
 		}
 
 		switch msg.Type {
@@ -397,7 +426,7 @@ func (s *Server) sendWS(conn *websocket.Conn, msgType string, payload any) {
 		b, _ := json.Marshal(payload)
 		raw = b
 	}
-	conn.WriteJSON(wsMessage{Type: msgType, Payload: raw}) //nolint:errcheck
+	conn.WriteJSON(WsMessage{Type: msgType, Payload: raw}) //nolint:errcheck
 }
 
 // ── REST API ──────────────────────────────────────────────────────────────────
@@ -646,7 +675,7 @@ func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 	defer s.clientsMu.RUnlock()
 	for conn, userName := range s.clients {
 		_ = userName
-		conn.WriteJSON(wsMessage{Type: "dashboard_update", Payload: payload}) //nolint:errcheck
+		conn.WriteJSON(WsMessage{Type: "dashboard_update", Payload: payload}) //nolint:errcheck
 	}
 }
 

@@ -62,12 +62,12 @@ type WebSearchConfig struct {
 // disabled, the agent falls back to inline-everything (legacy v0.5.x
 // behavior — vulnerable to context overflow on big tool results).
 type ToolCacheConfig struct {
-	Enabled       bool              `yaml:"enabled"`          // default true when config block present; auto-enabled in main.go
-	PerUserCapMB  int64             `yaml:"per_user_cap_mb"`  // default 100
-	TotalCapMB    int64             `yaml:"total_cap_mb"`     // default 1024 (advisory; not enforced yet)
-	CacheDir      string            `yaml:"cache_dir"`        // empty = toolcache.DefaultCacheDir()
-	SweepInterval string            `yaml:"sweep_interval"`   // Go duration; default "15m"
-	TTLByRole     map[string]string `yaml:"ttl"`              // role → duration ("24h", "6h", "1h", "30m")
+	Enabled       bool              `yaml:"enabled"`         // default true when config block present; auto-enabled in main.go
+	PerUserCapMB  int64             `yaml:"per_user_cap_mb"` // default 100
+	TotalCapMB    int64             `yaml:"total_cap_mb"`    // default 1024 (advisory; not enforced yet)
+	CacheDir      string            `yaml:"cache_dir"`       // empty = toolcache.DefaultCacheDir()
+	SweepInterval string            `yaml:"sweep_interval"`  // Go duration; default "15m"
+	TTLByRole     map[string]string `yaml:"ttl"`             // role → duration ("24h", "6h", "1h", "30m")
 }
 
 // WebFetchConfig controls the built-in web_fetch tool. Disabled by default;
@@ -100,8 +100,8 @@ type InferenceConfig struct {
 }
 
 type GatewaysConfig struct {
-	Telegram TelegramConfig `yaml:"telegram"`
-	WhatsApp WhatsAppConfig `yaml:"whatsapp"`
+	Telegram TelegramConfig  `yaml:"telegram"`
+	WhatsApp WhatsAppConfig  `yaml:"whatsapp"`
 	Discord  DiscordGWConfig `yaml:"discord"`
 }
 
@@ -111,8 +111,8 @@ type TelegramConfig struct {
 }
 
 type WhatsAppConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	DBPath   string `yaml:"db_path"`
+	Enabled bool   `yaml:"enabled"`
+	DBPath  string `yaml:"db_path"`
 }
 
 type DiscordGWConfig struct {
@@ -155,13 +155,13 @@ type LLMProfile struct {
 
 type LLMConfig struct {
 	// Legacy single-endpoint fields (backward compatible)
-	Provider          string  `yaml:"provider"`
-	BaseURL           string  `yaml:"base_url"`
-	Model             string  `yaml:"model"`
-	APIKey            string  `yaml:"api_key,omitempty"`
+	Provider string `yaml:"provider"`
+	BaseURL  string `yaml:"base_url"`
+	Model    string `yaml:"model"`
+	APIKey   string `yaml:"api_key,omitempty"`
 	// Named profiles (takes precedence when set)
-	Default           string                 `yaml:"default,omitempty"`
-	Profiles          map[string]LLMProfile  `yaml:"profiles,omitempty"`
+	Default  string                `yaml:"default,omitempty"`
+	Profiles map[string]LLMProfile `yaml:"profiles,omitempty"`
 	// Common settings
 	SystemPrompt      string  `yaml:"system_prompt"`
 	MaxContextTokens  int     `yaml:"max_context_tokens"`
@@ -172,12 +172,12 @@ type LLMConfig struct {
 type UserConfig struct {
 	Name        string `yaml:"name"`
 	DisplayName string `yaml:"display_name"`
-	Role        string `yaml:"role"`   // parent | child
+	Role        string `yaml:"role"`      // parent | child
 	AgeGroup    string `yaml:"age_group"` // under_8 | age_8_12 | age_13_17
 	PIN         string `yaml:"pin"`
 	Color       string `yaml:"color"`
-	Model      string `yaml:"model"`       // optional per-user model override (legacy)
-	LLMProfile string `yaml:"llm_profile,omitempty"` // named LLM profile override
+	Model       string `yaml:"model"`                 // optional per-user model override (legacy)
+	LLMProfile  string `yaml:"llm_profile,omitempty"` // named LLM profile override
 }
 
 // PoliciesConfig overrides the embedded OPA policies. Leave both
@@ -195,12 +195,12 @@ type ApprovalConfig struct {
 }
 
 type SkillsConfig struct {
-	Dir            string                          `yaml:"dir"`
-	AutoSecCheck   bool                            `yaml:"auto_seccheck"`
-	BlockOnFail    bool                            `yaml:"block_on_fail"`
-	OpenClawCompat bool                            `yaml:"openclaw_compat"`
-	MCPServers     map[string]MCPServerConfig      `yaml:"mcp_servers,omitempty"`
-	Credentials    map[string]map[string]string    `yaml:"credentials,omitempty"` // per-skill env vars
+	Dir            string                       `yaml:"dir"`
+	AutoSecCheck   bool                         `yaml:"auto_seccheck"`
+	BlockOnFail    bool                         `yaml:"block_on_fail"`
+	OpenClawCompat bool                         `yaml:"openclaw_compat"`
+	MCPServers     map[string]MCPServerConfig   `yaml:"mcp_servers,omitempty"`
+	Credentials    map[string]map[string]string `yaml:"credentials,omitempty"` // per-skill env vars
 }
 
 type StorageConfig struct {
@@ -324,8 +324,8 @@ func Load(path string) (*Config, error) {
 // resolveLLMAPIKey applies the env-var-over-YAML precedence for the LLM API key.
 // Precedence (highest wins):
 //
-//	1. FAMCLAW_LLM_API_KEY environment variable
-//	2. YAML llm.api_key field
+//  1. FAMCLAW_LLM_API_KEY environment variable
+//  2. YAML llm.api_key field
 //
 // If the env var is set it overrides the YAML value silently.
 // If only YAML is set (and non-empty) a warning is logged — the key is

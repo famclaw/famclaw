@@ -11,20 +11,20 @@ import (
 // Known context window sizes for cloud models.
 var knownContextWindows = map[string]int{
 	// OpenAI
-	"gpt-4o":          128000,
-	"gpt-4o-mini":     128000,
-	"gpt-4.1-mini":    1000000,
-	"gpt-4.1-nano":    1000000,
-	"o4-mini":         200000,
+	"gpt-4o":       128000,
+	"gpt-4o-mini":  128000,
+	"gpt-4.1-mini": 1000000,
+	"gpt-4.1-nano": 1000000,
+	"o4-mini":      200000,
 	// Groq (hosted models)
 	"llama-3.3-70b-versatile": 128000,
 	"llama-3.1-8b-instant":    131072,
 	"gemma2-9b-it":            8192,
 	"mixtral-8x7b-32768":      32768,
 	// OpenRouter free
-	"google/gemma-3-4b-it:free":                 8192,
-	"meta-llama/llama-3.3-70b-instruct:free":    131072,
-	"qwen/qwen3-8b:free":                        40960,
+	"google/gemma-3-4b-it:free":              8192,
+	"meta-llama/llama-3.3-70b-instruct:free": 131072,
+	"qwen/qwen3-8b:free":                     40960,
 	// Ollama defaults (can be overridden by /api/show)
 	"gemma4:e2b":  131072,
 	"gemma4:e4b":  131072,

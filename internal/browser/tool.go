@@ -5,13 +5,13 @@ import "github.com/famclaw/famclaw/internal/agentcore"
 // Tools returns the atomic browser_* builtin tools the LLM can call.
 //
 // The workflow the model is expected to follow:
-//   1. browser_navigate(url) — opens a page; returns a snapshot of interactive
-//      elements with ref ids (e1, e2, …).
-//   2. Look at the snapshot. Identify the element you want by its role+name.
-//   3. browser_fill(ref=eN, value=...) / browser_click(ref=eN) / browser_select / etc.
-//      Every action returns a FRESH snapshot so refs are always current.
-//   4. browser_wait_for(ref=eN) when content loads after a click.
-//   5. browser_extract(mode="text" [, ref=eN]) to read scraped content.
+//  1. browser_navigate(url) — opens a page; returns a snapshot of interactive
+//     elements with ref ids (e1, e2, …).
+//  2. Look at the snapshot. Identify the element you want by its role+name.
+//  3. browser_fill(ref=eN, value=...) / browser_click(ref=eN) / browser_select / etc.
+//     Every action returns a FRESH snapshot so refs are always current.
+//  4. browser_wait_for(ref=eN) when content loads after a click.
+//  5. browser_extract(mode="text" [, ref=eN]) to read scraped content.
 //
 // REFS ARE EPHEMERAL: ref ids are valid only against the most recent
 // snapshot. They are renumbered after every action. Always use the refs

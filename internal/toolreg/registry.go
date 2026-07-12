@@ -13,10 +13,10 @@ type Tool struct {
 	Name        string         `json:"name"`         // namespaced: "mcp__weather__forecast"
 	Description string         `json:"description"`  // one-line description
 	InputSchema map[string]any `json:"input_schema"` // JSON Schema for parameters
-	Source      string         `json:"source"`        // "mcp", "builtin", "plugin"
-	ServerName  string         `json:"server_name"`   // which MCP server owns this (empty for builtins)
-	ScanTarget  string         `json:"scan_target"`   // URL or path for security scanning (empty = skip)
-	Roles       []string       `json:"roles"`         // allowed roles (empty = all)
+	Source      string         `json:"source"`       // "mcp", "builtin", "plugin"
+	ServerName  string         `json:"server_name"`  // which MCP server owns this (empty for builtins)
+	ScanTarget  string         `json:"scan_target"`  // URL or path for security scanning (empty = skip)
+	Roles       []string       `json:"roles"`        // allowed roles (empty = all)
 }
 
 // AllowedForRole returns true if the tool is available for the given role.

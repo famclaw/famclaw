@@ -153,4 +153,3 @@ func totalTokens(messages []Message, est TokenEstimator) int {
 	}
 	return total
 }
-

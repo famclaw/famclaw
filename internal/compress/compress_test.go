@@ -14,7 +14,7 @@ func TestSimpleEstimator(t *testing.T) {
 	}{
 		{"", 0},
 		{"hi", 1},
-		{"hello world", 3},       // 11 chars / 4 = 2.75 → ceil = 3
+		{"hello world", 3},             // 11 chars / 4 = 2.75 → ceil = 3
 		{strings.Repeat("a", 100), 25}, // 100 / 4 = 25
 		{strings.Repeat("a", 101), 26}, // 101 / 4 = 25.25 → ceil = 26
 	}
@@ -214,7 +214,7 @@ func TestEstimatorMarginDefaults(t *testing.T) {
 		{Role: "user", Content: "d"},
 	}
 	zeroMargin := Compress(msgs, Options{ContextWindow: 1000, EstimatorMargin: -1}) // explicit no margin
-	defaultMargin := Compress(msgs, Options{ContextWindow: 1000})                    // gets 0.15 default
+	defaultMargin := Compress(msgs, Options{ContextWindow: 1000})                   // gets 0.15 default
 	if len(defaultMargin) >= len(zeroMargin) {
 		t.Errorf("default margin should be more aggressive than zero: zero=%d default=%d",
 			len(zeroMargin), len(defaultMargin))
@@ -224,8 +224,8 @@ func TestEstimatorMarginDefaults(t *testing.T) {
 func TestTotalTokens(t *testing.T) {
 	est := &SimpleEstimator{}
 	msgs := []Message{
-		{Role: "system", Content: strings.Repeat("x", 40)},  // 10 + 4 = 14
-		{Role: "user", Content: strings.Repeat("x", 80)},    // 20 + 4 = 24
+		{Role: "system", Content: strings.Repeat("x", 40)}, // 10 + 4 = 14
+		{Role: "user", Content: strings.Repeat("x", 80)},   // 20 + 4 = 24
 	}
 	total := totalTokens(msgs, est)
 	if total != 38 { // 14 + 24

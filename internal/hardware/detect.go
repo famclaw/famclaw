@@ -13,10 +13,10 @@ import (
 
 // HardwareInfo describes the current device's capabilities.
 type HardwareInfo struct {
-	OS               string `json:"os"`                // runtime.GOOS value (linux, darwin, windows, etc.) or "android"
-	Arch             string `json:"arch"`              // arm64 | arm | amd64
+	OS               string `json:"os"`   // runtime.GOOS value (linux, darwin, windows, etc.) or "android"
+	Arch             string `json:"arch"` // arm64 | arm | amd64
 	TotalRAMMB       int    `json:"total_ram_mb"`
-	Model            string `json:"model"`             // "Raspberry Pi 5 Model B" or "Mac14,3" or ""
+	Model            string `json:"model"` // "Raspberry Pi 5 Model B" or "Mac14,3" or ""
 	OllamaFound      bool   `json:"ollama_found"`
 	CanRunLocal      bool   `json:"can_run_local"`     // true if RAM >= 4096 and not Android
 	RecommendedModel string `json:"recommended_model"` // from llm.HardwareRecommendation()

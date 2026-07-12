@@ -1046,3 +1046,12 @@ func (d *DB) SetRoleOverride(ctx context.Context, userName, role, ageGroup, setB
 	}
 	return nil
 }
+
+// DeleteRoleOverride removes the role override for a user.
+func (d *DB) DeleteRoleOverride(ctx context.Context, userName string) error {
+	_, err := d.sql.ExecContext(ctx, `DELETE FROM user_role_overrides WHERE user_name = ?`, userName)
+	if err != nil {
+		return fmt.Errorf("delete role override: %w", err)
+	}
+	return nil
+}
