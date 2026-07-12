@@ -47,7 +47,7 @@ func TestBasicExecution(t *testing.T) {
 	}
 	
 	// Create runtime
-	rt, err := NewRuntime(echoWasm, config)
+	rt, err := NewRuntime(context.Background(), echoWasm, config)
 	if err != nil {
 		t.Fatalf("Failed to create runtime: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestFilesystemDenyByDefault(t *testing.T) {
 	}
 	
 	// Create runtime
-	rt, err := NewRuntime(testWasm, config)
+	rt, err := NewRuntime(context.Background(), testWasm, config)
 	if err != nil {
 		t.Fatalf("Failed to create runtime: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestNoNetworkAccess(t *testing.T) {
 	}
 	
 	// Create runtime
-	rt, err := NewRuntime(testWasm, config)
+	rt, err := NewRuntime(context.Background(), testWasm, config)
 	if err != nil {
 		t.Fatalf("Failed to create runtime: %v", err)
 	}
