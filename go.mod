@@ -13,6 +13,7 @@ require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/mark3labs/mcp-go v0.55.1
 	github.com/playwright-community/playwright-go v0.5700.1
+	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0
