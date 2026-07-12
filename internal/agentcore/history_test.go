@@ -169,8 +169,8 @@ func TestRebuildUserMessage_TrailingNewline(t *testing.T) {
 
 func TestParseSelfSummary(t *testing.T) {
 	cases := []struct {
-		name                       string
-		input                      string
+		name                        string
+		input                       string
 		wantEval, wantMem, wantNext string
 	}{
 		{

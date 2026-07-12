@@ -140,7 +140,6 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 	approvals, _ := r.db.AllApprovalsForOPA()
 
 	// Check for a DB-persisted role/age override that supersedes the config row.
-<<<<<<< HEAD
 	// Build an adjustedUser copy so the override is applied to both policy
 	// evaluation and the downstream agent (which re-runs policy internally
 	// for output-gate, tool-call gate, and parent-auto-apply privilege).
@@ -155,10 +154,6 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 				copied.AgeGroup = ageGroup
 			}
 			adjustedUser = &copied
-		}
-	} else if err != nil {
-		log.Printf("[router] %s: GetRoleOverride error: %v — falling back to config", user.Name, err)
-	}
 		}
 	} else if err != nil {
 		log.Printf("[router] %s: GetRoleOverride error: %v — falling back to config", user.Name, err)

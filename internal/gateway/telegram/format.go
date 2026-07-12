@@ -21,7 +21,7 @@ import (
 // Why pulled placeholders: if we escaped first then converted, the model's
 // **bold** markers would still work — but a markdown `*important*` span
 // surrounding a literal `<` would have its escaped `&lt;` between the
-// markers. That's fine. The problem is code content: `` `<x>` `` must
+// markers. That's fine. The problem is code content: “ `<x>` “ must
 // render the literal `<x>` inside a <code> tag, not be doubly-escaped or
 // mistaken for an HTML tag. Pulling code spans out first preserves them.
 var (

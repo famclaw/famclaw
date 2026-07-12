@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
+	"github.com/gorilla/websocket"
 )
 
 // TestServerResolveUserRoleFromDB verifies that resolveUserRole returns the
@@ -38,8 +38,6 @@ func TestServerResolveUserRoleFromDB(t *testing.T) {
 		t.Fatalf("NewEvaluator: %v", err)
 	}
 
-	clf := classifier.New()
-
 	cfg := &config.Config{
 		Server: config.ServerConfig{
 			Secret:   "test-secret",
@@ -56,14 +54,14 @@ func TestServerResolveUserRoleFromDB(t *testing.T) {
 	}
 
 	identStore := identity.NewStore(db)
-	clf2 := classifier.New()
+	clf := classifier.New()
 
 	s := &Server{
 		cfg:        cfg,
 		db:         db,
 		identStore: identStore,
 		evaluator:  ev,
-		clf:        clf2,
+		clf:        clf,
 		cfgMu:      sync.RWMutex{},
 	}
 	ctx := context.Background()

@@ -531,7 +531,6 @@ func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
 	}
 }
 
-
 func TestHandleGetFamilyState(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
@@ -763,56 +762,56 @@ func TestIsSubagentExcludedTool(t *testing.T) {
 // EvaluateAndApply could filter them.
 func TestStreamedOutputGate(t *testing.T) {
 	tests := []struct {
-		name           string
-		userRole       string
-		userAgeGroup   string
-		llmResponse    string
-		expectBlocked  bool   // output gate blocked (no tokens emitted, safe content)
-		expectRedact   bool   // soft-blocked: tokens emitted but content redacted
-		expectSafeMsg  bool   // blocked: content replaced with safe fallback
-		expectTokens   int    // 0 = blocked, >0 = allowed/soft-blocked (at least one token emitted)
+		name          string
+		userRole      string
+		userAgeGroup  string
+		llmResponse   string
+		expectBlocked bool // output gate blocked (no tokens emitted, safe content)
+		expectRedact  bool // soft-blocked: tokens emitted but content redacted
+		expectSafeMsg bool // blocked: content replaced with safe fallback
+		expectTokens  int  // 0 = blocked, >0 = allowed/soft-blocked (at least one token emitted)
 	}{
 		{
-			name:         "hard-blocked self_harm child",
-			userRole:     "child",
-			userAgeGroup: "age_8_12",
-			llmResponse:  "I don't want to live anymore, I want to suicide",
+			name:          "hard-blocked self_harm child",
+			userRole:      "child",
+			userAgeGroup:  "age_8_12",
+			llmResponse:   "I don't want to live anymore, I want to suicide",
 			expectBlocked: true,
 			expectSafeMsg: true,
 			expectTokens:  0,
 		},
 		{
-			name:         "hard-blocked violence parent",
-			userRole:     "parent",
-			userAgeGroup: "adult",
-			llmResponse:  "Here is how to make a bomb and kill yourself",
+			name:          "hard-blocked violence parent",
+			userRole:      "parent",
+			userAgeGroup:  "adult",
+			llmResponse:   "Here is how to make a bomb and kill yourself",
 			expectBlocked: true,
 			expectSafeMsg: true,
 			expectTokens:  0,
 		},
 		{
-			name:         "hard-blocked extreme_content",
-			userRole:     "child",
-			userAgeGroup: "under_8",
-			llmResponse:  "That involves pornography and explicit content",
+			name:          "hard-blocked extreme_content",
+			userRole:      "child",
+			userAgeGroup:  "under_8",
+			llmResponse:   "That involves pornography and explicit content",
 			expectBlocked: true,
 			expectSafeMsg: true,
 			expectTokens:  0,
 		},
 		{
-			name:         "hard-blocked illegal_harm",
-			userRole:     "child",
-			userAgeGroup: "age_13_17",
-			llmResponse:  "How to steal and how to hack a computer",
+			name:          "hard-blocked illegal_harm",
+			userRole:      "child",
+			userAgeGroup:  "age_13_17",
+			llmResponse:   "How to steal and how to hack a computer",
 			expectBlocked: true,
 			expectSafeMsg: true,
 			expectTokens:  0,
 		},
 		{
-			name:         "allowed_benign_child",
-			userRole:     "child",
-			userAgeGroup: "age_8_12",
-			llmResponse:  "Hello there, how can I help?",
+			name:          "allowed_benign_child",
+			userRole:      "child",
+			userAgeGroup:  "age_8_12",
+			llmResponse:   "Hello there, how can I help?",
 			expectBlocked: false,
 			expectTokens:  1,
 		},
@@ -824,13 +823,13 @@ func TestStreamedOutputGate(t *testing.T) {
 			expectBlocked: false,
 		},
 		{
-			name:         "soft_blocked_child_violence",
-			userRole:     "child",
-			userAgeGroup: "under_8",
-			llmResponse:  "The movie had a lot of violence and death",
+			name:          "soft_blocked_child_violence",
+			userRole:      "child",
+			userAgeGroup:  "under_8",
+			llmResponse:   "The movie had a lot of violence and death",
 			expectBlocked: false,
-			expectRedact: true,
-			expectTokens: 1,
+			expectRedact:  true,
+			expectTokens:  1,
 		},
 		{
 			name:          "allowed_parent_soft_blocked_passes",

@@ -10,11 +10,11 @@ func TestTokenBudget(t *testing.T) {
 		ctxWindow int
 		want      int
 	}{
-		{128000, 0},    // unlimited
-		{32000, 8000},  // ~40 schemas
-		{8000, 1500},   // ~7-8 schemas
-		{4096, 500},    // ~2-3 schemas
-		{2048, 200},    // ~1 schema
+		{128000, 0},   // unlimited
+		{32000, 8000}, // ~40 schemas
+		{8000, 1500},  // ~7-8 schemas
+		{4096, 500},   // ~2-3 schemas
+		{2048, 200},   // ~1 schema
 	}
 	for _, tt := range tests {
 		got := TokenBudget(tt.ctxWindow)

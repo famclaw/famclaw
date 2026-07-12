@@ -38,10 +38,10 @@ func TestScanNotAvailable(t *testing.T) {
 func TestScanOptionsArgs(t *testing.T) {
 	// Verify ScanOptions struct works correctly
 	opts := ScanOptions{
-		Paranoia:         "family",
-		InstalledSHA:     "abc123",
+		Paranoia:          "family",
+		InstalledSHA:      "abc123",
 		InstalledToolHash: "def456",
-		Path:             "subdir",
+		Path:              "subdir",
 	}
 	if opts.Paranoia != "family" {
 		t.Errorf("paranoia = %q", opts.Paranoia)

@@ -234,9 +234,9 @@ func (s *Store) UpsertFact(ctx context.Context, f *Fact) error {
 	// on the conflict-update path, created_at and created_by come from
 	// the original insert, not the input or `now`.
 	var (
-		recurrence              sql.NullString
-		createdAt, updatedAt    int64
-		id                      int64
+		recurrence                                 sql.NullString
+		createdAt, updatedAt                       int64
+		id                                         int64
 		category, subject, label, value, createdBy string
 	)
 	if err := tx.QueryRowContext(ctx,

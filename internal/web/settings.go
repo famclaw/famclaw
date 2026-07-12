@@ -28,11 +28,11 @@ type llmProfileView struct {
 }
 
 type llmSettingsView struct {
-	BaseURL  string                      `json:"base_url"`
-	Model    string                      `json:"model"`
-	APIKey   string                      `json:"api_key,omitempty"`
-	Default  *string                     `json:"default,omitempty"`
-	Profiles *map[string]llmProfileView  `json:"profiles,omitempty"`
+	BaseURL  string                     `json:"base_url"`
+	Model    string                     `json:"model"`
+	APIKey   string                     `json:"api_key,omitempty"`
+	Default  *string                    `json:"default,omitempty"`
+	Profiles *map[string]llmProfileView `json:"profiles,omitempty"`
 }
 
 type userSettingsView struct {
@@ -242,4 +242,3 @@ func (s *Server) NeedsSetup() bool {
 	defer s.cfgMu.RUnlock()
 	return s.cfg.LLM.BaseURL == "" || s.cfg.LLM.Model == ""
 }
-

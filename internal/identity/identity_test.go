@@ -41,7 +41,7 @@ func TestLinkAndResolve(t *testing.T) {
 				t.Fatalf("LinkAccount: %v", err)
 			}
 
-			user, err := s.Resolve(context.Background(),tt.gateway, tt.externalID)
+			user, err := s.Resolve(context.Background(), tt.gateway, tt.externalID)
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)
 			}
@@ -58,7 +58,7 @@ func TestLinkAndResolve(t *testing.T) {
 func TestResolveUnknown(t *testing.T) {
 	s := setupStore(t)
 
-	user, err := s.Resolve(context.Background(),"telegram", "nonexistent")
+	user, err := s.Resolve(context.Background(), "telegram", "nonexistent")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestGatewayNormalization(t *testing.T) {
 
 	s.LinkAccount("alice", "TELEGRAM", "12345")
 
-	user, err := s.Resolve(context.Background(),"telegram", "12345")
+	user, err := s.Resolve(context.Background(), "telegram", "12345")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestUniquenessConstraint(t *testing.T) {
 	// Re-link same external_id to bob — should update
 	s.LinkAccount("bob", "telegram", "12345")
 
-	user, err := s.Resolve(context.Background(),"telegram", "12345")
+	user, err := s.Resolve(context.Background(), "telegram", "12345")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +122,8 @@ func TestSameUserMultipleGateways(t *testing.T) {
 	s.LinkAccount("alice", "telegram", "111")
 	s.LinkAccount("alice", "discord", "222")
 
-	u1, _ := s.Resolve(context.Background(),"telegram", "111")
-	u2, _ := s.Resolve(context.Background(),"discord", "222")
+	u1, _ := s.Resolve(context.Background(), "telegram", "111")
+	u2, _ := s.Resolve(context.Background(), "discord", "222")
 
 	if u1 == nil || u1.Name != "alice" {
 		t.Error("telegram should resolve to alice")
@@ -139,7 +139,7 @@ func TestUnlink(t *testing.T) {
 	s.LinkAccount("alice", "telegram", "12345")
 	s.Unlink("telegram", "12345")
 
-	user, err := s.Resolve(context.Background(),"telegram", "12345")
+	user, err := s.Resolve(context.Background(), "telegram", "12345")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestConcurrentResolve(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			user, err := s.Resolve(context.Background(),"telegram", "12345")
+			user, err := s.Resolve(context.Background(), "telegram", "12345")
 			if err != nil {
 				t.Errorf("concurrent Resolve error: %v", err)
 			}
@@ -344,7 +344,7 @@ func TestStore_LinkAndClearUnknown(t *testing.T) {
 				t.Fatalf("LinkAndClearUnknown: %v", err)
 			}
 
-			user, err := s.Resolve(context.Background(),tc.linkGW, tc.linkExtID)
+			user, err := s.Resolve(context.Background(), tc.linkGW, tc.linkExtID)
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)
 			}
