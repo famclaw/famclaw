@@ -22,8 +22,8 @@ type redactFn func(*url.URL)
 
 // webhookRedactors maps known webhook hosts to their redaction functions.
 var webhookRedactors = map[string]redactFn{
-	"hooks.slack.com": redactSlack,
-	"discord.com":     redactDiscord,
+	"hooks.slack.com":  redactSlack,
+	"discord.com":      redactDiscord,
 	"api.telegram.org": redactTelegram,
 }
 

@@ -10,40 +10,40 @@ import (
 
 func TestRedactWebhookURLInError(t *testing.T) {
 	tests := []struct {
-		name    string
-		err     error
-		want    string
-		redact  bool
+		name   string
+		err    error
+		want   string
+		redact bool
 	}{
 		{
 			name:   "nil error",
-			err:     nil,
-			want:    "",
-			redact:  false,
+			err:    nil,
+			want:   "",
+			redact: false,
 		},
 		{
 			name:   "plain error without tokens",
-			err:     errors.New("some other error"),
-			want:    "some other error",
-			redact:  false,
+			err:    errors.New("some other error"),
+			want:   "some other error",
+			redact: false,
 		},
 		{
 			name:   "slack webhook URL with service token",
-			err:     fmt.Errorf("posting to slack: Post \"%s\": connection refused", slackTestURL()),
-			want:    "posting to slack: Post \"" + slackRedactedURL() + "\": connection refused",
-			redact:  true,
+			err:    fmt.Errorf("posting to slack: Post \"%s\": connection refused", slackTestURL()),
+			want:   "posting to slack: Post \"" + slackRedactedURL() + "\": connection refused",
+			redact: true,
 		},
 		{
-			name: "discord webhook URL with token",
-			err:     fmt.Errorf("posting to discord: Post \"https://discord.com/api/webhooks/123456789/FAKE_DISCORD_TOKEN\": dial tcp: connection refused"),
-			want:    "posting to discord: Post \"https://discord.com/api/webhooks/123456789/<REDACTED>\": dial tcp: connection refused",
-			redact:  true,
+			name:   "discord webhook URL with token",
+			err:    fmt.Errorf("posting to discord: Post \"https://discord.com/api/webhooks/123456789/FAKE_DISCORD_TOKEN\": dial tcp: connection refused"),
+			want:   "posting to discord: Post \"https://discord.com/api/webhooks/123456789/<REDACTED>\": dial tcp: connection refused",
+			redact: true,
 		},
 		{
 			name:   "ntfy Bearer token in error",
-			err:     fmt.Errorf("posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret"),
-			want:    "posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer <REDACTED>",
-			redact:  true,
+			err:    fmt.Errorf("posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret"),
+			want:   "posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer <REDACTED>",
+			redact: true,
 		},
 	}
 
