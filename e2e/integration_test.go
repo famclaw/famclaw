@@ -115,6 +115,8 @@ func TestIntegration_UnknownUser_Onboarding(t *testing.T) {
 		Gateway:    "telegram",
 		ExternalID: "unknown-999",
 		Text:       "hello",
+		GroupID:    "", // Direct message
+		IsGroup:    false,
 	})
 
 	if reply.PolicyAction != "onboarding" {
@@ -134,6 +136,8 @@ func TestIntegration_Child_AllowedTopic_LLMCalled(t *testing.T) {
 		Gateway:    "telegram",
 		ExternalID: "emma-tg",
 		Text:       "help me with math homework",
+		GroupID:    "", // Direct message
+		IsGroup:    false,
 	})
 
 	if reply.PolicyAction != "allow" {
@@ -173,6 +177,8 @@ func TestIntegration_Child_BlockedTopic_LLMNeverCalled(t *testing.T) {
 				Gateway:    "telegram",
 				ExternalID: tt.externalID,
 				Text:       tt.text,
+				GroupID:    "", // Direct message
+				IsGroup:    false,
 			})
 			if reply.PolicyAction != "block" {
 				t.Errorf("should be blocked, got %q: %s", reply.PolicyAction, reply.Text)
@@ -205,6 +211,8 @@ func TestIntegration_Child_ApprovalTopic_LLMNeverCalled(t *testing.T) {
 				Gateway:    "telegram",
 				ExternalID: tt.externalID,
 				Text:       tt.text,
+				GroupID:    "", // Direct message
+				IsGroup:    false,
 			})
 			if reply.PolicyAction != "request_approval" {
 				t.Errorf("should request approval, got %q: %s", reply.PolicyAction, reply.Text)
@@ -237,6 +245,8 @@ func TestIntegration_Parent_AnyTopic_LLMCalled(t *testing.T) {
 				Gateway:    "telegram",
 				ExternalID: "parent-tg",
 				Text:       tt.text,
+				GroupID:    "", // Direct message
+				IsGroup:    false,
 			})
 			if reply.PolicyAction != "allow" {
 				t.Errorf("parent should always be allowed, got %q: %s", reply.PolicyAction, reply.Text)
@@ -272,9 +282,13 @@ func TestIntegration_SamePolicy_AcrossGateways(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			replyTG := panicRouter.Handle(context.Background(), gateway.Message{
 				Gateway: "telegram", ExternalID: tt.tgID, Text: tt.text,
+				GroupID: "", // Direct message
+				IsGroup: false,
 			})
 			replyDC := panicRouter.Handle(context.Background(), gateway.Message{
 				Gateway: "discord", ExternalID: tt.dcID, Text: tt.text,
+				GroupID: "", // Direct message
+				IsGroup: false,
 			})
 
 			if replyTG.PolicyAction != replyDC.PolicyAction {
@@ -301,6 +315,8 @@ func TestIntegration_Parent_AllowedViaAllGateways(t *testing.T) {
 				Gateway:    gw.name,
 				ExternalID: gw.id,
 				Text:       "explain quantum physics",
+				GroupID:    "", // Direct message
+				IsGroup:    false,
 			})
 			if reply.PolicyAction != "allow" {
 				t.Errorf("parent via %s should be allowed, got %q", gw.name, reply.PolicyAction)

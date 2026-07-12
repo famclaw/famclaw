@@ -51,6 +51,8 @@ func TestTelegram_UnknownAccount_AutoLink(t *testing.T) {
 		ExternalID:  "tg-test-9999",
 		DisplayName: "Alpha",
 		Text:        "hi",
+		GroupID:     "", // Empty for direct message
+		IsGroup:     false,
 	})
 
 	if reply.PolicyAction != "onboarding" {

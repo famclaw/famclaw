@@ -45,6 +45,12 @@ func TestRedactWebhookURLInError(t *testing.T) {
 			want:   "posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer <REDACTED>",
 			redact: true,
 		},
+		{
+			name:   "ntfy Bearer token with slash in error",
+			err:    fmt.Errorf("posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer abc/def+ghi=jkl"),
+			want:   "posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer <REDACTED>",
+			redact: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -62,7 +68,7 @@ func TestRedactWebhookURLInError(t *testing.T) {
 			}
 			if tt.redact && strings.Contains(gotMsg, "REDACTED") {
 				// Ensure the original token is gone
-				if strings.Contains(gotMsg, "XXXXXXXX") || strings.Contains(gotMsg, "abcdefg_token") || strings.Contains(gotMsg, "FAKE_SLACK_TOKEN") || strings.Contains(gotMsg, "FAKE_DISCORD_TOKEN") || strings.Contains(gotMsg, "FAKE_BEARER_TOKEN") || strings.Contains(gotMsg, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") {
+				if strings.Contains(gotMsg, "XXXXXXXX") || strings.Contains(gotMsg, "abcdefg_token") || strings.Contains(gotMsg, "FAKE_SLACK_TOKEN") || strings.Contains(gotMsg, "FAKE_DISCORD_TOKEN") || strings.Contains(gotMsg, "FAKE_BEARER_TOKEN") || strings.Contains(gotMsg, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") || strings.Contains(gotMsg, "abc/def+ghi=jkl") {
 					t.Errorf("original token still present in redacted message: %s", gotMsg)
 				}
 			}

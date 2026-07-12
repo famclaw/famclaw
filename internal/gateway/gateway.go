@@ -11,6 +11,8 @@ type Message struct {
 	ExternalID  string // platform-specific user ID
 	Text        string
 	DisplayName string // from platform profile (best effort)
+	GroupID     string // platform-specific group/channel ID (empty for direct messages)
+	IsGroup     bool   // true if message is from a group/channel
 }
 
 // Reply is an outbound response to send back through the gateway.

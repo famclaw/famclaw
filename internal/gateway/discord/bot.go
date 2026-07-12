@@ -44,11 +44,18 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			displayName = m.Author.Username
 		}
 
+		isGroup := m.GuildID != ""
+		groupID := ""
+		if isGroup {
+			groupID = m.ChannelID
+		}
 		msg := gateway.Message{
 			Gateway:     "discord",
 			ExternalID:  m.Author.ID,
 			Text:        m.Content,
 			DisplayName: displayName,
+			GroupID:     groupID,
+			IsGroup:     isGroup,
 		}
 
 		// Typing indicator. Discord's typing state expires after ~10s, so
