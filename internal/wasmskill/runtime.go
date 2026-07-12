@@ -2,6 +2,8 @@ package wasmskill
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 
@@ -41,7 +43,7 @@ type Config struct {
 }
 
 // NewRuntime creates a new WASM skill runtime with the given WASM bytecode and config.
-func NewRuntime(wasmModule []byte, config *Config) (*Runtime, error) {
+func NewRuntime(ctx context.Context, wasmModule []byte, config *Config) (*Runtime, error) {
 	if config == nil {
 		config = &Config{}
 	}
@@ -63,12 +65,12 @@ func NewRuntime(wasmModule []byte, config *Config) (*Runtime, error) {
 	}
 
 	// Create wazero runtime
-	runtime := wazero.NewRuntime(context.Background())
+	runtime := wazero.NewRuntime(ctx)
 
 	// Instantiate WASI (this makes WASI functions available to modules)
-	if _, err := wasi_snapshot_preview1.Instantiate(context.Background(), runtime); err != nil {
-		runtime.Close(context.Background())
-		return nil, err
+	if _, err := wasi_snapshot_preview1.Instantiate(ctx, runtime); err != nil {
+		runtime.Close(ctx)
+		return nil, fmt.Errorf("instantiating WASI: %w", err)
 	}
 
 	// Create module configuration
@@ -90,17 +92,16 @@ func NewRuntime(wasmModule []byte, config *Config) (*Runtime, error) {
 	// Add the sandbox directory as a preopened directory
 	// This is the ONLY directory the WASM module can access
 	if config.SandboxRoot != "" {
-		// Note: wazero.ModuleConfig doesn't have WithPreopenedDir method
-		// We need to use WithFSConfig or another approach
-		// For now, we'll leave this as a TODO and focus on the core functionality
-		// TODO: Implement proper sandbox directory preopening
+		moduleConfig = moduleConfig.WithFSConfig(
+			wazero.NewFSConfig().WithDirMount(config.SandboxRoot, "/"),
+		)
 	}
 
 	// Instantiate the module with the module configuration
-	module, err := runtime.InstantiateWithConfig(context.Background(), wasmModule, moduleConfig)
+	module, err := runtime.InstantiateWithConfig(ctx, wasmModule, moduleConfig)
 	if err != nil {
-		runtime.Close(context.Background())
-		return nil, err
+		runtime.Close(ctx)
+		return nil, fmt.Errorf("instantiating module: %w", err)
 	}
 
 	r.runtime = runtime
@@ -108,10 +109,9 @@ func NewRuntime(wasmModule []byte, config *Config) (*Runtime, error) {
 
 	// Set up close function
 	r.closeFunc = func(ctx context.Context) error {
-		if err := r.module.Close(ctx); err != nil {
-			return err
-		}
-		return r.runtime.Close(ctx)
+		moduleErr := r.module.Close(ctx)
+		runtimeErr := r.runtime.Close(ctx)
+		return errors.Join(moduleErr, runtimeErr)
 	}
 
 	return r, nil
