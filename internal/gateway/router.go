@@ -159,8 +159,6 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		log.Printf("[router] %s: GetRoleOverride error: %v — falling back to config", user.Name, err)
 	}
 
-	
-
 	decision, err := r.evaluator.Evaluate(ctx, policy.Input{
 		User: policy.UserInput{
 			Role:     adjustedUser.Role,

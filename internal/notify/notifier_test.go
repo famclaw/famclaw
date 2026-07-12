@@ -198,9 +198,9 @@ func TestMultiNotifierLen(t *testing.T) {
 func TestRedactWebhookURLInErrorLogPath(t *testing.T) {
 	// Test cases with tokens that should be redacted
 	tests := []struct {
-		name    string
-		err     error
-		want    string
+		name string
+		err  error
+		want string
 	}{
 		{
 			name: "Telegram bot token in URL",
@@ -238,22 +238,22 @@ func TestRedactWebhookURLInErrorLogPath(t *testing.T) {
 			if redactedErr == nil {
 				t.Fatal("expected non-nil error from redaction")
 			}
-			
+
 			// Format as it would appear in the log
 			logged := fmt.Sprintf("[notify] channel error: %v", redactedErr)
-			
+
 			if logged != tt.want {
 				t.Errorf("TestRedactWebhookURLInErrorLogPath(%v) = %q, want %q", tt.err, logged, tt.want)
 			}
-			
-// Additionally verify that the original token is not present in the logged output
-		if strings.Contains(logged, "123456:ABC") ||
-			strings.Contains(logged, "abcdefg_token_here_12345") ||
-			strings.Contains(logged, "FAKE_SLACK_TOKEN") ||
-			strings.Contains(logged, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") ||
-			strings.Contains(logged, "FAKE_DISCORD_BOT_TOKEN") {
-			t.Errorf("original token still present in logged output: %s", logged)
-		}
+
+			// Additionally verify that the original token is not present in the logged output
+			if strings.Contains(logged, "123456:ABC") ||
+				strings.Contains(logged, "abcdefg_token_here_12345") ||
+				strings.Contains(logged, "FAKE_SLACK_TOKEN") ||
+				strings.Contains(logged, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") ||
+				strings.Contains(logged, "FAKE_DISCORD_BOT_TOKEN") {
+				t.Errorf("original token still present in logged output: %s", logged)
+			}
 		})
 	}
 }
