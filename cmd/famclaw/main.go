@@ -232,20 +232,14 @@ reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallCon
 		Paranoia:     cfg.SecCheck.Paranoia,
 	}, cfg.Skills.RoleEnablement)
 	var enabledSkills []*skillbridge.Skill
-	if skills, err := reg.ListForRole(user.Role); err == nil {
-		enabledSkills = skills
-	} else {
-		// Fallback to global enabled skills if role-based lookup fails.
-		if skills, err := reg.List(); err == nil {
-			for _, sk := range skills {
-				if reg.IsEnabled(sk.Name) {
-					enabledSkills = append(enabledSkills, sk)
-				}
+	// Fallback to global enabled skills (no user context at startup).
+	if skills, err := reg.List(); err == nil {
+		for _, sk := range skills {
+			if reg.IsEnabled(sk.Name) {
+				enabledSkills = append(enabledSkills, sk)
+				log.Printf("Skill: %s v%s", sk.Name, sk.Version)
 			}
 		}
-	}
-	if len(enabledSkills) > 0 {
-		log.Printf("Skills: %d loaded for prompt injection", len(enabledSkills))
 	}
 
 	// Subagent scheduler for spawn_agent dispatching (max 2 concurrent)
