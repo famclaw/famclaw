@@ -36,6 +36,13 @@ type ToolsConfig struct {
 	FileRead FileReadConfig `yaml:"file_read,omitempty"`
 	FileList FileListConfig `yaml:"file_list,omitempty"`
 	SandboxRoot string `yaml:"sandbox_root,omitempty"`
+	Sandbox   SandboxConfig   `yaml:"sandbox,omitempty"`
+}
+
+// SandboxConfig controls the sandboxing of MCP servers.
+type SandboxConfig struct {
+	Enabled         bool  `yaml:"enabled"`          // default true
+	AllowUnconfined bool  `yaml:"allow_unconfined"` // default false (fail-closed)
 }
 
 // BrowserConfig controls the built-in browser_* tools (real browser nav via
@@ -415,6 +422,10 @@ func applyDefaults(c *Config) {
 	}
 	if len(c.Tools.WebSearch.AllowedRoles) == 0 {
 		c.Tools.WebSearch.AllowedRoles = []string{"parent"}
+	}
+	// sandbox defaults
+	if c.Tools.Sandbox.Enabled == false { // zero value is false, so we explicitly check for zero
+		c.Tools.Sandbox.Enabled = true
 	}
 	// browser defaults
 	if c.Tools.Browser.IdleSec == 0 {

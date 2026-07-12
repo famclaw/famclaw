@@ -18,6 +18,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/elastic/go-seccomp-bpf"
+	landlock "github.com/landlock-lsm/go-landlock/landlock"
+	landlocksyscall "github.com/landlock-lsm/go-landlock/landlock/syscall"
+
 	"github.com/famclaw/famclaw/internal/agent"
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/browser"
@@ -47,10 +51,118 @@ import (
 	"github.com/famclaw/famclaw/internal/filetool"
 )
 
+// applySandboxRestrictions applies Landlock filesystem restrictions and seccomp network restrictions
+func applySandboxRestrictions(sandboxRoot string) error {
+	// Apply Landlock filesystem restrictions
+	if err := applyLandlockRules(sandboxRoot); err != nil {
+		return fmt.Errorf("failed to apply Landlock rules: %w", err)
+	}
+
+	// Apply seccomp network restrictions
+	if err := applySeccompNetworkFilter(); err != nil {
+		return fmt.Errorf("failed to apply seccomp filter: %w", err)
+	}
+
+	return nil
+}
+
+// applyLandlockRules creates and applies a Landlock ruleset that restricts filesystem access
+// to the specified sandbox root (read/write within, nothing outside)
+// Also allows execution from standard system paths
+func applyLandlockRules(sandboxRoot string) error {
+	// Use Landlock V9 with BestEffort for graceful degradation
+	// Allow read/write access to sandbox root only
+	// Allow execution from standard system paths
+	log.Printf("Applying Landlock rules: RWDirs(%s), RODirs(/bin, /usr/bin)", sandboxRoot)
+	err := landlock.V9.BestEffort().
+		RestrictPaths(
+			landlock.RWDirs(sandboxRoot),
+			landlock.RODirs("/bin", "/usr/bin"),
+		)
+	if err != nil {
+		log.Printf("Landlock restriction error: %v", err)
+		return fmt.Errorf("failed to apply Landlock restrictions: %w", err)
+	}
+	log.Printf("Landlock rules applied successfully")
+	return nil
+}
+
+// applySeccompNetworkFilter applies a seccomp-BPF filter to deny network-related syscalls
+func applySeccompNetworkFilter() error {
+	// Create a seccomp filter that denies network syscalls
+	filter := seccomp.Filter{
+		NoNewPrivs: true,
+		Flag:       seccomp.FilterFlagTSync,
+		Policy: seccomp.Policy{
+			DefaultAction: seccomp.ActionAllow,
+			Syscalls: []seccomp.SyscallGroup{
+				{
+					Action: seccomp.ActionErrno,
+					Names: []string{
+						"socket", "socketpair", "bind", "listen", "accept", "accept4",
+						"connect", "getsockname", "getpeername", "setsockopt", "getsockopt",
+						"sendto", "recvfrom", "sendmsg", "recvmsg",
+					},
+				},
+			},
+		},
+	}
+
+	// Load and apply the filter
+	if err := seccomp.LoadFilter(filter); err != nil {
+		return fmt.Errorf("failed to load seccomp filter: %w", err)
+	}
+	
+	return nil
+}
+
+// checkLandlockSupport returns true if Landlock is supported on the current system
+func checkLandlockSupport() bool {
+	// Try to get the Landlock ABI version - returns error if not supported
+	_, err := landlocksyscall.LandlockGetABIVersion()
+	return err == nil
+}
+
+// checkSeccompSupport returns true if seccomp is supported on the current system
+func checkSeccompSupport() bool {
+	return seccomp.Supported()
+}
+
 var Version = "dev"
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+	// Sandbox launcher mode - detects if we're running as a sandboxed MCP server
+	if len(os.Args) >= 3 && os.Args[1] == "-sandbox-launcher" && os.Args[2] == "--sandbox-root" {
+		if len(os.Args) < 6 || os.Args[4] != "--" {
+			log.Fatalf("Invalid sandbox launcher arguments. Expected: -sandbox-launcher --sandbox-root <root> -- <command> <args...>")
+		}
+		sandboxRoot := os.Args[3]
+		command := os.Args[5]
+		args := os.Args[6:]
+
+		log.Printf("Sandbox launcher: applying restrictions for root %s, executing %s %v", sandboxRoot, command, args)
+		log.Printf("Sandbox launcher: command=%q, args=%q", command, args)
+		log.Printf("Sandbox launcher: os.Args=%v", os.Args)
+
+		// Apply Landlock filesystem restrictions
+		if err := applySandboxRestrictions(sandboxRoot); err != nil {
+			log.Fatalf("Failed to apply sandbox restrictions: %v", err)
+		}
+		log.Printf("Sandbox launcher: restrictions applied successfully")
+
+		// Execute the real MCP server command
+		// Construct full argv for the new process: [command, arg1, arg2, ...]
+		var argv []string
+		argv = append(argv, command)
+		argv = append(argv, args...)
+		log.Printf("Sandbox launcher: about to execute %s with argv %v", command, argv)
+		if err := syscall.Exec(command, argv, os.Environ()); err != nil {
+			log.Fatalf("Failed to execute %s: %v", command, err)
+		}
+		// syscall.Exec only returns on error
+	}
 
 	// Dispatch subcommands before flag parsing
 	if len(os.Args) >= 2 && os.Args[1] == "skill" {
@@ -610,3 +722,5 @@ func parseTTLByRole(in map[string]string) map[string]time.Duration {
 	}
 	return out
 }
+
+

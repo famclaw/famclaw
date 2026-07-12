@@ -12,12 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/elastic/go-seccomp-bpf"
+	syscall "github.com/landlock-lsm/go-landlock/landlock/syscall"
+
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/famclaw/famclaw/internal/config"
-)
+	"github.com/famclaw/famclaw/internal/config")
 
 // Client wraps an mcp-go client for any transport (stdio, HTTP, SSE).
 type Client struct {
@@ -28,7 +30,19 @@ type Client struct {
 	env           map[string]string // per-skill credential env vars
 	inner         client.MCPClient
 	tools         []mcp.Tool
-	closed        bool
+closed        bool
+}
+
+// checkLandlockSupport returns true if Landlock is supported on the current system
+func checkLandlockSupport() bool {
+	// Try to get the Landlock ABI version - returns error if not supported
+	_, err := syscall.LandlockGetABIVersion()
+	return err == nil
+}
+
+// checkSeccompSupport returns true if seccomp is supported on the current system
+func checkSeccompSupport() bool {
+	return seccomp.Supported()
 }
 
 // NewTransportClient creates an MCP client from config.
@@ -61,7 +75,7 @@ func (c *Client) Start(ctx context.Context) error {
 	var inner client.MCPClient
 	var err error
 
-	switch c.transportType {
+switch c.transportType {
 	case "stdio":
 		// Build a minimal environment: base allowlist + skill-declared vars +
 		// per-skill credentials.  Never passes os.Environ() — a skill inherits
@@ -70,12 +84,43 @@ func (c *Client) Start(ctx context.Context) error {
 		allowlist := buildAllowlist(c.env)
 		var opts []transport.StdioOption
 		if c.SandboxRoot != "" {
+			// For now, we'll use the sandbox launcher if available, falling back to the original approach
+			// TODO: Implement proper config-based enabling and fail-closed logic
+			
+// Check if kernel supports required sandboxing features
+		landlockSupported := checkLandlockSupport()
+		seccompSupported := checkSeccompSupport()
+	
+		if landlockSupported && seccompSupported {
+			// Use the sandbox launcher to apply Landlock+seccomp restrictions
+			opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
+				launcherArgs := []string{
+					"-sandbox-launcher",
+					"--sandbox-root", c.SandboxRoot,
+					"--",
+					command,
+				}
+				launcherArgs = append(launcherArgs, args...)
+				
+				cmd := exec.CommandContext(ctx, os.Args[0], launcherArgs...)
+				// Build environment: base allowlist + skill-declared vars + per-skill credentials
+				cmd.Env = env
+				return cmd, nil
+			}))
+		} else {
+			// Kernel lacks required sandboxing support - fall back to original approach
+			log.Printf("[mcp] WARNING: Kernel lacks required sandboxing support (landlock: %v, seccomp: %v). Falling back to non-sandboxed execution!", 
+				landlockSupported, seccompSupported)
+			
+			// Fall back to original approach: just set the directory
 			opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 				cmd := exec.CommandContext(ctx, command, args...)
+				// Build environment: base allowlist + skill-declared vars + per-skill credentials
 				cmd.Env = env
 				cmd.Dir = c.SandboxRoot
 				return cmd, nil
 			}))
+		}
 		}
 		inner, err = client.NewStdioMCPClientWithOptions(c.cfg.Command, allowlist, c.cfg.Args, opts...)
 	case "http":
