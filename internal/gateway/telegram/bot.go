@@ -69,11 +69,14 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				displayName = u.Message.From.Username
 			}
 
+			isGroup := u.Message.Chat.Type == "group" || u.Message.Chat.Type == "supergroup"
 			msg := gateway.Message{
 				Gateway:     "telegram",
 				ExternalID:  strconv.FormatInt(u.Message.From.ID, 10),
 				Text:        u.Message.Text,
 				DisplayName: displayName,
+				GroupID:     strconv.FormatInt(u.Message.Chat.ID, 10),
+				IsGroup:     isGroup,
 			}
 
 			// Typing indicator. Telegram's chat action expires after ~5s,
@@ -158,7 +161,8 @@ type tgMessage struct {
 }
 
 type tgChat struct {
-	ID int64 `json:"id"`
+	ID   int64  `json:"id"`
+	Type string `json:"type"` // private, group, supergroup, channel
 }
 
 type tgUser struct {

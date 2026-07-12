@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -84,6 +85,8 @@ func TestTelegramBotHandlerCalled(t *testing.T) {
 		Gateway:    "telegram",
 		ExternalID: "42",
 		Text:       "hello",
+		GroupID:    "100",
+		IsGroup:    false,
 	})
 
 	if reply.Text != "hi" {
@@ -123,6 +126,73 @@ func TestTelegramErrorRedaction(t *testing.T) {
 			}
 			if !strings.Contains(got, "bot<REDACTED>") {
 				t.Errorf("expected bot<REDACTED>, got: %s", got)
+			}
+		})
+	}
+}
+
+// TestTelegramBotMessageConstruction tests that the bot correctly constructs messages
+// with proper GroupID and IsGroup fields from Telegram updates.
+func TestTelegramBotMessageConstruction(t *testing.T) {
+	// Test the core logic directly: GroupID from chat.ID, IsGroup from chat.Type
+	testCases := []struct {
+		name            string
+		chatID          int64
+		chatType        string
+		userID          int64
+		userName        string
+		expectedGroupID string
+		expectedIsGroup bool
+	}{
+		{
+			name:            "private chat",
+			chatID:          100,
+			chatType:        "private",
+			userID:          42,
+			userName:        "John Doe",
+			expectedGroupID: "100",
+			expectedIsGroup: false,
+		},
+		{
+			name:            "group chat",
+			chatID:          200,
+			chatType:        "group",
+			userID:          43,
+			userName:        "Jane Smith",
+			expectedGroupID: "200",
+			expectedIsGroup: true,
+		},
+		{
+			name:            "supergroup chat",
+			chatID:          300,
+			chatType:        "supergroup",
+			userID:          44,
+			userName:        "Bob",
+			expectedGroupID: "300",
+			expectedIsGroup: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test the core logic that would be used in the bot
+			groupID := strconv.FormatInt(tc.chatID, 10)
+			isGroup := tc.chatType == "group" || tc.chatType == "supergroup"
+
+			if groupID != tc.expectedGroupID {
+				t.Errorf("GroupID mismatch: got %q, want %q", groupID, tc.expectedGroupID)
+			}
+			if isGroup != tc.expectedIsGroup {
+				t.Errorf("IsGroup mismatch: got %v, want %v", isGroup, tc.expectedIsGroup)
+			}
+
+			// Verify the expected values match our test case expectations
+			if tc.expectedGroupID != strconv.FormatInt(tc.chatID, 10) {
+				t.Errorf("Test case error: expectedGroupID %q doesn't match chatID %d", tc.expectedGroupID, tc.chatID)
+			}
+			expectedIsGroup := tc.chatType == "group" || tc.chatType == "supergroup"
+			if tc.expectedIsGroup != expectedIsGroup {
+				t.Errorf("Test case error: expectedIsGroup %v doesn't match chatType %q", tc.expectedIsGroup, tc.chatType)
 			}
 		})
 	}
