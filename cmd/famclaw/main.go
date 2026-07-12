@@ -315,6 +315,12 @@ func main() {
 		log.Fatalf("Sandbox root must not be the root directory")
 	}
 	sandboxRoot = absRoot
+	
+	// Validate that the sandbox root is not a parent of itself
+	// This ensures we properly validate the path and avoid traversal issues
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Configuration validation failed: %v", err)
+	}
 	mcpPool := mcp.NewPool(sandboxRoot)
 	if len(cfg.Skills.MCPServers) > 0 {
 		mcpPool.RegisterFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
