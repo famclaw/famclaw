@@ -77,7 +77,7 @@ func setupRouter(t *testing.T, chatFn ChatFunc) (*Router, *identity.Store) {
 	identStore := identity.NewStore(db)
 	clf := classifier.New()
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
-	reg := skillbridge.NewRegistry(t.TempDir(), nil, skillbridge.InstallConfig{})
+	reg := skillbridge.NewRegistry(t.TempDir(), nil, skillbridge.InstallConfig{}, nil)
 
 	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg)
 	return router, identStore
@@ -961,7 +961,7 @@ func TestHandleSkillCommand(t *testing.T) {
 	clf := classifier.New()
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
 	skillTmpDir := t.TempDir()
-	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{})
+	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{}, nil)
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
 		return "stub", nil
 	}
@@ -1228,7 +1228,7 @@ func TestHandleSkillCommandInstallEnableDisable(t *testing.T) {
 	clf := classifier.New()
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
 	skillTmpDir := t.TempDir()
-	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{})
+	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{}, nil)
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
 		return "stub", nil
 	}
@@ -1350,7 +1350,7 @@ func TestHandleSkillCommandEmptyList(t *testing.T) {
 	clf := classifier.New()
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
 	skillTmpDir := t.TempDir()
-	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{})
+	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{}, nil)
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
 		return "stub", nil
 	}

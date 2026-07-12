@@ -225,18 +225,22 @@ func main() {
 	}
 
 	// Skills loaded for prompt injection (independent of MCP)
-	reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallConfig{
+reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallConfig{
 		Enabled:      cfg.SecCheck.Enabled,
 		AutoSecCheck: cfg.SecCheck.AutoSecCheck,
 		BlockOnFail:  cfg.SecCheck.BlockOnFail,
 		Paranoia:     cfg.SecCheck.Paranoia,
-	})
+	}, cfg.Skills.RoleEnablement)
 	var enabledSkills []*skillbridge.Skill
-	if skills, err := reg.List(); err == nil {
-		for _, sk := range skills {
-			if reg.IsEnabled(sk.Name) {
-				enabledSkills = append(enabledSkills, sk)
-				log.Printf("Skill: %s v%s", sk.Name, sk.Version)
+	if skills, err := reg.ListForRole(user.Role); err == nil {
+		enabledSkills = skills
+	} else {
+		// Fallback to global enabled skills if role-based lookup fails.
+		if skills, err := reg.List(); err == nil {
+			for _, sk := range skills {
+				if reg.IsEnabled(sk.Name) {
+					enabledSkills = append(enabledSkills, sk)
+				}
 			}
 		}
 	}

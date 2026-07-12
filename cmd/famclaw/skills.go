@@ -14,7 +14,7 @@ import (
 
 // noScanRegistry creates a registry with scanning disabled (for list/remove/enable/disable).
 func noScanRegistry(dir string) *skillbridge.Registry {
-	return skillbridge.NewRegistry(dir, nil, skillbridge.InstallConfig{})
+	return skillbridge.NewRegistry(dir, nil, skillbridge.InstallConfig{}, nil)
 }
 
 func runSkillCommand(args []string) {
@@ -94,7 +94,7 @@ func skillInstall(dir, nameOrPath string) {
 		scanner = honeybadger.New()
 	}
 
-	reg := skillbridge.NewRegistry(dir, scanner, installCfg)
+	reg := skillbridge.NewRegistry(dir, scanner, installCfg, nil)
 	skill, err := reg.Install(context.Background(), nameOrPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "install failed: %v\n", err)

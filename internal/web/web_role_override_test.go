@@ -234,7 +234,7 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 	}()
 
 	// Helper to wait for a message of a given type (text) and optionally check its content.
-	waitForMessage := func(expectedType string, timeout time.Duration) (*WsMessage, error) {
+	waitForMessage := func(expectedType string, timeout time.Duration) (*wsMessage, error) {
 		ticker := time.NewTicker(timeout)
 		defer ticker.Stop()
 		for {
@@ -249,7 +249,7 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 				if msg.msgType != websocket.TextMessage {
 					continue
 				}
-				var wm WsMessage
+				var wm wsMessage
 				if err := json.Unmarshal(msg.data, &wm); err != nil {
 					continue
 				}
@@ -274,7 +274,7 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 	defer db.SetRoleOverride(ctx, "emma", "", "", "parent")
 
 	// Step 2: Send a chat message from emma and expect it to be blocked (because under_8 cannot use social_media).
-	chatMsg := WsMessage{
+	chatMsg := wsMessage{
 		Type:    "chat",
 		Payload: []byte(`{"text":"can I use instagram and tiktok"}`),
 	}
