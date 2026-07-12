@@ -150,7 +150,7 @@ func TestTelegramBotMessageConstruction(t *testing.T) {
 			chatType:        "private",
 			userID:          42,
 			userName:        "John Doe",
-			expectedGroupID: "100",
+			expectedGroupID: "", // Private chat has no group ID
 			expectedIsGroup: false,
 		},
 		{
@@ -171,13 +171,25 @@ func TestTelegramBotMessageConstruction(t *testing.T) {
 			expectedGroupID: "300",
 			expectedIsGroup: true,
 		},
+		{
+			name:            "channel",
+			chatID:          400,
+			chatType:        "channel",
+			userID:          45,
+			userName:        "Channel Admin",
+			expectedGroupID: "400",
+			expectedIsGroup: true, // Channel is a group
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Test the core logic that would be used in the bot
-			groupID := strconv.FormatInt(tc.chatID, 10)
-			isGroup := tc.chatType == "group" || tc.chatType == "supergroup"
+			groupID := ""
+			isGroup := tc.chatType == "group" || tc.chatType == "supergroup" || tc.chatType == "channel"
+			if isGroup {
+				groupID = strconv.FormatInt(tc.chatID, 10)
+			}
 
 			if groupID != tc.expectedGroupID {
 				t.Errorf("GroupID mismatch: got %q, want %q", groupID, tc.expectedGroupID)
