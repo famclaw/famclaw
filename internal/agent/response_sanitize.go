@@ -8,14 +8,16 @@ import (
 // Pre-compiled regexes for stripping XML reasoning wrappers from LLM output.
 // (?s) makes . match newlines so multi-line tags are handled in one pass.
 var (
-	reThinking      = regexp.MustCompile(`(?s)(?i)<thinking[^>]*>.*?</thinking[^>]*>`)
-	reFinal         = regexp.MustCompile(`(?s)(?i)<final[^>]*>(.*?)</final[^>]*>`)
-	reToolCallSpill = regexp.MustCompile(`(?s)<tool_call>(.*?)<tool_call>`)
-	reFunctionBlock = regexp.MustCompile(`(?s)(?i)<function[^>]*>.*?</function[^>]*>`)
+	reThinking       = regexp.MustCompile(`(?s)(?i)<thinking[^>]*>.*?</thinking[^>]*>`)
+	reFinal          = regexp.MustCompile(`(?s)(?i)<final[^>]*>(.*?)</final[^>]*>`)
+	reToolCallSpill  = regexp.MustCompile(`(?s)<tool_call>.*?</tool_call>`)
+	reFunctionBlock  = regexp.MustCompile(`(?s)(?i)<function[^>]*>.*?</function[^>]*>`)
 	reParameterBlock = regexp.MustCompile(`(?s)(?i)<parameter[^>]*>.*?</parameter[^>]*>`)
-	reStrayThinking = regexp.MustCompile(`(?i)</?thinking[^>]*>`)
-	reStrayFunction = regexp.MustCompile(`(?i)</?function[^>]*>`)
+	reStrayThinking  = regexp.MustCompile(`(?i)</?thinking[^>]*>`)
+	reStrayFunction  = regexp.MustCompile(`(?i)</?function[^>]*>`)
 	reStrayParameter = regexp.MustCompile(`(?i)</?parameter[^>]*>`)
+	reStrayFinal     = regexp.MustCompile(`(?i)</?final[^>]*>`)
+	reBlankLines     = regexp.MustCompile(`\n{3,}`)
 )
 
 // sanitizeModelResponse strips XML reasoning wrappers from LLM output
@@ -31,94 +33,52 @@ var (
 func sanitizeModelResponse(input string) string {
 	result := input
 
-	// Remove thinking blocks (case-insensitive)
-	result = removeThinkingBlocks(result)
-
-	// Remove function blocks
-	result = removeFunctionBlocks(result)
-
-	// Remove parameter blocks
-	result = removeParameterBlocks(result)
-
-	// Remove tool call spill blocks
-	result = removeToolCallSpill(result)
-
-	// Unwrap final blocks
+	// Remove thinking blocks (well-formed pairs, then any leftover stray tags).
+	result = stripBlock(result, reThinking, reStrayThinking)
+	// Remove function blocks.
+	result = stripBlock(result, reFunctionBlock, reStrayFunction)
+	// Remove parameter blocks.
+	result = stripBlock(result, reParameterBlock, reStrayParameter)
+	// Remove tool-call spill blocks.
+	result = reToolCallSpill.ReplaceAllString(result, "")
+	// Unwrap <final>...</final>, then strip any stray final tags.
 	result = unwrapFinalBlocks(result)
+	result = reStrayFinal.ReplaceAllString(result, "")
 
-	// Apply whitespace rule: trim and collapse 3+ newlines to 2
+	// Whitespace cleanup: trim and collapse 3+ newlines to 2.
 	result = strings.TrimSpace(result)
-	result = regexp.MustCompile(`\n{3,}`).ReplaceAllString(result, "\n\n")
+	result = reBlankLines.ReplaceAllString(result, "\n\n")
 
 	return result
 }
 
-// removeThinkingBlocks removes all thinking blocks (case-insensitive) and any stray tags.
-func removeThinkingBlocks(s string) string {
-	// First, remove well-formed thinking blocks (non-greedy, dot matches newline)
+// stripBlock repeatedly removes well-formed matches of `block`, then strips
+// any remaining stray opening/closing tags matched by `stray`.
+func stripBlock(s string, block, stray *regexp.Regexp) string {
 	for {
-		loc := reThinking.FindStringIndex(s)
+		loc := block.FindStringIndex(s)
 		if loc == nil {
 			break
 		}
 		s = s[:loc[0]] + s[loc[1]:]
 	}
-	// Remove any remaining opening or closing thinking tags
-	s = reStrayThinking.ReplaceAllString(s, "")
-	return s
+	return stray.ReplaceAllString(s, "")
 }
 
-// removeFunctionBlocks removes all function blocks (case-insensitive) and any stray tags.
-func removeFunctionBlocks(s string) string {
-	for {
-		loc := reFunctionBlock.FindStringIndex(s)
-		if loc == nil {
-			break
-		}
-		s = s[:loc[0]] + s[loc[1]:]
-	}
-	s = reStrayFunction.ReplaceAllString(s, "")
-	return s
-}
-
-// removeParameterBlocks removes all parameter blocks (case-insensitive) and any stray tags.
-func removeParameterBlocks(s string) string {
-	for {
-		loc := reParameterBlock.FindStringIndex(s)
-		if loc == nil {
-			break
-		}
-		s = s[:loc[0]] + s[loc[1]:]
-	}
-	s = reStrayParameter.ReplaceAllString(s, "")
-	return s
-}
-
-// removeToolCallSpill removes  ... ? blocks.
-func removeToolCallSpill(s string) string {
-	return regexp.MustCompile(`(?s)<tool_call>(.*?)</tool_call>`).ReplaceAllString(s, "")
-}
-
-// unwrapFinalBlocks repeatedly unwraps final tags.
+// unwrapFinalBlocks repeatedly replaces outermost <final>...</final> pairs
+// with their inner content. Looping handles nested <final> tags: after each
+// substitution a new outermost pair becomes available, until none remain.
 func unwrapFinalBlocks(s string) string {
-	// Use a more robust approach to handle nested final tags
 	for {
-		// Find the first occurrence of a final tag
 		loc := reFinal.FindStringIndex(s)
 		if loc == nil {
 			break
 		}
-		
-		// Extract the inner content (group 1)
-		submatch := reFinal.FindStringSubmatch(s)
-		if len(submatch) >= 2 {
-			inner := submatch[1]
-			// Replace the entire final tag with just the inner content
-			s = s[:loc[0]] + inner + s[loc[1]:]
-		} else {
-			// Should not happen, but break to avoid infinite loop
-			break
+		sub := reFinal.FindStringSubmatch(s)
+		if len(sub) < 2 {
+			return s
 		}
+		s = s[:loc[0]] + sub[1] + s[loc[1]:]
 	}
 	return s
 }
