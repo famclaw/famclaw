@@ -532,6 +532,17 @@ func (c *Config) Validate() error {
 		if cleaned == "/" || cleaned == "." {
 			return fmt.Errorf("tools.sandbox_root must not be the root directory (\"/\") or current directory (\".\")")
 		}
+		// Check that the directory exists.
+		info, err := os.Stat(cleaned)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("tools.sandbox_root: directory does not exist: %w", err)
+			}
+			return fmt.Errorf("tools.sandbox_root: failed to stat directory: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("tools.sandbox_root: not a directory: %w", err)
+		}
 		// Optionally, ensure the parent directory exists? Not required; we can create later.
 		c.Tools.SandboxRoot = cleaned
 	}

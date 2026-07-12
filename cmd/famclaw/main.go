@@ -102,6 +102,7 @@ func applySeccompNetworkFilter() error {
 						"socket", "socketpair", "bind", "listen", "accept", "accept4",
 						"connect", "getsockname", "getpeername", "setsockopt", "getsockopt",
 						"sendto", "recvfrom", "sendmsg", "recvmsg",
+						"recvmmsg", "sendmmsg",
 					},
 				},
 			},
@@ -140,6 +141,9 @@ func main() {
 		}
 		sandboxRoot := os.Args[3]
 		command := os.Args[5]
+	if !filepath.IsAbs(command) {
+		log.Fatalf("Sandbox launcher: command must be an absolute path: %q", command)
+}
 		args := os.Args[6:]
 
 		log.Printf("Sandbox launcher: applying restrictions for root %s, executing %s %v", sandboxRoot, command, args)

@@ -108,18 +108,8 @@ switch c.transportType {
 				return cmd, nil
 			}))
 		} else {
-			// Kernel lacks required sandboxing support - fall back to original approach
-			log.Printf("[mcp] WARNING: Kernel lacks required sandboxing support (landlock: %v, seccomp: %v). Falling back to non-sandboxed execution!", 
+			return fmt.Errorf("kernel lacks required sandboxing support (landlock: %v, seccomp: %v)",
 				landlockSupported, seccompSupported)
-			
-			// Fall back to original approach: just set the directory
-			opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
-				cmd := exec.CommandContext(ctx, command, args...)
-				// Build environment: base allowlist + skill-declared vars + per-skill credentials
-				cmd.Env = env
-				cmd.Dir = c.SandboxRoot
-				return cmd, nil
-			}))
 		}
 		}
 		inner, err = client.NewStdioMCPClientWithOptions(c.cfg.Command, allowlist, c.cfg.Args, opts...)
