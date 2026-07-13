@@ -165,3 +165,68 @@ func TestHandleFileWrite_WritesWith0600(t *testing.T) {
 		t.Fatalf("expected mode 0600, got %#o", perm)
 	}
 }
+
+// TestHandleFileWrite_SymlinkEscapeBlocked plants a symlink inside the
+// sandbox that points at a path outside it, then attempts to write
+// through that symlink. handleFileWrite must reject the resolved path
+// even when the directory-level confinement check has passed.
+func TestHandleFileWrite_SymlinkEscapeBlocked(t *testing.T) {
+	sandbox := t.TempDir()
+	// Lay down a "shadow" file outside the sandbox that the symlink
+	// points to. If the escape succeeds, this file is overwritten — a
+	// real-world break-out.
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "outside.txt")
+	mustWrite(t, outsideFile, "untouched")
+
+	linkName := "alias.txt"
+	if err := os.Symlink(outsideFile, filepath.Join(sandbox, linkName)); err != nil {
+		t.Skipf("symlinks unsupported on this filesystem: %v", err)
+	}
+
+	a := newFileAgent(t, sandbox)
+	_, err := a.handleFileWrite(context.Background(), map[string]any{
+		"path":    linkName,
+		"content": "OVERWRITE",
+	})
+	if err == nil {
+		t.Fatalf("expected symlink-escape error, got nil")
+	}
+	// Confirm the outside file was NOT modified.
+	body, readErr := os.ReadFile(outsideFile)
+	if readErr != nil {
+		t.Fatalf("read outside: %v", readErr)
+	}
+	if string(body) != "untouched" {
+		t.Fatalf("outside file was modified through symlink: %q", body)
+	}
+}
+
+// TestIsWithinDir covers the helper that powers the symlink-escape check.
+func TestIsWithinDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	mustMkdir(t, root)
+	child := filepath.Join(root, "sub")
+	mustMkdir(t, child)
+	grandchild := filepath.Join(child, "deep.txt")
+	mustWrite(t, grandchild, "x")
+
+	tests := []struct {
+		path string
+		dir  string
+		want bool
+	}{
+		{path: grandchild, dir: root, want: true},
+		{path: root, dir: root, want: true},
+		{path: filepath.Dir(root), dir: root, want: false},
+		{path: "/etc/passwd", dir: root, want: false},
+		// Reject the prefix-spoof case "/rootABC" vs "/root".
+		{path: root + "ABC", dir: root, want: false},
+	}
+	for _, tc := range tests {
+		got := isWithinDir(tc.path, tc.dir)
+		if got != tc.want {
+			t.Errorf("isWithinDir(%q, %q) = %v, want %v", tc.path, tc.dir, got, tc.want)
+		}
+	}
+}

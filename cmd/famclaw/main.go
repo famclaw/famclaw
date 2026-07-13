@@ -68,13 +68,25 @@ func applySandboxRestrictions(sandboxRoot string) error {
 
 // applyLandlockRules creates and applies a Landlock ruleset that restricts filesystem access
 // to the specified sandbox root (read/write within, nothing outside)
-// Also allows execution from standard system paths
+// Also allows execution from standard system paths.
+//
+// Defensive validation of sandboxRoot happens here too (not just in
+// main()) because this function is also called from the sandbox
+// launcher sub-process — the launcher is entered by re-exec before
+// config is parsed, so it must guard its own input. The checks mirror
+// what config.Validate enforces on the host side.
 func applyLandlockRules(sandboxRoot string) error {
+	cleaned, err := validateSandboxRoot(sandboxRoot)
+	if err != nil {
+		return err
+	}
+	sandboxRoot = cleaned
+
 	// Use Landlock V9 with BestEffort for graceful degradation
 	// Allow read/write access to sandbox root only
 	// Allow execution from standard system paths
 	log.Printf("Applying Landlock rules: RWDirs(%s), RODirs(/bin, /usr/bin)", sandboxRoot)
-	err := landlock.V9.BestEffort().
+	err = landlock.V9.BestEffort().
 		RestrictPaths(
 			landlock.RWDirs(sandboxRoot),
 			landlock.RODirs("/bin", "/usr/bin"),
@@ -87,7 +99,48 @@ func applyLandlockRules(sandboxRoot string) error {
 	return nil
 }
 
-// applySeccompNetworkFilter applies a seccomp-BPF filter to deny network-related syscalls
+// validateSandboxRoot enforces the preconditions for applying Landlock
+// rules: non-empty, absolute, cleaned, not "/" or ".", and an existing
+// directory. Returns the cleaned path on success.
+//
+// Pure function — extracted from applyLandlockRules so unit tests can
+// exercise the validation logic without flipping the running process
+// into a Landlock-restricted state (which prevents Go's TempDir
+// cleanup from removing the test directory).
+func validateSandboxRoot(sandboxRoot string) (string, error) {
+	if sandboxRoot == "" {
+		return "", fmt.Errorf("applyLandlockRules: sandbox root is empty")
+	}
+	if !filepath.IsAbs(sandboxRoot) {
+		return "", fmt.Errorf("applyLandlockRules: sandbox root must be an absolute path, got %q", sandboxRoot)
+	}
+	cleaned := filepath.Clean(sandboxRoot)
+	if cleaned == "/" || cleaned == "." {
+		return "", fmt.Errorf("applyLandlockRules: sandbox root must not be \"/\" or \".\", got %q", sandboxRoot)
+	}
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("applyLandlockRules: sandbox root %q does not exist: %w", sandboxRoot, err)
+		}
+		return "", fmt.Errorf("applyLandlockRules: failed to stat sandbox root %q: %w", sandboxRoot, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("applyLandlockRules: sandbox root %q is not a directory", sandboxRoot)
+	}
+	return cleaned, nil
+}
+
+// applySeccompNetworkFilter applies a seccomp-BPF filter to deny network-related syscalls.
+//
+// INTENTIONAL DESIGN — network denylist, not syscall denylist. The
+// DefaultAction is ActionAllow with only socket/connect/etc. blocked.
+// A blanket default-Deny would also block file I/O syscalls — read,
+// write, open, mmap, all the things a normal MCP server needs. The
+// Landlock ruleset is what contains the filesystem surface; this
+// filter is only here to cut off network egress. Reviewers should not
+// re-write this as a default-Deny without also re-checking which syscalls
+// an MCP child actually invokes.
 func applySeccompNetworkFilter() error {
 	// Create a seccomp filter that denies network syscalls
 	filter := seccomp.Filter{
@@ -113,7 +166,7 @@ func applySeccompNetworkFilter() error {
 	if err := seccomp.LoadFilter(filter); err != nil {
 		return fmt.Errorf("failed to load seccomp filter: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -127,6 +180,20 @@ func checkLandlockSupport() bool {
 // checkSeccompSupport returns true if seccomp is supported on the current system
 func checkSeccompSupport() bool {
 	return seccomp.Supported()
+}
+
+// sandboxEnv returns a minimal environment allowlist for the sandbox
+// launcher's syscall.Exec call. Only safe, non-secret variables the
+// child process actually needs are included.
+func sandboxEnv() []string {
+	safe := []string{"HOME", "LANG", "PATH", "TERM", "TMPDIR"}
+	var out []string
+	for _, k := range safe {
+		if v, ok := os.LookupEnv(k); ok {
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
 }
 
 var Version = "dev"
@@ -162,7 +229,13 @@ func main() {
 		argv = append(argv, command)
 		argv = append(argv, args...)
 		log.Printf("Sandbox launcher: about to execute %s with argv %v", command, argv)
-		if err := syscall.Exec(command, argv, os.Environ()); err != nil {
+		// Filter the inherited environment through the sandbox allowlist.
+		// Passing os.Environ() would leak FAMCLAW_LLM_API_KEY,
+		// FAMCLAW_HMAC_SECRET, *_TOKEN, etc. to every sandbox-launched
+		// MCP server. sandboxEnv returns only the safe subset the child
+		// actually needs (PATH, HOME, LANG, TERM, TMPDIR).
+		execEnv := sandboxEnv()
+		if err := syscall.Exec(command, argv, execEnv); err != nil {
 			log.Fatalf("Failed to execute %s: %v", command, err)
 		}
 		// syscall.Exec only returns on error
@@ -325,10 +398,16 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
-	mcpPool := mcp.NewPool(sandboxRoot)
+	mcpPool := mcp.NewPool(sandboxRoot, cfg.Tools.Sandbox.Enabled)
 	if len(cfg.Skills.MCPServers) > 0 {
 		mcpPool.RegisterFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
 		if err := mcpPool.StartAll(context.Background()); err != nil {
+			// Sandbox kernel-support probe at pool boot is fail-closed:
+			// terminating here keeps an insecure-by-default deployment
+			// from silently downgrading to unsandboxed MCP subprocesses.
+			if cfg.Tools.Sandbox.Enabled {
+				log.Fatalf("MCP pool: %v", err)
+			}
 			log.Printf("MCP pool: %v", err)
 		}
 		tools := mcpPool.ListTools()

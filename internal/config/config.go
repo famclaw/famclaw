@@ -425,6 +425,13 @@ func applyDefaults(c *Config) {
 	}
 	// sandbox defaults
 	if c.Tools.Sandbox.Enabled == false { // zero value is false, so we explicitly check for zero
+		// INTENTIONAL DESIGN — secure-by-default. A fresh deployment
+		// enables the landlock+seccomp sandbox launcher for every stdio
+		// MCP server; operators who genuinely want unconfined subprocesses
+		// must set tools.sandbox.enabled=false explicitly. The startup
+		// checks elsewhere in the codebase assume this default is on
+		// and produce a fail-closed error if it is enabled but the
+		// kernel cannot support it.
 		c.Tools.Sandbox.Enabled = true
 	}
 	// browser defaults

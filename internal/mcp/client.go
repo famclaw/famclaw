@@ -27,6 +27,13 @@ type Client struct {
 	transportType string // stdio | http | sse | inprocess (test only)
 	cfg           config.MCPServerConfig
 	SandboxRoot   string // sandbox root for file operations
+	// Sandbox == true means this stdio client MUST launch through the
+	// landlock+seccomp sandbox launcher (and Pool.StartAll has already
+	// verified kernel support). When false, the launcher is skipped —
+	// either because the operator set Tools.Sandbox.Enabled=false
+	// (explicit opt-out) or because the per-server config did not pick
+	// the stdio sandbox path.
+	Sandbox       bool
 	env           map[string]string // per-skill credential env vars
 	inner         client.MCPClient
 	tools         []mcp.Tool
@@ -49,7 +56,12 @@ func checkSeccompSupport() bool {
 // Transport is auto-detected from fields if not set explicitly:
 //   - command present → stdio
 //   - url present → http
-func NewTransportClient(name string, cfg config.MCPServerConfig, sandboxRoot string) *Client {
+//
+// sandboxEnabled mirrors the pool-level Sandbox flag (Tools.Sandbox.Enabled
+// in config). It is recorded on the client so Start() can refuse to launch
+// when kernel support is missing, instead of silently downgrading to an
+// unsandboxed process.
+func NewTransportClient(name string, cfg config.MCPServerConfig, sandboxRoot string, sandboxEnabled bool) *Client {
 	t := cfg.Transport
 	if t == "" {
 		if cfg.Command != "" {
@@ -58,7 +70,13 @@ func NewTransportClient(name string, cfg config.MCPServerConfig, sandboxRoot str
 			t = "http"
 		}
 	}
-	return &Client{name: name, transportType: t, cfg: cfg, SandboxRoot: sandboxRoot}
+	return &Client{
+		name:          name,
+		transportType: t,
+		cfg:           cfg,
+		SandboxRoot:   sandboxRoot,
+		Sandbox:       sandboxEnabled,
+	}
 }
 
 // Start connects to the MCP server and performs the initialize handshake.
@@ -75,24 +93,25 @@ func (c *Client) Start(ctx context.Context) error {
 	var inner client.MCPClient
 	var err error
 
-switch c.transportType {
+ switch c.transportType {
 	case "stdio":
 		// Build a minimal environment: base allowlist + skill-declared vars +
 		// per-skill credentials.  Never passes os.Environ() — a skill inherits
 		// only the variables explicitly named in its allowlist (or the base set
 		// if the skill declares none), plus its own injected credentials.
-		allowlist := buildAllowlist(c.env)
+		allowlist := BuildAllowlist(c.env)
 		var opts []transport.StdioOption
-		if c.SandboxRoot != "" {
-			// For now, we'll use the sandbox launcher if available, falling back to the original approach
-			// TODO: Implement proper config-based enabling and fail-closed logic
-			
-// Check if kernel supports required sandboxing features
-		landlockSupported := checkLandlockSupport()
-		seccompSupported := checkSeccompSupport()
-	
-		if landlockSupported && seccompSupported {
-			// Use the sandbox launcher to apply Landlock+seccomp restrictions
+		// Sandbox decision: when the deployment enabled Tools.Sandbox the
+		// stdio server must launch through the landlock+seccomp launcher.
+		// Pool.StartAll already verified kernel support at boot and
+		// refused to start if either was missing; this per-call check is
+		// defence-in-depth so a misconfigured pool cannot silently fall
+		// back to an unsandboxed subprocess.
+		if c.Sandbox {
+			if !checkLandlockSupport() || !checkSeccompSupport() {
+				return fmt.Errorf("kernel lacks required sandboxing support (landlock=%v, seccomp=%v); refusing to launch MCP server %q unsandboxed",
+					checkLandlockSupport(), checkSeccompSupport(), c.name)
+			}
 			opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 				launcherArgs := []string{
 					"-sandbox-launcher",
@@ -101,17 +120,17 @@ switch c.transportType {
 					command,
 				}
 				launcherArgs = append(launcherArgs, args...)
-				
+
 				cmd := exec.CommandContext(ctx, os.Args[0], launcherArgs...)
 				// Build environment: base allowlist + skill-declared vars + per-skill credentials
 				cmd.Env = env
 				return cmd, nil
 			}))
-		} else {
-			return fmt.Errorf("kernel lacks required sandboxing support (landlock: %v, seccomp: %v)",
-				landlockSupported, seccompSupported)
 		}
-		}
+		// Tools.Sandbox.Enabled=false branch: the sandbox launcher is
+		// skipped and the subprocess is started without landlock/seccomp
+		// (operator explicitly opted out). We do NOT add WithCommandFunc,
+		// so mcp-go falls back to its default exec path.
 		inner, err = client.NewStdioMCPClientWithOptions(c.cfg.Command, allowlist, c.cfg.Args, opts...)
 	case "http":
 		var opts []transport.StreamableHTTPCOption
@@ -232,11 +251,18 @@ func envKeyBlocked(name string) bool {
 	return false
 }
 
-// buildAllowlist returns an env []string for os/exec that contains only the
+// BuildAllowlist returns an env []string for os/exec that contains only the
 // permitted variables from the current process environment, plus any
 // per-skill credential values from credKeys.  The result is sorted for
 // deterministic ordering (helps tests).
-func buildAllowlist(credKeys map[string]string) []string {
+//
+// Exported so the sandbox launcher (cmd/famclaw/main.go) can produce the
+// same minimal environment it forwards to syscall.Exec — without the
+// launcher having to import os/env-parsing logic of its own.
+//
+// Strict secret-blocklist: see blockedKeys / envKeyBlocked. Skills never
+// receive FAMCLAW_* tokens, *_BOT_TOKEN, *_TOKEN, LLM_API_KEY, etc.
+func BuildAllowlist(credKeys map[string]string) []string {
 	var result []string
 	for _, n := range baseAllowlist {
 		if v, ok := os.LookupEnv(n); ok && !envKeyBlocked(n) {
@@ -256,4 +282,10 @@ func buildAllowlist(credKeys map[string]string) []string {
 		}
 	}
 	return result
+}
+
+// buildAllowlist is the unexported form kept for backward-compatible
+// callers within the package.
+func buildAllowlist(credKeys map[string]string) []string {
+	return BuildAllowlist(credKeys)
 }

@@ -529,7 +529,10 @@ func (a *Agent) handleFileWrite(ctx context.Context, args map[string]any) (strin
 	// Re-check that the joined path is within the sandbox root. confinePath
 	// evaluated the directory but not the final component (a non-existent
 	// file's symlinks cannot be resolved yet), so a pathological base like
-	// ".." can shift joinedPath back outside the root.
+	// ".." can shift joinedPath back outside the root. We also need to
+	// defeat a symlink INSIDE the sandbox that points outside — the string
+	// prefix check below is not enough on its own; we re-resolve via
+	// EvalSymlinks when possible and reconfirm containment.
 	if a.cfg.Tools.SandboxRoot == "" {
 		return "", fmt.Errorf("file_write: sandbox root not configured")
 	}
@@ -541,11 +544,36 @@ func (a *Agent) handleFileWrite(ctx context.Context, args map[string]any) (strin
 	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("file_write path %q escapes sandbox root %q", pathRaw, sandboxRoot)
 	}
+	// Defence-in-depth against in-sandbox symlinks pointing outside. If
+	// the target file already exists, EvalSymlinks returns the resolved
+	// path; otherwise (new file) the path either does not exist or its
+	// parent has been resolved by confinePath already — so this branch
+	// only catches the "the wrong-named symlink is in the way" case.
+	if resolved, err := filepath.EvalSymlinks(joinedPath); err == nil {
+		if !isWithinDir(resolved, sandboxRoot) {
+			return "", fmt.Errorf("file_write path %q resolves to %q outside sandbox", pathRaw, resolved)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("file_write: failed to resolve %q: %w", joinedPath, err)
+	}
 	// Write the file with restrictive mode (sandbox holds user-private data).
 	if err := os.WriteFile(joinedPath, []byte(contentRaw), 0600); err != nil {
 		return "", fmt.Errorf("writing file: %w", err)
 	}
 	return fmt.Sprintf("ok — wrote %d bytes to %q", len(contentRaw), pathRaw), nil
+}
+
+// isWithinDir reports whether path equals dir or sits beneath it, using
+// a separator-aware prefix match. Both arguments must be cleaned first.
+// Returns false if path is absolute and outside dir.
+func isWithinDir(path, dir string) bool {
+	path = filepath.Clean(path)
+	dir = filepath.Clean(dir)
+	if path == dir {
+		return true
+	}
+	sep := string(os.PathSeparator)
+	return strings.HasPrefix(path, dir+sep)
 }
 
 func (a *Agent) handleFileStat(ctx context.Context, args map[string]any) (string, error) {

@@ -22,6 +22,15 @@ type Pool struct {
 	clients map[string]*managedClient // server name + tool name → client
 	mu      sync.RWMutex
 	SandboxRoot string
+	// Sandbox == true means every stdio MCP server is **required** to be
+	// launched inside the sandbox-restricted child process (landlock +
+	// seccomp). When true, the pool also performs a one-shot probe of
+	// kernel support at StartAll time; if the running kernel lacks
+	// landlock or seccomp the pool refuses to start any MCP server
+	// (fail-closed). Operators who explicitly want to run unconfined
+	// MCP subprocesses must set Tools.Sandbox.Enabled=false in config
+	// — the default is true (secure-by-default).
+	Sandbox bool
 }
 
 type managedClient struct {
@@ -33,11 +42,15 @@ type managedClient struct {
 	restartCnt int
 }
 
-// NewPool creates an empty MCP pool.
-func NewPool(sandboxRoot string) *Pool {
+// NewPool creates an empty MCP pool. sandboxRoot is the on-disk directory
+// for file-tool sandboxing; sandboxEnabled mirrors Tools.Sandbox.Enabled
+// in config and gates the per-server launcher (when true, every stdio
+// MCP server runs through the landlock+seccomp re-exec).
+func NewPool(sandboxRoot string, sandboxEnabled bool) *Pool {
 	return &Pool{
-		clients:   make(map[string]*managedClient),
+		clients:     make(map[string]*managedClient),
 		SandboxRoot: sandboxRoot,
+		Sandbox:     sandboxEnabled,
 	}
 }
 
@@ -55,7 +68,7 @@ func (p *Pool) RegisterFromConfig(servers map[string]config.MCPServerConfig, cre
 			log.Printf("[mcp-pool] skip %s: %v", name, err)
 			continue
 		}
-		c := NewTransportClient(name, cfg, p.SandboxRoot)
+		c := NewTransportClient(name, cfg, p.SandboxRoot, p.Sandbox)
 		if creds, ok := credentials[name]; ok {
 			c.env = creds
 		}
@@ -70,9 +83,26 @@ p.clients[name] = &managedClient{
 
 // StartAll starts all registered MCP servers and maps their tools by name.
 // Failed servers are kept in the map for later retry — not removed.
+//
+// When p.Sandbox is true (the secure-by-default mode), callers are
+// required to be running on a kernel that supports BOTH landlock and
+// seccomp-BPF, otherwise every stdio MCP server would launch without
+// the syscall-level isolation the rest of the system relies on. The
+// probe below fails fast at boot rather than discovering the gap at the
+// first tool call.
 func (p *Pool) StartAll(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.Sandbox {
+		if !checkLandlockSupport() {
+			return fmt.Errorf("sandbox: kernel lacks landlock support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.enabled=false to run unconfined — NOT recommended)")
+		}
+		if !checkSeccompSupport() {
+			return fmt.Errorf("sandbox: kernel lacks seccomp support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.enabled=false to run unconfined — NOT recommended)")
+		}
+		log.Printf("sandbox: kernel support verified (landlock + seccomp-BPF) ✅")
+	}
 
 	toolAliases := make(map[string]*managedClient)
 	for name, mc := range p.clients {
@@ -127,7 +157,7 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 			log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
 			mc.restartCnt++
 			mc.client.Stop()
-			mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot)
+			mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox)
 			mc.client.env = mc.env
 			if startErr := mc.client.Start(ctx); startErr != nil {
 				return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
