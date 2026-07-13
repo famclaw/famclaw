@@ -54,6 +54,16 @@ func TestSanitizeModelResponse(t *testing.T) {
 			output: "core",
 		},
 		{
+			name:   "four-level nested final tags",
+			input:  "<final><final><final><final>core</final></final></final></final>",
+			output: "core",
+		},
+		{
+			name:   "four-level nested final with interleaved text",
+			input:  "<final>a<final>b<final>c<final>d</final>e</final>f</final>g</final>",
+			output: "abcdefg",
+		},
+		{
 			name:   "malformed — opening tag only, no closing",
 			input:  "thinking no close answer",
 			output: "thinking no close answer",
@@ -127,6 +137,71 @@ func TestSanitizeModelResponse(t *testing.T) {
 			name:   "empty final wrapper",
 			input:  "<final></final>",
 			output: "",
+		},
+		{
+			name:   "self-closing thinking tag",
+			input:  "before<thinking/>after",
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing thinking tag with space",
+			input:  "before<thinking />after",
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing thinking tag with extra whitespace",
+			input:  "before<thinking  />after",
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing thinking tag with attributes",
+			input:  `before<thinking reason="r"/>after`,
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing thinking tag uppercase",
+			input:  "before<THINKING/>after",
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing function tag",
+			input:  "before<function/>after",
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing function tag with attributes",
+			input:  `before<function name="search"/>after`,
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing parameter tag",
+			input:  "before<parameter/>after",
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing parameter tag with attributes",
+			input:  `before<parameter name="q"/>after`,
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing final tag",
+			input:  "before<final/>after",
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing final tag with space",
+			input:  "before<final />after",
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing final tag mixed case",
+			input:  "before<FINAL/>after",
+			output: "beforeafter",
+		},
+		{
+			name:   "self-closing tag does not consume surrounding non-tag",
+			input:  "xaaathinkingx/by",
+			output: "xaaathinkingx/by",
 		},
 	}
 

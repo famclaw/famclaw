@@ -17,7 +17,15 @@ var (
 	reStrayFunction  = regexp.MustCompile(`(?i)</?function[^>]*>`)
 	reStrayParameter = regexp.MustCompile(`(?i)</?parameter[^>]*>`)
 	reStrayFinal     = regexp.MustCompile(`(?i)</?final[^>]*>`)
-	reBlankLines     = regexp.MustCompile(`\n{3,}`)
+	// selfClosing* match self-closing forms (<tag/>, <tag attr="x"/>, <tag />)
+	// with word boundaries so prefixes like <thinkingx/> don't trip them.
+	// These are stripped before the block regexes — self-closing tags have
+	// no body and no closing tag, so they bypass the well-formed block matcher.
+	reSelfClosingThinking  = regexp.MustCompile(`(?i)<thinking\b[^>]*/>`)
+	reSelfClosingFunction  = regexp.MustCompile(`(?i)<function\b[^>]*/>`)
+	reSelfClosingParameter = regexp.MustCompile(`(?i)<parameter\b[^>]*/>`)
+	reSelfClosingFinal     = regexp.MustCompile(`(?i)<final\b[^>]*/>`)
+	reBlankLines           = regexp.MustCompile(`\n{3,}`)
 )
 
 // sanitizeModelResponse strips XML reasoning wrappers from LLM output
@@ -32,6 +40,14 @@ var (
 // Returns the trimmed result. Input with no matching tags passes through unchanged.
 func sanitizeModelResponse(input string) string {
 	result := input
+
+	// Strip self-closing tags first (<tag/>, <tag attr="x"/>, <tag />). They
+	// carry no body and have no closing tag, so the well-formed block regexes
+	// below would never match them.
+	result = reSelfClosingThinking.ReplaceAllString(result, "")
+	result = reSelfClosingFunction.ReplaceAllString(result, "")
+	result = reSelfClosingParameter.ReplaceAllString(result, "")
+	result = reSelfClosingFinal.ReplaceAllString(result, "")
 
 	// Remove thinking blocks (well-formed pairs, then any leftover stray tags).
 	result = stripBlock(result, reThinking, reStrayThinking)
