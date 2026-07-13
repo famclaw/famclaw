@@ -15,6 +15,7 @@ import (
 	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -150,6 +151,37 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		log.Printf("[agent][%s] save user message: %v", a.user.Name, err)
 	}
 
+	// Check for and deliver any due reminders
+	reminders, err := a.db.GetDueReminders(ctx, a.user.Name)
+	if err != nil {
+		log.Printf("[agent][%s] error checking for due reminders: %v", a.user.Name, err)
+	} else if len(reminders) > 0 {
+		// Build a reminder message
+		var reminderText strings.Builder
+		reminderText.WriteString("You have the following reminder(s):\n\n")
+		for _, r := range reminders {
+			reminderText.WriteString(fmt.Sprintf("- %s\n", r.Message))
+			// Delete the reminder after delivering it
+			if err := a.db.DeleteReminder(r.ID); err != nil {
+				log.Printf("[agent][%s] error deleting reminder %d: %v", a.user.Name, r.ID, err)
+			}
+		}
+		reminderMessage := reminderText.String()
+
+		// Save the reminder message as an assistant response
+		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", reminderMessage, "reminder", "allow"); err != nil {
+			log.Printf("[agent][%s] save reminder message: %v", a.user.Name, err)
+		}
+
+		// Return the reminder message directly, bypassing LLM processing
+		return &Response{
+			Content:      reminderMessage,
+			PolicyAction: "allow",
+			Category:     "reminder",
+			Streamed:     false,
+		}, nil
+	}
+
 	// Build conversation context
 	history, _ := a.db.GetConversationHistory(a.convID, 20)
 	messages := a.buildMessages(ctx, history, userMessage)
@@ -256,7 +288,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 
 	pipeline := agentcore.FamilyPipeline(deps)
 
-	err := pipeline.Run(ctx, turn)
+	err = pipeline.Run(ctx, turn)
 
 	// Handle policy blocks (not a real error — just a non-allow decision)
 	if errors.Is(err, agentcore.ErrPolicyBlock) {
@@ -407,6 +439,8 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		case "builtin__delete_family_category":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
 			return admin.HandleDeleteFamilyCategory(ctx, deps, args)
+		case "builtin__set_reminder":
+			return a.handleSetReminder(ctx, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
@@ -877,6 +911,174 @@ func (a *Agent) handleProposeFamilyFact(ctx context.Context, args map[string]any
 	return "Proposal sent to parents.", nil
 }
 
+// SetReminderTool returns the tool definition for builtin__set_reminder.
+func SetReminderTool() agentcore.Tool {
+	return agentcore.Tool{
+		Name:   "builtin__set_reminder",
+		Source: "builtin",
+		Description: strings.Join([]string{
+			"Set a reminder to be delivered at a specified time.",
+			"",
+			"Supported formats:",
+			"- \"in X seconds/minutes/hours/days [message]\"",
+			"- \"at HH:MM [message]\" (today or tomorrow if time has passed)",
+			"- \"tomorrow HH:MM [message]\"",
+			"- \"YYYY-MM-DD HH:MM [message]\"",
+			"",
+			"If no time is specified, the reminder is set for 1 minute from now.",
+			"",
+			"Example: set_reminder(request=\"in 10 minutes Take out the trash\")",
+		}, "\n"),
+		// Available to all roles
+		Roles: []string{},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"request": map[string]any{"type": "string"},
+			},
+			"required": []string{"request"},
+		},
+	}
+}
+
+// handleSetReminder dispatches builtin__set_reminder. Parses a natural language
+// reminder request and stores it for delivery when the user next sends a message.
+func (a *Agent) handleSetReminder(ctx context.Context, args map[string]any) (string, error) {
+	request, _ := args["request"].(string)
+	if request == "" {
+		return "", fmt.Errorf("set_reminder requires a 'request' argument")
+	}
+
+	// Parse the reminder request to extract due time and message
+	// For simplicity, we'll support basic formats:
+	// - "in X seconds/minutes/hours/days"
+	// - "at HH:MM" (today or tomorrow if time has passed)
+	// - "tomorrow HH:MM"
+	// - "YYYY-MM-DD HH:MM"
+	//
+	// In a production implementation, we would use a proper natural language
+	// parsing library, but for now we'll implement a simple parser.
+
+	var dueAt int64
+	var message string
+	now := time.Now()
+
+	// Try to parse "in X [unit]" format
+	if strings.HasPrefix(strings.ToLower(request), "in ") {
+		parts := strings.Fields(request)
+		if len(parts) >= 3 {
+			amountStr := parts[1]
+			unit := strings.ToLower(parts[2])
+			message = strings.TrimPrefix(request, parts[0]+" "+parts[1]+" "+parts[2]+" ")
+
+			amount, err := strconv.Atoi(amountStr)
+			if err != nil {
+				return "", fmt.Errorf("invalid amount in reminder request: %w", err)
+			}
+
+			var duration time.Duration
+			switch unit {
+			case "second", "seconds":
+				duration = time.Duration(amount) * time.Second
+			case "minute", "minutes":
+				duration = time.Duration(amount) * time.Minute
+			case "hour", "hours":
+				duration = time.Duration(amount) * time.Hour
+			case "day", "days":
+				duration = time.Duration(amount) * 24 * time.Hour
+			default:
+				return "", fmt.Errorf("unsupported time unit: %s", unit)
+			}
+
+			dueAt = now.Add(duration).Unix()
+		} else {
+			return "", fmt.Errorf("invalid reminder format. Expected: 'in X [unit] [message]'")
+		}
+	} else if strings.HasPrefix(strings.ToLower(request), "at ") {
+		// Parse "at HH:MM" format
+		timeStr := strings.TrimPrefix(request, "at ")
+		t, err := time.Parse("15:04", timeStr)
+		if err != nil {
+			return "", fmt.Errorf("invalid time format. Expected: 'at HH:MM'")
+		}
+
+		// Set to today at the specified time
+		dueTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
+
+		// If the time has already passed today, set for tomorrow
+		if dueTime.Before(now) {
+			dueTime = dueTime.Add(24 * time.Hour)
+		}
+
+		// Extract message (everything after the time specification)
+		// For "at HH:MM message", the message starts after the time
+		if len(request) > len("at "+timeStr) {
+			message = strings.TrimSpace(request[len("at "+timeStr):])
+		} else {
+			message = "Reminder"
+		}
+
+		dueAt = dueTime.Unix()
+	} else if strings.HasPrefix(strings.ToLower(request), "tomorrow ") {
+		// Parse "tomorrow HH:MM" format
+		rest := strings.TrimPrefix(request, "tomorrow ")
+		parts := strings.Fields(rest)
+		if len(parts) >= 2 {
+			timeStr := parts[0]
+			message = strings.TrimPrefix(rest, parts[0]+" ")
+			
+			t, err := time.Parse("15:04", timeStr)
+			if err != nil {
+				return "", fmt.Errorf("invalid time format. Expected: 'tomorrow HH:MM [message]'")
+			}
+
+			// Set to tomorrow at the specified time
+			dueTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
+			dueTime = dueTime.Add(24 * time.Hour)
+
+			if len(rest) > len(timeStr) {
+				message = strings.TrimSpace(rest[len(timeStr):])
+			} else {
+				message = "Reminder"
+			}
+
+			dueAt = dueTime.Unix()
+		} else {
+			return "", fmt.Errorf("invalid reminder format. Expected: 'tomorrow HH:MM [message]'")
+		}
+	} else {
+		// Try to parse as "YYYY-MM-DD HH:MM [message]"
+		parts := strings.Fields(request)
+		if len(parts) >= 2 {
+			dateTimeStr := parts[0] + " " + parts[1]
+			t, err := time.Parse("2006-01-02 15:04", dateTimeStr)
+			if err != nil {
+				return "", fmt.Errorf("invalid date/time format. Expected: 'YYYY-MM-DD HH:MM [message]'")
+			}
+
+			dueAt = t.Unix()
+			if len(request) > len(dateTimeStr) {
+				message = strings.TrimSpace(request[len(dateTimeStr):])
+			} else {
+				message = "Reminder"
+			}
+		} else {
+			// If we can't parse it as a timed reminder, treat the whole thing as a message
+			// to be delivered immediately (or in 1 minute as a fallback)
+			dueAt = now.Add(time.Minute).Unix()
+			message = request
+		}
+	}
+
+	// Store the reminder
+	if err := a.db.CreateReminder(a.user.Name, message, dueAt); err != nil {
+		return "", fmt.Errorf("failed to create reminder: %w", err)
+	}
+
+	// Format the due time for user feedback
+	dueTime := time.Unix(dueAt, 0)
+	return fmt.Sprintf("Reminder set for %s: %s", dueTime.Format("Mon Jan 2 15:04:05"), message), nil
+}
 // proposalApprovalID makes a stable, per-proposal id derived from the
 // proposing user, subject, label, and the current day. Re-proposing the
 // exact same triple within a day deduplicates onto the existing pending

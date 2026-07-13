@@ -297,6 +297,9 @@ reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallCon
 	// handlers degrade gracefully when the store is nil (tests).
 	builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
 	registered = append(registered, "get_family_state", "propose_family_fact")
+	// Reminder tool
+	builtinTools = append(builtinTools, agent.SetReminderTool())
+	registered = append(registered, "set_reminder")
 	if cfg.Tools.WebSearch.Enabled {
 		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
 		registered = append(registered, "web_search")

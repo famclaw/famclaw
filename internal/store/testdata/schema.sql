@@ -14,6 +14,10 @@ CREATE INDEX idx_gateway_accounts_lookup ON gateway_accounts(gateway, external_i
 
 CREATE INDEX idx_messages_conv ON messages(conversation_id);
 
+CREATE INDEX idx_reminders_due_at ON reminders(due_at);
+
+CREATE INDEX idx_reminders_user_name ON reminders(user_name);
+
 CREATE INDEX idx_tool_audit_created   ON tool_result_audit (created_at);
 
 CREATE INDEX idx_tool_audit_user_conv ON tool_result_audit (user_name, conv_id);
@@ -128,6 +132,15 @@ CREATE TABLE quarantine (
 		reasoning    TEXT,
 		key_finding  TEXT,
 		blocked_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+CREATE TABLE reminders (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_name  TEXT NOT NULL,
+		message    TEXT NOT NULL,
+		due_at     INTEGER NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
 	);
 
 CREATE TABLE seccheck_reports (
