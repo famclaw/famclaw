@@ -409,16 +409,16 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		case "builtin__delete_family_category":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
 			return admin.HandleDeleteFamilyCategory(ctx, deps, args)
-case "builtin__file_read":
-		return a.handleFileRead(ctx, args)
-	case "builtin__file_write":
-		return a.handleFileWrite(ctx, args)
-	case "builtin__file_stat":
-		return a.handleFileStat(ctx, args)
-	case "builtin__file_list":
-		return a.handleFileList(ctx, args)
-	default:
-		return "", fmt.Errorf("unknown builtin tool: %s", name)
+		case "builtin__file_read":
+			return a.handleFileRead(ctx, args)
+		case "builtin__file_write":
+			return a.handleFileWrite(ctx, args)
+		case "builtin__file_stat":
+			return a.handleFileStat(ctx, args)
+		case "builtin__file_list":
+			return a.handleFileList(ctx, args)
+		default:
+			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
 	}
 }
@@ -517,16 +517,32 @@ func (a *Agent) handleFileWrite(ctx context.Context, args map[string]any) (strin
 	if dir == "" {
 		dir = "."
 	}
-	// Confine the directory (must exist).
+	// Confine the directory (must exist). confinePath canonicalises via
+	// EvalSymlinks so confinedDir is an absolute, symlink-resolved path
+	// already verified to sit inside the sandbox root.
 	confinedDir, err := a.confinePath(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolving file_write path: %w", err)
 	}
-	// Form the absolute path for the file.
-	absPath := filepath.Join(confinedDir, base)
-	// Write the file.
-	err = os.WriteFile(absPath, []byte(contentRaw), 0644)
+	// Form the absolute path for the file, then CollapseDotDot via Clean.
+	joinedPath := filepath.Clean(filepath.Join(confinedDir, base))
+	// Re-check that the joined path is within the sandbox root. confinePath
+	// evaluated the directory but not the final component (a non-existent
+	// file's symlinks cannot be resolved yet), so a pathological base like
+	// ".." can shift joinedPath back outside the root.
+	if a.cfg.Tools.SandboxRoot == "" {
+		return "", fmt.Errorf("file_write: sandbox root not configured")
+	}
+	sandboxRoot, err := filepath.EvalSymlinks(filepath.Clean(a.cfg.Tools.SandboxRoot))
 	if err != nil {
+		return "", fmt.Errorf("file_write: invalid sandbox root: %w", err)
+	}
+	rel, relErr := filepath.Rel(sandboxRoot, joinedPath)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("file_write path %q escapes sandbox root %q", pathRaw, sandboxRoot)
+	}
+	// Write the file with restrictive mode (sandbox holds user-private data).
+	if err := os.WriteFile(joinedPath, []byte(contentRaw), 0600); err != nil {
 		return "", fmt.Errorf("writing file: %w", err)
 	}
 	return fmt.Sprintf("ok — wrote %d bytes to %q", len(contentRaw), pathRaw), nil

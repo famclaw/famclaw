@@ -1,0 +1,167 @@
+// Package agent — sandbox confinement tests for the builtin file_* tools
+// (file_read, file_write, file_stat, file_list). These exercise the
+// confinePath / handleFileWrite escape-prevention and the 0600 default
+// mode added in response to PR #188 independent review findings.
+package agent
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/famclaw/famclaw/internal/classifier"
+	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/store"
+)
+
+// newFileAgent builds a minimal Agent wired only enough to drive
+// handleFileWrite / confinePath directly. It uses a real on-disk
+// sandbox root inside t.TempDir() and a parent-role config so the
+// policy evaluator is not relevant here.
+func newFileAgent(t *testing.T, sandboxRoot string) *Agent {
+	t.Helper()
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ev, err := policy.NewEvaluator("", "", "")
+	if err != nil {
+		t.Fatalf("policy.NewEvaluator: %v", err)
+	}
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent"},
+		},
+		Tools: config.ToolsConfig{
+			SandboxRoot: sandboxRoot,
+		},
+	}
+	return &Agent{
+		user:       &cfg.Users[0],
+		cfg:        cfg,
+		evaluator:  ev,
+		classifier: classifier.New(),
+		db:         db,
+	}
+}
+
+func TestConfinePath_Table(t *testing.T) {
+	sandbox := t.TempDir()
+	// Pre-create the file and subdirectory consumed by the happy-path
+	// sub-tests. EvalSymlinks refuses non-existent paths so callers must
+	// provide existing on-disk layout; confinePath itself does not create.
+	mustMkdir(t, filepath.Join(sandbox, "sub", "dir"))
+	mustWrite(t, filepath.Join(sandbox, "note.txt"), "x")
+	a := newFileAgent(t, sandbox)
+
+	tests := []struct {
+		name       string
+		path       string
+		wantErr    bool
+		wantInSand bool
+	}{
+		{name: "abs path inside sandbox ok", path: filepath.Join(sandbox, "note.txt"), wantErr: false, wantInSand: true},
+		{name: "rel path inside sandbox ok", path: "note.txt", wantErr: false, wantInSand: true},
+		{name: "rel path with subdir ok", path: filepath.Join("sub", "dir"), wantErr: false, wantInSand: true},
+		{name: "abs path outside sandbox blocked", path: "/etc/passwd", wantErr: true, wantInSand: false},
+		{name: "rel ../escape blocked", path: "../escape.txt", wantErr: true, wantInSand: false},
+		{name: "rel deep escape blocked", path: filepath.Join("sub", "..", "..", "..", "..", "etc", "passwd"), wantErr: true, wantInSand: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := a.confinePath(tc.path)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for path %q, got %q", tc.path, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for path %q: %v", tc.path, err)
+			}
+			if tc.wantInSand && !strings.HasPrefix(got, sandbox) && !strings.HasPrefix(got, sandbox+string(os.PathSeparator)) {
+				t.Fatalf("path %q not within sandbox %q", got, sandbox)
+			}
+		})
+	}
+}
+
+func mustMkdir(t *testing.T, p string) {
+	t.Helper()
+	if err := os.MkdirAll(p, 0700); err != nil {
+		t.Fatalf("mkdir %s: %v", p, err)
+	}
+}
+
+func mustWrite(t *testing.T, p string, body string) {
+	t.Helper()
+	if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+}
+
+// TestHandleFileWrite_ReconfinesAfterJoin is the regression test for the
+// review finding that filepath.Join(confinedDir, base) inside the sandbox
+// is not re-checked. A pathological ".."-only base collapses the joined
+// path back to the directory above the sandbox and must be rejected even
+// though confinePath already approved the directory.
+func TestHandleFileWrite_ReconfinesAfterJoin(t *testing.T) {
+	sandbox := t.TempDir()
+	a := newFileAgent(t, sandbox)
+
+	escapes := []string{
+		"..",
+		"./..",
+		"sub/../..",
+		"a/b/../../../..",
+	}
+	for _, p := range escapes {
+		t.Run(p, func(t *testing.T) {
+			_, err := a.handleFileWrite(context.Background(), map[string]any{
+				"path":    p,
+				"content": "x",
+			})
+			if err == nil {
+				t.Fatalf("expected escape error for path %q, got nil", p)
+			}
+			if !strings.Contains(err.Error(), "sandbox") {
+				t.Fatalf("expected sandbox-escape error, got %v", err)
+			}
+		})
+	}
+}
+
+// TestHandleFileWrite_WritesWith0600 verifies the file is created with
+// 0600 permissions (the second review finding — restrictive default
+// instead of 0644). Uses t.TempDir() for the sandbox so cleanup is
+// implicit.
+func TestHandleFileWrite_WritesWith0600(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits are not meaningful when running as root")
+	}
+	sandbox := t.TempDir()
+	a := newFileAgent(t, sandbox)
+
+	if _, err := a.handleFileWrite(context.Background(), map[string]any{
+		"path":    "secret.txt",
+		"content": "classified",
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	full := filepath.Join(sandbox, "secret.txt")
+	info, err := os.Stat(full)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Fatalf("expected mode 0600, got %#o", perm)
+	}
+}
