@@ -258,4 +258,3 @@ func (p *Pool) StopAll() {
 		}
 	}
 }
-

@@ -299,6 +299,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 			}, nil
 		}
 		turn.Output = final
+		turn.Output = sanitizeModelResponse(turn.Output)
 	}
 
 	// Drain buffered tokens after pipeline completes.

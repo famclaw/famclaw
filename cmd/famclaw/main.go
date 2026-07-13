@@ -361,9 +361,24 @@ func main() {
 
 	// Notifications
 	notifier := notify.NewMultiNotifier(cfg.Notifications, cfg.Server.Secret)
-	if cfg.SecCheck.Enabled && notifier.Len() == 0 && cfg.SecCheck.NotifyOnQuarantine {
-		log.Printf("[notify] WARNING: no notification channels enabled but seccheck.notify_on_quarantine=true; parental approvals will fire into the void — add an enabled channel under `notifications:` in your config.yaml (email, slack, discord, sms, ntfy)")
+	
+	// Check for potential silent notification failures
+	if notifier.Len() == 0 {
+		// Check if any user has parent role
+		hasParent := false
+		for _, user := range cfg.Users {
+			if user.Role == "parent" {
+				hasParent = true
+				break
+			}
+		}
+		
+		// Log warning if notifications are expected but no channels are configured
+		if hasParent || cfg.SecCheck.NotifyOnQuarantine {
+			log.Printf("[notify] WARNING: no notification channels enabled but parent users or seccheck.notify_on_quarantine are configured; parental approvals will fire into the void — add an enabled channel under `notifications:` in your config.yaml (email, slack, discord, sms, ntfy)")
+		}
 	}
+	
 	log.Printf("Notifications: configured (%d channel(s))", notifier.Len())
 
 	// Identity store
@@ -441,8 +456,14 @@ func main() {
 	}
 
 	// Skills loaded for prompt injection (independent of MCP)
-	reg := skillbridge.NewRegistry(cfg.Skills.Dir, nil, skillbridge.InstallConfig{})
+reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallConfig{
+		Enabled:      cfg.SecCheck.Enabled,
+		AutoSecCheck: cfg.SecCheck.AutoSecCheck,
+		BlockOnFail:  cfg.SecCheck.BlockOnFail,
+		Paranoia:     cfg.SecCheck.Paranoia,
+	}, cfg.Skills.RoleEnablement)
 	var enabledSkills []*skillbridge.Skill
+	// Fallback to global enabled skills (no user context at startup).
 	if skills, err := reg.List(); err == nil {
 		for _, sk := range skills {
 			if reg.IsEnabled(sk.Name) {
@@ -450,9 +471,6 @@ func main() {
 				log.Printf("Skill: %s v%s", sk.Name, sk.Version)
 			}
 		}
-	}
-	if len(enabledSkills) > 0 {
-		log.Printf("Skills: %d loaded for prompt injection", len(enabledSkills))
 	}
 
 	// Subagent scheduler for spawn_agent dispatching (max 2 concurrent)
@@ -578,7 +596,7 @@ if cfg.Tools.Browser.Enabled {
 	defer gwCancel()
 
 	// Gateway router
-	router := gateway.NewRouter(gwCtx, cfg, identStore, clf, evaluator, db, notifier, chatFn)
+	router := gateway.NewRouter(gwCtx, cfg, identStore, clf, evaluator, db, notifier, chatFn, reg)
 
 	// Gateway bots
 	var gateways []gateway.Gateway

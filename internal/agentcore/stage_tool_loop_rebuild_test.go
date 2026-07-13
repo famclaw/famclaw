@@ -325,9 +325,9 @@ func (s *stubChatterClickLoop) ChatWithTools(_ context.Context, msgs []llm.Messa
 // stubChatterMultiCall returns a batch of 3 specific tool calls on the first
 // ChatWithTools invocation, then returns "done" on subsequent calls.
 type stubChatterMultiCall struct {
-	mu        sync.Mutex
-	callCount int
-	captured  [][]llm.Message
+	mu         sync.Mutex
+	callCount  int
+	captured   [][]llm.Message
 	firstBatch []llm.ToolCall
 }
 

@@ -15,13 +15,13 @@ import (
 
 // Skill represents a parsed SKILL.md file.
 type Skill struct {
-	Name         string   `yaml:"name"           json:"name"`
-	Description  string   `yaml:"description"    json:"description"`
-	Version      string   `yaml:"version"        json:"version,omitempty"`
-	Author       string   `yaml:"author"         json:"author,omitempty"`
-	Tags         []string `yaml:"tags"           json:"tags,omitempty"`
-	Platforms    []string `yaml:"platforms"      json:"platforms,omitempty"`
-	Requires     struct {
+	Name        string   `yaml:"name"           json:"name"`
+	Description string   `yaml:"description"    json:"description"`
+	Version     string   `yaml:"version"        json:"version,omitempty"`
+	Author      string   `yaml:"author"         json:"author,omitempty"`
+	Tags        []string `yaml:"tags"           json:"tags,omitempty"`
+	Platforms   []string `yaml:"platforms"      json:"platforms,omitempty"`
+	Requires    struct {
 		Bins []string `yaml:"bins" json:"bins,omitempty"`
 	} `yaml:"requires" json:"requires,omitempty"`
 	EnvAllowlist []string `yaml:"env_allowlist"  json:"env_allowlist,omitempty"`

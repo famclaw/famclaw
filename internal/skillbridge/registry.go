@@ -28,15 +28,29 @@ type InstallConfig struct {
 
 // Registry manages installed skills on disk.
 type Registry struct {
-	dir     string
-	scanner Scanner // may be nil if scanning is disabled
-	cfg     InstallConfig
+	dir             string
+	scanner         Scanner // may be nil if scanning is disabled
+	cfg             InstallConfig
+	roleEnablement  map[string]map[string]bool // role -> skillName -> enabled
 }
 
 // NewRegistry creates a Registry rooted at the given directory.
 // scanner may be nil if seccheck is disabled.
-func NewRegistry(dir string, scanner Scanner, cfg InstallConfig) *Registry {
-	return &Registry{dir: dir, scanner: scanner, cfg: cfg}
+// roleEnablement is a map of role to slice of skill names that are enabled for that role.
+// It may be nil or empty.
+func NewRegistry(dir string, scanner Scanner, cfg InstallConfig, roleEnablement map[string][]string) *Registry {
+	// Convert the roleEnablement map[string][]string to map[string]map[string]bool for fast lookup.
+	re := make(map[string]map[string]bool)
+	if roleEnablement != nil {
+		for role, skills := range roleEnablement {
+			skillSet := make(map[string]bool)
+			for _, skill := range skills {
+				skillSet[skill] = true
+			}
+			re[role] = skillSet
+		}
+	}
+	return &Registry{dir: dir, scanner: scanner, cfg: cfg, roleEnablement: re}
 }
 
 // Install parses, scans (if configured), and installs a skill.
@@ -162,6 +176,9 @@ func (r *Registry) List() ([]*Skill, error) {
 
 // Remove deletes an installed skill by name.
 func (r *Registry) Remove(name string) error {
+	if err := ValidateName(name); err != nil {
+		return fmt.Errorf("invalid skill name: %w", err)
+	}
 	dir := filepath.Join(r.dir, name)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return fmt.Errorf("skill %q not installed", name)
@@ -169,8 +186,15 @@ func (r *Registry) Remove(name string) error {
 	return os.RemoveAll(dir)
 }
 
-// Enable creates an "enabled" marker for a skill (default state).
+// Enable marks a skill as enabled. Returns an error if the skill is not installed.
 func (r *Registry) Enable(name string) error {
+	if err := ValidateName(name); err != nil {
+		return fmt.Errorf("invalid skill name: %w", err)
+	}
+	dir := filepath.Join(r.dir, name)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return fmt.Errorf("skill %q not installed", name)
+	}
 	disabledFile := filepath.Join(r.dir, name, ".disabled")
 	if err := os.Remove(disabledFile); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("enabling skill: %w", err)
@@ -180,6 +204,9 @@ func (r *Registry) Enable(name string) error {
 
 // Disable creates a ".disabled" marker file for a skill.
 func (r *Registry) Disable(name string) error {
+	if err := ValidateName(name); err != nil {
+		return fmt.Errorf("invalid skill name: %w", err)
+	}
 	dir := filepath.Join(r.dir, name)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return fmt.Errorf("skill %q not installed", name)
@@ -206,4 +233,37 @@ func (r *Registry) IsEnabled(name string) bool {
 	disabledFile := filepath.Join(r.dir, name, ".disabled")
 	_, err := os.Stat(disabledFile)
 	return os.IsNotExist(err)
+}
+
+// IsEnabledFor returns true if the skill is enabled for the given role.
+func (r *Registry) IsEnabledFor(name, role string) bool {
+	// If globally disabled, not enabled for any role.
+	if !r.IsEnabled(name) {
+		return false
+	}
+	// If there is no role-specific enablement, fall back to global (which is enabled, since we passed the global check).
+	if r.roleEnablement == nil {
+		return true
+	}
+	// Check if there is an enablement set for this role.
+	if skills, ok := r.roleEnablement[role]; ok {
+		return skills[name]
+	}
+	// No enablement config for this role -> fall back to global (enabled).
+	return true
+}
+
+// ListForRole returns the list of skills enabled for the given role.
+func (r *Registry) ListForRole(role string) ([]*Skill, error) {
+	skills, err := r.List()
+	if err != nil {
+		return nil, err
+	}
+	var enabled []*Skill
+	for _, s := range skills {
+		if r.IsEnabledFor(s.Name, role) {
+			enabled = append(enabled, s)
+		}
+	}
+	return enabled, nil
 }

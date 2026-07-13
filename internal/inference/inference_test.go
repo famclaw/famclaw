@@ -78,7 +78,7 @@ func TestDefaultModel(t *testing.T) {
 		{512, ""},
 		{1024, "Qwen 2.5 1.5B (tiny, chat only)"},
 		{4096, "Qwen3 4B (balanced)"},
-		{8192, "Llama 3.1 8B (powerful)"},   // 8192 matches both gemma and llama, llama has same MinRAM
+		{8192, "Llama 3.1 8B (powerful)"}, // 8192 matches both gemma and llama, llama has same MinRAM
 	}
 
 	for _, tt := range tests {

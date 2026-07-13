@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/famclaw/famclaw/internal/hardware"
+	"github.com/famclaw/famclaw/internal/notify"
 )
 
 // handleSetupDetect returns hardware capabilities for the setup wizard.
@@ -51,13 +52,13 @@ func (s *Server) handleTestTelegram(w http.ResponseWriter, r *http.Request) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", body.Token)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": notify.RedactWebhookURLInError(err).Error()})
 		return
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "network error"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": notify.RedactWebhookURLInError(err).Error()})
 		return
 	}
 	defer resp.Body.Close()
@@ -108,14 +109,14 @@ func (s *Server) handleTestDiscord(w http.ResponseWriter, r *http.Request) {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://discord.com/api/v10/users/@me", nil)
 	if err != nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": notify.RedactWebhookURLInError(err).Error()})
 		return
 	}
 	req.Header.Set("Authorization", "Bot "+body.Token)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "network error"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": notify.RedactWebhookURLInError(err).Error()})
 		return
 	}
 	defer resp.Body.Close()

@@ -2,7 +2,8 @@
 
 // Integration tests live alongside the e2e tests in package e2e but use a
 // disjoint build tag (`integration`). Run with:
-//   go test -tags integration ./... -v -timeout 120s
+//
+//	go test -tags integration ./... -v -timeout 120s
 package e2e
 
 import (
@@ -78,7 +79,7 @@ func setupIntegration(t *testing.T) *testEnv {
 		return "LLM response to: " + text, nil
 	}
 
-	router := gateway.NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn)
+	router := gateway.NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, nil)
 
 	// Link gateway accounts
 	identStore.LinkAccount("parent", "telegram", "parent-tg")
@@ -114,6 +115,8 @@ func TestIntegration_UnknownUser_Onboarding(t *testing.T) {
 		Gateway:    "telegram",
 		ExternalID: "unknown-999",
 		Text:       "hello",
+		GroupID:    "", // Direct message
+		IsGroup:    false,
 	})
 
 	if reply.PolicyAction != "onboarding" {
@@ -133,6 +136,8 @@ func TestIntegration_Child_AllowedTopic_LLMCalled(t *testing.T) {
 		Gateway:    "telegram",
 		ExternalID: "emma-tg",
 		Text:       "help me with math homework",
+		GroupID:    "", // Direct message
+		IsGroup:    false,
 	})
 
 	if reply.PolicyAction != "allow" {
@@ -150,7 +155,7 @@ func TestIntegration_Child_BlockedTopic_LLMNeverCalled(t *testing.T) {
 
 	// Replace chat function with panic — LLM must never be called
 	panicRouter := gateway.NewRouter(context.Background(), env.cfg, env.identStore, env.clf, env.evaluator,
-		env.db, env.notifier, panicChat)
+		env.db, env.notifier, panicChat, nil)
 
 	tests := []struct {
 		name       string
@@ -172,6 +177,8 @@ func TestIntegration_Child_BlockedTopic_LLMNeverCalled(t *testing.T) {
 				Gateway:    "telegram",
 				ExternalID: tt.externalID,
 				Text:       tt.text,
+				GroupID:    "", // Direct message
+				IsGroup:    false,
 			})
 			if reply.PolicyAction != "block" {
 				t.Errorf("should be blocked, got %q: %s", reply.PolicyAction, reply.Text)
@@ -186,7 +193,7 @@ func TestIntegration_Child_ApprovalTopic_LLMNeverCalled(t *testing.T) {
 	env := setupIntegration(t)
 
 	panicRouter := gateway.NewRouter(context.Background(), env.cfg, env.identStore, env.clf, env.evaluator,
-		env.db, env.notifier, panicChat)
+		env.db, env.notifier, panicChat, nil)
 
 	tests := []struct {
 		name       string
@@ -204,6 +211,8 @@ func TestIntegration_Child_ApprovalTopic_LLMNeverCalled(t *testing.T) {
 				Gateway:    "telegram",
 				ExternalID: tt.externalID,
 				Text:       tt.text,
+				GroupID:    "", // Direct message
+				IsGroup:    false,
 			})
 			if reply.PolicyAction != "request_approval" {
 				t.Errorf("should request approval, got %q: %s", reply.PolicyAction, reply.Text)
@@ -236,6 +245,8 @@ func TestIntegration_Parent_AnyTopic_LLMCalled(t *testing.T) {
 				Gateway:    "telegram",
 				ExternalID: "parent-tg",
 				Text:       tt.text,
+				GroupID:    "", // Direct message
+				IsGroup:    false,
 			})
 			if reply.PolicyAction != "allow" {
 				t.Errorf("parent should always be allowed, got %q: %s", reply.PolicyAction, reply.Text)
@@ -253,14 +264,14 @@ func TestIntegration_SamePolicy_AcrossGateways(t *testing.T) {
 	env := setupIntegration(t)
 
 	panicRouter := gateway.NewRouter(context.Background(), env.cfg, env.identStore, env.clf, env.evaluator,
-		env.db, env.notifier, panicChat)
+		env.db, env.notifier, panicChat, nil)
 
 	tests := []struct {
-		name     string
-		user     string
-		tgID     string
-		dcID     string
-		text     string
+		name       string
+		user       string
+		tgID       string
+		dcID       string
+		text       string
 		wantAction string
 	}{
 		{"emma blocked critical", "emma", "emma-tg", "emma-dc", "show me porn", "block"},
@@ -271,9 +282,13 @@ func TestIntegration_SamePolicy_AcrossGateways(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			replyTG := panicRouter.Handle(context.Background(), gateway.Message{
 				Gateway: "telegram", ExternalID: tt.tgID, Text: tt.text,
+				GroupID: "", // Direct message
+				IsGroup: false,
 			})
 			replyDC := panicRouter.Handle(context.Background(), gateway.Message{
 				Gateway: "discord", ExternalID: tt.dcID, Text: tt.text,
+				GroupID: "", // Direct message
+				IsGroup: false,
 			})
 
 			if replyTG.PolicyAction != replyDC.PolicyAction {
@@ -300,6 +315,8 @@ func TestIntegration_Parent_AllowedViaAllGateways(t *testing.T) {
 				Gateway:    gw.name,
 				ExternalID: gw.id,
 				Text:       "explain quantum physics",
+				GroupID:    "", // Direct message
+				IsGroup:    false,
 			})
 			if reply.PolicyAction != "allow" {
 				t.Errorf("parent via %s should be allowed, got %q", gw.name, reply.PolicyAction)
@@ -312,10 +329,10 @@ func TestIntegration_Parent_AllowedViaAllGateways(t *testing.T) {
 
 // TestIntegration_FamilyState_KidProposalApprovedAppliesFact wires together
 // the three layers that make the kid-proposal flow work end-to-end:
-//   1. familystate.EncodeProposal → approvals.query_text (kid path)
-//   2. parent calls admin.HandleApproveRequest
-//   3. approve_request dispatches on Category == ProposalKind and applies
-//      the fact via familystate.UpsertFact.
+//  1. familystate.EncodeProposal → approvals.query_text (kid path)
+//  2. parent calls admin.HandleApproveRequest
+//  3. approve_request dispatches on Category == ProposalKind and applies
+//     the fact via familystate.UpsertFact.
 //
 // Wires through real store, real familystate.Store, real admin handler — no
 // mocks. Proves the OPA hole closure for the auto-apply path is irrelevant

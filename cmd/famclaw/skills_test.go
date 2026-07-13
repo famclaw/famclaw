@@ -27,7 +27,7 @@ func setupSkillDir(t *testing.T) (registryDir string, srcDir string) {
 }
 
 func noScanReg(dir string) *skillbridge.Registry {
-	return skillbridge.NewRegistry(dir, nil, skillbridge.InstallConfig{})
+	return skillbridge.NewRegistry(dir, nil, skillbridge.InstallConfig{}, nil)
 }
 
 func TestSkillInstallAndList(t *testing.T) {

@@ -345,9 +345,9 @@ func TestEvaluateOutput(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name      string
-		input     OutputInput
-		wantAllow bool
+		name       string
+		input      OutputInput
+		wantAllow  bool
 		wantRedact bool // true means len(Redact) > 0 is expected
 	}{
 		{

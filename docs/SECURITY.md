@@ -167,3 +167,32 @@ deferred:
 
 Until the CGO trade-off decision is made, the vault stays as it is and
 this section stays honest about what it does and does not defend against.
+
+## Sandbox / process confinement
+
+FamClaw uses a landlock+seccomp-based sandbox to confine MCP stdio-server subprocesses and restrict built-in file tool access to a designated directory.
+
+### MCP server sandboxing
+
+When `tools.sandbox.enabled` is true (the secure-by-default setting), FamClaw launches stdio-based MCP skill servers through a sandbox launcher that applies:
+
+- **Landlock filesystem rules**: The subprocess gains read/write access only to the configured sandbox root (default: a subdirectory of the database directory) and execute access to standard system paths (`/bin`, `/usr/bin`). All other filesystem access is denied.
+- **Seccomp network filter**: The subprocess is forbidden from performing network-related syscalls (socket, bind, connect, etc.), preventing any outbound network connections.
+
+The sandbox launcher is the FamClaw binary itself, re-executed with the `-sandbox-launcher` flag. It receives a minimal allowlisted environment (only `HOME`, `LANG`, `PATH`, `TERM`, `TMPDIR` are forwarded; all secrets and FamClaw-specific environment variables are stripped).
+
+If the host kernel lacks landlock or seccomp support, FamClaw refuses to start rather than run an unsandboxed subprocess (fail-closed behavior). Operators who genuinely want unconfined subprocesses must explicitly set `tools.sandbox.enabled: false`.
+
+### Built-in file tool confinement
+
+The built-in file tools (`file_read`, `file_write`, `file_stat`, `file_list`) are confined to the sandbox root via path resolution in the agent layer. Any attempt to access a path outside the sandbox root results in an error.
+
+### Configuration
+
+- `tools.sandbox.root`: Absolute path to the sandbox directory. Defaults to `<database_directory>/skill_sandbox`.
+- `tools.sandbox.enabled`: Boolean flag to enable/disable the sandbox launcher for stdio MCP servers. Defaults to `true` (secure-by-default).
+- `tools.sandbox.allow_unconfined`: If set to `true`, the sandbox launcher will skip applying restrictions when kernel support is missing (not recommended). Defaults to `false`.
+
+### Environment variable handling
+
+The sandbox launcher constructs a minimal environment for the subprocess using only a hardcoded allowlist of safe variables. The `BuildAllowlist` function (used by both the launcher and the MCP client) ensures that no FamClaw secrets (e.g., `FAMCLAW_LLM_API_KEY`, `*_TOKEN` variables) are passed to the subprocess.
