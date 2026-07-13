@@ -182,6 +182,59 @@ func checkSeccompSupport() bool {
 	return seccomp.Supported()
 }
 
+// prepareSandboxRoot validates the sandbox root path and ensures the directory exists.
+// It returns the cleaned absolute path on success, or an error if the path is invalid
+// or the directory cannot be created.
+func prepareSandboxRoot(sandboxRoot string) (string, error) {
+	// Check for empty string
+	if sandboxRoot == "" {
+		return "", fmt.Errorf("invalid sandbox root: empty")
+	}
+	
+	// Reject unsafe values and relative paths
+	if !filepath.IsAbs(sandboxRoot) {
+		return "", fmt.Errorf("invalid sandbox root %q: must be an absolute path", sandboxRoot)
+	}
+	if sandboxRoot == "." {
+		return "", fmt.Errorf("sandbox root must not be the current directory")
+	}
+	if sandboxRoot == "/" {
+		return "", fmt.Errorf("sandbox root must not be the root directory")
+	}
+	
+	// Convert to absolute path (does not require path to exist)
+	absBase, err := filepath.Abs(sandboxRoot)
+	if err != nil {
+		return "", fmt.Errorf("invalid sandbox root %q: %w", sandboxRoot, err)
+	}
+	
+	// Check if absolute path is root directory
+	if absBase == "/" {
+		return "", fmt.Errorf("sandbox root must not be the root directory")
+	}
+
+	// Ensure the sandbox root directory exists
+	if err := os.MkdirAll(absBase, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create sandbox root %q: %w", absBase, err)
+	}
+	
+	// Ensure the directory has correct permissions (0o700)
+	if err := os.Chmod(absBase, 0o700); err != nil {
+		return "", fmt.Errorf("failed to set permissions on sandbox root %q: %w", absBase, err)
+	}
+	
+	// Verify that what we created is indeed a directory
+	info, err := os.Stat(absBase)
+	if err != nil {
+		return "", fmt.Errorf("failed to stat sandbox root %q: %w", absBase, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("sandbox root %q is not a directory", absBase)
+	}
+	
+	return absBase, nil
+}
+
 // sandboxEnv returns a minimal environment allowlist for the sandbox
 // launcher's syscall.Exec call. Only safe, non-secret variables the
 // child process actually needs are included.
@@ -398,19 +451,10 @@ func main() {
 	if sandboxRoot == "." || sandboxRoot == "/" {
 		log.Fatalf("Sandbox root must not be the current or root directory")
 	}
-	// Validate and canonicalize the sandbox root
-	absBase, err := filepath.Abs(sandboxRoot)
-	if err != nil {
-		log.Fatalf("Invalid sandbox root %q: %v", sandboxRoot, err)
-	}
-	absRoot, err := filepath.EvalSymlinks(absBase)
-	if err != nil {
-		log.Fatalf("Invalid sandbox root %q: %v", sandboxRoot, err)
-	}
-	if absRoot == "/" {
-		log.Fatalf("Sandbox root must not be the root directory")
-	}
-	sandboxRoot = absRoot
+sandboxRoot, err = prepareSandboxRoot(sandboxRoot)
+if err != nil {
+	log.Fatalf("Invalid sandbox root: %v", err)
+}
 	
 	// Validate that the sandbox root is not a parent of itself
 	// This ensures we properly validate the path and avoid traversal issues
