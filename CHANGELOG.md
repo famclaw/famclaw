@@ -89,6 +89,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   declarations, blocked-topic refusal, family-context awareness, and basic
   arithmetic correctness. 13 probe×persona pairs total. Run via
   `make behavioral`.
+- **Sandbox / process confinement**: Landlock+seccomp sandbox launcher for stdio MCP servers and path-confinement of built-in file_* tools to `tools.sandbox.root`. Fail-closed on missing kernel support.
 - **Built-in `web_fetch` tool.** When `tools.web_fetch.enabled: true` in
   config, the LLM gets a `web_fetch` tool that retrieves a URL and
   returns extracted text (HTML→text via `golang.org/x/net/html`, plain
@@ -245,6 +246,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   logging `Notifications: configured`. The startup line now reports the
   enabled channel count (`Notifications: configured (N channel(s))`).
   Closes #167.
+- **Model-response tag sanitizer**: Stripped leaked `<thinking>`, `*`
 
 ### Removed
 - `verifyParentPIN` and `verifyParentPINConstantTime` functions
