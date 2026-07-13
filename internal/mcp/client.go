@@ -107,12 +107,15 @@ func (c *Client) Start(ctx context.Context) error {
 		// refused to start if either was missing; this per-call check is
 		// defence-in-depth so a misconfigured pool cannot silently fall
 		// back to an unsandboxed subprocess.
-		if c.Sandbox {
-			if !checkLandlockSupport() || !checkSeccompSupport() {
-				return fmt.Errorf("kernel lacks required sandboxing support (landlock=%v, seccomp=%v); refusing to launch MCP server %q unsandboxed",
-					checkLandlockSupport(), checkSeccompSupport(), c.name)
-			}
-			opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
+if c.Sandbox {
+		if c.SandboxRoot == "" {
+			return fmt.Errorf("sandbox root not set for sandboxed MCP server %q", c.name)
+		}
+		if !checkLandlockSupport() || !checkSeccompSupport() {
+			return fmt.Errorf("kernel lacks required sandboxing support (landlock=%v, seccomp=%v); refusing to launch MCP server %q unsandboxed",
+				checkLandlockSupport(), checkSeccompSupport(), c.name)
+		}
+		opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 				launcherArgs := []string{
 					"-sandbox-launcher",
 					"--sandbox-root", c.SandboxRoot,
