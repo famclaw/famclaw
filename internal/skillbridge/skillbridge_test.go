@@ -2,6 +2,7 @@ package skillbridge
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -211,7 +212,7 @@ func TestLoadForPromptMultiple(t *testing.T) {
 
 func TestRegistryInstallListRemove(t *testing.T) {
 	registryDir := t.TempDir()
-	reg := NewRegistry(registryDir, nil, InstallConfig{})
+	reg := NewRegistry(registryDir, nil, InstallConfig{}, nil)
 
 	// Create a skill source
 	srcDir := t.TempDir()
@@ -249,7 +250,7 @@ func TestRegistryInstallListRemove(t *testing.T) {
 }
 
 func TestRegistryRemoveNonexistent(t *testing.T) {
-	reg := NewRegistry(t.TempDir(), nil, InstallConfig{})
+	reg := NewRegistry(t.TempDir(), nil, InstallConfig{}, nil)
 	err := reg.Remove("nonexistent")
 	if err == nil {
 		t.Error("expected error removing nonexistent skill")
@@ -258,7 +259,7 @@ func TestRegistryRemoveNonexistent(t *testing.T) {
 
 func TestRegistryEnableDisable(t *testing.T) {
 	registryDir := t.TempDir()
-	reg := NewRegistry(registryDir, nil, InstallConfig{})
+	reg := NewRegistry(registryDir, nil, InstallConfig{}, nil)
 
 	// Create a skill source and install
 	srcDir := t.TempDir()
@@ -288,7 +289,7 @@ func TestRegistryEnableDisable(t *testing.T) {
 }
 
 func TestRegistryDisableNonexistent(t *testing.T) {
-	reg := NewRegistry(t.TempDir(), nil, InstallConfig{})
+	reg := NewRegistry(t.TempDir(), nil, InstallConfig{}, nil)
 	err := reg.Disable("ghost")
 	if err == nil {
 		t.Error("expected error disabling nonexistent skill")
@@ -296,7 +297,7 @@ func TestRegistryDisableNonexistent(t *testing.T) {
 }
 
 func TestRegistryListEmptyDir(t *testing.T) {
-	reg := NewRegistry(t.TempDir(), nil, InstallConfig{})
+	reg := NewRegistry(t.TempDir(), nil, InstallConfig{}, nil)
 	skills, err := reg.List()
 	if err != nil {
 		t.Fatalf("List on empty dir: %v", err)
@@ -307,7 +308,7 @@ func TestRegistryListEmptyDir(t *testing.T) {
 }
 
 func TestRegistryListNonexistentDir(t *testing.T) {
-	reg := NewRegistry("/nonexistent/path", nil, InstallConfig{})
+	reg := NewRegistry("/nonexistent/path", nil, InstallConfig{}, nil)
 	skills, err := reg.List()
 	if err != nil {
 		t.Fatalf("List on nonexistent dir should not error: %v", err)
@@ -444,7 +445,7 @@ func TestValidateInstalledDirSafe(t *testing.T) {
 
 func TestInstallPathTraversal(t *testing.T) {
 	registryDir := t.TempDir()
-	reg := NewRegistry(registryDir, nil, InstallConfig{})
+	reg := NewRegistry(registryDir, nil, InstallConfig{}, nil)
 
 	// SKILL.md with path traversal in name
 	traversalSKILLMD := `---
@@ -473,7 +474,7 @@ Evil content.
 
 func TestInstallValidName(t *testing.T) {
 	registryDir := t.TempDir()
-	reg := NewRegistry(registryDir, nil, InstallConfig{})
+	reg := NewRegistry(registryDir, nil, InstallConfig{}, nil)
 
 	srcDir := t.TempDir()
 	os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte(minimalSKILLMD), 0644)
@@ -491,4 +492,138 @@ func TestInstallValidName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SKILL.md not found at expected path: %v", err)
 	}
+}
+
+// TestRegistryRoleEnablement tests the role-based enablement functionality.
+func TestRegistryRoleEnablement(t *testing.T) {
+	// Create a temporary directory for the registry.
+	registryDir := t.TempDir()
+
+	// Create a role enablement map: parent gets skill1 and skill2, child gets only skill1.
+	roleEnablement := map[string][]string{
+		"parent": {"skill1", "skill2"},
+		"child":  {"skill1"},
+	}
+
+	// Create a registry with the role enablement.
+	reg := NewRegistry(registryDir, nil, InstallConfig{}, roleEnablement)
+
+	// Install three skills: skill1, skill2, skill3.
+	// Skill1: no .disabled -> should be enabled for parent and child (because in parent's list and child's list).
+	// Skill2: no .disabled -> should be enabled for parent only.
+	// Skill3: with .disabled -> should be disabled for all roles.
+	for _, name := range []string{"skill1", "skill2", "skill3"} {
+		skillDir := filepath.Join(registryDir, name)
+		if err := os.MkdirAll(skillDir, 0755); err != nil {
+			t.Fatalf("failed to create skill dir: %v", err)
+		}
+		// Write a minimal SKILL.md.
+		skillMD := filepath.Join(skillDir, "SKILL.md")
+		if err := os.WriteFile(skillMD, []byte(fmt.Sprintf(`---
+name: %s
+description: A test skill
+version: "0.1"
+---
+Test skill body.`, name)), 0644); err != nil {
+			t.Fatalf("failed to write SKILL.md: %v", err)
+		}
+		// For skill3, also create a .disabled file to make it globally disabled.
+		if name == "skill3" {
+			disabledFile := filepath.Join(skillDir, ".disabled")
+			if err := os.WriteFile(disabledFile, []byte("disabled"), 0644); err != nil {
+				t.Fatalf("failed to write .disabled file: %v", err)
+			}
+		}
+	}
+
+	// Test ListForRole for parent.
+	parentSkills, err := reg.ListForRole("parent")
+	if err != nil {
+		t.Fatalf("ListForRole(parent) failed: %v", err)
+	}
+	if len(parentSkills) != 2 {
+		t.Errorf("expected 2 skills for parent, got %d", len(parentSkills))
+	}
+	// Check that skill1 and skill2 are present.
+	foundSkill1 := false
+	foundSkill2 := false
+	for _, s := range parentSkills {
+		switch s.Name {
+		case "skill1":
+			foundSkill1 = true
+		case "skill2":
+			foundSkill2 = true
+		case "skill3":
+			t.Errorf("unexpectedly found skill3 in parent skills")
+		}
+	}
+	if !foundSkill1 {
+		t.Error("skill1 not found in parent skills")
+	}
+	if !foundSkill2 {
+		t.Error("skill2 not found in parent skills")
+	}
+
+	// Test ListForRole for child.
+	childSkills, err := reg.ListForRole("child")
+	if err != nil {
+		t.Fatalf("ListForRole(child) failed: %v", err)
+	}
+	if len(childSkills) != 1 {
+		t.Errorf("expected 1 skill for child, got %d", len(childSkills))
+	}
+	// Check that skill1 is present and skill2 is not.
+	foundSkill1InChild := false
+	foundSkill2InChild := false
+	for _, s := range childSkills {
+		switch s.Name {
+		case "skill1":
+			foundSkill1InChild = true
+		case "skill2":
+			foundSkill2InChild = true
+		case "skill3":
+			t.Errorf("unexpectedly found skill3 in child skills")
+		}
+	}
+	if !foundSkill1InChild {
+		t.Error("skill1 not found in child skills")
+	}
+	if foundSkill2InChild {
+		t.Error("skill2 unexpectedly found in child skills")
+	}
+
+	// Test IsEnabledFor for each skill and role.
+	tests := []struct {
+		name   string
+		role   string
+		want1  bool // skill1
+		want2  bool // skill2
+		want3  bool // skill3
+	}{
+		{"parent", "parent", true, true, false},
+		{"child", "child", true, false, false},
+		// Also test a role with no config: should fall back to global.
+		{"guest", "guest", true, true, false}, // skill1 and skill2 are globally enabled, skill3 is disabled.
+	}
+	for _, tt := range tests {
+		if got := reg.IsEnabledFor("skill1", tt.role); got != tt.want1 {
+			t.Errorf("IsEnabledFor(skill1, %s) = %v, want %v", tt.role, got, tt.want1)
+		}
+		if got := reg.IsEnabledFor("skill2", tt.role); got != tt.want2 {
+			t.Errorf("IsEnabledFor(skill2, %s) = %v, want %v", tt.role, got, tt.want2)
+		}
+		if got := reg.IsEnabledFor("skill3", tt.role); got != tt.want3 {
+			t.Errorf("IsEnabledFor(skill3, %s) = %v, want %v", tt.role, got, tt.want3)
+		}
+	}
+
+	// Test that global disable overrides role enablement.
+	// Even though skill3 is not in any role enablement list, it should be disabled because of .disabled.
+	// We already tested that in the IsEnabledFor above (want3 is false for all roles).
+	// Also test that if we remove the .disabled file, then skill3 should be enabled for roles that have it in their enablement list.
+	// But note: we cannot easily remove the .disabled file without changing the filesystem.
+// Instead, we'll test that if a skill is not globally disabled and not in the role enablement list for a role with config, then it is disabled for that role.
+// For role "parent", skill3 is not in the enablement list -> should be disabled (and we already want false).
+// For role "child", skill3 is not in the enablement list -> should be disabled (we want false).
+// For role "guest", there is no enablement config -> should fall back to global -> disabled because of .disabled -> we want false (already in the test).
 }

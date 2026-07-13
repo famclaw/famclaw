@@ -201,6 +201,7 @@ type SkillsConfig struct {
 	OpenClawCompat bool                         `yaml:"openclaw_compat"`
 	MCPServers     map[string]MCPServerConfig   `yaml:"mcp_servers,omitempty"`
 	Credentials    map[string]map[string]string `yaml:"credentials,omitempty"` // per-skill env vars
+	RoleEnablement map[string][]string          `yaml:"role_enablement,omitempty"`
 }
 
 type StorageConfig struct {

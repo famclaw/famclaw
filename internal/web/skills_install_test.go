@@ -22,7 +22,7 @@ func newSkillTestServer(t *testing.T) *Server {
 		Role:        "parent",
 		PIN:         testParentPIN,
 	}
-	reg := skillbridge.NewRegistry(t.TempDir(), nil, skillbridge.InstallConfig{})
+	reg := skillbridge.NewRegistry(t.TempDir(), nil, skillbridge.InstallConfig{}, nil)
 	return &Server{
 		cfg:           &config.Config{Users: []config.UserConfig{parent}},
 		cfgMu:         sync.RWMutex{},
