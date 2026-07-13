@@ -11,6 +11,8 @@ require (
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
+	github.com/elastic/go-seccomp-bpf v1.6.0
+	github.com/landlock-lsm/go-landlock v0.9.0
 	github.com/mark3labs/mcp-go v0.56.0
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/tetratelabs/wazero v1.12.0
@@ -57,6 +59,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
+	kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 // indirect
 	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

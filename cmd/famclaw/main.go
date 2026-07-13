@@ -18,6 +18,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/elastic/go-seccomp-bpf"
+	landlock "github.com/landlock-lsm/go-landlock/landlock"
+	landlocksyscall "github.com/landlock-lsm/go-landlock/landlock/syscall"
+
 	"github.com/famclaw/famclaw/internal/agent"
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/browser"
@@ -44,12 +48,202 @@ import (
 	"github.com/famclaw/famclaw/internal/web"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
+	"github.com/famclaw/famclaw/internal/filetool"
 )
+
+// applySandboxRestrictions applies Landlock filesystem restrictions and seccomp network restrictions
+func applySandboxRestrictions(sandboxRoot string) error {
+	// Apply Landlock filesystem restrictions
+	if err := applyLandlockRules(sandboxRoot); err != nil {
+		return fmt.Errorf("failed to apply Landlock rules: %w", err)
+	}
+
+	// Apply seccomp network restrictions
+	if err := applySeccompNetworkFilter(); err != nil {
+		return fmt.Errorf("failed to apply seccomp filter: %w", err)
+	}
+
+	return nil
+}
+
+// applyLandlockRules creates and applies a Landlock ruleset that restricts filesystem access
+// to the specified sandbox root (read/write within, nothing outside)
+// Also allows execution from standard system paths.
+//
+// Defensive validation of sandboxRoot happens here too (not just in
+// main()) because this function is also called from the sandbox
+// launcher sub-process — the launcher is entered by re-exec before
+// config is parsed, so it must guard its own input. The checks mirror
+// what config.Validate enforces on the host side.
+func applyLandlockRules(sandboxRoot string) error {
+	cleaned, err := validateSandboxRoot(sandboxRoot)
+	if err != nil {
+		return err
+	}
+	sandboxRoot = cleaned
+
+	// Use Landlock V9 with BestEffort for graceful degradation
+	// Allow read/write access to sandbox root only
+	// Allow execution from standard system paths
+	log.Printf("Applying Landlock rules: RWDirs(%s), RODirs(/bin, /usr/bin)", sandboxRoot)
+	err = landlock.V9.BestEffort().
+		RestrictPaths(
+			landlock.RWDirs(sandboxRoot),
+			landlock.RODirs("/bin", "/usr/bin"),
+		)
+	if err != nil {
+		log.Printf("Landlock restriction error: %v", err)
+		return fmt.Errorf("failed to apply Landlock restrictions: %w", err)
+	}
+	log.Printf("Landlock rules applied successfully")
+	return nil
+}
+
+// validateSandboxRoot enforces the preconditions for applying Landlock
+// rules: non-empty, absolute, cleaned, not "/" or ".", and an existing
+// directory. Returns the cleaned path on success.
+//
+// Pure function — extracted from applyLandlockRules so unit tests can
+// exercise the validation logic without flipping the running process
+// into a Landlock-restricted state (which prevents Go's TempDir
+// cleanup from removing the test directory).
+func validateSandboxRoot(sandboxRoot string) (string, error) {
+	if sandboxRoot == "" {
+		return "", fmt.Errorf("applyLandlockRules: sandbox root is empty")
+	}
+	if !filepath.IsAbs(sandboxRoot) {
+		return "", fmt.Errorf("applyLandlockRules: sandbox root must be an absolute path, got %q", sandboxRoot)
+	}
+	cleaned := filepath.Clean(sandboxRoot)
+	if cleaned == "/" || cleaned == "." {
+		return "", fmt.Errorf("applyLandlockRules: sandbox root must not be \"/\" or \".\", got %q", sandboxRoot)
+	}
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("applyLandlockRules: sandbox root %q does not exist: %w", sandboxRoot, err)
+		}
+		return "", fmt.Errorf("applyLandlockRules: failed to stat sandbox root %q: %w", sandboxRoot, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("applyLandlockRules: sandbox root %q is not a directory", sandboxRoot)
+	}
+	return cleaned, nil
+}
+
+// applySeccompNetworkFilter applies a seccomp-BPF filter to deny network-related syscalls.
+//
+// INTENTIONAL DESIGN — network denylist, not syscall denylist. The
+// DefaultAction is ActionAllow with only socket/connect/etc. blocked.
+// A blanket default-Deny would also block file I/O syscalls — read,
+// write, open, mmap, all the things a normal MCP server needs. The
+// Landlock ruleset is what contains the filesystem surface; this
+// filter is only here to cut off network egress. Reviewers should not
+// re-write this as a default-Deny without also re-checking which syscalls
+// an MCP child actually invokes.
+func applySeccompNetworkFilter() error {
+	// Create a seccomp filter that denies network syscalls
+	filter := seccomp.Filter{
+		NoNewPrivs: true,
+		Flag:       seccomp.FilterFlagTSync,
+		Policy: seccomp.Policy{
+			DefaultAction: seccomp.ActionAllow,
+			Syscalls: []seccomp.SyscallGroup{
+				{
+					Action: seccomp.ActionErrno,
+					Names: []string{
+						"socket", "socketpair", "bind", "listen", "accept", "accept4",
+						"connect", "getsockname", "getpeername", "setsockopt", "getsockopt",
+						"sendto", "recvfrom", "sendmsg", "recvmsg",
+						"recvmmsg", "sendmmsg",
+					},
+				},
+			},
+		},
+	}
+
+	// Load and apply the filter
+	if err := seccomp.LoadFilter(filter); err != nil {
+		return fmt.Errorf("failed to load seccomp filter: %w", err)
+	}
+
+	return nil
+}
+
+// checkLandlockSupport returns true if Landlock is supported on the current system
+func checkLandlockSupport() bool {
+	// Try to get the Landlock ABI version - returns error if not supported
+	_, err := landlocksyscall.LandlockGetABIVersion()
+	return err == nil
+}
+
+// checkSeccompSupport returns true if seccomp is supported on the current system
+func checkSeccompSupport() bool {
+	return seccomp.Supported()
+}
+
+// sandboxEnv returns a minimal environment allowlist for the sandbox
+// launcher's syscall.Exec call. Only safe, non-secret variables the
+// child process actually needs are included.
+func sandboxEnv() []string {
+	safe := []string{"HOME", "LANG", "PATH", "TERM", "TMPDIR"}
+	var out []string
+	for _, k := range safe {
+		if v, ok := os.LookupEnv(k); ok {
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
+}
 
 var Version = "dev"
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+	// Sandbox launcher mode - detects if we're running as a sandboxed MCP server
+	if len(os.Args) >= 3 && os.Args[1] == "-sandbox-launcher" && os.Args[2] == "--sandbox-root" {
+		if len(os.Args) < 6 || os.Args[4] != "--" {
+			log.Fatalf("Invalid sandbox launcher arguments. Expected: -sandbox-launcher --sandbox-root <root> -- <command> <args...>")
+		}
+		sandboxRoot := os.Args[3]
+		command := os.Args[5]
+	if !filepath.IsAbs(command) {
+		log.Fatalf("Sandbox launcher: command must be an absolute path: %q", command)
+}
+		args := os.Args[6:]
+
+		log.Printf("Sandbox launcher: applying restrictions for root %s, executing %s %v", sandboxRoot, command, args)
+		log.Printf("Sandbox launcher: command=%q, args=%q", command, args)
+		log.Printf("Sandbox launcher: os.Args=%v", os.Args)
+
+		// Apply Landlock filesystem restrictions
+		if err := applySandboxRestrictions(sandboxRoot); err != nil {
+			log.Fatalf("Failed to apply sandbox restrictions: %v", err)
+		}
+		log.Printf("Sandbox launcher: restrictions applied successfully")
+
+		// Execute the real MCP server command
+		// Construct full argv for the new process: [command, arg1, arg2, ...]
+		var argv []string
+		argv = append(argv, command)
+		argv = append(argv, args...)
+		log.Printf("Sandbox launcher: about to execute %s with argv %v", command, argv)
+		// Change working directory to sandbox root
+		if err := os.Chdir(sandboxRoot); err != nil {
+			log.Fatalf("Failed to change directory to sandbox root %s: %v", sandboxRoot, err)
+		}
+		// Filter the inherited environment through the sandbox allowlist.
+		// Passing os.Environ() would leak FAMCLAW_LLM_API_KEY,
+		// FAMCLAW_HMAC_SECRET, *_TOKEN, etc. to every sandbox-launched
+		// MCP server. sandboxEnv returns only the safe subset the child
+		// actually needs (PATH, HOME, LANG, TERM, TMPDIR).
+		execEnv := sandboxEnv()
+		if err := syscall.Exec(command, argv, execEnv); err != nil {
+			log.Fatalf("Failed to execute %s: %v", command, err)
+		}
+		// syscall.Exec only returns on error
+	}
 
 	// Dispatch subcommands before flag parsing
 	if len(os.Args) >= 2 && os.Args[1] == "skill" {
@@ -192,10 +386,47 @@ func main() {
 	log.Printf("Identity: ready")
 
 	// MCP tool server pool (stdio, HTTP, SSE transports)
-	mcpPool := mcp.NewPool()
+	var sandboxRoot string
+	if cfg.Tools.SandboxRoot != "" {
+		sandboxRoot = cfg.Tools.SandboxRoot
+	} else {
+		// Default to a subdirectory of the directory containing the DB file
+		dbDir := filepath.Dir(cfg.Storage.DBPath)
+		sandboxRoot = filepath.Join(dbDir, "skill_sandbox")
+	}
+	// Reject unsafe values
+	if sandboxRoot == "." || sandboxRoot == "/" {
+		log.Fatalf("Sandbox root must not be the current or root directory")
+	}
+	// Validate and canonicalize the sandbox root
+	absBase, err := filepath.Abs(sandboxRoot)
+	if err != nil {
+		log.Fatalf("Invalid sandbox root %q: %v", sandboxRoot, err)
+	}
+	absRoot, err := filepath.EvalSymlinks(absBase)
+	if err != nil {
+		log.Fatalf("Invalid sandbox root %q: %v", sandboxRoot, err)
+	}
+	if absRoot == "/" {
+		log.Fatalf("Sandbox root must not be the root directory")
+	}
+	sandboxRoot = absRoot
+	
+	// Validate that the sandbox root is not a parent of itself
+	// This ensures we properly validate the path and avoid traversal issues
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Configuration validation failed: %v", err)
+	}
+	mcpPool := mcp.NewPool(sandboxRoot, cfg.Tools.Sandbox.Enabled)
 	if len(cfg.Skills.MCPServers) > 0 {
 		mcpPool.RegisterFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
 		if err := mcpPool.StartAll(context.Background()); err != nil {
+			// Sandbox kernel-support probe at pool boot is fail-closed:
+			// terminating here keeps an insecure-by-default deployment
+			// from silently downgrading to unsandboxed MCP subprocesses.
+			if cfg.Tools.Sandbox.Enabled {
+				log.Fatalf("MCP pool: %v", err)
+			}
 			log.Printf("MCP pool: %v", err)
 		}
 		tools := mcpPool.ListTools()
@@ -292,36 +523,44 @@ reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallCon
 			registered = append(registered, "tool_result_more")
 		}
 	}
-	// Phase 3.3 — get_family_state + propose_family_fact are always
-	// available; OPA policy already permits them for every role, and the
-	// handlers degrade gracefully when the store is nil (tests).
-	builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
-	registered = append(registered, "get_family_state", "propose_family_fact")
-	if cfg.Tools.WebSearch.Enabled {
-		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
-		registered = append(registered, "web_search")
+// Phase 3.3 — get_family_state + propose_family_fact are always
+// available; OPA policy already permits them for every role, and the
+// handlers degrade gracefully when the store is nil (tests).
+builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
+registered = append(registered, "get_family_state", "propose_family_fact")
+if cfg.Tools.WebSearch.Enabled {
+	builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
+	registered = append(registered, "web_search")
+}
+// File tools are always available; access is restricted by OPA policy.
+builtinTools = append(builtinTools,
+	filetool.FileReadTool(),
+	filetool.FileWriteTool(),
+	filetool.FileStatTool(),
+	filetool.FileListTool(),
+)
+registered = append(registered, "file_read", "file_write", "file_stat", "file_list")
+var browserPool *browser.Pool
+if cfg.Tools.Browser.Enabled {
+	// Pool owns its idle-sweeper goroutine; pass Background and rely on
+	// Close (deferred below) to cancel it. A process-wide cancellable
+	// ctx exists later in main but Pool boots before the gateway ctx.
+	pool, err := browser.NewPool(context.Background(), browser.Config{
+		Endpoint:         cfg.Tools.Browser.Endpoint,
+		IdleTimeout:      time.Duration(cfg.Tools.Browser.IdleSec) * time.Second,
+		SnapshotMaxChars: cfg.Tools.Browser.SnapshotMaxChars,
+	})
+	if err != nil {
+		log.Fatalf("Browser pool: %v", err)
 	}
-	var browserPool *browser.Pool
-	if cfg.Tools.Browser.Enabled {
-		// Pool owns its idle-sweeper goroutine; pass Background and rely on
-		// Close (deferred below) to cancel it. A process-wide cancellable
-		// ctx exists later in main but Pool boots before the gateway ctx.
-		pool, err := browser.NewPool(context.Background(), browser.Config{
-			Endpoint:         cfg.Tools.Browser.Endpoint,
-			IdleTimeout:      time.Duration(cfg.Tools.Browser.IdleSec) * time.Second,
-			SnapshotMaxChars: cfg.Tools.Browser.SnapshotMaxChars,
-		})
-		if err != nil {
-			log.Fatalf("Browser pool: %v", err)
-		}
-		defer pool.Close()
-		browserPool = pool
-		for _, t := range browser.Tools(cfg.Tools.Browser.AllowedRoles) {
-			builtinTools = append(builtinTools, t)
-			registered = append(registered, strings.TrimPrefix(t.Name, "builtin__"))
-		}
-		log.Printf("Browser: enabled (endpoint=%s, idle=%ds)", cfg.Tools.Browser.Endpoint, cfg.Tools.Browser.IdleSec)
+	defer pool.Close()
+	browserPool = pool
+	for _, t := range browser.Tools(cfg.Tools.Browser.AllowedRoles) {
+		builtinTools = append(builtinTools, t)
+		registered = append(registered, strings.TrimPrefix(t.Name, "builtin__"))
 	}
+	log.Printf("Browser: enabled (endpoint=%s, idle=%ds)", cfg.Tools.Browser.Endpoint, cfg.Tools.Browser.IdleSec)
+}
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
 	// Chat function for gateway router
@@ -594,3 +833,5 @@ func parseTTLByRole(in map[string]string) map[string]time.Duration {
 	}
 	return out
 }
+
+

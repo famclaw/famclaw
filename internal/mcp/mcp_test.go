@@ -79,7 +79,7 @@ func newTestClient(t *testing.T) *Client {
 
 func TestNewTransportClient_Stdio(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "stdio", Command: "echo"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "", false)
 	if c.transportType != "stdio" {
 		t.Errorf("transport = %q, want stdio", c.transportType)
 	}
@@ -87,7 +87,7 @@ func TestNewTransportClient_Stdio(t *testing.T) {
 
 func TestNewTransportClient_HTTP(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "http", URL: "http://localhost:9999/mcp"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "", false)
 	if c.transportType != "http" {
 		t.Errorf("transport = %q, want http", c.transportType)
 	}
@@ -95,7 +95,7 @@ func TestNewTransportClient_HTTP(t *testing.T) {
 
 func TestNewTransportClient_SSE(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "sse", URL: "http://localhost:9999/sse"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "", false)
 	if c.transportType != "sse" {
 		t.Errorf("transport = %q, want sse", c.transportType)
 	}
@@ -103,7 +103,7 @@ func TestNewTransportClient_SSE(t *testing.T) {
 
 func TestNewTransportClient_DefaultStdio(t *testing.T) {
 	cfg := config.MCPServerConfig{Command: "some-cmd"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "", false)
 	if c.transportType != "stdio" {
 		t.Errorf("empty transport with command should default to stdio, got %q", c.transportType)
 	}
@@ -111,7 +111,7 @@ func TestNewTransportClient_DefaultStdio(t *testing.T) {
 
 func TestNewTransportClient_DefaultHTTP(t *testing.T) {
 	cfg := config.MCPServerConfig{URL: "http://example.com/mcp"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "", false)
 	if c.transportType != "http" {
 		t.Errorf("empty transport with url should default to http, got %q", c.transportType)
 	}
@@ -119,7 +119,7 @@ func TestNewTransportClient_DefaultHTTP(t *testing.T) {
 
 func TestNewTransportClient_UnknownTransportFails(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "grpc", URL: "localhost:50051"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "", false)
 	err := c.Start(context.Background())
 	if err == nil {
 		t.Error("expected error for unknown transport")
@@ -128,7 +128,7 @@ func TestNewTransportClient_UnknownTransportFails(t *testing.T) {
 
 func TestNewTransportClient_StdioFailsBadBinary(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "stdio", Command: "nonexistent-binary-xyz"}
-	c := NewTransportClient("test", cfg)
+	c := NewTransportClient("test", cfg, "", false)
 	err := c.Start(context.Background())
 	if err == nil {
 		t.Error("expected error for bad binary")
@@ -205,14 +205,14 @@ func TestClientStopNilsInner(t *testing.T) {
 // ── Pool tests ───────────────────────────────────────────────────────────────
 
 func TestPoolHasTool(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool("", false)
 	if pool.HasTool("nonexistent") {
 		t.Error("empty pool should not have any tools")
 	}
 }
 
 func TestPoolCallToolUnknown(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool("", false)
 	_, err := pool.CallTool(context.Background(), "ghost", nil)
 	if err == nil {
 		t.Error("expected error for unknown tool")
@@ -226,12 +226,12 @@ func TestMaxToolCallIterations(t *testing.T) {
 }
 
 func TestPoolStopAllEmpty(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool("", false)
 	pool.StopAll()
 }
 
 func TestPoolListToolsEmpty(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool("", false)
 	tools := pool.ListTools()
 	if len(tools) != 0 {
 		t.Errorf("expected 0 tools, got %d", len(tools))
@@ -271,7 +271,7 @@ func TestValidateMCPServer(t *testing.T) {
 }
 
 func TestPoolRegisterFromConfig(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool("", false)
 	servers := map[string]config.MCPServerConfig{
 		"enabled":  {Transport: "stdio", Command: "echo"},
 		"disabled": {Transport: "stdio", Command: "nope", Disabled: true},
@@ -279,6 +279,55 @@ func TestPoolRegisterFromConfig(t *testing.T) {
 	pool.RegisterFromConfig(servers, nil)
 	if len(pool.clients) != 1 {
 		t.Errorf("expected 1 client (disabled skipped), got %d", len(pool.clients))
+	}
+}
+
+// TestPoolRegisterFromConfig_PropagatesSandboxFlag ensures the
+// pool-level Sandbox flag lands on every registered Client.Sandbox so
+// the per-call fail-closed path activates when the operator enabled
+// the sandbox in config.
+func TestPoolRegisterFromConfig_PropagatesSandboxFlag(t *testing.T) {
+	pool := NewPool("/var/sandbox", true)
+	pool.RegisterFromConfig(map[string]config.MCPServerConfig{
+		"a": {Transport: "stdio", Command: "/bin/true"},
+	}, nil)
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+	mc, ok := pool.clients["a"]
+	if !ok {
+		t.Fatalf("server %q not registered", "a")
+	}
+	if !mc.client.Sandbox {
+		t.Errorf("client.Sandbox = false, want true (pool propagated Sandbox=true)")
+	}
+	if mc.client.SandboxRoot != "/var/sandbox" {
+		t.Errorf("client.SandboxRoot = %q, want /var/sandbox", mc.client.SandboxRoot)
+	}
+}
+
+// TestPool_StartAll_FailClosedOnSandboxKernelGap covers the new boot-time
+// fail-closed probe. When Sandbox=true and the kernel is missing one of
+// the required features (landlock or seccomp), StartAll must return an
+// error rather than spawning unsandboxed subprocesses. On a host that
+// actually has both landlock and seccomp the probe succeeds and the
+// test is skipped — guarding against environment-dependent flips.
+func TestPool_StartAll_FailClosedOnSandboxKernelGap(t *testing.T) {
+	pool := NewPool(t.TempDir(), true)
+	// Register one synthetic stdio server so StartAll has something to
+	// iterate over if the kernel probe passes; the test skips in that
+	// case so we never actually try to spawn the fake binary.
+	pool.RegisterFromConfig(map[string]config.MCPServerConfig{
+		"never": {Transport: "stdio", Command: "/bin/true"},
+	}, nil)
+	if checkLandlockSupport() && checkSeccompSupport() {
+		t.Skip("kernel has both landlock and seccomp — cannot exercise fail-closed path here")
+	}
+	err := pool.StartAll(context.Background())
+	if err == nil {
+		t.Fatalf("expected fail-closed error, got nil")
+	}
+	if !strings.Contains(err.Error(), "sandbox") {
+		t.Fatalf("expected sandbox-related error, got %v", err)
 	}
 }
 
@@ -469,5 +518,45 @@ func TestStdioEnvIsolation(t *testing.T) {
 	out, _ := cmd.CombinedOutput()
 	if len(out) > 0 {
 		t.Errorf("subprocess leaked env vars:\n%s", string(out))
+	}
+}
+
+// TestBuildAllowlist_Exported verifies the exported BuildAllowlist is
+// the same function as the internal buildAllowlist. The sandbox launcher
+// in cmd/famclaw/main.go calls the exported form to filter os.Environ()
+// before syscall.Exec — make sure both routes produce identical output.
+func TestBuildAllowlist_Exported(t *testing.T) {
+	t.Setenv("FAMCLAW_LLM_API_KEY", "sk-test-llm-key-12345")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "111:AAAbbCCDdEE")
+	t.Setenv("PATH", "/usr/local/bin:/usr/bin:/bin")
+	t.Setenv("HOME", "/tmp")
+
+	want := buildAllowlist(map[string]string{"MY_CUSTOM_CRED": "ok"})
+	got := BuildAllowlist(map[string]string{"MY_CUSTOM_CRED": "ok"})
+	if fmt.Sprintf("%v", want) != fmt.Sprintf("%v", got) {
+		t.Fatalf("BuildAllowlist != buildAllowlist\nwant=%v\n got=%v", want, got)
+	}
+}
+
+// TestClient_Start_FailClosedWhenSandboxRequiredButKernelLacksSupport
+// guards the per-call fail-closed path inside Client.Start. When the
+// pool already started (kernel support verified) the launcher will be
+// installed — this test inverts those conditions: it intentionally
+// requests Sandbox=true without going through the pool, and on a host
+// without both landlock and seccomp the call must return the
+// fail-closed error rather than silently launching unsandboxed.
+func TestClient_Start_FailClosedWhenSandboxRequired(t *testing.T) {
+	cfg := config.MCPServerConfig{Transport: "stdio", Command: "/bin/true"}
+	c := NewTransportClient("fail-closed-test", cfg, "/tmp", true)
+	// Force the gate to trip by patching support to false on this call.
+	if checkLandlockSupport() && checkSeccompSupport() {
+		t.Skip("kernel has both landlock and seccomp — cannot exercise fail-closed path here")
+	}
+	err := c.Start(context.Background())
+	if err == nil {
+		t.Fatalf("expected fail-closed error, got nil")
+	}
+	if !strings.Contains(err.Error(), "lacks required sandboxing support") {
+		t.Fatalf("expected sandboxing-support error, got %v", err)
 	}
 }

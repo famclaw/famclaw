@@ -10,10 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"math"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -407,10 +410,49 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		case "builtin__delete_family_category":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
 			return admin.HandleDeleteFamilyCategory(ctx, deps, args)
+		case "builtin__file_read":
+			return a.handleFileRead(ctx, args)
+		case "builtin__file_write":
+			return a.handleFileWrite(ctx, args)
+		case "builtin__file_stat":
+			return a.handleFileStat(ctx, args)
+		case "builtin__file_list":
+			return a.handleFileList(ctx, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
 	}
+}
+
+func (a *Agent) confinePath(path string) (string, error) {
+	if a.cfg.Tools.SandboxRoot == "" {
+		return "", fmt.Errorf("sandbox root not configured")
+	}
+	sandboxRoot := a.cfg.Tools.SandboxRoot
+	var err error
+	// Ensure sandbox root is absolute and evaluated for symlinks
+	if sandboxRoot, err = filepath.EvalSymlinks(filepath.Clean(sandboxRoot)); err != nil {
+		return "", fmt.Errorf("invalid sandbox root: %w", err)
+	}
+	var absPath string
+	if filepath.IsAbs(path) {
+		if absPath, err = filepath.EvalSymlinks(filepath.Clean(path)); err != nil {
+			return "", fmt.Errorf("failed to clean path: %w", err)
+		}
+	} else {
+		if absPath, err = filepath.EvalSymlinks(filepath.Clean(filepath.Join(sandboxRoot, path))); err != nil {
+			return "", fmt.Errorf("failed to join and clean path: %w", err)
+		}
+	}
+	// Check that the path is within the sandbox root using filepath.Rel to avoid string prefix issues.
+	rel, err := filepath.Rel(sandboxRoot, absPath)
+	if err != nil {
+		return "", fmt.Errorf("computing relative path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("path %q escapes sandbox root %q", path, sandboxRoot)
+	}
+	return absPath, nil
 }
 
 // Subagent timeout defaults / caps (in seconds).
@@ -418,6 +460,176 @@ const (
 	subagentDefaultTimeoutSec = 300  // 5 minutes
 	subagentMaxTimeoutSec     = 1800 // 30 minutes
 )
+
+func (a *Agent) handleFileRead(ctx context.Context, args map[string]any) (string, error) {
+	pathRaw, ok := args["path"].(string)
+	if !ok || pathRaw == "" {
+		return "", fmt.Errorf("file_read requires a non-empty 'path' argument")
+	}
+	absPath, err := a.confinePath(pathRaw)
+	if err != nil {
+		return "", fmt.Errorf("resolving file_read path: %w", err)
+	}
+	maxBytes := a.cfg.Tools.FileRead.MaxBytes
+	if maxBytes > 0 {
+		file, err := os.Open(absPath)
+		if err != nil {
+			return "", fmt.Errorf("opening file: %w", err)
+		}
+		defer file.Close()
+		data := make([]byte, maxBytes)
+		n, err := file.Read(data)
+		if err != nil && err != io.EOF {
+			return "", fmt.Errorf("reading file: %w", err)
+		}
+		data = data[:n]
+		// Check if there is more data
+		var buf [1]byte
+		_, err = file.Read(buf[:])
+		if err == nil {
+			// We read an extra byte, meaning there is more data.
+			return string(data) + "\n[truncated]", nil
+		} else if err != io.EOF {
+			return "", fmt.Errorf("checking for extra data: %w", err)
+		}
+		// If err == io.EOF, then we reached the end.
+		return string(data), nil
+	} else {
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			return "", fmt.Errorf("reading file: %w", err)
+		}
+		return string(data), nil
+	}
+}
+
+func (a *Agent) handleFileWrite(ctx context.Context, args map[string]any) (string, error) {
+	pathRaw, ok := args["path"].(string)
+	if !ok || pathRaw == "" {
+		return "", fmt.Errorf("file_write requires a non-empty 'path' argument")
+	}
+	contentRaw, ok := args["content"].(string)
+	if !ok {
+		return "", fmt.Errorf("file_write requires a 'content' argument")
+	}
+	// Split the path into directory and base.
+	dir := filepath.Dir(pathRaw)
+	base := filepath.Base(pathRaw)
+	if dir == "" {
+		dir = "."
+	}
+	// Confine the directory (must exist). confinePath canonicalises via
+	// EvalSymlinks so confinedDir is an absolute, symlink-resolved path
+	// already verified to sit inside the sandbox root.
+	confinedDir, err := a.confinePath(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolving file_write path: %w", err)
+	}
+	// Form the absolute path for the file, then CollapseDotDot via Clean.
+	joinedPath := filepath.Clean(filepath.Join(confinedDir, base))
+	// Re-check that the joined path is within the sandbox root. confinePath
+	// evaluated the directory but not the final component (a non-existent
+	// file's symlinks cannot be resolved yet), so a pathological base like
+	// ".." can shift joinedPath back outside the root. We also need to
+	// defeat a symlink INSIDE the sandbox that points outside — the string
+	// prefix check below is not enough on its own; we re-resolve via
+	// EvalSymlinks when possible and reconfirm containment.
+	if a.cfg.Tools.SandboxRoot == "" {
+		return "", fmt.Errorf("file_write: sandbox root not configured")
+	}
+	sandboxRoot, err := filepath.EvalSymlinks(filepath.Clean(a.cfg.Tools.SandboxRoot))
+	if err != nil {
+		return "", fmt.Errorf("file_write: invalid sandbox root: %w", err)
+	}
+	rel, relErr := filepath.Rel(sandboxRoot, joinedPath)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("file_write path %q escapes sandbox root %q", pathRaw, sandboxRoot)
+	}
+	// Defence-in-depth against in-sandbox symlinks pointing outside. If
+	// the target file already exists, EvalSymlinks returns the resolved
+	// path; otherwise (new file) the path either does not exist or its
+	// parent has been resolved by confinePath already — so this branch
+	// only catches the "the wrong-named symlink is in the way" case.
+	if resolved, err := filepath.EvalSymlinks(joinedPath); err == nil {
+		if !isWithinDir(resolved, sandboxRoot) {
+			return "", fmt.Errorf("file_write path %q resolves to %q outside sandbox", pathRaw, resolved)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("file_write: failed to resolve %q: %w", joinedPath, err)
+	}
+	// Write the file with restrictive mode (sandbox holds user-private data).
+	if err := os.WriteFile(joinedPath, []byte(contentRaw), 0600); err != nil {
+		return "", fmt.Errorf("writing file: %w", err)
+	}
+	return fmt.Sprintf("ok — wrote %d bytes to %q", len(contentRaw), pathRaw), nil
+}
+
+// isWithinDir reports whether path equals dir or sits beneath it, using
+// a separator-aware prefix match. Both arguments must be cleaned first.
+// Returns false if path is absolute and outside dir.
+func isWithinDir(path, dir string) bool {
+	path = filepath.Clean(path)
+	dir = filepath.Clean(dir)
+	if path == dir {
+		return true
+	}
+	sep := string(os.PathSeparator)
+	return strings.HasPrefix(path, dir+sep)
+}
+
+func (a *Agent) handleFileStat(ctx context.Context, args map[string]any) (string, error) {
+	pathRaw, ok := args["path"].(string)
+	if !ok || pathRaw == "" {
+		return "", fmt.Errorf("file_stat requires a non-empty 'path' argument")
+	}
+	absPath, err := a.confinePath(pathRaw)
+	if err != nil {
+		return "", fmt.Errorf("resolving file_stat path: %w", err)
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", fmt.Errorf("statting file: %w", err)
+	}
+	return fmt.Sprintf("Name: %s\nSize: %d bytes\nMode: %s\nModTime: %s", info.Name(), info.Size(), info.Mode(), info.ModTime().Format(time.RFC3339)), nil
+}
+
+func (a *Agent) handleFileList(ctx context.Context, args map[string]any) (string, error) {
+	pathRaw, ok := args["path"].(string)
+	if !ok {
+		pathRaw = "" // default to sandbox root
+	}
+	absPath, err := a.confinePath(pathRaw)
+	if err != nil {
+		return "", fmt.Errorf("resolving file_list path: %w", err)
+	}
+	files, err := os.ReadDir(absPath)
+	if err != nil {
+		return "", fmt.Errorf("reading directory: %w", err)
+	}
+	var lines []string
+	var truncated bool
+	if maxEntries := a.cfg.Tools.FileList.MaxEntries; maxEntries > 0 {
+		if len(files) > maxEntries {
+			files = files[:maxEntries]
+			truncated = true
+		}
+	}
+	for _, f := range files {
+		line := f.Name()
+		if f.IsDir() {
+			line += "/"
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return "(empty)", nil
+	}
+	result := strings.Join(lines, "\n")
+	if truncated {
+		result += "\n[truncated]"
+	}
+	return result, nil
+}
 
 func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (string, error) {
 	if a.scheduler == nil {

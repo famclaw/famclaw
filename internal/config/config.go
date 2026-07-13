@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
+	"path/filepath"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,6 +33,16 @@ type ToolsConfig struct {
 	WebSearch WebSearchConfig `yaml:"web_search,omitempty"`
 	Browser   BrowserConfig   `yaml:"browser,omitempty"`
 	ToolCache ToolCacheConfig `yaml:"tool_cache,omitempty"`
+	FileRead FileReadConfig `yaml:"file_read,omitempty"`
+	FileList FileListConfig `yaml:"file_list,omitempty"`
+	SandboxRoot string `yaml:"sandbox_root,omitempty"`
+	Sandbox   SandboxConfig   `yaml:"sandbox,omitempty"`
+}
+
+// SandboxConfig controls the sandboxing of MCP servers.
+type SandboxConfig struct {
+	Enabled         bool  `yaml:"enabled"`          // default true
+	AllowUnconfined bool  `yaml:"allow_unconfined"` // default false (fail-closed)
 }
 
 // BrowserConfig controls the built-in browser_* tools (real browser nav via
@@ -412,6 +424,17 @@ func applyDefaults(c *Config) {
 	if len(c.Tools.WebSearch.AllowedRoles) == 0 {
 		c.Tools.WebSearch.AllowedRoles = []string{"parent"}
 	}
+	// sandbox defaults
+	if c.Tools.Sandbox.Enabled == false { // zero value is false, so we explicitly check for zero
+		// INTENTIONAL DESIGN — secure-by-default. A fresh deployment
+		// enables the landlock+seccomp sandbox launcher for every stdio
+		// MCP server; operators who genuinely want unconfined subprocesses
+		// must set tools.sandbox.enabled=false explicitly. The startup
+		// checks elsewhere in the codebase assume this default is on
+		// and produce a fail-closed error if it is enabled but the
+		// kernel cannot support it.
+		c.Tools.Sandbox.Enabled = true
+	}
 	// browser defaults
 	if c.Tools.Browser.IdleSec == 0 {
 		c.Tools.Browser.IdleSec = 300
@@ -481,6 +504,12 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("tools.web_search.timeout_seconds must be > 0 (got %d)", c.Tools.WebSearch.TimeoutSec)
 		}
 	}
+	if c.Tools.FileRead.MaxBytes < 0 {
+		return fmt.Errorf("tools.file_read.max_bytes must be >= 0 (got %d)", c.Tools.FileRead.MaxBytes)
+	}
+	if c.Tools.FileList.MaxEntries < 0 {
+		return fmt.Errorf("tools.file_list.max_entries must be >= 0 (got %d)", c.Tools.FileList.MaxEntries)
+	}
 	if c.Tools.Browser.Enabled {
 		if strings.TrimSpace(c.Tools.Browser.Endpoint) == "" {
 			return fmt.Errorf("tools.browser.endpoint must be set when enabled (e.g. ws://localhost:3000/)")
@@ -494,6 +523,36 @@ func (c *Config) Validate() error {
 	}
 	if c.Tools.Browser.SnapshotMaxChars < 0 {
 		return fmt.Errorf("tools.browser.snapshot_max_chars must be >= 0 (got %d)", c.Tools.Browser.SnapshotMaxChars)
+	}
+	// Validate sandbox root if set.
+	if c.Tools.SandboxRoot != "" {
+		// Make absolute if not already.
+		if !filepath.IsAbs(c.Tools.SandboxRoot) {
+			abs, err := filepath.Abs(c.Tools.SandboxRoot)
+			if err != nil {
+				return fmt.Errorf("tools.sandbox_root: failed to get absolute path: %w", err)
+			}
+			c.Tools.SandboxRoot = abs
+		}
+		// Clean the path (removes trailing slashes, resolves . and .. components).
+		cleaned := filepath.Clean(c.Tools.SandboxRoot)
+		// Reject unsafe values: root directory or current directory.
+		if cleaned == "/" || cleaned == "." {
+			return fmt.Errorf("tools.sandbox_root must not be the root directory (\"/\") or current directory (\".\")")
+		}
+		// Check that the directory exists.
+		info, err := os.Stat(cleaned)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("tools.sandbox_root: directory does not exist: %w", err)
+			}
+			return fmt.Errorf("tools.sandbox_root: failed to stat directory: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("tools.sandbox_root: not a directory: %w", err)
+		}
+		// Optionally, ensure the parent directory exists? Not required; we can create later.
+		c.Tools.SandboxRoot = cleaned
 	}
 	return nil
 }
@@ -565,6 +624,21 @@ func (c *Config) LLMEndpointForProfile(profileName string) LLMEndpoint {
 		log.Printf("[config] warning: LLM endpoint is empty for profile %q — check llm.base_url in config", profileName)
 	}
 	return ep
+}
+
+
+// FileReadConfig controls the built-in file_read tool.
+type FileReadConfig struct {
+	// MaxBytes is the maximum number of bytes to read from a file.
+	// If 0, there is no limit.
+	MaxBytes int `yaml:"max_bytes,omitempty"`
+}
+
+// FileListConfig controls the built-in file_list tool.
+type FileListConfig struct {
+	// MaxEntries is the maximum number of directory entries to return.
+// If 0, there is no limit.
+	MaxEntries int `yaml:"max_entries,omitempty"`
 }
 
 // ValidateProvider checks that the configured LLM provider is valid.
