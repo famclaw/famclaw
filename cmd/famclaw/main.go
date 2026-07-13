@@ -229,6 +229,10 @@ func main() {
 		argv = append(argv, command)
 		argv = append(argv, args...)
 		log.Printf("Sandbox launcher: about to execute %s with argv %v", command, argv)
+		// Change working directory to sandbox root
+		if err := os.Chdir(sandboxRoot); err != nil {
+			log.Fatalf("Failed to change directory to sandbox root %s: %v", sandboxRoot, err)
+		}
 		// Filter the inherited environment through the sandbox allowlist.
 		// Passing os.Environ() would leak FAMCLAW_LLM_API_KEY,
 		// FAMCLAW_HMAC_SECRET, *_TOKEN, etc. to every sandbox-launched
