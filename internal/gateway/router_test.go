@@ -24,17 +24,17 @@ import (
 )
 
 // panicChat is a ChatFunc that panics if called — proves policy gate works.
-func panicChat(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+func panicChat(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 	panic("LLM called when it should not have been — policy gate FAILED")
 }
 
 // echoChat returns a predictable response for testing the allow path.
-func echoChat(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+func echoChat(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 	return "echo: " + text, nil
 }
 
 // errorChat simulates an LLM error.
-func errorChat(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+func errorChat(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 	return "", fmt.Errorf("LLM unavailable")
 }
 
@@ -488,7 +488,7 @@ func TestRouterPendingApproval(t *testing.T) {
 }
 
 // slowChat simulates a slow LLM — 200ms per response.
-func slowChat(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+func slowChat(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 	time.Sleep(200 * time.Millisecond)
 	return "slow: " + text, nil
 }
@@ -962,7 +962,7 @@ func TestHandleSkillCommand(t *testing.T) {
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
 	skillTmpDir := t.TempDir()
 	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{}, nil)
-	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 		return "stub", nil
 	}
 	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg)
@@ -1229,7 +1229,7 @@ func TestHandleSkillCommandInstallEnableDisable(t *testing.T) {
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
 	skillTmpDir := t.TempDir()
 	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{}, nil)
-	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 		return "stub", nil
 	}
 	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg)
@@ -1351,7 +1351,7 @@ func TestHandleSkillCommandEmptyList(t *testing.T) {
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
 	skillTmpDir := t.TempDir()
 	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{}, nil)
-	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 		return "stub", nil
 	}
 	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg)

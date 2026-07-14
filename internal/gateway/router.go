@@ -33,10 +33,6 @@ type pendingRegistration struct {
 	askedAt     time.Time
 }
 
-// ChatFunc is the function signature for LLM chat.
-// Matches the shape of agent.Chat but decoupled for testability.
-type ChatFunc func(ctx context.Context, user *config.UserConfig, text string) (string, error)
-
 // Router routes inbound gateway messages through the policy pipeline.
 // Uses a SessionPool for per-user serial, cross-user concurrent processing.
 type Router struct {
@@ -214,7 +210,12 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		}
 		return r.handleSkillCommand(ctx, adjustedUser.Name, fields)
 	}
-	response, err := r.chatFn(ctx, adjustedUser, msg.Text)
+	response, err := r.chatFn(ctx, adjustedUser, msg.Text, MsgContext{
+		Gateway:    msg.Gateway,
+		ExternalID: msg.ExternalID,
+		GroupID:    msg.GroupID,
+		IsGroup:    msg.IsGroup,
+	})
 	if err != nil {
 		log.Printf("[router] chat error: %v", err)
 		// Surface a more actionable hint when the model truncated its tool

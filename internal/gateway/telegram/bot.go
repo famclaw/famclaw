@@ -233,6 +233,26 @@ func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error 
 	return nil
 }
 
+// Send implements gateway.Sender for outbound messages (e.g., reminders).
+func (b *Bot) Send(ctx context.Context, chatID string, text string) error {
+	// chatID for Telegram can be a user ID or group chat ID (as string)
+	// Convert to int64 for the API
+	var id int64
+	if _, err := fmt.Sscanf(chatID, "%d", &id); err != nil {
+		return fmt.Errorf("invalid telegram chat_id %q: %w", chatID, err)
+	}
+
+	// Chunk and normalize the message like the inbound handler does
+	const chunkBudget = 3800
+	for _, raw := range gateway.ChunkMessage(text, chunkBudget) {
+		chunk := markdownToTelegramHTML(raw)
+		if err := b.sendMessage(ctx, id, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // sendChatAction posts a sendChatAction call to show "Butler is typing..."
 // in the Telegram client. Best-effort — errors are not surfaced (the
 // caller wants the typing UX, not a hard dependency on it).

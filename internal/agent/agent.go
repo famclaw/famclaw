@@ -27,10 +27,12 @@ import (
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
+	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/prompt"
+	"github.com/famclaw/famclaw/internal/reminder"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
@@ -87,6 +89,11 @@ type Agent struct {
 
 	// todoStore is the per-user todo store.
 	todoStore *todo.Store
+
+	// msgContext holds the gateway-specific context for the current message
+	// (gateway, external_id, group_id, is_group). Used by outbound tools
+	// like reminders to know where to send the notification.
+	msgContext gateway.MsgContext
 }
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
@@ -99,9 +106,10 @@ type AgentDeps struct {
 	Scanner      skillbridge.Scanner
 	Scheduler    *subagent.Scheduler
 	BuiltinTools []agentcore.Tool
-	Gateway      string           // gateway name (telegram, discord, web, etc.) for admin tool audit logs
+	Gateway      string           // gateway name (telegram, discord, web, etc.) for audit logs
 	Cache        *toolcache.Cache // tool-result spillover cache; nil disables spillover (legacy inline path)
 	BrowserPool  *browser.Pool    // backs builtin__browser_*; nil disables browser tools
+	MsgContext   gateway.MsgContext // gateway-specific context for outbound tools (reminders, etc.)
 }
 
 // NewAgent creates an Agent for the given user. Optional dependencies
@@ -149,6 +157,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		webFetcher:   webfetch.Fetch,
 		cache:        deps.Cache,
 		browserPool:  deps.BrowserPool,
+		msgContext:   deps.MsgContext,
 	}
 }
 
@@ -427,6 +436,11 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			return a.handleFileStat(ctx, args)
 		case "builtin__file_list":
 			return a.handleFileList(ctx, args)
+		case "builtin__add_reminder":
+			when, _ := args["when"].(string)
+			message, _ := args["message"].(string)
+			forUser, _ := args["for_user"].(string)
+			return reminder.HandleAddReminder(ctx, a.db, a.user, a.msgContext.Gateway, a.msgContext.ExternalID, a.msgContext.GroupID, a.msgContext.IsGroup, when, message, forUser)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
