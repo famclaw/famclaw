@@ -83,6 +83,11 @@ Returns all memories for the current user, optionally filtered by category.
 
 Deletes a specific memory.
 
+If the memory doesn't exist, returns a clear message instead of an error:
+```
+No memory found with category "preferences" and label "coffee".
+```
+
 ```json
 {
   "category": "preferences",
