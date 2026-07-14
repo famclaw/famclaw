@@ -318,6 +318,21 @@ func (d *DB) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_reminders_due_at ON reminders(due_at);
 	CREATE INDEX IF NOT EXISTS idx_reminders_user_dispatched ON reminders(user_name, dispatched);
+
+	-- Phase 4 — per-user memory (scoped by user identity, not shared family-wide).
+	-- See docs/superpowers/specs/2026-07-14-user-memory-design.md.
+	CREATE TABLE IF NOT EXISTS user_memories (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_name  TEXT NOT NULL,
+		category   TEXT NOT NULL,
+		label      TEXT NOT NULL,
+		value      TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		UNIQUE(user_name, category, label)
+	);
+	CREATE INDEX IF NOT EXISTS idx_user_memories_user ON user_memories(user_name);
+	CREATE INDEX IF NOT EXISTS idx_user_memories_category ON user_memories(category)
 	`)
 	if err != nil {
 		return err

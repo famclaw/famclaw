@@ -9,18 +9,20 @@ import (
 
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
+	"github.com/famclaw/famclaw/internal/usermemory"
 )
 
 // BuildContext is the input to every component. Components only
 // read from it — never mutate.
 type BuildContext struct {
-	Cfg          *config.Config        // family config (users list, etc.)
-	User         *config.UserConfig    // the user this prompt is for
-	Gateway      string                // "telegram" | "discord" | "web" | ""
-	Skills       []string              // skill names loaded for this user; can be empty
-	HardBlocked  []string              // hard-blocked policy categories for this user
-	BuiltinTools []string              // builtin tool bare names (e.g. "spawn_agent", "web_fetch")
-	FamilyState  *familystate.Snapshot // Phase 3.3 — may be nil (legacy callers) or UnavailableSnapshot
+	Cfg          *config.Config         // family config (users list, etc.)
+	User         *config.UserConfig     // the user this prompt is for
+	Gateway      string                 // "telegram" | "discord" | "web" | ""
+	Skills       []string               // skill names loaded for this user; can be empty
+	HardBlocked  []string               // hard-blocked policy categories for this user
+	BuiltinTools []string               // builtin tool bare names (e.g. "spawn_agent", "web_fetch")
+	FamilyState  *familystate.Snapshot  // Phase 3.3 — may be nil (legacy callers) or UnavailableSnapshot
+	UserMemory   *usermemory.Snapshot   // Phase 4 — per-user memory; may be nil
 }
 
 // component returns (text, included). Empty text or included=false → skipped.
@@ -42,6 +44,7 @@ func Build(ctx BuildContext) string {
 		gatewayComponent,
 		outputComponent,
 		memoryComponent,
+		userMemoryComponent,
 	}
 	var parts []string
 	for _, c := range components {

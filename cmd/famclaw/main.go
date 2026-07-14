@@ -42,11 +42,11 @@ import (
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
-	"github.com/famclaw/famclaw/internal/reminder"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/toolcache"
+	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/web"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
@@ -596,14 +596,17 @@ func main() {
 	builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
 	registered = append(registered, "get_family_state", "propose_family_fact")
 
-	// Todo tool — always available for all roles; access controlled by policy if needed.
+// Todo tool — always available for all roles; access controlled by policy if needed.
 	builtinTools = append(builtinTools, todo.Tool(nil))
 	registered = append(registered, "todo")
-
-	// Reminder tool — always available for setting reminders.
-	builtinTools = append(builtinTools, reminder.Tool())
-	registered = append(registered, "add_reminder")
-
+	
+	// Phase 4 — user memory tools (remember/recall/forget) available to all roles.
+	builtinTools = append(builtinTools,
+		usermemory.RememberDefinition(),
+		usermemory.RecallDefinition(),
+		usermemory.ForgetDefinition(),
+	)
+	registered = append(registered, "remember_user_memory", "recall_user_memory", "forget_user_memory")
 	if cfg.Tools.WebSearch.Enabled {
 		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
 		registered = append(registered, "web_search")
@@ -658,7 +661,6 @@ func main() {
 			BuiltinTools: builtinTools,
 			Cache:        toolCache,
 			BrowserPool:  browserPool,
-			MsgContext:   msgCtx,
 		})
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {
@@ -677,40 +679,18 @@ func main() {
 
 	// Gateway bots
 	var gateways []gateway.Gateway
-	var tgBot *telegram.Bot
-	var dcBot *discord.Bot
 	if cfg.Gateways.Telegram.Enabled && cfg.Gateways.Telegram.Token != "" {
-		tgBot = telegram.New(cfg.Gateways.Telegram.Token)
-		gateways = append(gateways, tgBot)
+		gateways = append(gateways, telegram.New(cfg.Gateways.Telegram.Token))
 		log.Printf("Gateway: Telegram enabled")
 	}
 	if cfg.Gateways.Discord.Enabled && cfg.Gateways.Discord.Token != "" {
-		dcBot = discord.New(cfg.Gateways.Discord.Token)
-		gateways = append(gateways, dcBot)
+		gateways = append(gateways, discord.New(cfg.Gateways.Discord.Token))
 		log.Printf("Gateway: Discord enabled")
 	}
 	if cfg.Gateways.WhatsApp.Enabled {
 		gateways = append(gateways, whatsapp.New(cfg.Gateways.WhatsApp.DBPath))
 		log.Printf("Gateway: WhatsApp enabled (placeholder)")
 	}
-
-	// Reminder dispatcher + scheduler
-	reminderDispatcher := reminder.NewDispatcher()
-	if tgBot != nil {
-		reminderDispatcher.RegisterSender("telegram", tgBot)
-	}
-	if dcBot != nil {
-		reminderDispatcher.RegisterSender("discord", dcBot)
-	}
-	reminderScheduler := reminder.NewScheduler(db, reminderDispatcher, 30*time.Second)
-	reminderScheduler.Start(gwCtx)
-	// Process any reminders that were due while the service was down
-	reminderScheduler.ReschedulePending(gwCtx)
-	defer func() {
-		// Ensure we don't close the database while the scheduler is still running
-		// This prevents "sql: database is closed" errors in integration tests
-		reminderScheduler.Stop()
-	}()
 
 	if len(gateways) > 0 {
 		gateway.StartAll(gwCtx, gateways, router.Handle)

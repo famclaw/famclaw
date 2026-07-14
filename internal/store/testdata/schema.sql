@@ -36,6 +36,10 @@ CREATE INDEX idx_unknown_accounts_lookup ON unknown_accounts(gateway, external_i
 
 CREATE INDEX idx_used_tokens_used_at ON used_tokens(used_at);
 
+CREATE INDEX idx_user_memories_category ON user_memories(category);
+
+CREATE INDEX idx_user_memories_user ON user_memories(user_name);
+
 CREATE INDEX idx_web_sessions_expires_at ON web_sessions(expires_at);
 
 CREATE TABLE approvals (
@@ -241,6 +245,17 @@ CREATE TABLE unknown_accounts (
 CREATE TABLE used_tokens (
 		token_hash TEXT PRIMARY KEY,
 		used_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+CREATE TABLE user_memories (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_name  TEXT NOT NULL,
+		category   TEXT NOT NULL,
+		label      TEXT NOT NULL,
+		value      TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		UNIQUE(user_name, category, label)
 	);
 
 CREATE TABLE user_role_overrides (

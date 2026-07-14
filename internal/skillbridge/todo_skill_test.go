@@ -77,13 +77,13 @@ func TestParseTodoSKILLMD(t *testing.T) {
 
 func containsAll(s string, substrings []string) bool {
 	for _, sub := range substrings {
-		if !contains(s, sub) {
+		if !containsSubstring(s, sub) {
 			return false
 		}
 	}
 	return true
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && (s[:len(substr)] == substr || contains(s[1:], substr)))
+func containsSubstring(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && (s[:len(substr)] == substr || containsSubstring(s[1:], substr)))
 }

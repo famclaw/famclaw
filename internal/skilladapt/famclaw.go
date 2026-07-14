@@ -53,6 +53,8 @@ func (a *FamClawAdapter) Parse(path string) (*Skill, error) {
 	// Parse trigger
 	if mode := fm["trigger"]; mode != "" {
 		skill.Trigger.Mode = mode
+	} else if mode := fm["trigger_mode"]; mode != "" {
+		skill.Trigger.Mode = mode
 	} else {
 		skill.Trigger.Mode = "manual"
 	}

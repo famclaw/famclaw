@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"math"
 	"net/url"
 	"os"
@@ -38,6 +37,7 @@ import (
 	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/todo"
 	"github.com/famclaw/famclaw/internal/toolcache"
+	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
 )
@@ -71,6 +71,10 @@ type Agent struct {
 	// prompt-build time. Phase 3.3 — nil disables family-state injection
 	// (tests / legacy callers).
 	familyState *familystate.Store
+
+	// userMemory is the per-user memory store used at prompt-build time.
+	// Phase 4 — nil disables user-memory injection (tests / legacy callers).
+	userMemory *usermemory.Store
 
 	// webFetcher is the function used by handleWebFetch. Defaults to
 	// webfetch.Fetch in NewAgent. Tests can swap in a stub to assert the
@@ -131,10 +135,12 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	}
 
 	var fs *familystate.Store
-	var ts *todo.Store
+		var ts *todo.Store
+	var um *usermemory.Store
 	if db != nil {
 		fs = familystate.NewStore(db)
 		ts = todo.NewStore(db)
+		um = usermemory.NewStore(db)
 	}
 
 	return &Agent{
@@ -154,6 +160,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		gateway:      deps.Gateway,
 		familyState:  fs,
 		todoStore:    ts,
+		userMemory:   um,
 		webFetcher:   webfetch.Fetch,
 		cache:        deps.Cache,
 		browserPool:  deps.BrowserPool,
@@ -395,6 +402,27 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			return a.handleProposeFamilyFact(ctx, args)
 		case "builtin__todo":
 			return a.handleTodo(ctx, args)
+		case "builtin__remember_user_memory":
+			if a.userMemory == nil {
+				return "", fmt.Errorf("user memory not configured")
+			}
+			category, _ := args["category"].(string)
+			label, _ := args["label"].(string)
+			value, _ := args["value"].(string)
+			return usermemory.HandleRemember(ctx, a.userMemory, a.user.Name, category, label, value)
+		case "builtin__recall_user_memory":
+			if a.userMemory == nil {
+				return "", fmt.Errorf("user memory not configured")
+			}
+			category, _ := args["category"].(string)
+			return usermemory.HandleRecall(ctx, a.userMemory, a.user.Name, category)
+		case "builtin__forget_user_memory":
+			if a.userMemory == nil {
+				return "", fmt.Errorf("user memory not configured")
+			}
+			category, _ := args["category"].(string)
+			label, _ := args["label"].(string)
+			return usermemory.HandleForget(ctx, a.userMemory, a.user.Name, category, label)
 		case "builtin__list_pending_approvals":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
 			return admin.HandleListPendingApprovals(ctx, deps, args)
@@ -1374,32 +1402,14 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 			builtinNames = append(builtinNames, bare)
 		}
 
-		// Phase 3.3 — load the always-injected family-state snapshot.
-		// On any non-nil error, use the UnavailableSnapshot sentinel so
-		// the model gets a "safety context temporarily unavailable"
-		// notice rather than silently dropping the block (R3 council
-		// 2-branch fail-stance).
-		var snap *familystate.Snapshot
-		if a.familyState != nil {
-			s, err := a.familyState.AlwaysInjectedSnapshot(ctx, knownSubjects(a.cfg))
-			if err != nil {
-				slog.ErrorContext(ctx, "family-state snapshot failed; injecting unavailable notice",
-					"err", err, "user", a.user.Name)
-				snap = familystate.UnavailableSnapshot()
-			} else {
-				snap = s
-			}
-		}
-
-		systemPrompt = prompt.Build(prompt.BuildContext{
-			Cfg:          a.cfg,
-			User:         a.user,
-			Skills:       skillNames,
-			BuiltinTools: builtinNames,
-			FamilyState:  snap,
-			// Gateway and HardBlocked left empty for now — wired by future PRs
-			// that thread gateway and policy info through Agent.
-		})
+systemPrompt = prompt.Build(prompt.BuildContext{
+	Cfg:          a.cfg,
+	User:         a.user,
+	Skills:       skillNames,
+	BuiltinTools: builtinNames,
+	// Gateway and HardBlocked left empty for now — wired by future PRs
+	// that thread gateway and policy info through Agent.
+})
 	}
 
 	msgs = append(msgs, llm.Message{Role: "system", Content: systemPrompt})
