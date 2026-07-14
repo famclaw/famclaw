@@ -3,6 +3,7 @@ package usermemory
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -281,5 +282,70 @@ func TestStore_MemoryCategories(t *testing.T) {
 	}
 	if len(bobCats) != 1 || bobCats[0] != "reminders" {
 		t.Errorf("expected [reminders] for bob, got %v", bobCats)
+	}
+}
+
+// TestHandleForget tests the HandleForget function for both existing and non-existent memories.
+func TestHandleForget(t *testing.T) {
+	dbPath := "/tmp/usermemory_forget_test_" + time.Now().Format("20060102150405") + ".db"
+	defer os.Remove(dbPath)
+
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	store := NewStore(db)
+	ctx := context.Background()
+	userName := "testuser"
+
+	// Test forgetting a non-existent memory (should return "No memory found" message)
+	msg, err := HandleForget(ctx, store, userName, "category", "label")
+	if err != nil {
+		t.Fatalf("unexpected error when forgetting non-existent memory: %v", err)
+	}
+	expectedMsg := fmt.Sprintf("No memory found with category %q and label %q.", "category", "label")
+	if msg != expectedMsg {
+		t.Errorf("expected %q, got %q", expectedMsg, msg)
+	}
+
+	// Test forgetting an existing memory
+	// First, insert a memory
+	m := &Memory{
+		UserName: userName,
+		Category: "category",
+		Label:    "label",
+		Value:    "value to forget",
+	}
+	if err := store.UpsertMemory(ctx, m); err != nil {
+		t.Fatalf("upsert memory: %v", err)
+	}
+
+	// Verify the memory exists
+	memories, err := store.ListMemories(ctx, userName, "")
+	if err != nil {
+		t.Fatalf("list memories: %v", err)
+	}
+	if len(memories) != 1 {
+		t.Errorf("expected 1 memory after upsert, got %d", len(memories))
+	}
+
+	// Now forget it
+	msg, err = HandleForget(ctx, store, userName, "category", "label")
+	if err != nil {
+		t.Fatalf("unexpected error when forgetting existing memory: %v", err)
+	}
+	if msg != "ok — forgotten" {
+		t.Errorf("expected 'ok — forgotten', got %q", msg)
+	}
+
+	// Verify the memory is actually gone
+	memories, err = store.ListMemories(ctx, userName, "")
+	if err != nil {
+		t.Fatalf("list memories after forget: %v", err)
+	}
+	if len(memories) != 0 {
+		t.Errorf("expected 0 memories after forget, got %d", len(memories))
 	}
 }

@@ -128,12 +128,20 @@ func (s *Store) DeleteMemory(ctx context.Context, userName string, id int64) err
 }
 
 // DeleteMemoryByKey removes a memory by user_name, category, label.
-// Returns nil if the row didn't exist (idempotent).
+// Returns sql.ErrNoRows if no rows were deleted (idempotent behavior preserved).
 func (s *Store) DeleteMemoryByKey(ctx context.Context, userName, category, label string) error {
-	if _, err := s.db.SQL().ExecContext(ctx,
+	result, err := s.db.SQL().ExecContext(ctx,
 		`DELETE FROM user_memories WHERE user_name = ? AND category = ? AND label = ?`,
-		userName, category, label); err != nil {
+		userName, category, label)
+	if err != nil {
 		return fmt.Errorf("delete memory by key: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete memory by key rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
 	}
 	return nil
 }
