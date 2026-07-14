@@ -642,7 +642,7 @@ func main() {
 	}
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
-	// Chat function for gateway router
+	// Chat function for gateway router - combining incoming changes with our multimodal support
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		var llmClient llm.Chatter
 		switch cfg.LLM.Provider {
@@ -661,6 +661,7 @@ func main() {
 			BuiltinTools: builtinTools,
 			Cache:        toolCache,
 			BrowserPool:  browserPool,
+			MsgContext:   msgCtx,
 		})
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {

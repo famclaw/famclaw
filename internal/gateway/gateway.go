@@ -17,9 +17,18 @@ type Message struct {
 	DisplayName string // from platform profile (best effort)
 	GroupID     string // platform-specific group/channel ID (empty for direct messages)
 	IsGroup     bool   // true if message is from a group/channel
+	Attachments []Attachment // Attachments contains any attached media (images, etc.)
 }
-
-// Reply is an outbound response to send back through the gateway.
+// Attachment represents an attached file or media.
+type Attachment struct {
+	// Type of attachment (e.g., "image")
+	Type string
+	// For images: base64-encoded data or URL
+	// We'll use Data for base64-encoded content
+	Data string
+	// MIME type (e.g., "image/jpeg", "image/png")
+	MIMEType string
+}
 type Reply struct {
 	Text         string
 	PolicyAction string // allow | block | request_approval | pending | onboarding

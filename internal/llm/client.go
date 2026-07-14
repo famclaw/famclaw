@@ -26,7 +26,10 @@ var ErrToolCallArgsTruncated = errors.New("tool call arguments JSON truncated")
 // Message is a conversation turn.
 type Message struct {
 	Role       string     `json:"role"` // system | user | assistant | tool
-	Content    string     `json:"content"`
+	Content    string     `json:"content,omitempty"`
+	// For multimodal content (images, etc.). If set (non-nil and non-empty), 
+	// takes precedence over Content when marshaling to JSON.
+	ContentParts []any
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // present when LLM requests tool use
 	ToolCallID string     `json:"tool_call_id,omitempty"` // required on role=tool replies (OpenAI)
 
@@ -36,6 +39,43 @@ type Message struct {
 	// message back (omitempty), and at receive time the client merges it
 	// into Content when Content is empty — see mergeReasoning() below.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+}
+// MarshalJSON implements custom JSON marshaling for Message.
+// If ContentParts is set (non-nil and non-empty), it is used for the "content" field.
+// Otherwise, the Content string field is used. This maintains backward compatibility
+// for text-only messages while enabling multimodal content.
+func (m Message) MarshalJSON() ([]byte, error) {
+	// If ContentParts is set and non-empty, use it
+	if m.ContentParts != nil && len(m.ContentParts) > 0 {
+		return json.Marshal(struct {
+			Role       string  `json:"role"`
+			Content    []any   `json:"content"`
+			ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+			ToolCallID string  `json:"tool_call_id,omitempty"`
+			ReasoningContent string `json:"reasoning_content,omitempty"`
+		}{
+			Role:       m.Role,
+			Content:    m.ContentParts,
+			ToolCalls:  m.ToolCalls,
+			ToolCallID: m.ToolCallID,
+			ReasoningContent: m.ReasoningContent,
+		})
+	}
+	
+	// Otherwise, fall back to the original behavior using Content string
+	return json.Marshal(struct {
+		Role       string  `json:"role"`
+		Content    string  `json:"content,omitempty"`
+		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+		ToolCallID string  `json:"tool_call_id,omitempty"`
+		ReasoningContent string `json:"reasoning_content,omitempty"`
+	}{
+		Role:       m.Role,
+		Content:    m.Content,
+		ToolCalls:  m.ToolCalls,
+		ToolCallID: m.ToolCallID,
+		ReasoningContent: m.ReasoningContent,
+	})
 }
 
 // mergeReasoning hoists ReasoningContent into Content when Content is
