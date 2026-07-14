@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"math"
 	"net/url"
 	"os"
