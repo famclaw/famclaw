@@ -380,18 +380,18 @@ func (d *DB) DeleteQuarantine(scanTarget string) error {
 // ── Approvals ─────────────────────────────────────────────────────────────────
 
 type Approval struct {
-	ID           string
-	UserName     string
-	UserDisplay  string
-	AgeGroup     string
-	Category     string
-	QueryText    string
-	Status       string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	ExpiresAt    time.Time
-	DecidedBy    string
-	DecisionNote string
+	ID           string `json:"id"`
+	UserName     string `json:"user_name"`
+	UserDisplay  string `json:"user_display"`
+	AgeGroup     string `json:"age_group"`
+	Category     string `json:"category"`
+	QueryText    string `json:"query_text"`
+	Status       string `json:"status"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	DecidedBy    string `json:"decided_by"`
+	DecisionNote string `json:"decision_note"`
 }
 
 // UpsertApproval inserts a new approval request or returns the existing one.
