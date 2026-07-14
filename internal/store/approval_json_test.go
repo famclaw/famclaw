@@ -38,7 +38,7 @@ func TestApprovalJSONSerializationRegression(t *testing.T) {
 
 	// Verify that all fields are present with correct lowercase names (regression test for issue #198)
 	fieldNames := []string{"id", "user_name", "user_display", "age_group", "category", "query_text", "status", "created_at", "updated_at", "expires_at", "decided_by", "decision_note"}
-	
+
 	for _, fieldName := range fieldNames {
 		if _, exists := parsed[fieldName]; !exists {
 			t.Errorf("Expected lowercase field '%s' not found in JSON", fieldName)
