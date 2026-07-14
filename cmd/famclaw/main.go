@@ -723,7 +723,6 @@ if cfg.Tools.Browser.Enabled {
 
 	// Web server
 	srv := web.NewServer(cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
-	srv.SetSkippedMCPs(skippedMCPs)
 	srv.SetVaultMismatch(vaultMismatch)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
