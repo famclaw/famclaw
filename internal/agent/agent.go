@@ -1403,46 +1403,11 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 			builtinNames = append(builtinNames, bare)
 		}
 
-// Phase 3.3 — load the always-injected family-state snapshot.
-// On any non-nil error, use the UnavailableSnapshot sentinel so
-// the model gets a "safety context temporarily unavailable"
-// notice rather than silently dropping the block (R3 council
-// 2-branch fail-stance).
-var snap *familystate.Snapshot
-if a.familyState != nil {
-	s, err := a.familyState.AlwaysInjectedSnapshot(ctx, knownSubjects(a.cfg))
-	if err != nil {
-		slog.ErrorContext(ctx, "family-state snapshot failed; injecting unavailable notice",
-			"err", err, "user", a.user.Name)
-		snap = familystate.UnavailableSnapshot()
-	} else {
-		snap = s
-	}
-}
-
-// Phase 4 — load the always-injected user-memory snapshot.
-// On any non-nil error, use the UnavailableSnapshot sentinel so
-// the model gets a "memory context temporarily unavailable"
-// notice rather than silently dropping the block.
-var userMemSnap *usermemory.Snapshot
-if a.userMemory != nil {
-	s, err := a.userMemory.AlwaysInjectedSnapshot(ctx, a.user.Name)
-	if err != nil {
-		slog.ErrorContext(ctx, "user-memory snapshot failed; injecting unavailable notice",
-			"err", err, "user", a.user.Name)
-		userMemSnap = usermemory.UnavailableSnapshot()
-	} else {
-		userMemSnap = s
-	}
-}
-
 systemPrompt = prompt.Build(prompt.BuildContext{
 	Cfg:          a.cfg,
 	User:         a.user,
 	Skills:       skillNames,
 	BuiltinTools: builtinNames,
-	FamilyState:  snap,
-	UserMemory:   userMemSnap,
 	// Gateway and HardBlocked left empty for now — wired by future PRs
 	// that thread gateway and policy info through Agent.
 })
