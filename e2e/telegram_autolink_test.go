@@ -40,7 +40,7 @@ func TestTelegram_UnknownAccount_AutoLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("policy.NewEvaluator: %v", err)
 	}
-	chatFn := func(ctx context.Context, u *config.UserConfig, text string) (string, error) {
+	chatFn := func(ctx context.Context, u *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		return "stub", nil
 	}
 	router := gateway.NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, nil)
