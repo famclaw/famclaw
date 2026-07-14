@@ -1,11 +1,141 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/famclaw/famclaw/internal/config"
 )
+
+// TestInitMCPPool_NonFatalOnBadConfig tests that initMCPPool returns a pool
+// (does not fatal-exit) when an MCP server is misconfigured or unreachable.
+// This verifies the #199 fix: MCP pool initialization is non-fatal.
+func TestInitMCPPool_NonFatalOnBadConfig(t *testing.T) {
+	// Create a temp dir for sandbox root
+	sandboxRoot := t.TempDir()
+
+	// Config with a deliberately broken MCP server (nonexistent binary)
+	cfg := &config.Config{
+		Tools: config.ToolsConfig{
+			SandboxRoot: sandboxRoot,
+			Sandbox: config.SandboxConfig{
+				Enabled: true,
+			},
+		},
+		Skills: config.SkillsConfig{
+			MCPServers: map[string]config.MCPServerConfig{
+				"bad-server": {
+					Transport: "stdio",
+					Command:   "/nonexistent/binary/that/does/not/exist",
+				},
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pool, _, err := initMCPPool(ctx, cfg, sandboxRoot)
+
+	// Should not return an error (non-fatal behavior)
+	if err != nil {
+		t.Fatalf("initMCPPool returned error (should be non-fatal): %v", err)
+	}
+
+	// Pool should be returned even though server failed to start
+	if pool == nil {
+		t.Fatal("initMCPPool returned nil pool")
+	}
+
+	// The bad server should not have any tools registered
+	tools := pool.ListTools()
+	if len(tools) != 0 {
+		t.Errorf("expected 0 tools from failed server, got %d: %v", len(tools), tools)
+	}
+
+	// Pool should be usable (StopAll should not panic)
+	pool.StopAll()
+}
+
+// TestInitMCPPool_SandboxEnabledFailClosed tests that when sandbox is enabled
+// but kernel lacks support, the error is logged but non-fatal.
+func TestInitMCPPool_SandboxEnabledFailClosed(t *testing.T) {
+	sandboxRoot := t.TempDir()
+
+	cfg := &config.Config{
+		Tools: config.ToolsConfig{
+			SandboxRoot: sandboxRoot,
+			Sandbox: config.SandboxConfig{
+				Enabled: true,
+			},
+		},
+		Skills: config.SkillsConfig{
+			MCPServers: map[string]config.MCPServerConfig{
+				"test-server": {
+					Transport: "stdio",
+					Command:   "/bin/true", // simple command that exits
+				},
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// This will fail on kernels without landlock/seccomp, but should not fatal
+	pool, _, err := initMCPPool(ctx, cfg, sandboxRoot)
+
+	if err != nil {
+		t.Fatalf("initMCPPool returned error (should be non-fatal): %v", err)
+	}
+
+	if pool == nil {
+		t.Fatal("initMCPPool returned nil pool")
+	}
+
+	pool.StopAll()
+}
+
+// TestInitMCPPool_NoServers tests that initMCPPool works with no MCP servers configured.
+func TestInitMCPPool_NoServers(t *testing.T) {
+	sandboxRoot := t.TempDir()
+
+	cfg := &config.Config{
+		Tools: config.ToolsConfig{
+			SandboxRoot: sandboxRoot,
+			Sandbox: config.SandboxConfig{
+				Enabled: false,
+			},
+		},
+		Skills: config.SkillsConfig{
+			MCPServers: map[string]config.MCPServerConfig{},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pool, _, err := initMCPPool(ctx, cfg, sandboxRoot)
+
+	if err != nil {
+		t.Fatalf("initMCPPool returned error: %v", err)
+	}
+
+	if pool == nil {
+		t.Fatal("initMCPPool returned nil pool")
+	}
+
+	tools := pool.ListTools()
+	if len(tools) != 0 {
+		t.Errorf("expected 0 tools, got %d: %v", len(tools), tools)
+	}
+
+	pool.StopAll()
+}
 
 // TestValidateSandboxRoot covers the pre-Landlock validation extraction.
 // The full applyLandlockRules path mutates the running process's

@@ -251,6 +251,40 @@ func sandboxEnv() []string {
 
 var Version = "dev"
 
+// initMCPPool initializes the MCP server pool.
+// Returns the pool and a list of skipped server names.
+// Errors from StartAll are non-fatal and logged; the pool is returned
+// even if some servers failed to start (caller logs and continues).
+func initMCPPool(ctx context.Context, cfg *config.Config, sandboxRoot string) (*mcp.Pool, []string, error) {
+	pool := mcp.NewPool(sandboxRoot, cfg.Tools.Sandbox.Enabled)
+	var skippedMCPs []string
+
+	if len(cfg.Skills.MCPServers) > 0 {
+		pool.RegisterFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
+		if err := pool.StartAll(ctx); err != nil {
+			// Sandbox kernel-support probe at pool boot is fail-closed:
+			// terminating here keeps an insecure-by-default deployment
+			// from silently downgrading to unsandboxed MCP subprocesses.
+			// However, make this non-fatal to prevent famclaw from crashing
+			// at boot when MCP servers are misconfigured or unreachable.
+			if cfg.Tools.Sandbox.Enabled {
+				log.Printf("⚠️  MCP pool: %v (non-fatal - continuing boot)", err)
+				for serverName := range cfg.Skills.MCPServers {
+					skippedMCPs = append(skippedMCPs, fmt.Sprintf("%s (sandbox enabled but failed to start)", serverName))
+				}
+			} else {
+				log.Printf("MCP pool: %v", err)
+				for serverName := range cfg.Skills.MCPServers {
+					skippedMCPs = append(skippedMCPs, fmt.Sprintf("%s (failed to start)", serverName))
+				}
+			}
+		}
+		tools := pool.ListTools()
+		log.Printf("MCP: %d servers configured, %d tools available", len(cfg.Skills.MCPServers), len(tools))
+	}
+	return pool, skippedMCPs, nil
+}
+
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
@@ -461,33 +495,8 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
-	mcpPool := mcp.NewPool(sandboxRoot, cfg.Tools.Sandbox.Enabled)
-	var skippedMCPs []string
-	if len(cfg.Skills.MCPServers) > 0 {
-		mcpPool.RegisterFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
-		if err := mcpPool.StartAll(context.Background()); err != nil {
-			// Sandbox kernel-support probe at pool boot is fail-closed:
-			// terminating here keeps an insecure-by-default deployment
-			// from silently downgrading to unsandboxed MCP subprocesses.
-			// However, make this non-fatal to prevent famclaw from crashing
-			// at boot when MCP servers are misconfigured or unreachable.
-			if cfg.Tools.Sandbox.Enabled {
-				log.Printf("⚠️  MCP pool: %v (non-fatal - continuing boot)", err)
-				// Track skipped MCP servers for visibility
-				for serverName := range cfg.Skills.MCPServers {
-					skippedMCPs = append(skippedMCPs, fmt.Sprintf("%s (sandbox enabled but failed to start)", serverName))
-				}
-			} else {
-				log.Printf("MCP pool: %v", err)
-				// Track skipped MCP servers for visibility
-				for serverName := range cfg.Skills.MCPServers {
-					skippedMCPs = append(skippedMCPs, fmt.Sprintf("%s (failed to start)", serverName))
-				}
-			}
-		}
-		tools := mcpPool.ListTools()
-		log.Printf("MCP: %d servers configured, %d tools available", len(cfg.Skills.MCPServers), len(tools))
-	}
+	var mcpPool *mcp.Pool
+	mcpPool, _, _ = initMCPPool(context.Background(), cfg, sandboxRoot)
 	defer mcpPool.StopAll()
 
 	// HoneyBadger client + quarantine for runtime scanning
