@@ -706,7 +706,11 @@ func main() {
 	reminderScheduler.Start(gwCtx)
 	// Process any reminders that were due while the service was down
 	reminderScheduler.ReschedulePending(gwCtx)
-	defer reminderScheduler.Stop()
+	defer func() {
+		// Ensure we don't close the database while the scheduler is still running
+		// This prevents "sql: database is closed" errors in integration tests
+		reminderScheduler.Stop()
+	}()
 
 	if len(gateways) > 0 {
 		gateway.StartAll(gwCtx, gateways, router.Handle)
