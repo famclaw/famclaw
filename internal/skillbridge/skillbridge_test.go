@@ -594,11 +594,11 @@ Test skill body.`, name)), 0644); err != nil {
 
 	// Test IsEnabledFor for each skill and role.
 	tests := []struct {
-		name   string
-		role   string
-		want1  bool // skill1
-		want2  bool // skill2
-		want3  bool // skill3
+		name  string
+		role  string
+		want1 bool // skill1
+		want2 bool // skill2
+		want3 bool // skill3
 	}{
 		{"parent", "parent", true, true, false},
 		{"child", "child", true, false, false},
@@ -622,8 +622,8 @@ Test skill body.`, name)), 0644); err != nil {
 	// We already tested that in the IsEnabledFor above (want3 is false for all roles).
 	// Also test that if we remove the .disabled file, then skill3 should be enabled for roles that have it in their enablement list.
 	// But note: we cannot easily remove the .disabled file without changing the filesystem.
-// Instead, we'll test that if a skill is not globally disabled and not in the role enablement list for a role with config, then it is disabled for that role.
-// For role "parent", skill3 is not in the enablement list -> should be disabled (and we already want false).
-// For role "child", skill3 is not in the enablement list -> should be disabled (we want false).
-// For role "guest", there is no enablement config -> should fall back to global -> disabled because of .disabled -> we want false (already in the test).
+	// Instead, we'll test that if a skill is not globally disabled and not in the role enablement list for a role with config, then it is disabled for that role.
+	// For role "parent", skill3 is not in the enablement list -> should be disabled (and we already want false).
+	// For role "child", skill3 is not in the enablement list -> should be disabled (we want false).
+	// For role "guest", there is no enablement config -> should fall back to global -> disabled because of .disabled -> we want false (already in the test).
 }

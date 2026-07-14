@@ -28,10 +28,10 @@ type InstallConfig struct {
 
 // Registry manages installed skills on disk.
 type Registry struct {
-	dir             string
-	scanner         Scanner // may be nil if scanning is disabled
-	cfg             InstallConfig
-	roleEnablement  map[string]map[string]bool // role -> skillName -> enabled
+	dir            string
+	scanner        Scanner // may be nil if scanning is disabled
+	cfg            InstallConfig
+	roleEnablement map[string]map[string]bool // role -> skillName -> enabled
 }
 
 // NewRegistry creates a Registry rooted at the given directory.

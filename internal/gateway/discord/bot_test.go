@@ -57,7 +57,7 @@ func TestDiscordBotMessageConstruction(t *testing.T) {
 			guildID:         "", // Empty guild ID indicates DM
 			userID:          "user1",
 			userName:        "Alice",
-			expectedGroupID: "", // DM has no group ID
+			expectedGroupID: "",    // DM has no group ID
 			expectedIsGroup: false, // 1-on-1 DM
 		},
 		{
