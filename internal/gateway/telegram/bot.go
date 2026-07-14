@@ -5,6 +5,7 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,11 +70,51 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				displayName = u.Message.From.Username
 			}
 
+// Check if this is a photo message
+			var photoData []byte
+			var mimeType string
+			if u.Message.Photo != nil && len(u.Message.Photo) > 0 {
+				// Get the largest photo (last one in the array)
+				photoSize := u.Message.Photo[len(u.Message.Photo)-1]
+				
+				// Download the photo file
+				fileInfo, err := b.getFile(ctx, photoSize.FileID)
+				if err != nil {
+					log.Printf("[telegram] failed to get file info: %v", err)
+				} else if fileInfo != nil {
+					// Download the actual file data
+					photoData, err = b.downloadFile(ctx, fileInfo.FilePath)
+					if err != nil {
+						log.Printf("[telegram] failed to download file: %v", err)
+					} else {
+						// Determine MIME type based on file extension or default to JPEG
+						if strings.HasSuffix(strings.ToLower(fileInfo.FilePath), ".png") {
+							mimeType = "image/png"
+						} else {
+							// Default to JPEG for Telegram photos
+							mimeType = "image/jpeg"
+						}
+					}
+				}
+			}
+
+			// Prepare attachments if we have photo data
+			var attachments []gateway.Attachment
+			if len(photoData) > 0 {
+				attachments = []gateway.Attachment{{
+					Type:     "image",
+					Data:     base64.StdEncoding.EncodeToString(photoData),
+					MIMEType: mimeType,
+				}}
+			}
+
+			// Group info (moved after photo processing to maintain variable scope)
 			isGroup := u.Message.Chat.Type == "group" || u.Message.Chat.Type == "supergroup" || u.Message.Chat.Type == "channel"
 			groupID := ""
 			if isGroup {
 				groupID = strconv.FormatInt(u.Message.Chat.ID, 10)
 			}
+			
 			msg := gateway.Message{
 				Gateway:     "telegram",
 				ExternalID:  strconv.FormatInt(u.Message.From.ID, 10),
@@ -81,6 +122,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				DisplayName: displayName,
 				GroupID:     groupID,
 				IsGroup:     isGroup,
+				Attachments: attachments,
 			}
 
 			// Typing indicator. Telegram's chat action expires after ~5s,
@@ -159,9 +201,10 @@ type tgUpdate struct {
 }
 
 type tgMessage struct {
-	Chat tgChat `json:"chat"`
-	From tgUser `json:"from"`
-	Text string `json:"text"`
+	Chat   tgChat    `json:"chat"`
+	From   tgUser    `json:"from"`
+	Text   string    `json:"text"`
+	Photo  []tgPhoto `json:"photo,omitempty"`
 }
 
 type tgChat struct {
@@ -174,6 +217,14 @@ type tgUser struct {
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name,omitempty"`
 	Username  string `json:"username,omitempty"`
+}
+
+type tgPhoto struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	FileSize     int    `json:"file_size,omitempty"`
 }
 
 func (b *Bot) getUpdates(ctx context.Context, offset int) ([]tgUpdate, error) {
@@ -276,4 +327,75 @@ func (b *Bot) sendChatAction(ctx context.Context, chatID int64, action string) e
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// getFile retrieves file information from the Telegram Bot API.
+func (b *Bot) getFile(ctx context.Context, fileID string) (*tgFile, error) {
+	u := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", b.endpoint, b.token, fileID)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating getFile request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("getFile request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var body []byte
+	
+	if resp.StatusCode != http.StatusOK {
+		body, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("reading getFile response body: %w", err)
+		}
+		return nil, fmt.Errorf("telegram getFile error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		OK     bool     `json:"ok"`
+		Result *tgFile  `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("parsing getFile response: %w", err)
+	}
+
+	if !result.OK {
+		return nil, fmt.Errorf("telegram API error: %s", string(body))
+	}
+
+	return result.Result, nil
+}
+
+// downloadFile downloads a file from the Telegram Bot API.
+func (b *Bot) downloadFile(ctx context.Context, filePath string) ([]byte, error) {
+	u := fmt.Sprintf("%s/file/bot%s/%s", b.endpoint, b.token, filePath)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating downloadFile request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("downloadFile request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("telegram downloadFile error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// tgFile represents a file ready for download from Telegram.
+type tgFile struct {
+	FileID     string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileSize   int    `json:"file_size,omitempty"`
+	FilePath   string `json:"file_path"`
 }

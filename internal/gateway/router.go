@@ -16,6 +16,7 @@ import (
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/llm"
+	"github.com/famclaw/famclaw/internal/llm/claudecli"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/skillbridge"
@@ -210,12 +211,70 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		}
 		return r.handleSkillCommand(ctx, adjustedUser.Name, fields)
 	}
-	response, err := r.chatFn(ctx, adjustedUser, msg.Text, MsgContext{
-		Gateway:    msg.Gateway,
-		ExternalID: msg.ExternalID,
-		GroupID:    msg.GroupID,
-		IsGroup:    msg.IsGroup,
-	})
+			return Reply{Text: "Only a parent can manage skills.", PolicyAction: "block"}
+		}
+		return r.handleSkillCommand(ctx, adjustedUser.Name, fields)
+	}
+	var response string
+	
+	// Check if we have attachments that need to be sent as multimodal content
+	if len(msg.Attachments) > 0 {
+		// Build multimodal message content
+		var contentParts []any
+		
+		// Add text part if there's text
+		if msg.Text != "" {
+			contentParts = append(contentParts, map[string]any{
+				"type": "text",
+				"text": msg.Text,
+			})
+		}
+		
+		// Add attachment parts
+		for _, att := range msg.Attachments {
+			if att.Type == "image" && att.Data != "" && att.MIMEType != "" {
+				contentParts = append(contentParts, map[string]any{
+					"type": "image_url",
+					"image_url": map[string]any{
+						"url": fmt.Sprintf("data:%s;base64,%s", att.MIMEType, att.Data),
+					},
+				})
+			}
+		}
+		
+		// Create a message with multimodal content
+		multimodalMsg := llm.Message{
+			Role:       "user",
+			ContentParts: contentParts,
+		}
+		
+		// Create LLM client using the same logic as in main.go's chatFn
+		var llmClient llm.Chatter
+		switch r.cfg.LLM.Provider {
+		case "claude_cli":
+			llmClient = claudecli.New()
+		default: // "" or "openai"
+			ep := r.cfg.LLMEndpointFor(adjustedUser)
+			llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
+		}
+		
+		// Use ChatMessage to get the full response (non-streaming)
+		// Using default temperature (0.7) and max tokens from config
+		llmResp, err := llmClient.ChatMessage(ctx, []llm.Message{multimodalMsg}, 0.7, r.cfg.LLM.MaxResponseTokens)
+		if err != nil {
+			log.Printf("[router] LLM error: %v", err)
+			return Reply{Text: "I had trouble thinking of a response. Try again?", PolicyAction: "error"}
+		}
+		response = llmResp.Content
+	} else {
+		// Traditional text-only path for backward compatibility
+		response, err = r.chatFn(ctx, adjustedUser, msg.Text, MsgContext{
+			Gateway:    msg.Gateway,
+			ExternalID: msg.ExternalID,
+			GroupID:    msg.GroupID,
+			IsGroup:    msg.IsGroup,
+		})
+	}
 	if err != nil {
 		log.Printf("[router] chat error: %v", err)
 		// Surface a more actionable hint when the model truncated its tool
@@ -225,8 +284,27 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		}
 		return Reply{Text: "I had trouble thinking of a response. Try again?", PolicyAction: "error"}
 	}
-
 	return Reply{Text: response, PolicyAction: "allow"}
+	if err != nil {
+		log.Printf("[router] chat error: %v", err)
+		// Surface a more actionable hint when the model truncated its tool
+		// call arguments. Bubbles through wrapped error chains.
+		if errors.Is(err, llm.ErrToolCallArgsTruncated) {
+			return Reply{Text: "My tool call got cut off mid-thought. Could you rephrase or try again?", PolicyAction: "error"}
+		}
+		return Reply{Text: "I had trouble thinking of a response. Try again?", PolicyAction: "error"}
+	}
+}
+if err != nil {
+	log.Printf("[router] chat error: %v", err)
+	// Surface a more actionable hint when the model truncated its tool
+	// call arguments. Bubbles through wrapped error chains.
+	if errors.Is(err, llm.ErrToolCallArgsTruncated) {
+		return Reply{Text: "My tool call got cut off mid-thought. Could you rephrase or try again?", PolicyAction: "error"}
+	}
+	return Reply{Text: "I had trouble thinking of a response. Try again?", PolicyAction: "error"}
+}
+return Reply{Text: response, PolicyAction: "allow"}
 }
 
 func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, category, queryText, requestID string) error {

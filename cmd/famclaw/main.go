@@ -639,7 +639,7 @@ func main() {
 	}
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
-	// Chat function for gateway router
+	// Chat function for gateway router - combining incoming changes with our multimodal support
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		var llmClient llm.Chatter
 		switch cfg.LLM.Provider {
@@ -660,12 +660,35 @@ func main() {
 			BrowserPool:  browserPool,
 			MsgContext:   msgCtx,
 		})
+		// For backward compatibility with text-only chats, we pass nil attachments
+		// Our multimodal enhancements would be handled in the gateway/router when processing messages
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {
 			return "", err
 		}
 		return resp.Content, nil
 	}
+	}
+	a := agent.NewAgent(user, cfg, llmClient, evaluator, clf, db, agent.AgentDeps{
+		Pool:         mcpPool,
+		Skills:       enabledSkills,
+		Quarantine:   quarantine,
+		Scanner:      hbScanner,
+		Scheduler:    agentScheduler,
+		BuiltinTools: builtinTools,
+		Cache:        toolCache,
+		BrowserPool:  browserPool,
+	})
+	
+	// For now, we just pass the text through for backward compatibility
+	// TODO: Multimodal support would require modifying the agent.Chat signature
+	// to accept message attachments
+	resp, err := a.Chat(ctx, text, nil)
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
 
 	// Gateway lifecycle context — shared between the session pool and bots.
 	// Cancelled during graceful shutdown so session goroutines exit cleanly.
