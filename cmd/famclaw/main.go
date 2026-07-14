@@ -643,7 +643,7 @@ func main() {
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
 	// Chat function for gateway router
-	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		var llmClient llm.Chatter
 		switch cfg.LLM.Provider {
 		case "claude_cli":
