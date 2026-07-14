@@ -288,6 +288,18 @@ func (d *DB) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_family_facts_subject  ON family_facts(subject);
 	CREATE INDEX IF NOT EXISTS idx_family_facts_category ON family_facts(category);
+
+	-- Phase 3.4 — todo lists (per-user).
+	CREATE TABLE IF NOT EXISTS todos (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_name  TEXT NOT NULL,
+		text       TEXT NOT NULL,
+		completed  INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_name);
+	CREATE INDEX IF NOT EXISTS idx_todos_user_completed ON todos(user_name, completed);
 	`)
 	if err != nil {
 		return err
@@ -1071,4 +1083,129 @@ func (d *DB) DeleteRoleOverride(ctx context.Context, userName string) error {
 		return fmt.Errorf("delete role override: %w", err)
 	}
 	return nil
+}
+
+// ── Todos ────────────────────────────────────────────────────────────────────
+
+// Todo represents a todo item for a user.
+type Todo struct {
+	ID        int64
+	UserName  string
+	Text      string
+	Completed bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// AddTodo inserts a new todo item for the given user.
+func (d *DB) AddTodo(ctx context.Context, userName, text string) (*Todo, error) {
+	now := time.Now().Unix()
+	res, err := d.sql.ExecContext(ctx,
+		`INSERT INTO todos (user_name, text, completed, created_at, updated_at) VALUES (?, ?, 0, ?, ?)`,
+		userName, text, now, now)
+	if err != nil {
+		return nil, fmt.Errorf("add todo: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("add todo last insert id: %w", err)
+	}
+	return &Todo{
+		ID:        id,
+		UserName:  userName,
+		Text:      text,
+		Completed: false,
+		CreatedAt: time.Unix(now, 0),
+		UpdatedAt: time.Unix(now, 0),
+	}, nil
+}
+
+// ListTodos returns all todos for the given user, optionally filtered by completion status.
+func (d *DB) ListTodos(ctx context.Context, userName string, completed *bool) ([]*Todo, error) {
+	q := `SELECT id, user_name, text, completed, created_at, updated_at FROM todos WHERE user_name = ?`
+	args := []any{userName}
+	if completed != nil {
+		q += ` AND completed = ?`
+		if *completed {
+			args = append(args, 1)
+		} else {
+			args = append(args, 0)
+		}
+	}
+	q += ` ORDER BY completed ASC, created_at DESC`
+
+	rows, err := d.sql.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list todos: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*Todo
+	for rows.Next() {
+		t, err := scanTodo(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan todo: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// CompleteTodo marks a todo as completed.
+func (d *DB) CompleteTodo(ctx context.Context, userName string, id int64) error {
+	now := time.Now().Unix()
+	res, err := d.sql.ExecContext(ctx,
+		`UPDATE todos SET completed = 1, updated_at = ? WHERE id = ? AND user_name = ?`,
+		now, id, userName)
+	if err != nil {
+		return fmt.Errorf("complete todo: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("todo not found or not owned by user")
+	}
+	return nil
+}
+
+// UncompleteTodo marks a todo as not completed (reopen).
+func (d *DB) UncompleteTodo(ctx context.Context, userName string, id int64) error {
+	now := time.Now().Unix()
+	res, err := d.sql.ExecContext(ctx,
+		`UPDATE todos SET completed = 0, updated_at = ? WHERE id = ? AND user_name = ?`,
+		now, id, userName)
+	if err != nil {
+		return fmt.Errorf("uncomplete todo: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("todo not found or not owned by user")
+	}
+	return nil
+}
+
+// RemoveTodo deletes a todo item.
+func (d *DB) RemoveTodo(ctx context.Context, userName string, id int64) error {
+	res, err := d.sql.ExecContext(ctx,
+		`DELETE FROM todos WHERE id = ? AND user_name = ?`, id, userName)
+	if err != nil {
+		return fmt.Errorf("remove todo: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("todo not found or not owned by user")
+	}
+	return nil
+}
+
+func scanTodo(rows *sql.Rows) (*Todo, error) {
+	var t Todo
+	var createdAt, updatedAt int64
+	var completed int
+	if err := rows.Scan(&t.ID, &t.UserName, &t.Text, &completed, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	t.Completed = completed == 1
+	t.CreatedAt = time.Unix(createdAt, 0)
+	t.UpdatedAt = time.Unix(updatedAt, 0)
+	return &t, nil
 }

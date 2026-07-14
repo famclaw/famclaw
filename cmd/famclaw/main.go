@@ -49,6 +49,7 @@ import (
 	"github.com/famclaw/famclaw/internal/web"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
+	"github.com/famclaw/famclaw/internal/todo"
 )
 
 // applySandboxRestrictions applies Landlock filesystem restrictions and seccomp network restrictions
@@ -593,6 +594,11 @@ func main() {
 	// handlers degrade gracefully when the store is nil (tests).
 	builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
 	registered = append(registered, "get_family_state", "propose_family_fact")
+
+	// Todo tool — always available for all roles; access controlled by policy if needed.
+	builtinTools = append(builtinTools, todo.Tool(nil))
+	registered = append(registered, "todo")
+
 	if cfg.Tools.WebSearch.Enabled {
 		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
 		registered = append(registered, "web_search")
