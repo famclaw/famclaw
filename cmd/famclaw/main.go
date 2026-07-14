@@ -437,8 +437,7 @@ func main() {
 	// Identity store
 	identStore := identity.NewStore(db)
 	log.Printf("Identity: ready")
-
-	// MCP tool server pool (stdio, HTTP, SSE transports)
+// MCP tool server pool (stdio, HTTP, SSE transports)
 	var sandboxRoot string
 	if cfg.Tools.SandboxRoot != "" {
 		sandboxRoot = cfg.Tools.SandboxRoot
@@ -447,14 +446,15 @@ func main() {
 		dbDir := filepath.Dir(cfg.Storage.DBPath)
 		sandboxRoot = filepath.Join(dbDir, "skill_sandbox")
 	}
+
 	// Reject unsafe values
 	if sandboxRoot == "." || sandboxRoot == "/" {
 		log.Fatalf("Sandbox root must not be the current or root directory")
 	}
-sandboxRoot, err = prepareSandboxRoot(sandboxRoot)
-if err != nil {
-	log.Fatalf("Invalid sandbox root: %v", err)
-}
+	sandboxRoot, err = prepareSandboxRoot(sandboxRoot)
+	if err != nil {
+		log.Fatalf("Invalid sandbox root: %v", err)
+	}
 	
 	// Validate that the sandbox root is not a parent of itself
 	// This ensures we properly validate the path and avoid traversal issues
@@ -462,6 +462,7 @@ if err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
 	mcpPool := mcp.NewPool(sandboxRoot, cfg.Tools.Sandbox.Enabled)
+	var skippedMCPs []string
 	if len(cfg.Skills.MCPServers) > 0 {
 		mcpPool.RegisterFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
 		if err := mcpPool.StartAll(context.Background()); err != nil {
@@ -472,8 +473,16 @@ if err != nil {
 			// at boot when MCP servers are misconfigured or unreachable.
 			if cfg.Tools.Sandbox.Enabled {
 				log.Printf("⚠️  MCP pool: %v (non-fatal - continuing boot)", err)
+				// Track skipped MCP servers for visibility
+				for serverName := range cfg.Skills.MCPServers {
+					skippedMCPs = append(skippedMCPs, fmt.Sprintf("%s (sandbox enabled but failed to start)", serverName))
+				}
 			} else {
 				log.Printf("MCP pool: %v", err)
+				// Track skipped MCP servers for visibility
+				for serverName := range cfg.Skills.MCPServers {
+					skippedMCPs = append(skippedMCPs, fmt.Sprintf("%s (failed to start)", serverName))
+				}
 			}
 		}
 		tools := mcpPool.ListTools()
@@ -714,6 +723,7 @@ if cfg.Tools.Browser.Enabled {
 
 	// Web server
 	srv := web.NewServer(cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
+	srv.SetSkippedMCPs(skippedMCPs)
 	srv.SetVaultMismatch(vaultMismatch)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
