@@ -355,6 +355,15 @@ func (d *DB) migrate() error {
 		return fmt.Errorf("migrate seed family_fact_categories: %w", err)
 	}
 
+	// Guard for existing deployments that predate the reminders table migration.
+	// SQLite does not support ADD COLUMN IF NOT EXISTS, so we attempt the
+	// ALTER TABLE and ignore the error when the column already exists.
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE reminders ADD COLUMN dispatched INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add reminders dispatched: %w", err)
+		}
+	}
+
 	return nil
 }
 
