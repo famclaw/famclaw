@@ -42,6 +42,7 @@ import (
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/reminder"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
@@ -599,6 +600,10 @@ func main() {
 	builtinTools = append(builtinTools, todo.Tool(nil))
 	registered = append(registered, "todo")
 
+	// Reminder tool — always available for setting reminders.
+	builtinTools = append(builtinTools, reminder.Tool())
+	registered = append(registered, "add_reminder")
+
 	if cfg.Tools.WebSearch.Enabled {
 		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
 		registered = append(registered, "web_search")
@@ -635,7 +640,7 @@ func main() {
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
 	// Chat function for gateway router
-	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		var llmClient llm.Chatter
 		switch cfg.LLM.Provider {
 		case "claude_cli":
@@ -653,6 +658,7 @@ func main() {
 			BuiltinTools: builtinTools,
 			Cache:        toolCache,
 			BrowserPool:  browserPool,
+			MsgContext:   msgCtx,
 		})
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {
@@ -671,18 +677,40 @@ func main() {
 
 	// Gateway bots
 	var gateways []gateway.Gateway
+	var tgBot *telegram.Bot
+	var dcBot *discord.Bot
 	if cfg.Gateways.Telegram.Enabled && cfg.Gateways.Telegram.Token != "" {
-		gateways = append(gateways, telegram.New(cfg.Gateways.Telegram.Token))
+		tgBot = telegram.New(cfg.Gateways.Telegram.Token)
+		gateways = append(gateways, tgBot)
 		log.Printf("Gateway: Telegram enabled")
 	}
 	if cfg.Gateways.Discord.Enabled && cfg.Gateways.Discord.Token != "" {
-		gateways = append(gateways, discord.New(cfg.Gateways.Discord.Token))
+		dcBot = discord.New(cfg.Gateways.Discord.Token)
+		gateways = append(gateways, dcBot)
 		log.Printf("Gateway: Discord enabled")
 	}
 	if cfg.Gateways.WhatsApp.Enabled {
 		gateways = append(gateways, whatsapp.New(cfg.Gateways.WhatsApp.DBPath))
 		log.Printf("Gateway: WhatsApp enabled (placeholder)")
 	}
+
+	// Reminder dispatcher + scheduler
+	reminderDispatcher := reminder.NewDispatcher()
+	if tgBot != nil {
+		reminderDispatcher.RegisterSender("telegram", tgBot)
+	}
+	if dcBot != nil {
+		reminderDispatcher.RegisterSender("discord", dcBot)
+	}
+	reminderScheduler := reminder.NewScheduler(db, reminderDispatcher, 30*time.Second)
+	reminderScheduler.Start(gwCtx)
+	// Process any reminders that were due while the service was down
+	reminderScheduler.ReschedulePending(gwCtx)
+	defer func() {
+		// Ensure we don't close the database while the scheduler is still running
+		// This prevents "sql: database is closed" errors in integration tests
+		reminderScheduler.Stop()
+	}()
 
 	if len(gateways) > 0 {
 		gateway.StartAll(gwCtx, gateways, router.Handle)

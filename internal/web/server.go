@@ -651,12 +651,17 @@ func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 	if s.db == nil {
 		return
 	}
-	pending, _ := s.db.PendingApprovals(ctx)
+	pending, err := s.db.PendingApprovals(ctx)
+	if err != nil {
+		log.Printf("[web] dashboard broadcast pending approvals: %v", err)
+		return
+	}
 	var unknown any
 	if s.identStore != nil {
 		u, err := s.identStore.ListUnknown(ctx)
-		if err != nil {
+if err != nil {
 			log.Printf("[web] dashboard broadcast list unknown: %v", err)
+			return
 		} else {
 			unknown = u
 		}

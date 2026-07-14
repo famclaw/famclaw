@@ -75,7 +75,7 @@ func setupIntegration(t *testing.T) *testEnv {
 	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, cfg.Server.Secret)
 
 	// echoChat simulates a working LLM — returns predictable response
-	chatFn := func(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		return "LLM response to: " + text, nil
 	}
 
@@ -102,7 +102,7 @@ func setupIntegration(t *testing.T) *testEnv {
 }
 
 // panicChat panics if the LLM is called — proves the policy gate works.
-func panicChat(ctx context.Context, user *config.UserConfig, text string) (string, error) {
+func panicChat(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 	panic("INTEGRATION TEST FAILURE: LLM called when policy should have blocked")
 }
 

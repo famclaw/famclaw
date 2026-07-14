@@ -3,6 +3,7 @@ package discord
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -14,7 +15,8 @@ import (
 
 // Bot is a Discord gateway.
 type Bot struct {
-	token string
+	token   string
+	session *discordgo.Session
 }
 
 // New creates a Discord bot with the given token.
@@ -32,6 +34,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 	}
 
 	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsDirectMessages | discordgo.IntentsMessageContent
+	b.session = session
 
 	session.AddHandler(func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		// Ignore own messages
@@ -117,4 +120,18 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// Send implements gateway.Sender for outbound messages (e.g., reminders).
+func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
+	if b.session == nil {
+		return fmt.Errorf("discord session not initialized")
+	}
+	// Chunk at Discord's 2000-character message limit
+	for _, chunk := range gateway.ChunkMessage(text, 2000) {
+		if _, err := b.session.ChannelMessageSend(channelID, chunk); err != nil {
+			return fmt.Errorf("sending discord message: %w", err)
+		}
+	}
+	return nil
 }

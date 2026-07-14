@@ -300,6 +300,24 @@ func (d *DB) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_name);
 	CREATE INDEX IF NOT EXISTS idx_todos_user_completed ON todos(user_name, completed);
+
+	-- Phase 4 — reminders (fire-once scheduled notifications).
+	-- See internal/reminder/ for scheduler and delivery logic.
+	CREATE TABLE IF NOT EXISTS reminders (
+		id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_name      TEXT NOT NULL,
+		gateway        TEXT NOT NULL,
+		external_id    TEXT NOT NULL,
+		group_id       TEXT DEFAULT '',
+		is_group       INTEGER NOT NULL DEFAULT 0,
+		message        TEXT NOT NULL,
+		due_at         TEXT NOT NULL,
+		dispatched     INTEGER NOT NULL DEFAULT 0,
+		dispatched_at  TEXT DEFAULT '',
+		created_at     TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_reminders_due_at ON reminders(due_at);
+	CREATE INDEX IF NOT EXISTS idx_reminders_user_dispatched ON reminders(user_name, dispatched);
 	`)
 	if err != nil {
 		return err
@@ -311,6 +329,15 @@ func (d *DB) migrate() error {
 	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE approvals ADD COLUMN decision_note TEXT NOT NULL DEFAULT ''`); err != nil {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate add decision_note: %w", err)
+		}
+	}
+
+	// Guard for existing deployments that predate the reminders table migration.
+	// SQLite does not support ADD COLUMN IF NOT EXISTS, so we attempt the
+	// ALTER TABLE and ignore the error when the column already exists.
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE reminders ADD COLUMN dispatched INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add reminders dispatched: %w", err)
 		}
 	}
 
@@ -326,6 +353,15 @@ func (d *DB) migrate() error {
 		ON CONFLICT(name) DO NOTHING`,
 		now, now, now, now, now, now, now, now); err != nil {
 		return fmt.Errorf("migrate seed family_fact_categories: %w", err)
+	}
+
+	// Guard for existing deployments that predate the reminders table migration.
+	// SQLite does not support ADD COLUMN IF NOT EXISTS, so we attempt the
+	// ALTER TABLE and ignore the error when the column already exists.
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE reminders ADD COLUMN dispatched INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add reminders dispatched: %w", err)
+		}
 	}
 
 	return nil
@@ -1208,4 +1244,130 @@ func scanTodo(rows *sql.Rows) (*Todo, error) {
 	t.CreatedAt = time.Unix(createdAt, 0)
 	t.UpdatedAt = time.Unix(updatedAt, 0)
 	return &t, nil
+}
+
+// ── Reminders ──────────────────────────────────────────────────────────────────
+
+// Reminder represents a pending or dispatched reminder.
+type Reminder struct {
+	ID            int64
+	UserName      string
+	Gateway       string
+	ExternalID    string
+	GroupID       string
+	IsGroup       bool
+	Message       string
+	DueAt         time.Time
+	Dispatched    bool
+	DispatchedAt  *time.Time
+	CreatedAt     time.Time
+}
+
+// CreateReminder inserts a new reminder.
+func (d *DB) CreateReminder(ctx context.Context, r *Reminder) error {
+	_, err := d.sql.ExecContext(ctx, `
+		INSERT INTO reminders (user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)`,
+		r.UserName, r.Gateway, r.ExternalID, r.GroupID, boolToInt(r.IsGroup), r.Message, r.DueAt.UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("creating reminder: %w", err)
+	}
+	return nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// GetDueReminders returns all reminders that are due and not yet dispatched.
+func (d *DB) GetDueReminders(ctx context.Context, now time.Time) ([]*Reminder, error) {
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT id, user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, dispatched_at, created_at
+		FROM reminders
+		WHERE dispatched = 0 AND due_at <= ?
+		ORDER BY due_at ASC`, now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, fmt.Errorf("querying due reminders: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*Reminder
+	for rows.Next() {
+		r := &Reminder{}
+		var dueAtStr, dispatchedAtStr, createdAtStr string
+		var dispatched, isGroup int
+		if err := rows.Scan(&r.ID, &r.UserName, &r.Gateway, &r.ExternalID, &r.GroupID, &isGroup,
+			&r.Message, &dueAtStr, &dispatched, &dispatchedAtStr, &createdAtStr); err != nil {
+			return nil, fmt.Errorf("scanning reminder: %w", err)
+		}
+		r.DueAt, _ = time.Parse(time.RFC3339, dueAtStr)
+		r.Dispatched = dispatched == 1
+		r.IsGroup = isGroup == 1
+		if dispatchedAtStr != "" {
+			if t, err := time.Parse(time.RFC3339, dispatchedAtStr); err == nil {
+				r.DispatchedAt = &t
+			}
+		}
+		r.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// MarkReminderDispatched marks a reminder as dispatched.
+func (d *DB) MarkReminderDispatched(ctx context.Context, id int64, now time.Time) error {
+	_, err := d.sql.ExecContext(ctx, `
+		UPDATE reminders SET dispatched = 1, dispatched_at = ? WHERE id = ?`,
+		now.UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return fmt.Errorf("marking reminder dispatched: %w", err)
+	}
+	return nil
+}
+
+// GetPendingReminders returns all reminders that are not yet dispatched.
+func (d *DB) GetPendingReminders(ctx context.Context) ([]*Reminder, error) {
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT id, user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, dispatched_at, created_at
+		FROM reminders
+		WHERE dispatched = 0
+		ORDER BY due_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("querying pending reminders: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*Reminder
+	for rows.Next() {
+		r := &Reminder{}
+		var dueAtStr, dispatchedAtStr, createdAtStr string
+		var dispatched, isGroup int
+		if err := rows.Scan(&r.ID, &r.UserName, &r.Gateway, &r.ExternalID, &r.GroupID, &isGroup,
+			&r.Message, &dueAtStr, &dispatched, &dispatchedAtStr, &createdAtStr); err != nil {
+			return nil, fmt.Errorf("scanning reminder: %w", err)
+		}
+		r.DueAt, _ = time.Parse(time.RFC3339, dueAtStr)
+		r.Dispatched = dispatched == 1
+		r.IsGroup = isGroup == 1
+		if dispatchedAtStr != "" {
+			if t, err := time.Parse(time.RFC3339, dispatchedAtStr); err == nil {
+				r.DispatchedAt = &t
+			}
+		}
+		r.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteReminder deletes a reminder by ID.
+func (d *DB) DeleteReminder(ctx context.Context, id int64) error {
+	_, err := d.sql.ExecContext(ctx, `DELETE FROM reminders WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("deleting reminder: %w", err)
+	}
+	return nil
 }
