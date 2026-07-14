@@ -435,6 +435,10 @@ func applyDefaults(c *Config) {
 		// kernel cannot support it.
 		c.Tools.Sandbox.Enabled = true
 	}
+	// default sandbox root when not configured
+	if c.Tools.SandboxRoot == "" {
+		c.Tools.SandboxRoot = "./data/sandbox"
+	}
 	// browser defaults
 	if c.Tools.Browser.IdleSec == 0 {
 		c.Tools.Browser.IdleSec = 300

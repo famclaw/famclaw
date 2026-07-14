@@ -468,10 +468,13 @@ if err != nil {
 			// Sandbox kernel-support probe at pool boot is fail-closed:
 			// terminating here keeps an insecure-by-default deployment
 			// from silently downgrading to unsandboxed MCP subprocesses.
+			// However, make this non-fatal to prevent famclaw from crashing
+			// at boot when MCP servers are misconfigured or unreachable.
 			if cfg.Tools.Sandbox.Enabled {
-				log.Fatalf("MCP pool: %v", err)
+				log.Printf("⚠️  MCP pool: %v (non-fatal - continuing boot)", err)
+			} else {
+				log.Printf("MCP pool: %v", err)
 			}
-			log.Printf("MCP pool: %v", err)
 		}
 		tools := mcpPool.ListTools()
 		log.Printf("MCP: %d servers configured, %d tools available", len(cfg.Skills.MCPServers), len(tools))
