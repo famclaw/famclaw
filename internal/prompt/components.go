@@ -215,3 +215,13 @@ func memoryComponent(c BuildContext) (string, bool) {
 	}
 	return c.FamilyState.Render(), true
 }
+
+// userMemoryComponent renders the per-user memory block for the current user.
+// This is distinct from familyComponent/memoryComponent — it is scoped to
+// the individual user's private memories, not shared family state.
+func userMemoryComponent(c BuildContext) (string, bool) {
+	if c.UserMemory == nil || c.UserMemory.IsEmpty() {
+		return "", false
+	}
+	return c.UserMemory.Render(), true
+}
