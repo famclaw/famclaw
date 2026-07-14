@@ -29,20 +29,20 @@ type Config struct {
 
 // ToolsConfig groups configuration for built-in tools registered with the LLM.
 type ToolsConfig struct {
-	WebFetch  WebFetchConfig  `yaml:"web_fetch,omitempty"`
-	WebSearch WebSearchConfig `yaml:"web_search,omitempty"`
-	Browser   BrowserConfig   `yaml:"browser,omitempty"`
-	ToolCache ToolCacheConfig `yaml:"tool_cache,omitempty"`
-	FileRead FileReadConfig `yaml:"file_read,omitempty"`
-	FileList FileListConfig `yaml:"file_list,omitempty"`
-	SandboxRoot string `yaml:"sandbox_root,omitempty"`
-	Sandbox   SandboxConfig   `yaml:"sandbox,omitempty"`
+	WebFetch    WebFetchConfig  `yaml:"web_fetch,omitempty"`
+	WebSearch   WebSearchConfig `yaml:"web_search,omitempty"`
+	Browser     BrowserConfig   `yaml:"browser,omitempty"`
+	ToolCache   ToolCacheConfig `yaml:"tool_cache,omitempty"`
+	FileRead    FileReadConfig  `yaml:"file_read,omitempty"`
+	FileList    FileListConfig  `yaml:"file_list,omitempty"`
+	SandboxRoot string          `yaml:"sandbox_root,omitempty"`
+	Sandbox     SandboxConfig   `yaml:"sandbox,omitempty"`
 }
 
 // SandboxConfig controls the sandboxing of MCP servers.
 type SandboxConfig struct {
-	Enabled         bool  `yaml:"enabled"`          // default true
-	AllowUnconfined bool  `yaml:"allow_unconfined"` // default false (fail-closed)
+	Enabled         bool `yaml:"enabled"`          // default true
+	AllowUnconfined bool `yaml:"allow_unconfined"` // default false (fail-closed)
 }
 
 // BrowserConfig controls the built-in browser_* tools (real browser nav via
@@ -425,7 +425,7 @@ func applyDefaults(c *Config) {
 		c.Tools.WebSearch.AllowedRoles = []string{"parent"}
 	}
 	// sandbox defaults
-	if c.Tools.Sandbox.Enabled == false { // zero value is false, so we explicitly check for zero
+	if !c.Tools.Sandbox.Enabled { // zero value is false, so we explicitly check for zero
 		// INTENTIONAL DESIGN — secure-by-default. A fresh deployment
 		// enables the landlock+seccomp sandbox launcher for every stdio
 		// MCP server; operators who genuinely want unconfined subprocesses
@@ -630,7 +630,6 @@ func (c *Config) LLMEndpointForProfile(profileName string) LLMEndpoint {
 	return ep
 }
 
-
 // FileReadConfig controls the built-in file_read tool.
 type FileReadConfig struct {
 	// MaxBytes is the maximum number of bytes to read from a file.
@@ -641,7 +640,7 @@ type FileReadConfig struct {
 // FileListConfig controls the built-in file_list tool.
 type FileListConfig struct {
 	// MaxEntries is the maximum number of directory entries to return.
-// If 0, there is no limit.
+	// If 0, there is no limit.
 	MaxEntries int `yaml:"max_entries,omitempty"`
 }
 

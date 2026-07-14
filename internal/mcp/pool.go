@@ -19,8 +19,8 @@ const MaxToolCallIterations = 10
 
 // Pool manages multiple MCP clients (one per server), with lazy start and auto-restart.
 type Pool struct {
-	clients map[string]*managedClient // server name + tool name → client
-	mu      sync.RWMutex
+	clients     map[string]*managedClient // server name + tool name → client
+	mu          sync.RWMutex
 	SandboxRoot string
 	// Sandbox == true means every stdio MCP server is **required** to be
 	// launched inside the sandbox-restricted child process (landlock +
@@ -72,7 +72,7 @@ func (p *Pool) RegisterFromConfig(servers map[string]config.MCPServerConfig, cre
 		if creds, ok := credentials[name]; ok {
 			c.env = creds
 		}
-p.clients[name] = &managedClient{
+		p.clients[name] = &managedClient{
 			client: c,
 			name:   name,
 			cfg:    cfg,
@@ -152,16 +152,16 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 		return result, nil
 	}
 
-// Auto-restart once on failure
-		if mc.restartCnt < 1 {
-			log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
-			mc.restartCnt++
-			mc.client.Stop()
-			mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox)
-			mc.client.env = mc.env
-			if startErr := mc.client.Start(ctx); startErr != nil {
-				return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
-			}
+	// Auto-restart once on failure
+	if mc.restartCnt < 1 {
+		log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
+		mc.restartCnt++
+		mc.client.Stop()
+		mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox)
+		mc.client.env = mc.env
+		if startErr := mc.client.Start(ctx); startErr != nil {
+			return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
+		}
 		result, err = mc.client.CallTool(ctx, name, args)
 		if err == nil {
 			mc.restartCnt = 0

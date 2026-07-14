@@ -29,6 +29,7 @@ import (
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/credstore"
 	"github.com/famclaw/famclaw/internal/familystate"
+	"github.com/famclaw/famclaw/internal/filetool"
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/gateway/discord"
 	"github.com/famclaw/famclaw/internal/gateway/telegram"
@@ -48,7 +49,6 @@ import (
 	"github.com/famclaw/famclaw/internal/web"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
-	"github.com/famclaw/famclaw/internal/filetool"
 )
 
 // applySandboxRestrictions applies Landlock filesystem restrictions and seccomp network restrictions
@@ -190,7 +190,7 @@ func prepareSandboxRoot(sandboxRoot string) (string, error) {
 	if sandboxRoot == "" {
 		return "", fmt.Errorf("invalid sandbox root: empty")
 	}
-	
+
 	// Reject unsafe values and relative paths
 	if !filepath.IsAbs(sandboxRoot) {
 		return "", fmt.Errorf("invalid sandbox root %q: must be an absolute path", sandboxRoot)
@@ -201,13 +201,13 @@ func prepareSandboxRoot(sandboxRoot string) (string, error) {
 	if sandboxRoot == "/" {
 		return "", fmt.Errorf("sandbox root must not be the root directory")
 	}
-	
+
 	// Convert to absolute path (does not require path to exist)
 	absBase, err := filepath.Abs(sandboxRoot)
 	if err != nil {
 		return "", fmt.Errorf("invalid sandbox root %q: %w", sandboxRoot, err)
 	}
-	
+
 	// Check if absolute path is root directory
 	if absBase == "/" {
 		return "", fmt.Errorf("sandbox root must not be the root directory")
@@ -217,12 +217,12 @@ func prepareSandboxRoot(sandboxRoot string) (string, error) {
 	if err := os.MkdirAll(absBase, 0o700); err != nil {
 		return "", fmt.Errorf("failed to create sandbox root %q: %w", absBase, err)
 	}
-	
+
 	// Ensure the directory has correct permissions (0o700)
 	if err := os.Chmod(absBase, 0o700); err != nil {
 		return "", fmt.Errorf("failed to set permissions on sandbox root %q: %w", absBase, err)
 	}
-	
+
 	// Verify that what we created is indeed a directory
 	info, err := os.Stat(absBase)
 	if err != nil {
@@ -231,7 +231,7 @@ func prepareSandboxRoot(sandboxRoot string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("sandbox root %q is not a directory", absBase)
 	}
-	
+
 	return absBase, nil
 }
 
@@ -261,9 +261,9 @@ func main() {
 		}
 		sandboxRoot := os.Args[3]
 		command := os.Args[5]
-	if !filepath.IsAbs(command) {
-		log.Fatalf("Sandbox launcher: command must be an absolute path: %q", command)
-}
+		if !filepath.IsAbs(command) {
+			log.Fatalf("Sandbox launcher: command must be an absolute path: %q", command)
+		}
 		args := os.Args[6:]
 
 		log.Printf("Sandbox launcher: applying restrictions for root %s, executing %s %v", sandboxRoot, command, args)
@@ -414,7 +414,7 @@ func main() {
 
 	// Notifications
 	notifier := notify.NewMultiNotifier(cfg.Notifications, cfg.Server.Secret)
-	
+
 	// Check for potential silent notification failures
 	if notifier.Len() == 0 {
 		// Check if any user has parent role
@@ -425,19 +425,19 @@ func main() {
 				break
 			}
 		}
-		
+
 		// Log warning if notifications are expected but no channels are configured
 		if hasParent || cfg.SecCheck.NotifyOnQuarantine {
 			log.Printf("[notify] WARNING: no notification channels enabled but parent users or seccheck.notify_on_quarantine are configured; parental approvals will fire into the void — add an enabled channel under `notifications:` in your config.yaml (email, slack, discord, sms, ntfy)")
 		}
 	}
-	
+
 	log.Printf("Notifications: configured (%d channel(s))", notifier.Len())
 
 	// Identity store
 	identStore := identity.NewStore(db)
 	log.Printf("Identity: ready")
-// MCP tool server pool (stdio, HTTP, SSE transports)
+	// MCP tool server pool (stdio, HTTP, SSE transports)
 	var sandboxRoot string
 	if cfg.Tools.SandboxRoot != "" {
 		sandboxRoot = cfg.Tools.SandboxRoot
@@ -455,7 +455,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid sandbox root: %v", err)
 	}
-	
+
 	// Validate that the sandbox root is not a parent of itself
 	// This ensures we properly validate the path and avoid traversal issues
 	if err := cfg.Validate(); err != nil {
@@ -512,7 +512,7 @@ func main() {
 	}
 
 	// Skills loaded for prompt injection (independent of MCP)
-reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallConfig{
+	reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallConfig{
 		Enabled:      cfg.SecCheck.Enabled,
 		AutoSecCheck: cfg.SecCheck.AutoSecCheck,
 		BlockOnFail:  cfg.SecCheck.BlockOnFail,
@@ -579,44 +579,44 @@ reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallCon
 			registered = append(registered, "tool_result_more")
 		}
 	}
-// Phase 3.3 — get_family_state + propose_family_fact are always
-// available; OPA policy already permits them for every role, and the
-// handlers degrade gracefully when the store is nil (tests).
-builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
-registered = append(registered, "get_family_state", "propose_family_fact")
-if cfg.Tools.WebSearch.Enabled {
-	builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
-	registered = append(registered, "web_search")
-}
-// File tools are always available; access is restricted by OPA policy.
-builtinTools = append(builtinTools,
-	filetool.FileReadTool(),
-	filetool.FileWriteTool(),
-	filetool.FileStatTool(),
-	filetool.FileListTool(),
-)
-registered = append(registered, "file_read", "file_write", "file_stat", "file_list")
-var browserPool *browser.Pool
-if cfg.Tools.Browser.Enabled {
-	// Pool owns its idle-sweeper goroutine; pass Background and rely on
-	// Close (deferred below) to cancel it. A process-wide cancellable
-	// ctx exists later in main but Pool boots before the gateway ctx.
-	pool, err := browser.NewPool(context.Background(), browser.Config{
-		Endpoint:         cfg.Tools.Browser.Endpoint,
-		IdleTimeout:      time.Duration(cfg.Tools.Browser.IdleSec) * time.Second,
-		SnapshotMaxChars: cfg.Tools.Browser.SnapshotMaxChars,
-	})
-	if err != nil {
-		log.Fatalf("Browser pool: %v", err)
+	// Phase 3.3 — get_family_state + propose_family_fact are always
+	// available; OPA policy already permits them for every role, and the
+	// handlers degrade gracefully when the store is nil (tests).
+	builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
+	registered = append(registered, "get_family_state", "propose_family_fact")
+	if cfg.Tools.WebSearch.Enabled {
+		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
+		registered = append(registered, "web_search")
 	}
-	defer pool.Close()
-	browserPool = pool
-	for _, t := range browser.Tools(cfg.Tools.Browser.AllowedRoles) {
-		builtinTools = append(builtinTools, t)
-		registered = append(registered, strings.TrimPrefix(t.Name, "builtin__"))
+	// File tools are always available; access is restricted by OPA policy.
+	builtinTools = append(builtinTools,
+		filetool.FileReadTool(),
+		filetool.FileWriteTool(),
+		filetool.FileStatTool(),
+		filetool.FileListTool(),
+	)
+	registered = append(registered, "file_read", "file_write", "file_stat", "file_list")
+	var browserPool *browser.Pool
+	if cfg.Tools.Browser.Enabled {
+		// Pool owns its idle-sweeper goroutine; pass Background and rely on
+		// Close (deferred below) to cancel it. A process-wide cancellable
+		// ctx exists later in main but Pool boots before the gateway ctx.
+		pool, err := browser.NewPool(context.Background(), browser.Config{
+			Endpoint:         cfg.Tools.Browser.Endpoint,
+			IdleTimeout:      time.Duration(cfg.Tools.Browser.IdleSec) * time.Second,
+			SnapshotMaxChars: cfg.Tools.Browser.SnapshotMaxChars,
+		})
+		if err != nil {
+			log.Fatalf("Browser pool: %v", err)
+		}
+		defer pool.Close()
+		browserPool = pool
+		for _, t := range browser.Tools(cfg.Tools.Browser.AllowedRoles) {
+			builtinTools = append(builtinTools, t)
+			registered = append(registered, strings.TrimPrefix(t.Name, "builtin__"))
+		}
+		log.Printf("Browser: enabled (endpoint=%s, idle=%ds)", cfg.Tools.Browser.Endpoint, cfg.Tools.Browser.IdleSec)
 	}
-	log.Printf("Browser: enabled (endpoint=%s, idle=%ds)", cfg.Tools.Browser.Endpoint, cfg.Tools.Browser.IdleSec)
-}
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
 	// Chat function for gateway router
@@ -889,5 +889,3 @@ func parseTTLByRole(in map[string]string) map[string]time.Duration {
 	}
 	return out
 }
-
-

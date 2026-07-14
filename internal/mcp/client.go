@@ -19,7 +19,8 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/famclaw/famclaw/internal/config")
+	"github.com/famclaw/famclaw/internal/config"
+)
 
 // Client wraps an mcp-go client for any transport (stdio, HTTP, SSE).
 type Client struct {
@@ -33,11 +34,11 @@ type Client struct {
 	// either because the operator set Tools.Sandbox.Enabled=false
 	// (explicit opt-out) or because the per-server config did not pick
 	// the stdio sandbox path.
-	Sandbox       bool
-	env           map[string]string // per-skill credential env vars
-	inner         client.MCPClient
-	tools         []mcp.Tool
-closed        bool
+	Sandbox bool
+	env     map[string]string // per-skill credential env vars
+	inner   client.MCPClient
+	tools   []mcp.Tool
+	closed  bool
 }
 
 // checkLandlockSupport returns true if Landlock is supported on the current system
@@ -93,7 +94,7 @@ func (c *Client) Start(ctx context.Context) error {
 	var inner client.MCPClient
 	var err error
 
- switch c.transportType {
+	switch c.transportType {
 	case "stdio":
 		// Build a minimal environment: base allowlist + skill-declared vars +
 		// per-skill credentials.  Never passes os.Environ() — a skill inherits
@@ -107,15 +108,15 @@ func (c *Client) Start(ctx context.Context) error {
 		// refused to start if either was missing; this per-call check is
 		// defence-in-depth so a misconfigured pool cannot silently fall
 		// back to an unsandboxed subprocess.
-if c.Sandbox {
-		if c.SandboxRoot == "" {
-			return fmt.Errorf("sandbox root not set for sandboxed MCP server %q", c.name)
-		}
-		if !checkLandlockSupport() || !checkSeccompSupport() {
-			return fmt.Errorf("kernel lacks required sandboxing support (landlock=%v, seccomp=%v); refusing to launch MCP server %q unsandboxed",
-				checkLandlockSupport(), checkSeccompSupport(), c.name)
-		}
-		opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
+		if c.Sandbox {
+			if c.SandboxRoot == "" {
+				return fmt.Errorf("sandbox root not set for sandboxed MCP server %q", c.name)
+			}
+			if !checkLandlockSupport() || !checkSeccompSupport() {
+				return fmt.Errorf("kernel lacks required sandboxing support (landlock=%v, seccomp=%v); refusing to launch MCP server %q unsandboxed",
+					checkLandlockSupport(), checkSeccompSupport(), c.name)
+			}
+			opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 				launcherArgs := []string{
 					"-sandbox-launcher",
 					"--sandbox-root", c.SandboxRoot,
