@@ -34,6 +34,7 @@ import (
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
+	"github.com/famclaw/famclaw/internal/todo"
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
@@ -80,9 +81,12 @@ type Agent struct {
 	// LLM. When nil, the legacy inline-everything path runs.
 	cache *toolcache.Cache
 
-	// browserPool drives the builtin__browser_* tools when configured.
-	// nil = browser tools disabled.
+// browserPool drives the builtin__browser_* tools when configured.
+// nil = browser tools disabled.
 	browserPool *browser.Pool
+
+	// todoStore is the per-user todo store.
+	todoStore *todo.Store
 }
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
@@ -119,8 +123,10 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	}
 
 	var fs *familystate.Store
+	var ts *todo.Store
 	if db != nil {
 		fs = familystate.NewStore(db)
+		ts = todo.NewStore(db)
 	}
 
 	return &Agent{
@@ -139,6 +145,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		convID:       convID,
 		gateway:      deps.Gateway,
 		familyState:  fs,
+		todoStore:    ts,
 		webFetcher:   webfetch.Fetch,
 		cache:        deps.Cache,
 		browserPool:  deps.BrowserPool,
@@ -377,6 +384,8 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			return a.handleGetFamilyState(ctx, args)
 		case "builtin__propose_family_fact":
 			return a.handleProposeFamilyFact(ctx, args)
+		case "builtin__todo":
+			return a.handleTodo(ctx, args)
 		case "builtin__list_pending_approvals":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
 			return admin.HandleListPendingApprovals(ctx, deps, args)
@@ -629,6 +638,99 @@ func (a *Agent) handleFileList(ctx context.Context, args map[string]any) (string
 		result += "\n[truncated]"
 	}
 	return result, nil
+}
+
+// handleTodo dispatches the builtin__todo tool. Manages the user's personal todo list.
+// Actions: add, list, complete, uncomplete, remove.
+func (a *Agent) handleTodo(ctx context.Context, args map[string]any) (string, error) {
+	action, _ := args["action"].(string)
+	if action == "" {
+		return "", fmt.Errorf("todo requires an 'action' argument")
+	}
+
+	todoStore := todo.NewStore(a.db)
+	userName := a.user.Name
+
+	switch action {
+	case "add":
+		text, _ := args["text"].(string)
+		if text == "" {
+			return "", fmt.Errorf("todo add requires a 'text' argument")
+		}
+		t, err := todoStore.AddTodo(ctx, userName, text)
+		if err != nil {
+			return "", fmt.Errorf("add todo: %w", err)
+		}
+		return fmt.Sprintf("Added todo #%d: %s", t.ID, t.Text), nil
+
+	case "list":
+		filter, _ := args["filter"].(string)
+		if filter == "" {
+			filter = "all" // default to showing all
+		}
+		var completed *bool
+		switch filter {
+		case "active":
+			f := false
+			completed = &f
+		case "completed":
+			f := true
+			completed = &f
+		case "all":
+			completed = nil
+		default:
+			return "", fmt.Errorf("invalid filter %q: must be all, active, or completed", filter)
+		}
+		todos, err := todoStore.ListTodos(ctx, userName, completed)
+		if err != nil {
+			return "", fmt.Errorf("list todos: %w", err)
+		}
+		if len(todos) == 0 {
+			return "No todos found.", nil
+		}
+		var lines []string
+		for _, t := range todos {
+			status := " "
+			if t.Completed {
+				status = "x"
+			}
+			lines = append(lines, fmt.Sprintf("%d. [%s] %s", t.ID, status, t.Text))
+		}
+		return strings.Join(lines, "\n"), nil
+
+	case "complete":
+		id := readIntArg(args, "id", 0)
+		if id == 0 {
+			return "", fmt.Errorf("todo complete requires an 'id' argument")
+		}
+		if err := todoStore.CompleteTodo(ctx, userName, int64(id)); err != nil {
+			return "", fmt.Errorf("complete todo: %w", err)
+		}
+		return fmt.Sprintf("Marked todo #%d as complete.", id), nil
+
+	case "uncomplete":
+		id := readIntArg(args, "id", 0)
+		if id == 0 {
+			return "", fmt.Errorf("todo uncomplete requires an 'id' argument")
+		}
+		if err := todoStore.UncompleteTodo(ctx, userName, int64(id)); err != nil {
+			return "", fmt.Errorf("uncomplete todo: %w", err)
+		}
+		return fmt.Sprintf("Marked todo #%d as active.", id), nil
+
+	case "remove":
+		id := readIntArg(args, "id", 0)
+		if id == 0 {
+			return "", fmt.Errorf("todo remove requires an 'id' argument")
+		}
+		if err := todoStore.RemoveTodo(ctx, userName, int64(id)); err != nil {
+			return "", fmt.Errorf("remove todo: %w", err)
+		}
+		return fmt.Sprintf("Removed todo #%d.", id), nil
+
+	default:
+		return "", fmt.Errorf("unknown todo action %q (must be add, list, complete, uncomplete, or remove)", action)
+	}
 }
 
 func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (string, error) {

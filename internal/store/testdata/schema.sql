@@ -14,6 +14,10 @@ CREATE INDEX idx_gateway_accounts_lookup ON gateway_accounts(gateway, external_i
 
 CREATE INDEX idx_messages_conv ON messages(conversation_id);
 
+CREATE INDEX idx_todos_user ON todos(user_name);
+
+CREATE INDEX idx_todos_user_completed ON todos(user_name, completed);
+
 CREATE INDEX idx_tool_audit_created   ON tool_result_audit (created_at);
 
 CREATE INDEX idx_tool_audit_user_conv ON tool_result_audit (user_name, conv_id);
@@ -165,6 +169,15 @@ CREATE TABLE skills (
 		seccheck_verdict TEXT,
 		installed_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+CREATE TABLE todos (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_name  TEXT NOT NULL,
+		text       TEXT NOT NULL,
+		completed  INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
 	);
 
 CREATE TABLE tool_result_audit (
