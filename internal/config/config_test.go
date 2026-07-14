@@ -157,3 +157,62 @@ func TestLoadYAMLKeyWhenNoEnv(t *testing.T) {
 		t.Errorf("APIKey = %q, want %q (YAML should be used when no env)", cfg.LLM.APIKey, "sk-from-yaml")
 	}
 }
+
+func TestApplyDefaults_SandboxRootDefault(t *testing.T) {
+	tests := []struct {
+		name           string
+		sandboxRoot    string
+		expectedDefault string
+	}{
+		{
+			name:           "empty sandbox_root gets default",
+			sandboxRoot:    "",
+			expectedDefault: "./data/sandbox",
+		},
+		{
+			name:           "non-empty sandbox_root preserved",
+			sandboxRoot:    "/custom/sandbox",
+			expectedDefault: "/custom/sandbox",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Config{
+				Tools: ToolsConfig{
+					SandboxRoot: tt.sandboxRoot,
+					Sandbox: SandboxConfig{
+						Enabled: true,
+					},
+				},
+				Server: ServerConfig{
+					Host: "0.0.0.0",
+					Port: 8080,
+				},
+				LLM: LLMConfig{
+					MaxContextTokens: 4096,
+					MaxResponseTokens: 512,
+					Temperature: 0.7,
+				},
+				Approval: ApprovalConfig{
+					ExpiryHours: 24,
+				},
+				Skills: SkillsConfig{
+					Dir: "./skills",
+				},
+				Storage: StorageConfig{
+					DBPath: "./data/famclaw.db",
+				},
+				Notifications: NotificationsConfig{
+					Ntfy: NtfyConfig{
+						URL: "http://localhost:2586",
+					},
+				},
+			}
+			applyDefaults(c)
+			if c.Tools.SandboxRoot != tt.expectedDefault {
+				t.Errorf("SandboxRoot = %q, want %q", c.Tools.SandboxRoot, tt.expectedDefault)
+			}
+		})
+	}
+}
