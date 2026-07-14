@@ -11,31 +11,31 @@ import (
 // ParseTime parses natural language time expressions into a time.Time.
 // Supports relative times (in X minutes/hours/days) and absolute times (at HH:MM, tomorrow HH:MM).
 // Returns the parsed time in UTC.
-func ParseTime(input string, now time.Time) (time.Time, error) {
+func ParseTime(input string, now time.Time, loc *time.Location) (time.Time, error) {
 	input = strings.TrimSpace(strings.ToLower(input))
 	if input == "" {
 		return time.Time{}, errors.New("empty time expression")
 	}
 
 	// Try absolute time first: "at HH:MM" or "at H:MM am/pm" or "tomorrow at HH:MM"
-	if t, ok := parseAbsolute(input, now); ok {
-		return t, nil
+	if t, ok := parseAbsolute(input, now, loc); ok {
+		return t.UTC(), nil
 	}
 
 	// Try relative time: "in X minutes/hours/days"
-	if t, ok := parseRelative(input, now); ok {
-		return t, nil
+	if t, ok := parseRelative(input, now, loc); ok {
+		return t.UTC(), nil
 	}
 
 	// Try shorthand: "5m", "2h", "1d"
-	if t, ok := parseShorthand(input, now); ok {
-		return t, nil
+	if t, ok := parseShorthand(input, now, loc); ok {
+		return t.UTC(), nil
 	}
 
 	return time.Time{}, errors.New("could not parse time expression: " + input)
 }
 
-func parseAbsolute(input string, now time.Time) (time.Time, bool) {
+func parseAbsolute(input string, now time.Time, loc *time.Location) (time.Time, bool) {
 	// "at HH:MM" or "at H:MM am/pm"
 	atRegex := regexp.MustCompile(`^at\s+(\d{1,2}):(\d{2})\s*(am|pm)?$`)
 	if m := atRegex.FindStringSubmatch(input); m != nil {
@@ -52,7 +52,7 @@ func parseAbsolute(input string, now time.Time) (time.Time, bool) {
 				h = 0
 			}
 		}
-		t := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, time.UTC)
+		t := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, loc)
 		if t.Before(now) {
 			t = t.Add(24 * time.Hour)
 		}
@@ -76,7 +76,7 @@ func parseAbsolute(input string, now time.Time) (time.Time, bool) {
 			}
 		}
 		tomorrow := now.Add(24 * time.Hour)
-		return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), h, min, 0, 0, time.UTC), true
+		return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), h, min, 0, 0, loc), true
 	}
 
 	// "today at HH:MM"
@@ -95,7 +95,7 @@ func parseAbsolute(input string, now time.Time) (time.Time, bool) {
 				h = 0
 			}
 		}
-		t := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, time.UTC)
+		t := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, loc)
 		if t.Before(now) {
 			t = t.Add(24 * time.Hour)
 		}
@@ -124,7 +124,7 @@ func parseAbsolute(input string, now time.Time) (time.Time, bool) {
 			daysAhead += 7
 		}
 		t := now.AddDate(0, 0, int(daysAhead))
-		return time.Date(t.Year(), t.Month(), t.Day(), h, min, 0, 0, time.UTC), true
+		return time.Date(t.Year(), t.Month(), t.Day(), h, min, 0, 0, loc), true
 	}
 
 	return time.Time{}, false
@@ -151,7 +151,7 @@ func parseDayOfWeek(s string) time.Weekday {
 	}
 }
 
-func parseRelative(input string, now time.Time) (time.Time, bool) {
+func parseRelative(input string, now time.Time, loc *time.Location) (time.Time, bool) {
 	// "in X minutes/hours/days" or "in a minute/hour/day"
 	inRegex := regexp.MustCompile(`^in\s+(?:a\s+|an\s+|(\d+)\s+)(minute|minutes|hour|hours|day|days)$`)
 	if m := inRegex.FindStringSubmatch(input); m != nil {
@@ -173,7 +173,7 @@ func parseRelative(input string, now time.Time) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func parseShorthand(input string, now time.Time) (time.Time, bool) {
+func parseShorthand(input string, now time.Time, loc *time.Location) (time.Time, bool) {
 	// "5m", "2h", "1d", "30s"
 	shorthandRegex := regexp.MustCompile(`^(\d+)([smhd])$`)
 	if m := shorthandRegex.FindStringSubmatch(input); m != nil {

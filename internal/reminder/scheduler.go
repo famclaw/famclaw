@@ -69,6 +69,7 @@ type Scheduler struct {
 	mu         sync.Mutex
 	running    bool
 	stopCh     chan struct{}
+	stopOnce   sync.Once
 	wg         sync.WaitGroup
 	clock      func() time.Time // injectable for testing
 }
@@ -117,8 +118,8 @@ func (s *Scheduler) Stop() {
 		return
 	}
 	s.running = false
-	close(s.stopCh)
 	s.mu.Unlock()
+	s.stopOnce.Do(func() { close(s.stopCh) })
 	s.wg.Wait()
 }
 

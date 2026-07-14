@@ -59,7 +59,7 @@ func TestParseTime(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ParseTime(tc.input, base)
+			got, err := ParseTime(tc.input, base, time.UTC)
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("expected error, got %v", got)

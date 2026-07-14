@@ -46,8 +46,8 @@ func Tool() agentcore.Tool {
 // The agent's makeBuiltinHandler should call this with the appropriate deps.
 func HandleAddReminder(ctx context.Context, db *store.DB, user *config.UserConfig, gateway, externalID, groupID string, isGroup bool, when, message, forUser string) (string, error) {
 	// Parse the time
-	now := time.Now().UTC()
-	dueAt, err := ParseTime(when, now)
+	now := time.Now()
+	dueAt, err := ParseTime(when, now, time.Local)
 	if err != nil {
 		return "", fmt.Errorf("invalid time: %w", err)
 	}

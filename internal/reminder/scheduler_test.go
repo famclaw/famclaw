@@ -296,3 +296,42 @@ func TestSchedulerFutureRemindersNotDispatched(t *testing.T) {
 		t.Errorf("expected 0 dispatched, got %d", len(sent))
 	}
 }
+
+func TestSchedulerStop(t *testing.T) {
+	db := newMockDB()
+	dispatcher := NewDispatcher()
+	s := NewScheduler(db, dispatcher, 10*time.Millisecond)
+
+	ctx := context.Background()
+
+	// Start the scheduler
+	s.Start(ctx)
+
+	// Give it a moment to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Test that Stop returns without hanging
+	done := make(chan struct{})
+	go func() {
+		s.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Error("Stop did not return within 1 second")
+	}
+
+	// Test that calling Stop again does not panic and returns quickly
+	done2 := make(chan struct{})
+	go func() {
+		s.Stop()
+		close(done2)
+	}()
+	select {
+	case <-done2:
+	case <-time.After(1 * time.Second):
+		t.Error("Second Stop did not return within 1 second")
+	}
+}
