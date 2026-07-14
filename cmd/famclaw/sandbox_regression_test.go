@@ -15,7 +15,7 @@ import (
 func TestSandboxRootDefaulting(t *testing.T) {
 	// Create a temp dir for our test
 	tempDir := t.TempDir()
-	
+
 	// Create a mock config with no sandbox root configured
 	cfg := &config.Config{
 		Storage: config.StorageConfig{
