@@ -648,7 +648,6 @@ func (a *Agent) handleTodo(ctx context.Context, args map[string]any) (string, er
 		return "", fmt.Errorf("todo requires an 'action' argument")
 	}
 
-	todoStore := todo.NewStore(a.db)
 	userName := a.user.Name
 
 	switch action {
@@ -657,7 +656,7 @@ func (a *Agent) handleTodo(ctx context.Context, args map[string]any) (string, er
 		if text == "" {
 			return "", fmt.Errorf("todo add requires a 'text' argument")
 		}
-		t, err := todoStore.AddTodo(ctx, userName, text)
+		t, err := a.todoStore.AddTodo(ctx, userName, text)
 		if err != nil {
 			return "", fmt.Errorf("add todo: %w", err)
 		}
@@ -681,7 +680,7 @@ func (a *Agent) handleTodo(ctx context.Context, args map[string]any) (string, er
 		default:
 			return "", fmt.Errorf("invalid filter %q: must be all, active, or completed", filter)
 		}
-		todos, err := todoStore.ListTodos(ctx, userName, completed)
+		todos, err := a.todoStore.ListTodos(ctx, userName, completed)
 		if err != nil {
 			return "", fmt.Errorf("list todos: %w", err)
 		}
@@ -703,7 +702,7 @@ func (a *Agent) handleTodo(ctx context.Context, args map[string]any) (string, er
 		if id == 0 {
 			return "", fmt.Errorf("todo complete requires an 'id' argument")
 		}
-		if err := todoStore.CompleteTodo(ctx, userName, int64(id)); err != nil {
+		if err := a.todoStore.CompleteTodo(ctx, userName, int64(id)); err != nil {
 			return "", fmt.Errorf("complete todo: %w", err)
 		}
 		return fmt.Sprintf("Marked todo #%d as complete.", id), nil
@@ -713,7 +712,7 @@ func (a *Agent) handleTodo(ctx context.Context, args map[string]any) (string, er
 		if id == 0 {
 			return "", fmt.Errorf("todo uncomplete requires an 'id' argument")
 		}
-		if err := todoStore.UncompleteTodo(ctx, userName, int64(id)); err != nil {
+		if err := a.todoStore.UncompleteTodo(ctx, userName, int64(id)); err != nil {
 			return "", fmt.Errorf("uncomplete todo: %w", err)
 		}
 		return fmt.Sprintf("Marked todo #%d as active.", id), nil
@@ -723,7 +722,7 @@ func (a *Agent) handleTodo(ctx context.Context, args map[string]any) (string, er
 		if id == 0 {
 			return "", fmt.Errorf("todo remove requires an 'id' argument")
 		}
-		if err := todoStore.RemoveTodo(ctx, userName, int64(id)); err != nil {
+		if err := a.todoStore.RemoveTodo(ctx, userName, int64(id)); err != nil {
 			return "", fmt.Errorf("remove todo: %w", err)
 		}
 		return fmt.Sprintf("Removed todo #%d.", id), nil
