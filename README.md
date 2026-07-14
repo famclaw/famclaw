@@ -133,6 +133,17 @@ FamClaw uses the [AgentSkills](https://docs.openclaw.ai/tools/skills) spec — t
 famclaw skill install seccheck
 ```
 
+### First-party Skills
+
+#### `family-knowledge` — family memory and facts
+A first-party skill that gives the LLM access to a persistent family knowledge base for storing and retrieving household facts (members, allergies, dietary rules, doctors, schedules, house rules, pets, important dates). The knowledge is shared across all family members and conversations.
+
+The skill provides tools for reading facts, proposing new facts (children must get parent approval), and mutating facts (parents can add, update, or delete facts directly). Parents can also define custom categories for organizing knowledge.
+
+The built-in categories `allergies` and `dietary_restrictions` are always injected into every system prompt for safety-critical information. Other categories are accessed on-demand via `get_family_state`.
+
+See [`skills/family-knowledge/SKILL.md`](skills/family-knowledge/SKILL.md) for full documentation.
+
 ---
 
 ## Agent dispatch (`spawn_agent`)

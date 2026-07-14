@@ -145,6 +145,8 @@ Single CGO_ENABLED=0 binary.
 ### Skills repo
 Skills live in `famclaw/skills` — never create a skills/ dir here.
 
+First-party skills (like `family-knowledge`) are maintained in `skills-repo/family-knowledge/` and automatically synced to `famclaw/skills/family-knowledge/` during the build process.
+
 ### Module path
 `github.com/famclaw/famclaw`
 
