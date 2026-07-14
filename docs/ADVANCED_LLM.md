@@ -21,6 +21,21 @@ system message. Responses stream back in real time via `onToken` callbacks.
 **Limitations:** tool calls are not supported — `ChatWithTools` returns an error.
 This limitation may be lifted in a future release.
 
+## Multimodal LLMs
+
+FamClaw supports multimodal LLMs that can process both text and images. When using a
+vision-capable model, FamClaw will automatically encode and send images as part of
+the chat completion request. Supported models include:
+- GPT-4o, GPT-4o-mini (OpenAI)
+- Claude 3.x series (Anthropic)
+- Gemini Pro Vision (Google)
+- Llava series or other vision-capable open models
+- Any OpenAI-compatible API endpoint serving a vision-capable model
+
+To use multimodal capabilities, ensure your configured LLM model supports image input.
+The image understanding feature works with any vision-capable model, making it flexible
+for different configurations.
+
 ## Recommended path for most users
 
 The default Ollama path remains the recommended privacy-first choice. It keeps all
