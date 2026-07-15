@@ -10,6 +10,26 @@ platforms: [linux, darwin]
 
 This skill enables FamClaw to understand and analyze images provided by users. When a user shares an image (or references one), FamClaw can describe what's in it, read text contained within the image, and answer questions about the visual content.
 
+## Gateway Support
+
+Currently, image understanding is implemented for:
+- **Telegram** - Full image attachment support with automatic download and encoding
+- **WhatsApp** - Not yet implemented
+- **Discord** - Not yet implemented  
+- **Web Interface** - Not yet implemented
+
+The feature is designed to be extensible to other messaging platforms.
+
+## Gateway Support
+
+Currently, image understanding is implemented for:
+- **Telegram** - Full image attachment support with automatic download and encoding
+- **WhatsApp** - Not yet implemented
+- **Discord** - Not yet implemented  
+- **Web Interface** - Not yet implemented
+
+The feature is designed to be extensible to other messaging platforms.
+
 ## How It Works
 
 When a user sends an image through any supported gateway (Telegram, WhatsApp, Discord, or web interface), Famclaw processes the image and includes it as part of the message sent to the configured LLM model. The image understanding capabilities depend entirely on the configured model being vision-capable.
