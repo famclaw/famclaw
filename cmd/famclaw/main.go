@@ -45,12 +45,12 @@ import (
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
+	"github.com/famclaw/famclaw/internal/todo"
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/web"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
-	"github.com/famclaw/famclaw/internal/todo"
 )
 
 // applySandboxRestrictions applies Landlock filesystem restrictions and seccomp network restrictions
@@ -596,10 +596,10 @@ func main() {
 	builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
 	registered = append(registered, "get_family_state", "propose_family_fact")
 
-// Todo tool — always available for all roles; access controlled by policy if needed.
+	// Todo tool — always available for all roles; access controlled by policy if needed.
 	builtinTools = append(builtinTools, todo.Tool(nil))
 	registered = append(registered, "todo")
-	
+
 	// Phase 4 — user memory tools (remember/recall/forget) available to all roles.
 	builtinTools = append(builtinTools,
 		usermemory.RememberDefinition(),
@@ -642,7 +642,7 @@ func main() {
 	}
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
-	// Chat function for gateway router
+	// Chat function for gateway router - combining incoming changes with our multimodal support
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		var llmClient llm.Chatter
 		switch cfg.LLM.Provider {
@@ -661,6 +661,7 @@ func main() {
 			BuiltinTools: builtinTools,
 			Cache:        toolCache,
 			BrowserPool:  browserPool,
+			MsgContext:   msgCtx,
 		})
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {

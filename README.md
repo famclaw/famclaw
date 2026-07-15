@@ -144,6 +144,11 @@ The built-in categories `allergies` and `dietary_restrictions` are always inject
 
 See [`skills/family-knowledge/SKILL.md`](skills/family-knowledge/SKILL.md) for full documentation.
 
+#### `image-understanding` — image analysis and description
+A first-party skill that enables FamClaw to understand and analyze images provided by users. When a user shares an image (or references one), FamClaw can describe what's in it, read text contained within the image, and answer questions about the visual content.
+
+See [`skills/image-understanding/SKILL.md`](skills/image-understanding/SKILL.md) for full documentation.
+
 ---
 
 ## Agent dispatch (`spawn_agent`)

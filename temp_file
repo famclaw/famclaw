@@ -1,0 +1,20 @@
+// Package telegram provides a Telegram Bot API gateway for FamClaw.
+// Uses long-polling — no webhook required, works behind NAT/RPi.
+package telegram
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/famclaw/famclaw/internal/gateway"
+	"github.com/famclaw/famclaw/internal/notify"
+)
