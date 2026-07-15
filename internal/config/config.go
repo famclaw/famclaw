@@ -544,16 +544,18 @@ func (c *Config) Validate() error {
 		if cleaned == "/" || cleaned == "." {
 			return fmt.Errorf("tools.sandbox_root must not be the root directory (\"/\") or current directory (\".\")")
 		}
-		// Check that the directory exists.
+		// Create the sandbox directory if it does not exist. The default
+		// (./data/sandbox) never pre-exists on a fresh install, so creating it
+		// here is what lets a fresh install boot.
+		if err := os.MkdirAll(cleaned, 0o700); err != nil {
+			return fmt.Errorf("tools.sandbox_root: %w", err)
+		}
 		info, err := os.Stat(cleaned)
 		if err != nil {
-			if os.IsNotExist(err) {
-				return fmt.Errorf("tools.sandbox_root: directory does not exist: %w", err)
-			}
 			return fmt.Errorf("tools.sandbox_root: failed to stat directory: %w", err)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("tools.sandbox_root: not a directory: %w", err)
+			return fmt.Errorf("tools.sandbox_root: not a directory")
 		}
 		// Optionally, ensure the parent directory exists? Not required; we can create later.
 		c.Tools.SandboxRoot = cleaned

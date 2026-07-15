@@ -216,3 +216,55 @@ func TestApplyDefaults_SandboxRootDefault(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_SandboxRootDefaultCreatesDir(t *testing.T) {
+	// Create a temporary directory for the test
+	tmpDir := t.TempDir()
+	originalDir, _ := os.Getwd()
+	defer os.Chdir(originalDir)
+	os.Chdir(tmpDir)
+
+	// Create config with empty sandbox root
+	c := &Config{
+		Tools: ToolsConfig{
+			SandboxRoot: "",
+		},
+		Server: ServerConfig{
+			Host: "0.0.0.0",
+			Port: 8080,
+		},
+		LLM: LLMConfig{
+			MaxContextTokens: 4096,
+			MaxResponseTokens: 512,
+			Temperature: 0.7,
+		},
+		Approval: ApprovalConfig{
+			ExpiryHours: 24,
+		},
+		Skills: SkillsConfig{
+			Dir: "./skills",
+		},
+		Storage: StorageConfig{
+			DBPath: "./data/famclaw.db",
+		},
+		Notifications: NotificationsConfig{
+			Ntfy: NtfyConfig{
+				URL: "http://localhost:2586",
+			},
+		},
+	}
+
+	// Apply defaults and validate
+	applyDefaults(c)
+	err := c.Validate()
+
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Check if the default sandbox directory was created
+	expectedDir := "./data/sandbox"
+	if _, err := os.Stat(expectedDir); os.IsNotExist(err) {
+		t.Errorf("expected sandbox directory %q was not created", expectedDir)
+	}
+}
