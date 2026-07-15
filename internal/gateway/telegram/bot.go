@@ -19,7 +19,7 @@ import (
 	"github.com/famclaw/famclaw/internal/notify"
 )
 
-const maxImageBytes = 20 * 1024 * 1024 // 20MB cap to avoid memory exhaustion
+const maxImageBytes = 5 * 1024 * 1024 // 5MB cap (RPi-friendly)
 // Bot is a Telegram gateway using the Bot API with long-polling.
 type Bot struct {
 	token    string
@@ -98,9 +98,14 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 							// Default to JPEG for Telegram photos
 							mimeType = "image/jpeg"
 						}
+                    if mimeType != "image/jpeg" && mimeType != "image/png" {
+                        log.Printf("[telegram] unsupported image type: %s, skipping", mimeType)
+                        photoData = nil
+                    }
 					}
 				}
 			}
+			
 			
 			// Prepare attachments if we have photo data
 			var attachments []gateway.Attachment
