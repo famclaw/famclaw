@@ -180,10 +180,8 @@ func TestApplyDefaults_SandboxRootDefault(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &Config{
 				Tools: ToolsConfig{
-					SandboxRoot: tt.sandboxRoot,
-					Sandbox: SandboxConfig{
-						Enabled: true,
-					},
+						SandboxRoot: tt.sandboxRoot,
+						Sandbox: SandboxConfig{},
 				},
 				Server: ServerConfig{
 					Host: "0.0.0.0",
@@ -266,5 +264,50 @@ func TestValidate_SandboxRootDefaultCreatesDir(t *testing.T) {
 	expectedDir := "./data/sandbox"
 	if _, err := os.Stat(expectedDir); os.IsNotExist(err) {
 		t.Errorf("expected sandbox directory %q was not created", expectedDir)
+	}
+}
+
+func TestSandboxEnabled_IsEnabled(t *testing.T) {
+	tests := []struct {
+		name          string
+		yaml          string
+		wantEnabled   bool
+	}{
+		{
+			name:          "unset sandbox block",
+			yaml:          ``,
+			wantEnabled:   true,
+		},
+		{
+			name:          "enabled: false",
+			yaml:          `tools:
+  sandbox:
+    enabled: false`,
+			wantEnabled:   false,
+		},
+		{
+			name:          "enabled: true",
+			yaml:          `tools:
+  sandbox:
+    enabled: true`,
+			wantEnabled:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configPath := filepath.Join(tmpDir, "config.yaml")
+			if err := os.WriteFile(configPath, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatalf("failed to write config file: %v", err)
+			}
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("failed to load config: %v", err)
+			}
+			applyDefaults(cfg)
+			if got := cfg.Tools.Sandbox.IsEnabled(); got != tt.wantEnabled {
+				t.Errorf("IsEnabled() = %v, want %v", got, tt.wantEnabled)
+			}
+		})
 	}
 }

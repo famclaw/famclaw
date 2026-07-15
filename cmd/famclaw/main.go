@@ -258,7 +258,7 @@ var Version = "dev"
 // Errors from StartAll are non-fatal and logged; the pool is returned
 // even if some servers failed to start (caller logs and continues).
 func initMCPPool(ctx context.Context, cfg *config.Config, sandboxRoot string) (*mcp.Pool, []string, error) {
-	pool := mcp.NewPool(sandboxRoot, cfg.Tools.Sandbox.Enabled)
+	pool := mcp.NewPool(sandboxRoot, cfg.Tools.Sandbox.IsEnabled())
 	var skippedMCPs []string
 
 	if len(cfg.Skills.MCPServers) > 0 {
@@ -269,7 +269,7 @@ func initMCPPool(ctx context.Context, cfg *config.Config, sandboxRoot string) (*
 			// from silently downgrading to unsandboxed MCP subprocesses.
 			// However, make this non-fatal to prevent famclaw from crashing
 			// at boot when MCP servers are misconfigured or unreachable.
-			if cfg.Tools.Sandbox.Enabled {
+			if cfg.Tools.Sandbox.IsEnabled() {
 				log.Printf("⚠️  MCP pool: %v (non-fatal - continuing boot)", err)
 				for serverName := range cfg.Skills.MCPServers {
 					skippedMCPs = append(skippedMCPs, fmt.Sprintf("%s (sandbox enabled but failed to start)", serverName))
