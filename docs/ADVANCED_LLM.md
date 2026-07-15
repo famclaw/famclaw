@@ -43,13 +43,6 @@ with plans to expand to other gateways. When a user sends an image through a sup
 gateway, FamClaw processes the image and includes it as part of the message sent to the
 configured LLM model. The feature requires a vision-capable LLM model to function.
 
-### Image Understanding Feature
-
-FamClaw's image understanding feature extends support for image attachments in Telegram,
-with plans to expand to other gateways. When a user sends an image through a supported
-gateway, FamClaw processes the image and includes it as part of the message sent to the
-configured LLM model. The feature requires a vision-capable LLM model to function.
-
 ## Recommended path for most users
 
 The default Ollama path remains the recommended privacy-first choice. It keeps all
