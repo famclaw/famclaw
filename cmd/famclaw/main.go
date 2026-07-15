@@ -45,12 +45,12 @@ import (
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
+	"github.com/famclaw/famclaw/internal/todo"
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/web"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
-	"github.com/famclaw/famclaw/internal/todo"
 )
 
 // applySandboxRestrictions applies Landlock filesystem restrictions and seccomp network restrictions
@@ -596,10 +596,10 @@ func main() {
 	builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
 	registered = append(registered, "get_family_state", "propose_family_fact")
 
-// Todo tool — always available for all roles; access controlled by policy if needed.
+	// Todo tool — always available for all roles; access controlled by policy if needed.
 	builtinTools = append(builtinTools, todo.Tool(nil))
 	registered = append(registered, "todo")
-	
+
 	// Phase 4 — user memory tools (remember/recall/forget) available to all roles.
 	builtinTools = append(builtinTools,
 		usermemory.RememberDefinition(),
