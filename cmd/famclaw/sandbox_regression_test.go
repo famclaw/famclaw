@@ -24,7 +24,7 @@ func TestSandboxRootDefaulting(t *testing.T) {
 		Tools: config.ToolsConfig{
 			SandboxRoot: "", // Explicitly empty - should trigger defaulting
 			Sandbox: config.SandboxConfig{
-				Enabled: true,
+				Enabled: boolPtr(true),
 			},
 		},
 		Skills: config.SkillsConfig{
@@ -72,7 +72,7 @@ func TestInitMCPPoolNonFatal(t *testing.T) {
 		Tools: config.ToolsConfig{
 			SandboxRoot: sandboxRoot,
 			Sandbox: config.SandboxConfig{
-				Enabled: true,
+				Enabled: boolPtr(true),
 			},
 		},
 		Skills: config.SkillsConfig{

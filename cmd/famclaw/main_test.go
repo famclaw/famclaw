@@ -23,7 +23,7 @@ func TestInitMCPPool_NonFatalOnBadConfig(t *testing.T) {
 		Tools: config.ToolsConfig{
 			SandboxRoot: sandboxRoot,
 			Sandbox: config.SandboxConfig{
-				Enabled: true,
+				Enabled: boolPtr(true),
 			},
 		},
 		Skills: config.SkillsConfig{
@@ -70,7 +70,7 @@ func TestInitMCPPool_SandboxEnabledFailClosed(t *testing.T) {
 		Tools: config.ToolsConfig{
 			SandboxRoot: sandboxRoot,
 			Sandbox: config.SandboxConfig{
-				Enabled: true,
+				Enabled: boolPtr(true),
 			},
 		},
 		Skills: config.SkillsConfig{
@@ -108,7 +108,7 @@ func TestInitMCPPool_NoServers(t *testing.T) {
 		Tools: config.ToolsConfig{
 			SandboxRoot: sandboxRoot,
 			Sandbox: config.SandboxConfig{
-				Enabled: false,
+				Enabled: boolPtr(false),
 			},
 		},
 		Skills: config.SkillsConfig{
@@ -255,3 +255,5 @@ func TestPrepareSandboxRoot(t *testing.T) {
 		})
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }

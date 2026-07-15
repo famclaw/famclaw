@@ -41,9 +41,11 @@ type ToolsConfig struct {
 
 // SandboxConfig controls the sandboxing of MCP servers.
 type SandboxConfig struct {
-	Enabled         bool `yaml:"enabled"`          // default true
+	Enabled         *bool `yaml:"enabled"`          // nil = unset (defaults to true); explicit false honored
 	AllowUnconfined bool `yaml:"allow_unconfined"` // default false (fail-closed)
 }
+// IsEnabled reports whether the MCP sandbox is on. Unset (nil) defaults to true (secure-by-default).
+func (s SandboxConfig) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
 
 // BrowserConfig controls the built-in browser_* tools (real browser nav via
 // a remote Playwright server). Disabled by default; when enabled the LLM
@@ -425,15 +427,16 @@ func applyDefaults(c *Config) {
 		c.Tools.WebSearch.AllowedRoles = []string{"parent"}
 	}
 	// sandbox defaults
-	if !c.Tools.Sandbox.Enabled { // zero value is false, so we explicitly check for zero
-		// INTENTIONAL DESIGN — secure-by-default. A fresh deployment
-		// enables the landlock+seccomp sandbox launcher for every stdio
-		// MCP server; operators who genuinely want unconfined subprocesses
-		// must set tools.sandbox.enabled=false explicitly. The startup
-		// checks elsewhere in the codebase assume this default is on
-		// and produce a fail-closed error if it is enabled but the
-		// kernel cannot support it.
-		c.Tools.Sandbox.Enabled = true
+	// INTENTIONAL DESIGN — secure-by-default. A fresh deployment
+	// enables the landlock+seccomp sandbox launcher for every stdio
+	// MCP server; operators who genuinely want unconfined subprocesses
+	// must set tools.sandbox.enabled=false explicitly. The startup
+	// checks elsewhere in the codebase assume this default is on
+	// and produce a fail-closed error if it is enabled but the
+	// kernel cannot support it.
+	if c.Tools.Sandbox.Enabled == nil { // unset -> secure-by-default on
+		d := true
+		c.Tools.Sandbox.Enabled = &d
 	}
 	// default sandbox root when not configured
 	if c.Tools.SandboxRoot == "" {
