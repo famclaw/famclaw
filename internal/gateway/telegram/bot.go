@@ -13,13 +13,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-const maxImageBytes = 20 * 1024 * 1024 // 20MB cap to avoid memory exhaustion
 	"time"
 
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/notify"
 )
 
+const maxImageBytes = 20 * 1024 * 1024 // 20MB cap to avoid memory exhaustion
 // Bot is a Telegram gateway using the Bot API with long-polling.
 type Bot struct {
 	token    string
