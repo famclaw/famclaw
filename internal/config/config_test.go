@@ -311,3 +311,58 @@ func TestSandboxEnabled_IsEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_SandboxRootNonDirectory(t *testing.T) {
+	// Create a temporary file (not a directory) 
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "not-a-dir")
+	
+	// Create a file (not a directory) 
+	if err := os.WriteFile(testFile, []byte(""), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	c := &Config{
+		Tools: ToolsConfig{
+			SandboxRoot: testFile,
+		},
+		Server: ServerConfig{
+			Host: "0.0.0.0",
+			Port: 8080,
+		},
+		LLM: LLMConfig{
+			MaxContextTokens: 4096,
+			MaxResponseTokens: 512,
+			Temperature: 0.7,
+		},
+		Approval: ApprovalConfig{
+			ExpiryHours: 24,
+		},
+		Skills: SkillsConfig{
+			Dir: "./skills",
+		},
+		Storage: StorageConfig{
+			DBPath: "./data/famclaw.db",
+		},
+		Notifications: NotificationsConfig{
+			Ntfy: NtfyConfig{
+				URL: "http://localhost:2586",
+			},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+
+	errStr := err.Error()
+	if !strings.Contains(errStr, "tools.sandbox_root:") {
+		t.Errorf("error message should contain tools.sandbox_root: %v", errStr)
+	}
+	
+	// Check that the path is included in the error message
+	if !strings.Contains(errStr, testFile) {
+		t.Errorf("error message should contain the path %q, got: %v", testFile, errStr)
+	}
+}
