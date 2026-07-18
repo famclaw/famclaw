@@ -1348,7 +1348,7 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 	const maxContextTokens = 512
 	cfg := &config.Config{
 		LLM: config.LLMConfig{
-			MaxContextTokens:  maxContextTokens,
+			MaxContextTokens: maxContextTokens,
 			MaxResponseTokens: 100,
 			// SystemPrompt empty to use default.
 			SystemPrompt: "",
