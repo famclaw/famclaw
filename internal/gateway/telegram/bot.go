@@ -14,15 +14,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"github.com/famclaw/famclaw/internal/imageutil"
 
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/imageutil"
 )
-
 const maxImageBytes = 5 * 1024 * 1024 // 5MB cap (RPi-friendly)
 const maxImageDimension = 1280 // Maximum dimension in pixels (preserve aspect ratio)
 // Bot is a Telegram gateway using the Bot API with long-polling.
+const maxImageDimension = 1280 // Maximum dimension in pixels (preserve aspect ratio)
 type Bot struct {
 	token    string
 	endpoint string // Bot API base URL (defaults to https://api.telegram.org)
