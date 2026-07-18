@@ -1029,6 +1029,7 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 	cfg := &config.Config{
 		LLM: config.LLMConfig{
 			MaxContextTokens: maxContextTokens,
+			MaxResponseTokens: 100,
 			// SystemPrompt empty to use default.
 			SystemPrompt: "",
 		},
@@ -1086,13 +1087,15 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 		t.Fatalf("Last message content mismatch: got %q, expected %q", msgs[len(msgs)-1].Content, currentMessage)
 	}
 
+	// Optionally, we can also check that the number of messages is reasonable (e.g., not too large).
 	// Verify that the total tokens are within the budget.
 	// Use the same estimator as the compress package (SimpleEstimator) and the same budget calculation.
 	// We'll copy the logic from compress.Compress to compute the budget and total tokens.
 	// Note: the compress package uses a margin of 0.15 if EstimatorMargin is zero.
 	// We'll compute the budget as:
-	//   budget = int(float64(maxContextTokens) * 0.85) * (1 - margin)
+	//   budget = int(float64(effectiveContextWindow) * 0.85) * (1 - margin)
 	//   margin = 0.15
+	//   effectiveContextWindow = maxContextTokens - cfg.LLM.MaxResponseTokens (or maxContextTokens if the subtraction is non-positive)
 	//   total tokens estimated with SimpleEstimator (chars/4) plus 4 tokens overhead per message.
 	// We'll use the compress package's SimpleEstimator to be safe.
 	est := &compress.SimpleEstimator{}
@@ -1101,8 +1104,13 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 	for _, m := range msgs {
 		total += est.Estimate(m.Content) + 4 // ~4 tokens overhead per message
 	}
+	// Compute effective context window after reserving space for response
+	effectiveContextWindow := maxContextTokens - cfg.LLM.MaxResponseTokens
+	if effectiveContextWindow <= 0 {
+		effectiveContextWindow = maxContextTokens
+	}
 	// Compute budget as in compress.Compress.
-	var budgetFloat = float64(maxContextTokens) * 0.85
+	var budgetFloat = float64(effectiveContextWindow) * 0.85
 	budget := int(budgetFloat)
 	margin := 0.15
 	if margin < 0 {
@@ -1113,14 +1121,13 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 	}
 	budget = int(float64(budget) * (1 - margin))
 	if total > budget {
-		t.Fatalf("Total tokens %d exceed budget %d (context window %d)", total, budget, maxContextTokens)
+		t.Fatalf("Total tokens %d exceed budget %d (effective context window %d)", total, budget, effectiveContextWindow)
 	}
 	// Additionally, verify that the total tokens are strictly less than the max context tokens
 	// (leaving room for the response).
 	if total >= maxContextTokens {
 		t.Fatalf("Total tokens %d should be strictly less than max context tokens %d to leave room for response", total, maxContextTokens)
 	}
-	// Optionally, we can also check that the number of messages is reasonable (e.g., not too large).
 	// For a long history, we expect the number of messages to be bounded.
 	// We'll just check that it's less than, say, 50 messages (should be much less for 200 history messages with small context).
 	if len(msgs) > 50 {
