@@ -1392,6 +1392,7 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 		// user. This preserves the role-based allowance as a hint to the model.
 		var builtinNames []string
 		roleAllowedNames := make(map[string]bool) // Track tools allowed by role
+		builtinNameSet := make(map[string]bool) // Track what's already in builtinNames for O(1) lookup
 		for _, t := range a.builtinTools {
 			bare := strings.TrimPrefix(t.Name, "builtin__")
 			
@@ -1405,7 +1406,7 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 				continue
 			}
 			if a.evaluator != nil {
-				dec, err := a.evaluator.EvaluateToolCall(context.Background(), policy.ToolCallInput{
+				dec, err := a.evaluator.EvaluateToolCall(ctx, policy.ToolCallInput{
 					User:     policy.UserInput{Role: a.user.Role, AgeGroup: a.user.AgeGroup, Name: a.user.Name},
 					ToolName: bare,
 				})
@@ -1414,23 +1415,16 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 				}
 			}
 			builtinNames = append(builtinNames, bare)
+			builtinNameSet[bare] = true
 		}
 		
 		// Ensure that tools allowed by role are included in prompt even if policy
 		// blocks them for this specific user. This prevents over-deflection.
-		// We don't want to duplicate entries, so we check if already included.
+		// We don't want to duplicate entries, so we check if already included using a set.
 		for roleName, allowed := range roleAllowedNames {
-			if allowed {
-				alreadyIncluded := false
-				for _, name := range builtinNames {
-					if name == roleName {
-						alreadyIncluded = true
-						break
-					}
-				}
-				if !alreadyIncluded {
-					builtinNames = append(builtinNames, roleName)
-				}
+			if allowed && !builtinNameSet[roleName] {
+				builtinNames = append(builtinNames, roleName)
+				builtinNameSet[roleName] = true
 			}
 		}
 
