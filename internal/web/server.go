@@ -319,11 +319,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		ep := s.cfg.LLMEndpointFor(userCfg)
 		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 	}
-	a := agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
+	a, err := agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
 		Skills: s.skills,
 		Pool:   s.pool,
 	})
 
+	if err != nil {
+		log.Printf("[ws] failed to create agent for %s: %v", userCfg.DisplayName, err)
+		return
+	}
 	for {
 		var msg WsMessage
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -351,11 +355,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			copied.Role = currentRole
 			copied.AgeGroup = currentAgeGroup
 			adjustedUser := &copied
-			a = agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
+			a, err = agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
 				Skills: s.skills,
 				Pool:   s.pool,
 			})
 			lastRole = currentRole
+			if err != nil {
+				log.Printf("[ws] failed to recreate agent for %s: %v", userCfg.DisplayName, err)
+			}
 			lastAgeGroup = currentAgeGroup
 		}
 
