@@ -23,6 +23,8 @@ Family member sends message
       → OPA policy evaluates: allow / block / request approval
         → if allow: forwards to your LLM endpoint
           → streams response back
+- [Agent Setup Guide](./docs/AGENT_SETUP.md) — Complete setup instructions for AI coding agents
+
 ```
 
 FamClaw itself uses ~20MB RAM. The LLM runs elsewhere — on a Mac Mini on your LAN, a cloud API, or any OpenAI-compatible server.
