@@ -111,6 +111,35 @@ Essential configuration keys to set:
 - `gateways.telegram.token` - Telegram bot token (from @BotFather)
 - `gateways.discord.token` - Discord bot token (from Discord Developer Portal)
 
+## HoneyBadger Security Scanning (Optional but Recommended)
+
+FamClaw includes an optional security scanning feature powered by the external `honeybadger` binary. This tool scans skills and tools for safety upon installation and via asynchronous background runtime scans, and can quarantine tools that fail the scan.
+
+**What it is:** The HoneyBadger scanner shells out to an external `honeybadger` binary (see `internal/honeybadger/client.go`). It runs on skill install (if `seccheck.auto_seccheck` is true) and periodically in the background (if `seccheck.runtime_scan` is true). Tools that fail the scan can be quarantined (blocked from use) based on configuration.
+
+**Requirement:** The `honeybadger` binary must be installed and available in your system's `PATH`. The `Available()` function uses `exec.LookPath("honeybadger")` to check. If the binary is not found, scanning is disabled and a warning is logged.
+
+**Config:** HoneyBadger scanning is configured under the `seccheck:` section in `config.yaml` (labeled "Security Scanning (HoneyBadger)" in the example config). The real keys are:
+- `enabled`: Master switch — when false, no scanning anywhere.
+- `auto_seccheck`: Scan skills before writing to disk (install-time).
+- `block_on_fail`: Refuse to install a skill if the scan fails (FAIL verdict).
+- `paranoia`: Scanning level — one of `minimal`, `family`, `strict`, or `paranoid`.
+- `runtime_scan`: Enable asynchronous background scans of installed tools.
+- `rescan_interval`: How often to re-scan tools (e.g., "168h" for weekly).
+- `async_scan_timeout`: Timeout per background scan (e.g., "60s").
+- `quarantine_on_fail`: Block tools from use after a FAIL verdict.
+- `notify_on_quarantine`: Send a parent notification when a tool is quarantined.
+
+> **Note:** The internal `SecCheckConfig` struct in `internal/config/config.go` is marked as deprecated in favor of a future `honeybadger` key, but the current configuration remains under `seccheck:`.
+
+This feature is **optional but recommended** for a family assistant to help ensure that skills and tools do not contain malicious content.
+
+## Optional Features
+
+- **Policy/OPA rules:** Enable custom policies by setting `policies.dir` and `policies.data_dir` in `config.yaml` to point to directories containing `.rego` and JSON data files.
+- **Parent notifications:** Configure alert channels under `notifications:` in `config.yaml` (email, Slack, Discord, SMS, ntfy) to receive alerts about quarantined tools, approval requests, etc.
+- **MCP servers:** Enable multi-tool servers by configuring `skills.mcp_servers` in `config.yaml` (see the example in the default config).
+- **Web tools:** The built-in web tools (`web_fetch`, `web_search`, `browser`) can be enabled under `tools:` in `config.yaml`. Note: `web_fetch` requires a non-empty `url_allowlist` to prevent SSRF attacks; an empty list denies all fetches.
 ## Next Steps
 
 After successful setup, FamClaw will:
