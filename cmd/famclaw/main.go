@@ -498,7 +498,10 @@ func main() {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
 	var mcpPool *mcp.Pool
-	mcpPool, _, _ = initMCPPool(context.Background(), cfg, sandboxRoot)
+	// Use a reasonable timeout for MCP initialization to prevent hangs
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mcpPool, _, _ = initMCPPool(ctx, cfg, sandboxRoot)
 	defer mcpPool.StopAll()
 
 	// HoneyBadger client + quarantine for runtime scanning
