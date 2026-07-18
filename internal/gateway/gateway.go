@@ -14,11 +14,12 @@ type Message struct {
 	Gateway     string // telegram | whatsapp | discord
 	ExternalID  string // platform-specific user ID
 	Text        string
-	DisplayName string // from platform profile (best effort)
-	GroupID     string // platform-specific group/channel ID (empty for direct messages)
-	IsGroup     bool   // true if message is from a group/channel
+	DisplayName string       // from platform profile (best effort)
+	GroupID     string       // platform-specific group/channel ID (empty for direct messages)
+	IsGroup     bool         // true if message is from a group/channel
 	Attachments []Attachment // Attachments contains any attached media (images, etc.)
 }
+
 // Attachment represents an attached file or media.
 type Attachment struct {
 	// Type of attachment (e.g., "image")
@@ -37,10 +38,10 @@ type Reply struct {
 // MsgContext holds the gateway-specific context for a message.
 // Used by tools that need to send outbound messages (e.g., reminders).
 type MsgContext struct {
-	Gateway     string // telegram | discord | whatsapp
-	ExternalID  string // platform-specific user ID
-	GroupID     string // platform-specific group/channel ID (empty for DMs)
-	IsGroup     bool   // true if message is from a group/channel
+	Gateway    string // telegram | discord | whatsapp
+	ExternalID string // platform-specific user ID
+	GroupID    string // platform-specific group/channel ID (empty for DMs)
+	IsGroup    bool   // true if message is from a group/channel
 }
 
 // ChatFunc is the function signature for LLM chat.

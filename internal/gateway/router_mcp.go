@@ -3,126 +3,105 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"strconv"
+	"sort"
 	"strings"
 
 	"github.com/famclaw/famclaw/internal/config"
 )
 
-// handleMCPCommand processes parent-only MCP server management commands.
+// handleMCPCommand handles MCP management commands from chat.
 func (r *Router) handleMCPCommand(ctx context.Context, actor string, fields []string) Reply {
-	if len(fields) < 2 {
-		return Reply{Text: "MCP server management: mcp list | mcp add <name> <transport> [options] | mcp remove <name>", PolicyAction: "mcp"}
+	user := r.cfg.GetUser(actor)
+	if user == nil || user.Role != "parent" {
+		return Reply{PolicyAction: "block", Text: "Only a parent can manage MCP servers."}
 	}
-
-	cmd := strings.ToLower(fields[1])
-	switch cmd {
+	if len(fields) == 0 || fields[0] != "mcp" {
+		return Reply{PolicyAction: "skip"}
+	}
+	if len(fields) == 1 {
+		return r.listMCPServerNames()
+	}
+	switch fields[1] {
 	case "list":
-		servers := r.listMCPServerNames()
-		if len(servers) == 0 {
-			return Reply{Text: "No MCP servers configured.", PolicyAction: "mcp"}
-		}
-		return Reply{Text: "Configured MCP servers:\n" + strings.Join(servers, "\n"), PolicyAction: "mcp"}
-
+		return r.listMCPServerNames()
 	case "add":
-		if len(fields) < 3 {
-			return Reply{Text: "Usage: mcp add <name> <transport> [options]", PolicyAction: "mcp"}
+		if len(fields) < 4 {
+			return Reply{PolicyAction: "error", Text: "Usage: mcp add <name> <transport> <key=value>..."}
 		}
 		name := fields[2]
-		if len(fields) < 4 {
-			return Reply{Text: "Usage: mcp add <name> <transport> [options]", PolicyAction: "mcp"}
-		}
 		transport := fields[3]
-		// Parse remaining fields as key=value options
-		opts := make(map[string]string)
-		for i := 4; i < len(fields); i++ {
-			parts := strings.SplitN(fields[i], "=", 2)
+		kvs := fields[4:]
+		cfg := config.MCPServerConfig{}
+		for _, kv := range kvs {
+			parts := strings.SplitN(kv, "=", 2)
 			if len(parts) != 2 {
-				return Reply{Text: fmt.Sprintf("Invalid option %q: expected KEY=VALUE", fields[i]), PolicyAction: "error"}
+				return Reply{PolicyAction: "error", Text: fmt.Sprintf("Invalid key=value: %s", kv)}
 			}
-			opts[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+			key := parts[0]
+			value := parts[1]
+			switch key {
+			case "command":
+				cfg.Command = value
+			case "args":
+				cfg.Args = strings.Split(value, ",")
+			case "url":
+				cfg.URL = value
+			case "headers":
+				// headers are comma-separated key=value pairs
+				for _, header := range strings.Split(value, ",") {
+					h := strings.SplitN(header, "=", 2)
+					if len(h) != 2 {
+						return Reply{PolicyAction: "error", Text: fmt.Sprintf("Invalid header: %s", header)}
+					}
+					cfg.Headers[h[0]] = h[1]
+				}
+			case "disabled":
+				if value == "true" {
+					cfg.Disabled = true
+				} else if value == "false" {
+					cfg.Disabled = false
+				} else {
+					return Reply{PolicyAction: "error", Text: fmt.Sprintf("Invalid disabled value: %s", value)}
+				}
+			default:
+				return Reply{PolicyAction: "error", Text: fmt.Sprintf("Unknown key: %s", key)}
+			}
 		}
-		var cfg config.MCPServerConfig
 		cfg.Transport = transport
-		if transport == "stdio" {
-			cfg.Command = opts["command"]
-			if argsStr := opts["args"]; argsStr != "" {
-				// Parse args as comma-separated list
-				var args []string
-				for _, arg := range strings.Split(argsStr, ",") {
-					if arg = strings.TrimSpace(arg); arg != "" {
-						args = append(args, arg)
-					}
-				}
-				cfg.Args = args
-			}
-		} else if transport == "http" || transport == "sse" {
-			cfg.URL = opts["url"]
-			// Headers: comma-separated key=value
-			headersStr := opts["headers"]
-			if headersStr != "" {
-				headers := make(map[string]string)
-				for _, pair := range strings.Split(headersStr, ",") {
-					parts := strings.SplitN(pair, "=", 2)
-					if len(parts) != 2 {
-						return Reply{Text: fmt.Sprintf("Invalid header %q: expected KEY=VALUE", pair), PolicyAction: "error"}
-					}
-					headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-				}
-				cfg.Headers = headers
-			}
-		}
-		if disabledStr := opts["disabled"]; disabledStr != "" {
-			if disabled, err := strconv.ParseBool(disabledStr); err != nil {
-				return Reply{Text: fmt.Sprintf("Invalid disabled value %q: expected boolean", disabledStr), PolicyAction: "error"}
-			} else {
-				cfg.Disabled = disabled
-			}
-		}
-		// Validate the config
 		if err := config.ValidateMCPServer(name, cfg); err != nil {
-			return Reply{Text: fmt.Sprintf("Invalid MCP server config: %v", err), PolicyAction: "error"}
+			return Reply{PolicyAction: "error", Text: fmt.Sprintf("Invalid MCP server config: %s", err)}
 		}
 		if err := r.addMCPServer(name, cfg); err != nil {
-			return Reply{Text: fmt.Sprintf("Failed to add MCP server: %v", err), PolicyAction: "error"}
+			return Reply{PolicyAction: "error", Text: fmt.Sprintf("Failed to add MCP server: %v", err)}
 		}
-		return Reply{Text: fmt.Sprintf("MCP server %q added.", name), PolicyAction: "mcp"}
-
+		return Reply{PolicyAction: "mcp", Text: fmt.Sprintf("MCP server \"%s\" added.", name)}
 	case "remove":
-		if len(fields) < 3 {
-			return Reply{Text: "Usage: mcp remove <name>", PolicyAction: "mcp"}
+		if len(fields) != 3 {
+			return Reply{PolicyAction: "error", Text: "Usage: mcp remove <name>"}
 		}
 		name := fields[2]
 		if err := r.removeMCPServer(name); err != nil {
-			return Reply{Text: fmt.Sprintf("Failed to remove MCP server: %v", err), PolicyAction: "error"}
+			return Reply{PolicyAction: "error", Text: fmt.Sprintf("Failed to remove MCP server: %v", err)}
 		}
-		return Reply{Text: fmt.Sprintf("MCP server %q removed.", name), PolicyAction: "mcp"}
-
+		return Reply{PolicyAction: "mcp", Text: fmt.Sprintf("MCP server \"%s\" removed.", name)}
 	default:
-		return Reply{Text: "Unknown MCP command: " + fields[1] + ". Try: list, add, remove", PolicyAction: "mcp"}
+		return Reply{PolicyAction: "error", Text: fmt.Sprintf("Unknown MCP subcommand: %s", fields[1])}
 	}
 }
 
-// listMCPServerNames returns a slice of formatted strings representing the configured MCP servers.
-func (r *Router) listMCPServerNames() []string {
+// listMCPServerNames returns a formatted list of configured MCP server names.
+func (r *Router) listMCPServerNames() Reply {
 	r.cfgMu.RLock()
 	defer r.cfgMu.RUnlock()
-	var names []string
-	for name, cfg := range r.cfg.Skills.MCPServers {
-		var desc string
-		if cfg.Disabled {
-			desc = "(disabled)"
-		} else {
-			switch cfg.Transport {
-			case "stdio":
-				desc = fmt.Sprintf("stdio: %s", cfg.Command)
-			case "http", "sse":
-				desc = fmt.Sprintf("%s://%s", cfg.Transport, cfg.URL)
-			}
-		}
-		names = append(names, fmt.Sprintf("- %s: %s %s", name, cfg.Transport, desc))
+	if len(r.cfg.Skills.MCPServers) == 0 {
+		return Reply{PolicyAction: "mcp", Text: "No MCP servers configured."}
 	}
-	return names
+	names := make([]string, 0, len(r.cfg.Skills.MCPServers))
+	for name := range r.cfg.Skills.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return Reply{PolicyAction: "mcp", Text: "Configured MCP servers: " + strings.Join(names, ", ")}
 }
 
 // addMCPServer adds an MCP server to the config and persists the change.
@@ -140,6 +119,15 @@ func (r *Router) addMCPServer(name string, cfg config.MCPServerConfig) error {
 func (r *Router) removeMCPServer(name string) error {
 	r.cfgMu.Lock()
 	defer r.cfgMu.Unlock()
-	delete(r.cfg.Skills.MCPServers, name)
+	if r.cfg.Skills.MCPServers == nil {
+		r.cfg.Skills.MCPServers = make(map[string]config.MCPServerConfig)
+	}
+	newMap := make(map[string]config.MCPServerConfig)
+	for k, v := range r.cfg.Skills.MCPServers {
+		if k != name {
+			newMap[k] = v
+		}
+	}
+	r.cfg.Skills.MCPServers = newMap
 	return r.cfg.Save(r.configPath)
 }
