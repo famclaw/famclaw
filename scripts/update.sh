@@ -93,10 +93,19 @@ curl -fsSL "${RELEASE_BASE}/checksums.txt" -o "${TMP}/checksums.txt"
 
 # ── Verify checksum (goreleaser convention: single checksums.txt with all hashes) ──
 echo "  Verifying checksum..."
+sha_verify() {
+    if [ "$OS" = "darwin" ]; then
+        # macOS uses shasum -a 256 -c for checksum verification
+        shasum -a 256 -c "$1"
+    else
+        # Linux uses sha256sum -c for checksum verification
+        sha256sum -c "$1"
+    fi
+}
 (
     cd "$TMP"
-    # Extract just the line for our artifact and pipe it to sha256sum -c
-    if awk -v f="$ARTIFACT_ARCHIVE" '$NF == f' checksums.txt | sha256sum -c --status; then
+    # Extract just the line for our artifact and pipe it to the OS-appropriate verifier
+    if awk -v f="$ARTIFACT_ARCHIVE" '$NF == f' checksums.txt | sha_verify --status; then
         echo "  ✓ Checksum verified"
     else
         echo "  ✗ Checksum mismatch — aborting" >&2
