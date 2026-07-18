@@ -95,17 +95,15 @@ curl -fsSL "${RELEASE_BASE}/checksums.txt" -o "${TMP}/checksums.txt"
 echo "  Verifying checksum..."
 sha_verify() {
     if [ "$OS" = "darwin" ]; then
-        # macOS uses shasum -a 256 -c for checksum verification
-        shasum -a 256 -c "$1"
+        shasum -a 256 -c
     else
-        # Linux uses sha256sum -c for checksum verification
-        sha256sum -c "$1"
-    fi
+        sha256sum -c
+    fi >/dev/null 2>&1
 }
 (
     cd "$TMP"
     # Extract just the line for our artifact and pipe it to the OS-appropriate verifier
-    if awk -v f="$ARTIFACT_ARCHIVE" '$NF == f' checksums.txt | sha_verify --status; then
+    if awk -v f="$ARTIFACT_ARCHIVE" '$NF == f' checksums.txt | sha_verify; then
         echo "  ✓ Checksum verified"
     else
         echo "  ✗ Checksum mismatch — aborting" >&2
