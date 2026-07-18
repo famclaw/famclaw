@@ -24,6 +24,7 @@ import (
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/browser"
 	"github.com/famclaw/famclaw/internal/classifier"
+	"github.com/famclaw/famclaw/internal/compress"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/gateway"
@@ -1340,7 +1341,6 @@ func parseStringList(v any) []string {
 	return out
 }
 
-// buildMessages assembles the LLM message list from history + system prompt.
 func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, currentMessage string) []llm.Message {
 	var msgs []llm.Message
 
@@ -1402,21 +1402,27 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 			builtinNames = append(builtinNames, bare)
 		}
 
-systemPrompt = prompt.Build(prompt.BuildContext{
-	Cfg:          a.cfg,
-	User:         a.user,
-	Skills:       skillNames,
-	BuiltinTools: builtinNames,
-	// Gateway and HardBlocked left empty for now — wired by future PRs
-	// that thread gateway and policy info through Agent.
-})
+		systemPrompt = prompt.Build(prompt.BuildContext{
+			Cfg:          a.cfg,
+			User:         a.user,
+			Skills:       skillNames,
+			BuiltinTools: builtinNames,
+			// Gateway and HardBlocked left empty for now — wired by future PRs
+			// that thread gateway and policy info through Agent.
+		})
 	}
 
 	msgs = append(msgs, llm.Message{Role: "system", Content: systemPrompt})
 
+	// Mark history messages as prunable so they are preferred for dropping
+	// when compressing to fit the context window.
+	prunableIdx := make(map[int]bool)
+	historyIndex := 0
 	for _, m := range history {
 		if m.PolicyAction == "allow" || m.PolicyAction == "" {
 			msgs = append(msgs, llm.Message{Role: m.Role, Content: m.Content})
+			prunableIdx[len(msgs)-1] = true // index of the message we just added
+			historyIndex++
 		}
 	}
 
@@ -1424,9 +1430,32 @@ systemPrompt = prompt.Build(prompt.BuildContext{
 		msgs = append(msgs, llm.Message{Role: "user", Content: currentMessage})
 	}
 
+	// Compress the message list to fit within the configured context window,
+	// leaving room for the response. Reuse the same logic as the tool loop.
+	if a.cfg.LLM.MaxContextTokens > 0 {
+		// Convert to compress messages
+		var cmsgs []compress.Message
+		for i, m := range msgs {
+			cmsgs = append(cmsgs, compress.Message{
+				Role:     m.Role,
+				Content:  m.Content,
+				Prunable: prunableIdx[i],
+			})
+		}
+		// Compress
+		compressed := compress.Compress(cmsgs, compress.Options{ContextWindow: a.cfg.LLM.MaxContextTokens})
+		// Convert back
+		msgs = make([]llm.Message, 0, len(compressed))
+		for _, cm := range compressed {
+			msgs = append(msgs, llm.Message{
+				Role:  cm.Role,
+				Content: cm.Content,
+			})
+		}
+	}
+
 	return msgs
 }
-
 func defaultSystemPrompt(user *config.UserConfig) string {
 	base := "You are FamClaw, a helpful, friendly, and safe family AI assistant."
 	return base + "\n\n" + ageContextPrompt(user)

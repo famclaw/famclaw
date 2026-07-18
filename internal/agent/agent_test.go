@@ -21,6 +21,8 @@ import (
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/webfetch"
+	"github.com/famclaw/famclaw/internal/compress"
+	"github.com/famclaw/famclaw/internal/skillbridge"
 )
 
 func setupAgent(t *testing.T, serverURL string) *Agent {
@@ -1018,5 +1020,105 @@ func TestToolCallDrainEmptyBufferedTokens(t *testing.T) {
 	// Verify ChatWithTools was called (tool loop ran).
 	if mock.callCount < 2 {
 		t.Errorf("ChatWithTools was called %d times — expected at least 2 (tool call + final response)", mock.callCount)
+	}
+}
+
+func TestBuildMessagesContextWindow(t *testing.T) {
+	// Set a small context window to trigger compression.
+	const maxContextTokens = 512
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			MaxContextTokens: maxContextTokens,
+			// SystemPrompt empty to use default.
+			SystemPrompt: "",
+		},
+	}
+	// Create a user config.
+	user := &config.UserConfig{
+		Name:   "testuser",
+		AgeGroup: "age_8_12", // any group
+	}
+	// Create an agent with minimal dependencies.
+	agent := &Agent{
+		cfg:     cfg,
+		user:    user,
+		skills:  []*skillbridge.Skill{}, // empty
+		builtinTools: []agentcore.Tool{}, // empty
+		evaluator: nil, // nil to avoid nil pointer in skillbridge calls
+		// Other fields are not used in buildMessages.
+	}
+
+	// Build a long history of alternating user and assistant messages.
+	var history []*store.Message
+	const numTurns = 100 // 100 turns => 200 messages
+	for i := 0; i < numTurns; i++ {
+		// User message
+		history = append(history, &store.Message{
+			Role:         "user",
+			Content:      fmt.Sprintf("User message %d", i),
+			PolicyAction: "allow",
+		})
+		// Assistant message
+		history = append(history, &store.Message{
+			Role:         "assistant",
+			Content:      fmt.Sprintf("Assistant message %d", i),
+			PolicyAction: "allow",
+		})
+	}
+	// The last message in history is an assistant message.
+	currentMessage := "Current user message"
+
+	// Call buildMessages.
+	msgs := agent.buildMessages(context.Background(), history, currentMessage)
+
+	// Verify that the system prompt is present (first message).
+	if len(msgs) == 0 {
+		t.Fatalf("No messages returned")
+	}
+	if msgs[0].Role != "system" {
+		t.Fatalf("First message should be system prompt, got %s", msgs[0].Role)
+	}
+	// Verify that the current user message is present (last message).
+	if msgs[len(msgs)-1].Role != "user" {
+		t.Fatalf("Last message should be user, got %s", msgs[len(msgs)-1].Role)
+	}
+	if msgs[len(msgs)-1].Content != currentMessage {
+		t.Fatalf("Last message content mismatch: got %q, expected %q", msgs[len(msgs)-1].Content, currentMessage)
+	}
+
+	// Verify that the total tokens are within the budget.
+	// Use the same estimator as the compress package (SimpleEstimator) and the same budget calculation.
+	// We'll copy the logic from compress.Compress to compute the budget and total tokens.
+	// Note: the compress package uses a margin of 0.15 if EstimatorMargin is zero.
+	// We'll compute the budget as:
+	//   budget = int(float64(maxContextTokens) * 0.85) * (1 - margin)
+	//   margin = 0.15
+	//   total tokens estimated with SimpleEstimator (chars/4) plus 4 tokens overhead per message.
+	// We'll use the compress package's SimpleEstimator to be safe.
+	est := &compress.SimpleEstimator{}
+	// Compute total tokens of the returned messages.
+	total := 0
+	for _, m := range msgs {
+		total += est.Estimate(m.Content) + 4 // ~4 tokens overhead per message
+	}
+	// Compute budget as in compress.Compress.
+	var budgetFloat = float64(maxContextTokens) * 0.85
+	budget := int(budgetFloat)
+	margin := 0.15
+	if margin < 0 {
+		margin = 0
+	}
+	if margin >= 1 {
+		margin = 0.99
+	}
+	budget = int(float64(budget) * (1 - margin))
+	if total > budget {
+		t.Fatalf("Total tokens %d exceed budget %d (context window %d)", total, budget, maxContextTokens)
+	}
+	// Optionally, we can also check that the number of messages is reasonable (e.g., not too large).
+	// For a long history, we expect the number of messages to be bounded.
+	// We'll just check that it's less than, say, 50 messages (should be much less for 200 history messages with small context).
+	if len(msgs) > 50 {
+		t.Errorf("Number of messages %d seems too large for context window %d", len(msgs), maxContextTokens)
 	}
 }
