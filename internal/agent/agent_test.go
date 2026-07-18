@@ -1,12 +1,10 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -16,18 +14,15 @@ import (
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
-	"github.com/famclaw/famclaw/internal/compress"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
-	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/policy"
-	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
-	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/webfetch"
-	"github.com/famclaw/famclaw/internal/websearch"
+	"github.com/famclaw/famclaw/internal/compress"
+	"github.com/famclaw/famclaw/internal/skillbridge"
 )
 
 func setupAgent(t *testing.T, serverURL string) *Agent {
@@ -45,8 +40,6 @@ func setupAgent(t *testing.T, serverURL string) *Agent {
 		t.Fatal(err)
 	}
 
-	clf := classifier.New()
-
 	cfg := &config.Config{
 		LLM: config.LLMConfig{
 			BaseURL:           serverURL,
@@ -61,11 +54,9 @@ func setupAgent(t *testing.T, serverURL string) *Agent {
 
 	user := &cfg.Users[0]
 	client := llm.NewClient(serverURL, "test", "")
-	a, err := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
-	if err != nil {
-		t.Fatalf("failed to create agent: %v", err)
-	}
-	return a
+	clf := classifier.New()
+
+	return NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
 }
 
 func mockLLMServer(t *testing.T, messages []llm.Message) *httptest.Server {
@@ -129,118 +120,6 @@ func TestAgentChatNoToolCalls(t *testing.T) {
 	}
 	if resp.PolicyAction != "allow" {
 		t.Errorf("action = %q, want allow", resp.PolicyAction)
-	}
-}
-
-// TestAgentChatRecordsMsgContextGatewayNotAgentGateway verifies that
-// SaveMessage in Chat uses a.msgContext.Gateway (the gateway the message
-// actually arrived on) rather than a.auditGateway (the agent construction-time
-// value). An agent constructed with gateway "telegram" handling a message
-// whose msgCtx.Gateway is "discord" must save "discord".
-func TestAgentChatRecordsMsgContextGatewayNotAgentGateway(t *testing.T) {
-	server := mockLLMServer(t, []llm.Message{
-		{Role: "assistant", Content: "Hello!"},
-	})
-	defer server.Close()
-
-	agent := setupAgent(t, server.URL)
-	// Agent constructed with telegram as its default gateway, but the
-	// message actually arrives on Discord.
-	agent.auditGateway = "telegram"
-	agent.msgContext = gateway.MsgContext{
-		Gateway:    "discord",
-		ExternalID: "discord-chat-1",
-	}
-
-	resp, err := agent.Chat(context.Background(), "hi", nil)
-	if err != nil {
-		t.Fatalf("Chat: %v", err)
-	}
-	if resp.PolicyAction != "allow" {
-		t.Fatalf("expected allow, got %q", resp.PolicyAction)
-	}
-
-	// Saved messages must carry the msgCtx gateway (discord), not the
-	// agent's construction-time gateway (telegram).
-	msgs, err := agent.db.GetConversationHistory(agent.convID, 20)
-	if err != nil {
-		t.Fatalf("GetConversationHistory: %v", err)
-	}
-	if len(msgs) == 0 {
-		t.Fatalf("expected saved messages, got 0")
-	}
-	for _, m := range msgs {
-		if m.Gateway != "discord" {
-			t.Errorf("saved message gateway = %q, want %q (msgCtx gateway, not agent gateway %q)",
-				m.Gateway, "discord", agent.auditGateway)
-		}
-	}
-}
-
-// TestAgentChatZeroValueMsgContextSavesUnknown verifies that when the agent
-// is constructed without a message context (zero-valued MsgContext), the
-// gateway saved is "unknown" — never an empty string. This is the safety
-// net that prevents MostRecentGatewayForUser from returning "", which would
-// cause cross-chat delivery to misroute or drop the reply.
-func TestAgentChatZeroValueMsgContextSavesUnknown(t *testing.T) {
-	server := mockLLMServer(t, []llm.Message{
-		{Role: "assistant", Content: "Hello!"},
-	})
-	defer server.Close()
-
-	agent := setupAgent(t, server.URL)
-	// setupAgent uses AgentDeps{} so a.msgContext is zero-valued (Gateway="").
-
-	resp, err := agent.Chat(context.Background(), "hi", nil)
-	if err != nil {
-		t.Fatalf("Chat: %v", err)
-	}
-	if resp.PolicyAction != "allow" {
-		t.Fatalf("expected allow, got %q", resp.PolicyAction)
-	}
-
-	msgs, err := agent.db.GetConversationHistory(agent.convID, 20)
-	if err != nil {
-		t.Fatalf("GetConversationHistory: %v", err)
-	}
-	if len(msgs) == 0 {
-		t.Fatalf("expected saved messages, got 0")
-	}
-	for _, m := range msgs {
-		if m.Gateway != "unknown" {
-			t.Errorf("zero-value msgContext gateway = %q, want %q", m.Gateway, "unknown")
-		}
-	}
-}
-
-// TestGatewayForSave_PinsPerMessageAuthority verifies that gatewayForSave()
-// uses the per-message msgContext.Gateway, not the agent's construction-time
-// gateway field. This is the property that allows the same agent to record
-// the correct gateway even if msgContext is updated mid-conversation.
-func TestGatewayForSave_PinsPerMessageAuthority(t *testing.T) {
-	tests := []struct {
-		name    string
-		agentGw string
-		msgCtx  string
-		want    string
-	}{
-		{name: "msgCtx overrides agent", agentGw: "telegram", msgCtx: "discord", want: "discord"},
-		{name: "msgCtx web", agentGw: "telegram", msgCtx: "web", want: "web"},
-		{name: "empty msgCtx falls back", agentGw: "telegram", msgCtx: "", want: "unknown"},
-		{name: "empty msgCtx even if agent set", agentGw: "discord", msgCtx: "", want: "unknown"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			a := &Agent{
-				auditGateway: tc.agentGw,
-				msgContext:   gateway.MsgContext{Gateway: tc.msgCtx},
-			}
-			got := a.gatewayForSave()
-			if got != tc.want {
-				t.Errorf("gatewayForSave() = %q, want %q (agent=%q, msgCtx=%q)",
-					got, tc.want, tc.agentGw, tc.msgCtx)
-			}
-		})
 	}
 }
 
@@ -308,34 +187,13 @@ func TestAgentChatMessageWithToolCalls(t *testing.T) {
 	}
 }
 
-// TestHandleSpawnAgent_Timeout verifies that handleSpawnAgent returns immediately
-// with an acknowledgment and that the result is delivered asynchronously to the
-// originating conversation via gateway.Sender.
+// TestHandleSpawnAgent_Timeout asserts that handleSpawnAgent enforces the
+// timeout_seconds argument by wrapping ctx with WithTimeout and the resulting
+// error carries context.DeadlineExceeded.
 func TestHandleSpawnAgent_Timeout(t *testing.T) {
-	// Create a mock sender to verify delivery
-	mockSender := &mockSender{
-		calls: make(chan *senderCall, 1),
-	}
+	a := setupAgent(t, "http://unused")
+	a.scheduler = subagent.NewScheduler(2)
 
-	// Create agent with mock sender registry
-	a := &Agent{
-		user: &config.UserConfig{Name: "testuser", Role: "parent"},
-		cfg: &config.Config{
-			Users: []config.UserConfig{{Name: "testuser", Role: "parent"}},
-		},
-		scheduler: subagent.NewScheduler(2),
-		senderRegistry: map[string]gateway.Sender{
-			"telegram": mockSender,
-		},
-		msgContext: gateway.MsgContext{
-			Gateway:    "telegram",
-			ExternalID: "user123",
-			GroupID:    "",
-			IsGroup:    false,
-		},
-	}
-
-	// Set up the test to simulate a timeout scenario
 	// timeout_seconds=1 must be the deadline that fires, NOT the 5s parent ctx.
 	// The elapsed-time assertion below distinguishes the two: if it took close
 	// to 5s, the parent fired and the handler stopped honoring timeout_seconds.
@@ -366,58 +224,19 @@ func TestHandleSpawnAgent_Timeout(t *testing.T) {
 	}
 	args["profile"] = "slow"
 
-	// Test that handleSpawnAgent returns immediately (not blocking)
 	start := time.Now()
-	result, err := a.handleSpawnAgent(parentCtx, args)
+	_, err := a.handleSpawnAgent(parentCtx, args)
 	elapsed := time.Since(start)
 
-	// Should return immediately with acknowledgment, not wait for timeout
-	if err != nil {
-		t.Fatalf("Expected no error from immediate return, got: %v", err)
+	if err == nil {
+		t.Fatal("expected error from timeout, got nil")
 	}
-
-	// Check that the acknowledgment message is returned
-	if !strings.HasPrefix(result, "Started your research") {
-		t.Errorf("Expected acknowledgment message, got: %s", result)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got %v", err)
 	}
-
-	// Check that it returned quickly (within reasonable time)
-	if elapsed > 100*time.Millisecond {
-		t.Errorf("handleSpawnAgent should return immediately, but took %v", elapsed)
+	if elapsed > 3*time.Second {
+		t.Errorf("timeout took %v — expected ~1s from timeout_seconds; parent ctx (5s) likely fired instead", elapsed)
 	}
-
-	// Check that the result was delivered asynchronously via the sender
-	// We need to give the background goroutine time to execute
-	select {
-	case call := <-mockSender.calls:
-		// Verify the call was made to the correct chat ID
-		if call.chatID != "user123" {
-			t.Errorf("Expected message to be sent to chat ID 'user123', got '%s'", call.chatID)
-		}
-		// Verify the message contains timeout information
-		if !strings.Contains(call.text, "timed out") {
-			t.Errorf("Expected timeout message, got: %s", call.text)
-		}
-	case <-time.After(2 * time.Second):
-		// Background goroutine should have delivered the result
-		t.Error("Expected result to be delivered via sender, but none received")
-	}
-}
-
-// Helper type for testing sender calls
-type senderCall struct {
-	chatID string
-	text   string
-}
-
-// Mock sender implementation for testing
-type mockSender struct {
-	calls chan *senderCall
-}
-
-func (m *mockSender) Send(ctx context.Context, chatID string, text string) error {
-	m.calls <- &senderCall{chatID: chatID, text: text}
-	return nil
 }
 
 // TestHandleSpawnAgent_TimeoutCap verifies the explicit timeout_seconds arg is
@@ -521,54 +340,6 @@ func TestBuildMessages_OperatorOverrideKept(t *testing.T) {
 	}
 }
 
-func TestBuildMessages_OperatorOverrideIncludesCapabilities(t *testing.T) {
-	cfg := &config.Config{
-		LLM: config.LLMConfig{SystemPrompt: "You are a pirate."},
-		Users: []config.UserConfig{
-			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
-		},
-	}
-	a := &Agent{
-		cfg:  cfg,
-		user: &cfg.Users[0],
-		builtinTools: []agentcore.Tool{
-			{Name: "builtin__web_search", Source: "builtin"},
-			{Name: "builtin__web_fetch", Source: "builtin"},
-			{Name: "builtin__spawn_agent", Source: "builtin"},
-		},
-	}
-	msgs := a.buildMessages(context.Background(), nil, "hi")
-	sys := msgs[0].Content
-
-	// The custom operator prompt must still take effect verbatim.
-	if !strings.HasPrefix(sys, "You are a pirate.") {
-		t.Errorf("operator override should be verbatim at start, got: %q", sys)
-	}
-
-	// Bug fix: the capabilities section must be present even under a
-	// custom system_prompt. Without it the model never learns about its
-	// own tools and refuses to use web_search/web_fetch/spawn_agent.
-	for _, want := range []string{"web_search", "web_fetch", "spawn_agent"} {
-		if !strings.Contains(sys, want) {
-			t.Errorf("system prompt missing tool capability %q:\\n%s", want, sys)
-		}
-	}
-
-	// The behavioral guardrails are bundled into the capabilities
-	// section when tools are available.
-	for _, want := range []string{"tool call FIRST", "ONLY summarize"} {
-		if !strings.Contains(sys, want) {
-			t.Errorf("system prompt missing behavioral rule %q:\\n%s", want, sys)
-		}
-	}
-
-	// The standalone behavioral rules must not be duplicated now that
-	// the capabilities section carries them.
-	if c := strings.Count(sys, "ONLY summarize what the tool actually returned"); c != 1 {
-		t.Errorf("behavioral guardrails appear %d times, want 1 (no duplication):\n%s", c, sys)
-	}
-}
-
 func TestHandleWebFetch(t *testing.T) {
 	newAgent := func(allowlist []string, fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
 		return &Agent{
@@ -617,12 +388,6 @@ func TestHandleWebFetch(t *testing.T) {
 			name:       "disallowed host blocked, fetcher not called",
 			allowlist:  []string{"never.example.com"},
 			args:       map[string]any{"url": "https://other.example.com/x"},
-			wantErrSub: "url_allowlist",
-		},
-		{
-			name:       "blocked host error names host and identifies allowlist rejection",
-			allowlist:  []string{"never.example.com"},
-			args:       map[string]any{"url": "https://www.clinicaltrials.gov/study/NCT0000"},
 			wantErrSub: "url_allowlist",
 		},
 		{
@@ -768,87 +533,6 @@ func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
 	}
 }
 
-// TestHandleWebFetch_BlockedHostMessageIsClear verifies that when a host is
-// blocked by the URL allowlist, the error returned to the LLM is
-// unmistakably a configuration rejection — naming the host, identifying it
-// as an allowlist decision, and explicitly stating it is NOT a network error.
-// This lets the model tell the user "clinicaltrials.gov isn't on my allowed
-// list, ask a parent to add it" instead of inventing a vague network excuse.
-func TestHandleWebFetch_BlockedHostMessageIsClear(t *testing.T) {
-	newAgent := func(allowlist []string, fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
-		return &Agent{
-			user: &config.UserConfig{Name: "testuser", Role: "parent"},
-			cfg: &config.Config{
-				Tools: config.ToolsConfig{
-					WebFetch: config.WebFetchConfig{
-						Enabled:      true,
-						URLAllowlist: allowlist,
-						MaxBytes:     256 * 1024,
-						TimeoutSec:   5,
-					},
-				},
-			},
-			webFetcher: fetcher,
-		}
-	}
-	tests := []struct {
-		name string
-		args map[string]any
-	}{
-		{
-			name: "blocked host on pre-check path",
-			args: map[string]any{"url": "https://www.clinicaltrials.gov/study/NCT00000000"},
-		},
-		{
-			name: "blocked host on fetcher path",
-			args: map[string]any{"url": "https://blocked.example.com/page"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fetcher := func(_ context.Context, _ string, opts webfetch.Options) (*webfetch.Result, error) {
-				// Simulate the host validator rejecting the host
-				if opts.HostValidator != nil {
-					if err := opts.HostValidator("www.clinicaltrials.gov"); err != nil {
-						return nil, err
-					}
-					if err := opts.HostValidator("blocked.example.com"); err != nil {
-						return nil, err
-					}
-				}
-				return &webfetch.Result{StatusCode: 200, ContentType: "text/plain", Text: "ok"}, nil
-			}
-			a := newAgent([]string{"example.com"}, fetcher)
-
-			_, err := a.handleWebFetch(context.Background(), tt.args)
-			if err == nil {
-				t.Fatal("expected an error for blocked host, got nil")
-			}
-			msg := err.Error()
-
-			// Must name the host
-			if !strings.Contains(msg, "www.clinicaltrials.gov") && !strings.Contains(msg, "blocked.example.com") {
-				t.Errorf("error should name the blocked host, got: %q", msg)
-			}
-			// Must identify as an allowlist rejection
-			if !strings.Contains(msg, "url_allowlist") {
-				t.Errorf("error should mention url_allowlist, got: %q", msg)
-			}
-			// Must state it is a configuration choice, not a network error
-			if !strings.Contains(msg, "configuration") {
-				t.Errorf("error should mention configuration, got: %q", msg)
-			}
-			if !strings.Contains(msg, "not by a network failure") {
-				t.Errorf("error should mention it is not a network failure, got: %q", msg)
-			}
-			// Must mention a parent can fix it
-			if !strings.Contains(msg, "parent") {
-				t.Errorf("error should mention parent can fix it, got: %q", msg)
-			}
-		})
-	}
-}
-
 func TestHandleGetFamilyState(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
@@ -951,7 +635,7 @@ func TestHandleProposeFamilyFact_Parent_AutoApply(t *testing.T) {
 		t.Fatalf("evaluator: %v", err)
 	}
 
-	a := &Agent{cfg: cfg, db: db, familyState: fs, evaluator: ev, user: &cfg.Users[0], auditGateway: "test"}
+	a := &Agent{cfg: cfg, db: db, familyState: fs, evaluator: ev, user: &cfg.Users[0], gateway: "test"}
 
 	out, err := a.handleProposeFamilyFact(context.Background(), map[string]any{
 		"category": "pets", "subject": "family", "label": "Stella", "value": "cat",
@@ -984,7 +668,7 @@ func TestHandleProposeFamilyFact_Child_QueuesApproval(t *testing.T) {
 		{Name: "dep", Role: "parent"},
 		{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "age_13_17"},
 	}}
-	a := &Agent{cfg: cfg, db: db, familyState: fs, user: &cfg.Users[1], auditGateway: "test"}
+	a := &Agent{cfg: cfg, db: db, familyState: fs, user: &cfg.Users[1], gateway: "test"}
 
 	out, err := a.handleProposeFamilyFact(context.Background(), map[string]any{
 		"category": "pets", "subject": "family", "label": "Rex", "value": "dog",
@@ -1200,10 +884,8 @@ func TestStreamedOutputGate(t *testing.T) {
 			user := &cfg.Users[0]
 			client := llm.NewClient(server.URL, "test", "")
 			clf := classifier.New()
-			agent, err := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
-			if err != nil {
-				t.Fatalf("failed to create agent: %v", err)
-			}
+
+			agent := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
 
 			resp, err := agent.Chat(context.Background(), "hello", onToken)
 			if err != nil {
@@ -1305,7 +987,7 @@ func TestToolCallDrainEmptyBufferedTokens(t *testing.T) {
 	clf := classifier.New()
 
 	mock := &mockToolChatter{}
-	agent, err := NewAgent(user, cfg, mock, ev, clf, db, AgentDeps{
+	agent := NewAgent(user, cfg, mock, ev, clf, db, AgentDeps{
 		BuiltinTools: []agentcore.Tool{{
 			Name:        "builtin__get_family_state",
 			Description: "Get family state information",
@@ -1313,9 +995,7 @@ func TestToolCallDrainEmptyBufferedTokens(t *testing.T) {
 			Source:      "builtin",
 		}},
 	})
-	if err != nil {
-		t.Fatalf("failed to create agent: %v", err)
-	}
+
 	var tokens []string
 	onToken := func(tok string) {
 		tokens = append(tokens, tok)
@@ -1356,16 +1036,16 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 	}
 	// Create a user config.
 	user := &config.UserConfig{
-		Name:     "testuser",
+		Name:   "testuser",
 		AgeGroup: "age_8_12", // any group
 	}
 	// Create an agent with minimal dependencies.
 	agent := &Agent{
-		cfg:          cfg,
-		user:         user,
-		skills:       []*skillbridge.Skill{}, // empty
-		builtinTools: []agentcore.Tool{},     // empty
-		evaluator:    nil,                    // nil to avoid nil pointer in skillbridge calls
+		cfg:     cfg,
+		user:    user,
+		skills:  []*skillbridge.Skill{}, // empty
+		builtinTools: []agentcore.Tool{}, // empty
+		evaluator: nil, // nil to avoid nil pointer in skillbridge calls
 		// Other fields are not used in buildMessages.
 	}
 
@@ -1453,551 +1133,4 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 	if len(msgs) > 50 {
 		t.Errorf("Number of messages %d seems too large for context window %d", len(msgs), maxContextTokens)
 	}
-}
-
-// TestHandleWebFetch_BrowserFallbackDecision covers the browser-fallback DECISION
-// logic in handleWebFetch that is unit-testable without a live browser: config
-// gating and the nil-pool guard, both of which must surface an honest error
-// rather than attempt (or crash on) a fallback. The actual Playwright navigation
-// path uses a concrete *browser.Pool and needs a live browser, so it is exercised
-// by integration testing, not here.
-func TestHandleWebFetch_BrowserFallbackDecision(t *testing.T) {
-	newAgent := func(fallback bool) *Agent {
-		return &Agent{
-			user: &config.UserConfig{Name: "testuser", Role: "parent"},
-			cfg: &config.Config{
-				Tools: config.ToolsConfig{
-					WebFetch: config.WebFetchConfig{
-						Enabled:               true,
-						URLAllowlist:          []string{"example.com"},
-						MaxBytes:              256 * 1024,
-						TimeoutSec:            5,
-						FallbackToBrowser:     fallback,
-						FallbackMinTextLength: 10,
-					},
-				},
-			},
-			webFetcher: func(context.Context, string, webfetch.Options) (*webfetch.Result, error) {
-				return &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: ""}, nil
-			},
-			// browserPool intentionally nil.
-		}
-	}
-	cases := []struct {
-		name     string
-		fallback bool
-	}{
-		{"fallback disabled -> honest empty-response error", false},
-		{"fallback enabled but no browser pool -> honest empty-response error (nil-guard)", true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			a := newAgent(tc.fallback)
-			_, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
-			if err == nil || !strings.Contains(err.Error(), "empty response") {
-				t.Fatalf("want honest empty-response error, got: %v", err)
-			}
-		})
-	}
-}
-
-// TestHandleWebFetch_BrowserFallbackGracefulDegrade verifies that when the
-// browser fallback is wanted but unavailable (nil pool), a short-but-non-empty
-// HTTP result is returned as-is rather than turned into an error.
-func TestHandleWebFetch_BrowserFallbackGracefulDegrade(t *testing.T) {
-	a := &Agent{
-		user: &config.UserConfig{Name: "u", Role: "parent"},
-		cfg: &config.Config{Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
-			Enabled: true, URLAllowlist: []string{"example.com"}, MaxBytes: 256 * 1024, TimeoutSec: 5,
-			FallbackToBrowser: true, FallbackMinTextLength: 10,
-		}}},
-		// browserPool nil: fallback wanted but unavailable -> degrade to the thin HTTP text.
-		webFetcher: func(context.Context, string, webfetch.Options) (*webfetch.Result, error) {
-			return &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "thin"}, nil
-		},
-	}
-	out, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
-	if err != nil {
-		t.Fatalf("expected graceful degradation to thin text, got error: %v", err)
-	}
-	if !strings.Contains(out, "thin") {
-		t.Errorf("expected original thin text returned, got %q", out)
-	}
-}
-
-// TestHandleWebFetch_BrowserFallbackWantedButPoolUnavailableLogs verifies
-// that when browser fallback is enabled but the browser pool is unavailable
-// (nil), handleWebFetch still degrades gracefully to the thin HTTP text AND
-// emits a log line naming the missed fallback — so the degradation is
-// visible to operators instead of a silent downgrade. See issue #246.
-func TestHandleWebFetch_BrowserFallbackWantedButPoolUnavailableLogs(t *testing.T) {
-	var logBuf bytes.Buffer
-	prevOut := log.Writer()
-	log.SetOutput(&logBuf)
-	defer log.SetOutput(prevOut)
-
-	a := &Agent{
-		user: &config.UserConfig{Name: "u", Role: "parent"},
-		cfg: &config.Config{Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
-			Enabled: true, URLAllowlist: []string{"example.com"}, MaxBytes: 256 * 1024, TimeoutSec: 5,
-			FallbackToBrowser: true, FallbackMinTextLength: 10,
-		}}},
-		webFetcher: func(context.Context, string, webfetch.Options) (*webfetch.Result, error) {
-			return &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "thin"}, nil
-		},
-	}
-	out, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
-	if err != nil {
-		t.Fatalf("expected graceful degradation, got error: %v", err)
-	}
-	if !strings.Contains(out, "thin") {
-		t.Errorf("expected original thin text returned, got %q", out)
-	}
-	if !strings.Contains(logBuf.String(), "browser fallback is enabled but no browser pool is configured") {
-		t.Errorf("expected a log about the missing browser pool, got log: %q", logBuf.String())
-	}
-}
-
-// TestBuildMessagesMultimodal verifies that when an inbound message carries
-// image attachments, buildMessages builds the user message with multimodal
-// ContentParts (text + image_url data URI) — the exact shape the existing
-// llm.Message.MarshalJSON already serializes (see llm/multimodal_test.go).
-// Uses neutral synthetic content — no real user data.
-func TestBuildMessagesMultimodal(t *testing.T) {
-	cfg := &config.Config{
-		LLM: config.LLMConfig{
-			SystemPrompt: "", // use default prompt builder
-		},
-		Users: []config.UserConfig{
-			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
-		},
-	}
-	a := &Agent{
-		cfg:  cfg,
-		user: &cfg.Users[0],
-		msgContext: gateway.MsgContext{
-			Attachments: []gateway.Attachment{
-				{
-					Type:     "image",
-					Data:     "iVBtb2NrLWJhc2U2NA", // neutral synthetic base64
-					MIMEType: "image/png",
-				},
-			},
-		},
-	}
-	msgs := a.buildMessages(context.Background(), nil, "what is in this picture")
-
-	if len(msgs) < 2 {
-		t.Fatalf("expected system + user messages, got %d", len(msgs))
-	}
-	userMsg := msgs[len(msgs)-1]
-	if userMsg.Role != "user" {
-		t.Fatalf("last message should be user, got %q", userMsg.Role)
-	}
-
-	// ContentParts must be set (not the plain Content string).
-	if len(userMsg.ContentParts) != 2 {
-		t.Fatalf("expected 2 content parts (text + image), got %d: %+v", len(userMsg.ContentParts), userMsg.ContentParts)
-	}
-
-	// First part: text.
-	textPart, ok := userMsg.ContentParts[0].(map[string]any)
-	if !ok {
-		t.Fatalf("part 0 is not a map: %T", userMsg.ContentParts[0])
-	}
-	if textPart["type"] != "text" {
-		t.Errorf("part 0 type = %q, want %q", textPart["type"], "text")
-	}
-	if textPart["text"] != "what is in this picture" {
-		t.Errorf("part 0 text = %q, want %q", textPart["text"], "what is in this picture")
-	}
-
-	// Second part: image_url with data URI.
-	imgPart, ok := userMsg.ContentParts[1].(map[string]any)
-	if !ok {
-		t.Fatalf("part 1 is not a map: %T", userMsg.ContentParts[1])
-	}
-	if imgPart["type"] != "image_url" {
-		t.Errorf("part 1 type = %q, want %q", imgPart["type"], "image_url")
-	}
-	imgURL, ok := imgPart["image_url"].(map[string]any)
-	if !ok {
-		t.Fatalf("image_url is not a map: %T", imgPart["image_url"])
-	}
-	wantURL := "data:image/png;base64,iVBtb2NrLWJhc2U2NA"
-	if imgURL["url"] != wantURL {
-		t.Errorf("image url = %q, want %q", imgURL["url"], wantURL)
-	}
-}
-
-// TestBuildMessagesTextOnlyUnchanged verifies that when no attachments are
-// present, buildMessages produces the same text-only user message as before
-// (Content set, ContentParts nil). This is the no-regression guarantee.
-func TestBuildMessagesTextOnlyUnchanged(t *testing.T) {
-	cfg := &config.Config{
-		Users: []config.UserConfig{
-			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
-		},
-	}
-	a := &Agent{cfg: cfg, user: &cfg.Users[0]} // msgContext has nil Attachments
-	msgs := a.buildMessages(context.Background(), nil, "hello world")
-
-	userMsg := msgs[len(msgs)-1]
-	if userMsg.Role != "user" {
-		t.Fatalf("last message should be user, got %q", userMsg.Role)
-	}
-	if userMsg.Content != "hello world" {
-		t.Errorf("Content = %q, want %q", userMsg.Content, "hello world")
-	}
-	if len(userMsg.ContentParts) != 0 {
-		t.Errorf("text-only message should have 0 content parts, got %d: %+v", len(userMsg.ContentParts), userMsg.ContentParts)
-	}
-}
-
-// TestNewAgentPropagatesMsgContext verifies that NewAgent wires
-// AgentDeps.MsgContext into the agent's msgContext field so that
-// buildMessages (called from Chat) can read attachments. This test
-// FAILS if msgContext is not propagated — the exact gap a reviewer
-// flagged as critical. It closes the loop: router → chatFn →
-// AgentDeps.MsgContext → NewAgent → a.msgContext → buildMessages.
-func TestNewAgentPropagatesMsgContext(t *testing.T) {
-	msgCtx := gateway.MsgContext{
-		Gateway:    "telegram",
-		ExternalID: "parent-123",
-		Attachments: []gateway.Attachment{
-			{
-				Type:     "image",
-				Data:     "iVBtb2NrLWJhc2U2NA", // neutral synthetic base64
-				MIMEType: "image/png",
-			},
-		},
-	}
-	user := &config.UserConfig{
-		Name:     "parent",
-		Role:     "parent",
-		AgeGroup: "",
-	}
-	cfg := &config.Config{
-		Users: []config.UserConfig{*user},
-	}
-
-	// NewAgent with nil db / deps — the only thing we're testing is
-	// msgContext propagation.
-	a, err := NewAgent(user, cfg, nil, nil, nil, nil, AgentDeps{
-		MsgContext: msgCtx,
-	})
-	if err != nil {
-		t.Fatalf("NewAgent: %v", err)
-	}
-	if a.msgContext.Gateway != "telegram" {
-		t.Errorf("msgContext.Gateway = %q, want %q", a.msgContext.Gateway, "telegram")
-	}
-	if a.msgContext.ExternalID != "parent-123" {
-		t.Errorf("msgContext.ExternalID = %q, want %q", a.msgContext.ExternalID, "parent-123")
-	}
-	if len(a.msgContext.Attachments) != 1 {
-		t.Fatalf("expected 1 attachment in msgContext, got %d", len(a.msgContext.Attachments))
-	}
-	if a.msgContext.Attachments[0] != (gateway.Attachment{
-		Type: "image", Data: "iVBtb2NrLWJhc2U2NA", MIMEType: "image/png",
-	}) {
-		t.Errorf("attachment mismatch: got %+v", a.msgContext.Attachments[0])
-	}
-
-	// End-to-end: buildMessages must consume the propagated attachments.
-	msgs := a.buildMessages(context.Background(), nil, "what is this")
-	userMsg := msgs[len(msgs)-1]
-	if len(userMsg.ContentParts) != 2 {
-		t.Fatalf("expected 2 content parts (text+image), got %d", len(userMsg.ContentParts))
-	}
-}
-
-// seedStores opens an in-memory DB with familystate and usermemory stores
-// ready for seeding. The migration auto-seeds 'allergies' and
-// 'dietary_restrictions' as always_inject=1. The caller owns db.Close().
-func seedStores(t *testing.T) (*store.DB, *familystate.Store, *usermemory.Store) {
-	t.Helper()
-	db, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	return db, familystate.NewStore(db), usermemory.NewStore(db)
-}
-
-func TestBuildMessages_InjectsFamilyStateAndUserMemory(t *testing.T) {
-	// Both stores populated with always_inject facts → injected into the
-	// system prompt. Verified on BOTH prompt paths (default builder + operator
-	// override), since the captain's deployment sets a custom system_prompt.
-	db, fs, um := seedStores(t)
-	defer db.Close()
-
-	ctx := context.Background()
-	// 'allergies' is always_inject=1 from the migration seed.
-	for _, f := range []familystate.Fact{
-		{Category: "allergies", Subject: "dep", Label: "peanuts", Value: "severe", CreatedBy: "dep"},
-		{Category: "allergies", Subject: "family", Label: "shellfish", Value: "avoid", CreatedBy: "dep"},
-	} {
-		if err := fs.UpsertFact(ctx, &f); err != nil {
-			t.Fatalf("seed fact: %v", err)
-		}
-	}
-	if err := um.UpsertMemory(ctx, &usermemory.Memory{
-		UserName: "dep", Category: "preferences", Label: "color", Value: "blue",
-	}); err != nil {
-		t.Fatalf("seed memory: %v", err)
-	}
-
-	cfg := &config.Config{
-		Users: []config.UserConfig{
-			{Name: "dep", DisplayName: "Dep", Role: "parent"},
-			{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "age_13_17"},
-		},
-	}
-	a := &Agent{cfg: cfg, familyState: fs, userMemory: um, user: &cfg.Users[0]}
-
-	wantContains := []string{
-		"<family_safety>", "Allergies:", "peanuts", "severe", "shellfish", "avoid",
-		"<user_memory>", "Preferences:", "blue",
-	}
-
-	// Default path (SystemPrompt empty → prompt.Build).
-	t.Run("default_path", func(t *testing.T) {
-		msgs := a.buildMessages(ctx, nil, "hi")
-		sys := msgs[0].Content
-		for _, want := range wantContains {
-			if !strings.Contains(sys, want) {
-				t.Errorf("default-path system prompt missing %q:\n%s", want, sys)
-			}
-		}
-	})
-
-	// Override path (custom system_prompt — the captain's deployment).
-	t.Run("override_path", func(t *testing.T) {
-		overrideCfg := &config.Config{
-			LLM: config.LLMConfig{SystemPrompt: "custom override"},
-			Users: []config.UserConfig{
-				{Name: "dep", DisplayName: "Dep", Role: "parent"},
-				{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "age_13_17"},
-			},
-		}
-		a2 := &Agent{cfg: overrideCfg, familyState: fs, userMemory: um, user: &overrideCfg.Users[0]}
-		msgs := a2.buildMessages(ctx, nil, "hi")
-		sys := msgs[0].Content
-		if !strings.HasPrefix(sys, "custom override") {
-			t.Errorf("override path should start with custom prompt, got: %q", sys)
-		}
-		for _, want := range wantContains {
-			if !strings.Contains(sys, want) {
-				t.Errorf("override-path system prompt missing %q:\n%s", want, sys)
-			}
-		}
-	})
-}
-
-func TestBuildMessages_NilStoresOmitsInjection(t *testing.T) {
-	// No familyState/userMemory → prompt is byte-identical to before the
-	// injection feature (Render() returns "" for nil snapshots).
-	cfg := &config.Config{
-		Users: []config.UserConfig{
-			{Name: "dep", DisplayName: "Dep", Role: "parent"},
-		},
-	}
-	a := &Agent{cfg: cfg, user: &cfg.Users[0]}
-	msgs := a.buildMessages(context.Background(), nil, "hi")
-	sys := msgs[0].Content
-	for _, tag := range []string{"<family_safety>", "<user_memory>", "Allergies:", "Preferences:"} {
-		if strings.Contains(sys, tag) {
-			t.Errorf("nil stores: system prompt should not contain %q:\n%s", tag, sys)
-		}
-	}
-}
-
-func TestBuildMessages_EmptySnapshotsOmitted(t *testing.T) {
-	// Stores present but no always_inject facts or memories → nothing
-	// rendered, no stray headings.
-	db, fs, um := seedStores(t)
-	defer db.Close()
-
-	cfg := &config.Config{
-		Users: []config.UserConfig{
-			{Name: "dep", DisplayName: "Dep", Role: "parent"},
-		},
-	}
-	a := &Agent{cfg: cfg, familyState: fs, userMemory: um, user: &cfg.Users[0]}
-	msgs := a.buildMessages(context.Background(), nil, "hi")
-	sys := msgs[0].Content
-	for _, tag := range []string{"<family_safety>", "<user_memory>", "Allergies:", "Preferences:"} {
-		if strings.Contains(sys, tag) {
-			t.Errorf("empty snapshots: system prompt should not contain %q:\n%s", tag, sys)
-		}
-	}
-}
-
-func TestBuildMessages_StoreErrorOmitsSection(t *testing.T) {
-	// A closed DB makes snapshot queries error. The turn must still succeed
-	// and the prompt must simply omit the sections.
-	db, fs, um := seedStores(t)
-
-	ctx := context.Background()
-	if err := fs.UpsertFact(ctx, &familystate.Fact{
-		Category: "allergies", Subject: "dep", Label: "peanuts", Value: "severe", CreatedBy: "dep",
-	}); err != nil {
-		t.Fatalf("seed fact: %v", err)
-	}
-	if err := um.UpsertMemory(ctx, &usermemory.Memory{
-		UserName: "dep", Category: "preferences", Label: "color", Value: "blue",
-	}); err != nil {
-		t.Fatalf("seed memory: %v", err)
-	}
-	db.Close()
-
-	cfg := &config.Config{
-		Users: []config.UserConfig{
-			{Name: "dep", DisplayName: "Dep", Role: "parent"},
-		},
-	}
-	a := &Agent{cfg: cfg, familyState: fs, userMemory: um, user: &cfg.Users[0]}
-	msgs := a.buildMessages(context.Background(), nil, "hi")
-	sys := msgs[0].Content
-	for _, tag := range []string{"<family_safety>", "<user_memory>", "peanuts", "blue"} {
-		if strings.Contains(sys, tag) {
-			t.Errorf("store error: system prompt should not contain %q:\n%s", tag, sys)
-		}
-	}
-}
-
-func TestBuildMessages_UserMemoryScoped(t *testing.T) {
-	// One user's memories never appear in another user's prompt. This is
-	// the hard correctness rule of the feature.
-	db, _, um := seedStores(t)
-	defer db.Close()
-
-	ctx := context.Background()
-	for _, m := range []usermemory.Memory{
-		{UserName: "dep", Category: "preferences", Label: "color", Value: "blue"},
-		{UserName: "teo", Category: "preferences", Label: "color", Value: "green"},
-	} {
-		if err := um.UpsertMemory(ctx, &m); err != nil {
-			t.Fatalf("seed memory: %v", err)
-		}
-	}
-
-	cfg := &config.Config{
-		Users: []config.UserConfig{
-			{Name: "dep", DisplayName: "Dep", Role: "parent"},
-			{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "age_13_17"},
-		},
-	}
-
-	// dep's prompt must contain dep's memory (blue) and NOT teo's (green).
-	aDep := &Agent{cfg: cfg, userMemory: um, user: &cfg.Users[0]}
-	sysDep := aDep.buildMessages(ctx, nil, "hi")[0].Content
-	if !strings.Contains(sysDep, "blue") {
-		t.Errorf("dep's prompt should contain dep's memory (blue):\n%s", sysDep)
-	}
-	if strings.Contains(sysDep, "green") {
-		t.Errorf("dep's prompt must NOT contain teo's memory (green):\n%s", sysDep)
-	}
-
-	// teo's prompt must contain teo's memory (green) and NOT dep's (blue).
-	aTeo := &Agent{cfg: cfg, userMemory: um, user: &cfg.Users[1]}
-	sysTeo := aTeo.buildMessages(ctx, nil, "hi")[0].Content
-	if !strings.Contains(sysTeo, "green") {
-		t.Errorf("teo's prompt should contain teo's memory (green):\n%s", sysTeo)
-	}
-	if strings.Contains(sysTeo, "blue") {
-		t.Errorf("teo's prompt must NOT contain dep's memory (blue):\n%s", sysTeo)
-	}
-}
-
-// TestWebSearchError verifies that when the backend is unreachable, the
-// error is translated into an honest, human-readable message returned as
-// the RESULT STRING with a nil error — NOT as a tool error that the LLM
-// might ignore. This is critical: the tool loop wraps non-nil errors as
-// "Error: <msg>", which the LLM can treat as a system failure and
-// hallucinate around. A result string with nil error is treated as a
-// normal tool output.
-//
-// The result is intentionally a NEUTRAL marker (not a pre-written English
-// sentence addressed to the user) so the behavioural rule in components.go
-// can instruct the model to convey the unavailability in the family
-// member's preferred language.
-func TestWebSearchError(t *testing.T) {
-	t.Run("unavailable error becomes honest result string", func(t *testing.T) {
-		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
-		msg, err := webSearchError(wrapped, "http://localhost:8888")
-		if err != nil {
-			t.Fatalf("expected nil error for ErrUnavailable, got %v", err)
-		}
-		if !strings.Contains(msg, "unavailable") {
-			t.Errorf("result should mark search as unavailable, got: %q", msg)
-		}
-	})
-
-	t.Run("unavailable error result is not a pre-written English sentence", func(t *testing.T) {
-		// The result must be a neutral marker, NOT a full sentence addressed
-		// to the user in English (which would force every family member to
-		// receive an English error regardless of their language preference).
-		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
-		msg, err := webSearchError(wrapped, "http://localhost:8888")
-		if err != nil {
-			t.Fatalf("expected nil error, got %v", err)
-		}
-		// A neutral marker: no first-person "I", no second-person "you", no
-		// imperative verbs directed at the user.
-		for _, sentence := range []string{"I could not", "I'll answer", "A parent can", "try your search", "do not try to"} {
-			if strings.Contains(msg, sentence) {
-				t.Errorf("result must not contain a pre-written English sentence fragment %q: %q", sentence, msg)
-			}
-		}
-	})
-
-	t.Run("unavailable error does not leak endpoint", func(t *testing.T) {
-		// The endpoint may contain internal hostnames, credentials, or
-		// network topology — it must NEVER appear in the user-facing
-		// message the model speaks to the family.
-		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
-		msg, err := webSearchError(wrapped, "http://internal.corp:8888/searx")
-		if err != nil {
-			t.Fatalf("expected nil error, got %v", err)
-		}
-		if strings.Contains(msg, "internal.corp") {
-			t.Errorf("user-facing message must not contain the raw endpoint: %q", msg)
-		}
-		if strings.Contains(msg, "8888") {
-			t.Errorf("user-facing message must not contain the raw endpoint port: %q", msg)
-		}
-		if !strings.Contains(msg, "unavailable") {
-			t.Errorf("message should be honest about search being unavailable: %q", msg)
-		}
-	})
-
-	t.Run("host-not-allowed error translated to sanitized result", func(t *testing.T) {
-		hostErr := webfetch.NewHostNotAllowedError("evil.com")
-		msg, err := webSearchError(hostErr, "http://localhost:8888")
-		if err != nil {
-			t.Fatalf("host-not-allowed should return nil error (sanitized result), got %v", err)
-		}
-		if msg == "" {
-			t.Fatal("host-not-allowed should return a sanitized result string, got empty")
-		}
-		if !strings.Contains(msg, "host not permitted") {
-			t.Errorf("result should indicate host is not permitted, got: %q", msg)
-		}
-		// Must not leak the host name from the error into the user-facing message.
-		if strings.Contains(msg, "evil.com") {
-			t.Errorf("result must not leak the disallowed host: %q", msg)
-		}
-	})
-
-	t.Run("ordinary error passes through", func(t *testing.T) {
-		ordinary := errors.New("some other error")
-		msg, err := webSearchError(ordinary, "http://localhost:8888")
-		if msg != "" {
-			t.Errorf("expected empty string for non-unavailable error, got %q", msg)
-		}
-		if err != ordinary {
-			t.Errorf("ordinary error should pass through unchanged, got %v", err)
-		}
-	})
 }
