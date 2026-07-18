@@ -9,7 +9,7 @@ LDFLAGS   := -ldflags "-s -w -X main.Version=$(VERSION)"
 ## build: Build for current machine
 build:
 	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) $(CMD)
+	CGO_ENABLED=0 go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) $(CMD)
 	@echo "✅ $(BUILD_DIR)/$(BINARY)"
 
 ## run: Build and run with default config
@@ -40,14 +40,14 @@ cross: cross-rpi3 cross-rpi4 cross-android cross-mac-intel cross-mac-arm cross-l
 cross-rpi3:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-linux-armv7 $(CMD)
+		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-linux-armv7 $(CMD)
 	@echo "✅ RPi 2/3/Zero → $(BUILD_DIR)/$(BINARY)-linux-armv7"
 
 ## cross-rpi4: Raspberry Pi 4/5 (ARM64)
 cross-rpi4:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-linux-arm64 $(CMD)
+		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-linux-arm64 $(CMD)
 	@echo "✅ RPi 4/5 → $(BUILD_DIR)/$(BINARY)-linux-arm64"
 
 cross-rpi5: cross-rpi4   # RPi 5 uses same arm64 binary
@@ -56,28 +56,28 @@ cross-rpi5: cross-rpi4   # RPi 5 uses same arm64 binary
 cross-android:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=android GOARCH=arm64 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-android-arm64 $(CMD)
+		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-android-arm64 $(CMD)
 	GOOS=android GOARCH=arm GOARM=7 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-android-armv7 $(CMD)
+		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-android-armv7 $(CMD)
 	@echo "✅ Android → $(BUILD_DIR)/$(BINARY)-android-*"
 
 ## cross-mac-intel: Mac Intel
 cross-mac-intel:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-darwin-amd64 $(CMD)
+		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-darwin-amd64 $(CMD)
 
 ## cross-mac-arm: Mac Apple Silicon / Mac Mini M-series
 cross-mac-arm:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-darwin-arm64 $(CMD)
+		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-darwin-arm64 $(CMD)
 
 ## cross-linux64: Generic Linux x86_64
 cross-linux64:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-linux-amd64 $(CMD)
+		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-linux-amd64 $(CMD)
 
 ## install: Install binary to /usr/local/bin
 install: build
@@ -116,11 +116,11 @@ install-launchd: install
 build-seccheck:
 	@mkdir -p $(BUILD_DIR)/seccheck
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-arm64 ./skills-repo/seccheck/bin/
+		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-arm64 ./skills-repo/seccheck/bin/
 	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-armv7 ./skills-repo/seccheck/bin/
+		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-armv7 ./skills-repo/seccheck/bin/
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-		go build $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-amd64 ./skills-repo/seccheck/bin/
+		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-amd64 ./skills-repo/seccheck/bin/
 	@echo "✅ seccheck binaries: $(BUILD_DIR)/seccheck/"
 
 ## clean: Remove build artifacts
