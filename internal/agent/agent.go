@@ -99,6 +99,7 @@ type Agent struct {
 	// (gateway, external_id, group_id, is_group). Used by outbound tools
 	// like reminders to know where to send the notification.
 	msgContext gateway.MsgContext
+	effectiveSandboxRoot string
 }
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
@@ -120,9 +121,66 @@ type AgentDeps struct {
 // NewAgent creates an Agent for the given user. Optional dependencies
 // (MCP pool, skills, scanner, scheduler, etc.) are passed in deps —
 // any field left as zero value disables that capability for this Agent.
+// sanitizeDirName returns a string safe to use as a directory name component.
+// It replaces path separators with underscores and ensures the result is not
+// "." or "..".
+func sanitizeDirName(s string) (string, error) {
+	if s == "" {
+		return "", fmt.Errorf("identity cannot be empty")
+	}
+	// Replace path separators with underscore to prevent directory traversal.
+	s = strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, s)
+	// Disallow . and .. after replacement.
+	if s == "." || s == ".." {
+		return "", fmt.Errorf("identity %q is reserved after sanitization", s)
+	}
+	return s, nil
+}
+
+// computeEffectiveSandboxRoot returns the sandbox root to use for the given
+// message context, based on the configured base sandbox root and sandbox scope.
+func computeEffectiveSandboxRoot(cfg *config.Config, msgCtx gateway.MsgContext) (string, error) {
+	base := cfg.Tools.SandboxRoot
+	if base == "" {
+		return "", fmt.Errorf("sandbox root not configured")
+	}
+	scope := cfg.Tools.SandboxScope
+	if scope == "" {
+		scope = "user" // default to user
+	}
+	switch scope {
+	case "global":
+		return base, nil
+	case "group":
+		if msgCtx.GroupID == "" {
+			return "", fmt.Errorf("group ID is empty for group scope")
+		}
+		groupID, err := sanitizeDirName(msgCtx.GroupID)
+		if err != nil {
+			return "", fmt.Errorf("sanitizing group ID: %w", err)
+		}
+		return filepath.Join(base, "groups", groupID), nil
+	case "user":
+		if msgCtx.ExternalID == "" {
+			return "", fmt.Errorf("external ID is empty for user scope")
+		}
+		externalID, err := sanitizeDirName(msgCtx.ExternalID)
+		if err != nil {
+			return "", fmt.Errorf("sanitizing external ID: %w", err)
+		}
+		return filepath.Join(base, "users", externalID), nil
+	default:
+		return "", fmt.Errorf("invalid sandbox scope %q", scope)
+	}
+}
 func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter,
 	evaluator *policy.Evaluator, clf *classifier.Classifier, db *store.DB,
-	deps AgentDeps) *Agent {
+	deps AgentDeps) (*Agent, error) {
 
 	day := time.Now().UTC().Format("2006-01-02")
 	h := sha256.Sum256([]byte(user.Name + ":" + day))
@@ -142,6 +200,11 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		fs = familystate.NewStore(db)
 		ts = todo.NewStore(db)
 		um = usermemory.NewStore(db)
+	}
+	// Compute the effective sandbox root based on the message context.
+	effectiveSandboxRoot, err := computeEffectiveSandboxRoot(cfg, deps.MsgContext)
+	if err != nil {
+		return nil, fmt.Errorf("computing effective sandbox root: %w", err)
 	}
 
 	return &Agent{
@@ -166,7 +229,8 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		cache:        deps.Cache,
 		browserPool:  deps.BrowserPool,
 		msgContext:   deps.MsgContext,
-	}
+		effectiveSandboxRoot: effectiveSandboxRoot,
+	}, nil
 }
 
 // Chat processes a single user message and returns a Response.
@@ -477,10 +541,10 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 }
 
 func (a *Agent) confinePath(path string) (string, error) {
-	if a.cfg.Tools.SandboxRoot == "" {
+	if a.effectiveSandboxRoot == "" {
 		return "", fmt.Errorf("sandbox root not configured")
 	}
-	sandboxRoot := a.cfg.Tools.SandboxRoot
+	sandboxRoot := a.effectiveSandboxRoot
 	var err error
 	// Ensure sandbox root is absolute and evaluated for symlinks
 	if sandboxRoot, err = filepath.EvalSymlinks(filepath.Clean(sandboxRoot)); err != nil {

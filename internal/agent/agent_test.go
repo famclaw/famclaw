@@ -58,9 +58,11 @@ func setupAgent(t *testing.T, serverURL string) *Agent {
 
 	user := &cfg.Users[0]
 	client := llm.NewClient(serverURL, "test", "")
-	clf := classifier.New()
-
-	return NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
+		a, err := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
+		if err != nil {
+			t.Fatalf("failed to create agent: %v", err)
+		}
+		return a
 }
 
 func mockLLMServer(t *testing.T, messages []llm.Message) *httptest.Server {
@@ -895,7 +897,10 @@ func TestStreamedOutputGate(t *testing.T) {
 			}
 			user := &cfg.Users[0]
 			client := llm.NewClient(server.URL, "test", "")
-			clf := classifier.New()
+		agent, err := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
+		if err != nil {
+			t.Fatalf("failed to create agent: %v", err)
+		}
 
 			agent := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
 
@@ -999,7 +1004,7 @@ func TestToolCallDrainEmptyBufferedTokens(t *testing.T) {
 	clf := classifier.New()
 
 	mock := &mockToolChatter{}
-	agent := NewAgent(user, cfg, mock, ev, clf, db, AgentDeps{
+	agent, err := NewAgent(user, cfg, mock, ev, clf, db, AgentDeps{
 		BuiltinTools: []agentcore.Tool{{
 			Name:        "builtin__get_family_state",
 			Description: "Get family state information",
@@ -1007,7 +1012,9 @@ func TestToolCallDrainEmptyBufferedTokens(t *testing.T) {
 			Source:      "builtin",
 		}},
 	})
-
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
 	var tokens []string
 	onToken := func(tok string) {
 		tokens = append(tokens, tok)
