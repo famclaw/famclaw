@@ -15,14 +15,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/famclaw/famclaw/internal/gateway"
-	"github.com/famclaw/famclaw/internal/notify"
-	"github.com/famclaw/famclaw/internal/imageutil"
-)
-const maxImageBytes = 5 * 1024 * 1024 // 5MB cap (RPi-friendly)
 const maxImageDimension = 1280 // Maximum dimension in pixels (preserve aspect ratio)
+	"github.com/famclaw/famclaw/internal/gateway"
+	"github.com/famclaw/famclaw/internal/imageutil"
+	"github.com/famclaw/famclaw/internal/notify"
+)
+
+const maxImageBytes = 5 * 1024 * 1024 // 5MB cap (RPi-friendly)
 // Bot is a Telegram gateway using the Bot API with long-polling.
 type Bot struct {
+const maxImageDimension = 1280 // Maximum dimension in pixels (preserve aspect ratio)
 	token    string
 	endpoint string // Bot API base URL (defaults to https://api.telegram.org)
 	client   *http.Client
@@ -84,38 +86,30 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 					log.Printf("[telegram] failed to get file info: %v", err)
 				} else if fileInfo != nil {
 					// Download the actual file data
-					origData, err := b.downloadFile(ctx, fileInfo.FilePath)
+					photoData, err = b.downloadFile(ctx, fileInfo.FilePath)
 					if err != nil {
 						log.Printf("[telegram] failed to download file: %v", err)
 					} else {
-						// Resize image if needed
-						resizedData, err := imageutil.ResizeImage(origData, maxImageDimension)
-						if err != nil {
-							log.Printf("[telegram] failed to resize image: %v", err)
-							photoData = nil
-						} else {
-							// Check if we actually resized
-							if len(resizedData) != len(origData) || !bytes.Equal(resizedData, origData) {
-								// We resized, so set mimeType to JPEG
-								mimeType = "image/jpeg"
-							} else {
-								// We did not resize, so determine MIME type from file extension
-								if strings.HasSuffix(strings.ToLower(fileInfo.FilePath), ".png") {
-									mimeType = "image/png"
-								} else {
-									mimeType = "image/jpeg"
-								}
-							}
-							photoData = resizedData
-						}
-					}
-					// Check the size after potential resize
 					if len(photoData) > maxImageBytes {
 						log.Printf("[telegram] image %d bytes exceeds %d cap, skipping", len(photoData), maxImageBytes)
 						photoData = nil
 					}
+						// Determine MIME type based on file extension or default to JPEG
+						if strings.HasSuffix(strings.ToLower(fileInfo.FilePath), ".png") {
+							mimeType = "image/png"
+						} else {
+							// Default to JPEG for Telegram photos
+							mimeType = "image/jpeg"
+						}
+                    if mimeType != "image/jpeg" && mimeType != "image/png" {
+                        log.Printf("[telegram] unsupported image type: %s, skipping", mimeType)
+                        photoData = nil
+                    }
+					}
 				}
 			}
+			
+			
 			// Prepare attachments if we have photo data
 			var attachments []gateway.Attachment
 			if len(photoData) > 0 {
