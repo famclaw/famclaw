@@ -558,7 +558,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("tools.sandbox_root: failed to stat directory: %w", err)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("tools.sandbox_root: not a directory")
+			return fmt.Errorf("tools.sandbox_root: %q is not a directory", cleaned)
 		}
 		// Optionally, ensure the parent directory exists? Not required; we can create later.
 		c.Tools.SandboxRoot = cleaned
