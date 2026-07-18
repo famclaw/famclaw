@@ -1443,7 +1443,11 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 			})
 		}
 		// Compress
-		compressed := compress.Compress(cmsgs, compress.Options{ContextWindow: a.cfg.LLM.MaxContextTokens})
+		budget := a.cfg.LLM.MaxContextTokens - a.cfg.LLM.MaxResponseTokens
+		if budget <= 0 {
+			budget = a.cfg.LLM.MaxContextTokens
+		}
+		compressed := compress.Compress(cmsgs, compress.Options{ContextWindow: budget})
 		// Convert back
 		msgs = make([]llm.Message, 0, len(compressed))
 		for _, cm := range compressed {
