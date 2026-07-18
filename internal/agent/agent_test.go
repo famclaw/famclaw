@@ -1115,6 +1115,11 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 	if total > budget {
 		t.Fatalf("Total tokens %d exceed budget %d (context window %d)", total, budget, maxContextTokens)
 	}
+	// Additionally, verify that the total tokens are strictly less than the max context tokens
+	// (leaving room for the response).
+	if total >= maxContextTokens {
+		t.Fatalf("Total tokens %d should be strictly less than max context tokens %d to leave room for response", total, maxContextTokens)
+	}
 	// Optionally, we can also check that the number of messages is reasonable (e.g., not too large).
 	// For a long history, we expect the number of messages to be bounded.
 	// We'll just check that it's less than, say, 50 messages (should be much less for 200 history messages with small context).
