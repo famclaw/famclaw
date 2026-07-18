@@ -42,8 +42,9 @@ type ToolsConfig struct {
 // SandboxConfig controls the sandboxing of MCP servers.
 type SandboxConfig struct {
 	Enabled         *bool `yaml:"enabled"`          // nil = unset (defaults to true); explicit false honored
-	AllowUnconfined bool `yaml:"allow_unconfined"` // default false (fail-closed)
+	AllowUnconfined bool  `yaml:"allow_unconfined"` // default false (fail-closed)
 }
+
 // IsEnabled reports whether the MCP sandbox is on. Unset (nil) defaults to true (secure-by-default).
 func (s SandboxConfig) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
 
@@ -562,6 +563,25 @@ func (c *Config) Validate() error {
 		}
 		// Optionally, ensure the parent directory exists? Not required; we can create later.
 		c.Tools.SandboxRoot = cleaned
+	}
+	return nil
+}
+
+// Save atomically writes the config to the given path.
+// It marshals the config to YAML and writes it to a temporary file in the same directory,
+// then renames the temporary file to the target path (atomic on POSIX systems).
+// Note: This rewrites the file and does not preserve comments or custom formatting.
+func (c *Config) Save(path string) error {
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+	tmpFile := path + ".tmp"
+	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+		return fmt.Errorf("writing temporary config: %w", err)
+	}
+	if err := os.Rename(tmpFile, path); err != nil {
+		return fmt.Errorf("renaming temporary config: %w", err)
 	}
 	return nil
 }

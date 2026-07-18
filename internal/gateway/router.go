@@ -45,6 +45,8 @@ type Router struct {
 	chatFn     ChatFunc
 	pool       *SessionPool
 	registry   *skillbridge.Registry
+	configPath string
+	cfgMu      sync.RWMutex
 
 	pendingMu   sync.Mutex
 	pendingRegs map[string]*pendingRegistration
@@ -64,6 +66,7 @@ func NewRouter(
 	notifier *notify.MultiNotifier,
 	chatFn ChatFunc,
 	registry *skillbridge.Registry,
+	configPath string,
 ) *Router {
 	r := &Router{
 		cfg:         cfg,
@@ -74,6 +77,7 @@ func NewRouter(
 		notifier:    notifier,
 		chatFn:      chatFn,
 		registry:    registry,
+		configPath:  configPath,
 		pendingRegs: make(map[string]*pendingRegistration),
 	}
 	// Session pool dispatches heavy work (classify → policy → LLM) per-user
@@ -209,6 +213,13 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 			return Reply{Text: "Only a parent can manage skills.", PolicyAction: "block"}
 		}
 		return r.handleSkillCommand(ctx, adjustedUser.Name, fields)
+	}
+	// Check if this is a parent-only MCP command
+	if fields := strings.Fields(msg.Text); len(fields) >= 1 && strings.EqualFold(fields[0], "mcp") {
+		if adjustedUser.Role != "parent" {
+			return Reply{Text: "Only a parent can manage MCP servers.", PolicyAction: "block"}
+		}
+		return r.handleMCPCommand(ctx, adjustedUser.Name, fields)
 	}
 	response, err := r.chatFn(ctx, adjustedUser, msg.Text, MsgContext{
 		Gateway:    msg.Gateway,
