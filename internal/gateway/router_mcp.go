@@ -120,14 +120,11 @@ func (r *Router) removeMCPServer(name string) error {
 	r.cfgMu.Lock()
 	defer r.cfgMu.Unlock()
 	if r.cfg.Skills.MCPServers == nil {
-		r.cfg.Skills.MCPServers = make(map[string]config.MCPServerConfig)
+		return nil // nothing to remove
 	}
-	newMap := make(map[string]config.MCPServerConfig)
-	for k, v := range r.cfg.Skills.MCPServers {
-		if k != name {
-			newMap[k] = v
-		}
+	delete(r.cfg.Skills.MCPServers, name)
+	if len(r.cfg.Skills.MCPServers) == 0 {
+		r.cfg.Skills.MCPServers = nil
 	}
-	r.cfg.Skills.MCPServers = newMap
 	return r.cfg.Save(r.configPath)
 }

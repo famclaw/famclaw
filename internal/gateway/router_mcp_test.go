@@ -197,12 +197,13 @@ func TestHandleMCPCommand_Persistence(t *testing.T) {
 		t.Fatalf("failed to read config: %v", err)
 	}
 	fmt.Printf("Config file content: %s\\n", string(data))
-	err = yaml.Unmarshal(data, &loaded)
+	var loaded2 config.Config
+	err = yaml.Unmarshal(data, &loaded2)
 	if err != nil {
 		t.Fatalf("failed to unmarshal config: %v", err)
 	}
-	if len(loaded.Skills.MCPServers) != 0 {
-		t.Fatalf("Expected empty MCPServers, got: %v", loaded.Skills.MCPServers)
+	if len(loaded2.Skills.MCPServers) != 0 {
+		t.Fatalf("Expected empty MCPServers, got: %v", loaded2.Skills.MCPServers)
 	}
 }
 
