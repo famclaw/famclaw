@@ -98,17 +98,17 @@ func TestDiscordBotMessageConstruction(t *testing.T) {
 func TestDiscordBotImageHandling(t *testing.T) {
 	// Test cases for different scenarios
 	testCases := []struct {
-		name              string
-		attachments       []*discordgo.MessageAttachment
+		name                string
+		attachments         []*discordgo.MessageAttachment
 		expectedAttachments int
 	}{
 		{
 			name: "valid image attachment",
 			attachments: []*discordgo.MessageAttachment{
 				{
-					URL:          "https://example.com/image.jpg",
-					ContentType:  "image/jpeg",
-					Size:         1024,
+					URL:         "https://example.com/image.jpg",
+					ContentType: "image/jpeg",
+					Size:        1024,
 				},
 			},
 			expectedAttachments: 1,
@@ -117,9 +117,9 @@ func TestDiscordBotImageHandling(t *testing.T) {
 			name: "non-image attachment",
 			attachments: []*discordgo.MessageAttachment{
 				{
-					URL:          "https://example.com/document.pdf",
-					ContentType:  "application/pdf",
-					Size:         2048,
+					URL:         "https://example.com/document.pdf",
+					ContentType: "application/pdf",
+					Size:        2048,
 				},
 			},
 			expectedAttachments: 0,
@@ -128,9 +128,9 @@ func TestDiscordBotImageHandling(t *testing.T) {
 			name: "oversized image attachment",
 			attachments: []*discordgo.MessageAttachment{
 				{
-					URL:          "https://example.com/large-image.jpg",
-					ContentType:  "image/jpeg",
-					Size:         10 * 1024 * 1024, // 10MB - exceeds 5MB limit
+					URL:         "https://example.com/large-image.jpg",
+					ContentType: "image/jpeg",
+					Size:        10 * 1024 * 1024, // 10MB - exceeds 5MB limit
 				},
 			},
 			expectedAttachments: 0,
@@ -139,19 +139,19 @@ func TestDiscordBotImageHandling(t *testing.T) {
 			name: "multiple attachments mixed",
 			attachments: []*discordgo.MessageAttachment{
 				{
-					URL:          "https://example.com/image.jpg",
-					ContentType:  "image/jpeg",
-					Size:         1024,
+					URL:         "https://example.com/image.jpg",
+					ContentType: "image/jpeg",
+					Size:        1024,
 				},
 				{
-					URL:          "https://example.com/document.pdf",
-					ContentType:  "application/pdf",
-					Size:         2048,
+					URL:         "https://example.com/document.pdf",
+					ContentType: "application/pdf",
+					Size:        2048,
 				},
 				{
-					URL:          "https://example.com/image.png",
-					ContentType:  "image/png",
-					Size:         512,
+					URL:         "https://example.com/image.png",
+					ContentType: "image/png",
+					Size:        512,
 				},
 			},
 			expectedAttachments: 2,
@@ -163,7 +163,7 @@ func TestDiscordBotImageHandling(t *testing.T) {
 			// This test would require mocking the HTTP calls to download images
 			// For now, we're just checking the logic structure
 			// Actual integration tests would need a more complex setup
-			
+
 			// Just verify that the structure supports image processing
 			if len(tc.attachments) > 0 {
 				// Check if any are images
@@ -197,7 +197,7 @@ func TestDownloadImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("downloadImage failed: %v", err)
 	}
-	
+
 	if string(data) != "mock image data" {
 		t.Errorf("downloadImage returned unexpected data: %s", string(data))
 	}

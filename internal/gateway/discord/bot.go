@@ -179,7 +179,7 @@ func downloadImage(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
-	
+
 	// Set a User-Agent header to avoid being blocked by some servers
 	req.Header.Set("User-Agent", "FamClaw/1.0")
 
