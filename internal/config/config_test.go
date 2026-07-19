@@ -160,18 +160,18 @@ func TestLoadYAMLKeyWhenNoEnv(t *testing.T) {
 
 func TestApplyDefaults_SandboxRootDefault(t *testing.T) {
 	tests := []struct {
-		name           string
-		sandboxRoot    string
+		name            string
+		sandboxRoot     string
 		expectedDefault string
 	}{
 		{
-			name:           "empty sandbox_root gets default",
-			sandboxRoot:    "",
+			name:            "empty sandbox_root gets default",
+			sandboxRoot:     "",
 			expectedDefault: "./data/sandbox",
 		},
 		{
-			name:           "non-empty sandbox_root preserved",
-			sandboxRoot:    "/custom/sandbox",
+			name:            "non-empty sandbox_root preserved",
+			sandboxRoot:     "/custom/sandbox",
 			expectedDefault: "/custom/sandbox",
 		},
 	}
@@ -180,17 +180,17 @@ func TestApplyDefaults_SandboxRootDefault(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &Config{
 				Tools: ToolsConfig{
-						SandboxRoot: tt.sandboxRoot,
-						Sandbox: SandboxConfig{},
+					SandboxRoot: tt.sandboxRoot,
+					Sandbox:     SandboxConfig{},
 				},
 				Server: ServerConfig{
 					Host: "0.0.0.0",
 					Port: 8080,
 				},
 				LLM: LLMConfig{
-					MaxContextTokens: 4096,
+					MaxContextTokens:  4096,
 					MaxResponseTokens: 512,
-					Temperature: 0.7,
+					Temperature:       0.7,
 				},
 				Approval: ApprovalConfig{
 					ExpiryHours: 24,
@@ -232,9 +232,9 @@ func TestValidate_SandboxRootDefaultCreatesDir(t *testing.T) {
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			MaxContextTokens: 4096,
+			MaxContextTokens:  4096,
 			MaxResponseTokens: 512,
-			Temperature: 0.7,
+			Temperature:       0.7,
 		},
 		Approval: ApprovalConfig{
 			ExpiryHours: 24,
@@ -269,28 +269,28 @@ func TestValidate_SandboxRootDefaultCreatesDir(t *testing.T) {
 
 func TestSandboxEnabled_IsEnabled(t *testing.T) {
 	tests := []struct {
-		name          string
-		yaml          string
-		wantEnabled   bool
+		name        string
+		yaml        string
+		wantEnabled bool
 	}{
 		{
-			name:          "unset sandbox block",
-			yaml:          ``,
-			wantEnabled:   true,
+			name:        "unset sandbox block",
+			yaml:        ``,
+			wantEnabled: true,
 		},
 		{
-			name:          "enabled: false",
-			yaml:          `tools:
+			name: "enabled: false",
+			yaml: `tools:
   sandbox:
     enabled: false`,
-			wantEnabled:   false,
+			wantEnabled: false,
 		},
 		{
-			name:          "enabled: true",
-			yaml:          `tools:
+			name: "enabled: true",
+			yaml: `tools:
   sandbox:
     enabled: true`,
-			wantEnabled:   true,
+			wantEnabled: true,
 		},
 	}
 	for _, tt := range tests {
@@ -312,57 +312,114 @@ func TestSandboxEnabled_IsEnabled(t *testing.T) {
 	}
 }
 
-func TestValidate_SandboxRootNonDirectory(t *testing.T) {
-	// Create a temporary file (not a directory) 
-	tmpDir := t.TempDir()
-	testFile := filepath.Join(tmpDir, "not-a-dir")
-	
-	// Create a file (not a directory) 
-	if err := os.WriteFile(testFile, []byte(""), 0644); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
+func TestValidate_SandboxRootErrors(t *testing.T) {
+	// Common config fields
+	serverCfg := ServerConfig{
+		Host: "0.0.0.0",
+		Port: 8080,
+	}
+	llmCfg := LLMConfig{
+		MaxContextTokens:  4096,
+		MaxResponseTokens: 512,
+		Temperature:       0.7,
+	}
+	approvalCfg := ApprovalConfig{
+		ExpiryHours: 24,
+	}
+	skillsCfg := SkillsConfig{
+		Dir: "./skills",
+	}
+	storageCfg := StorageConfig{
+		DBPath: "./data/famclaw.db",
+	}
+	notificationsCfg := NotificationsConfig{
+		Ntfy: NtfyConfig{
+			URL: "http://localhost:2586",
+		},
 	}
 
-	c := &Config{
-		Tools: ToolsConfig{
-			SandboxRoot: testFile,
-		},
-		Server: ServerConfig{
-			Host: "0.0.0.0",
-			Port: 8080,
-		},
-		LLM: LLMConfig{
-			MaxContextTokens: 4096,
-			MaxResponseTokens: 512,
-			Temperature: 0.7,
-		},
-		Approval: ApprovalConfig{
-			ExpiryHours: 24,
-		},
-		Skills: SkillsConfig{
-			Dir: "./skills",
-		},
-		Storage: StorageConfig{
-			DBPath: "./data/famclaw.db",
-		},
-		Notifications: NotificationsConfig{
-			Ntfy: NtfyConfig{
-				URL: "http://localhost:2586",
+	tests := []struct {
+		name            string
+		sandboxRootFunc func() string
+		setupFunc       func(string) error
+		wantErr         bool
+		errContains     string
+		checkPathInErr  bool
+	}{
+		{
+			name: "sandbox_root is a file",
+			sandboxRootFunc: func() string {
+				tmp := t.TempDir()
+				return filepath.Join(tmp, "file")
 			},
+			setupFunc: func(path string) error {
+				return os.WriteFile(path, []byte(""), 0644)
+			},
+			wantErr:        true,
+			errContains:    "not a directory", // note: wrapped error says "not a directory"
+			checkPathInErr: true,
+		},
+		{
+			name: "sandbox_root parent not writable",
+			sandboxRootFunc: func() string {
+				tmp := t.TempDir()
+				parent := filepath.Join(tmp, "parent")
+				child := filepath.Join(parent, "child")
+				// Create parent directory but make it unwritable
+				os.MkdirAll(parent, 0o700)
+				os.Chmod(parent, 0o000) // prevent writing
+				return child
+			},
+			setupFunc: func(path string) error {
+				// No additional setup needed; parent permissions already set
+				return nil
+			},
+			wantErr:        true,
+			errContains:    "permission denied", // from mkdir
+			checkPathInErr: true,
 		},
 	}
 
-	err := c.Validate()
-	if err == nil {
-		t.Fatal("expected validation error, got nil")
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sandboxRoot := tt.sandboxRootFunc()
+			// Setup
+			if tt.setupFunc != nil {
+				if err := tt.setupFunc(sandboxRoot); err != nil {
+					t.Fatalf("setup failed: %v", err)
+				}
+			}
 
-	errStr := err.Error()
-	if !strings.Contains(errStr, "tools.sandbox_root:") {
-		t.Errorf("error message should contain tools.sandbox_root: %v", errStr)
-	}
-	
-	// Check that the path is included in the error message
-	if !strings.Contains(errStr, testFile) {
-		t.Errorf("error message should contain the path %q, got: %v", testFile, errStr)
+			c := &Config{
+				Tools: ToolsConfig{
+					SandboxRoot: sandboxRoot,
+				},
+				Server:        serverCfg,
+				LLM:           llmCfg,
+				Approval:      approvalCfg,
+				Skills:        skillsCfg,
+				Storage:       storageCfg,
+				Notifications: notificationsCfg,
+			}
+
+			err := c.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.errContains)
+				}
+				if tt.checkPathInErr {
+					if !strings.Contains(err.Error(), sandboxRoot) {
+						t.Errorf("error %q does not contain sandboxRoot %q", err.Error(), sandboxRoot)
+					}
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
 	}
 }

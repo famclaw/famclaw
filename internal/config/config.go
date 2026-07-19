@@ -42,8 +42,9 @@ type ToolsConfig struct {
 // SandboxConfig controls the sandboxing of MCP servers.
 type SandboxConfig struct {
 	Enabled         *bool `yaml:"enabled"`          // nil = unset (defaults to true); explicit false honored
-	AllowUnconfined bool `yaml:"allow_unconfined"` // default false (fail-closed)
+	AllowUnconfined bool  `yaml:"allow_unconfined"` // default false (fail-closed)
 }
+
 // IsEnabled reports whether the MCP sandbox is on. Unset (nil) defaults to true (secure-by-default).
 func (s SandboxConfig) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
 
@@ -551,11 +552,11 @@ func (c *Config) Validate() error {
 		// (./data/sandbox) never pre-exists on a fresh install, so creating it
 		// here is what lets a fresh install boot.
 		if err := os.MkdirAll(cleaned, 0o700); err != nil {
-			return fmt.Errorf("tools.sandbox_root: %w", err)
+			return fmt.Errorf("tools.sandbox_root: %q: %w", cleaned, err)
 		}
 		info, err := os.Stat(cleaned)
 		if err != nil {
-			return fmt.Errorf("tools.sandbox_root: failed to stat directory: %w", err)
+			return fmt.Errorf("tools.sandbox_root: %q: failed to stat directory: %w", cleaned, err)
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("tools.sandbox_root: %q is not a directory", cleaned)
