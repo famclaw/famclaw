@@ -685,7 +685,7 @@ func main() {
 		log.Printf("Gateway: Telegram enabled")
 	}
 	if cfg.Gateways.Discord.Enabled && cfg.Gateways.Discord.Token != "" {
-		gateways = append(gateways, discord.New(cfg.Gateways.Discord.Token))
+		gateways = append(gateways, discord.NewWithSandbox(cfg.Gateways.Discord.Token, sandboxRoot))
 		log.Printf("Gateway: Discord enabled")
 	}
 	if cfg.Gateways.WhatsApp.Enabled {

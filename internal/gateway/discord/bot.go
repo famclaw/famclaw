@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,11 +23,17 @@ import (
 type Bot struct {
 	token   string
 	session *discordgo.Session
+	sandboxRoot string
 }
 
 // New creates a Discord bot with the given token.
 func New(token string) *Bot {
 	return &Bot{token: token}
+}
+
+// NewWithSandbox creates a Discord bot with the given token and sandbox root.
+func NewWithSandbox(token string, sandboxRoot string) *Bot {
+	return &Bot{token: token, sandboxRoot: sandboxRoot}
 }
 
 func (b *Bot) Name() string { return "discord" }
@@ -57,8 +65,9 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			groupID = m.ChannelID
 		}
 
-		// Process image attachments
+		// Process attachments
 		var attachments []gateway.Attachment
+		var fileAttachmentNotes []string
 		if len(m.Message.Attachments) > 0 {
 			attachments = make([]gateway.Attachment, 0)
 			for _, attachment := range m.Message.Attachments {
@@ -83,14 +92,49 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 						Data:     base64.StdEncoding.EncodeToString(imageData),
 						MIMEType: attachment.ContentType,
 					})
+				} else {
+					// Handle non-image attachments (files)
+					// Only process files under 100MB (reasonable limit)
+					const maxFileSize = 100 * 1024 * 1024 // 100MB
+					if attachment.Size > maxFileSize {
+						log.Printf("[discord] file %d bytes exceeds %d cap, skipping", attachment.Size, maxFileSize)
+						continue
+					}
+
+					// Download file data
+					fileData, err := downloadFile(ctx, attachment.URL, maxFileSize)
+					if err != nil {
+						log.Printf("[discord] failed to download file: %v", err)
+						continue
+					}
+
+					// Write file to sandbox if sandbox is configured
+					if b.sandboxRoot != "" {
+						// Write to sandbox
+						relPath, err := writeAttachmentToFile(ctx, b.sandboxRoot, attachment.Filename, fileData)
+						if err != nil {
+							log.Printf("[discord] failed to write file to sandbox: %v", err)
+							continue
+						}
+						
+						// Add note about saved file
+						fileAttachmentNotes = append(fileAttachmentNotes, fmt.Sprintf("Saved attachment: %s", relPath))
+					}
 				}
 			}
+		}
+
+		// Construct the message text with file attachment notes
+		messageText := m.Content
+		if len(fileAttachmentNotes) > 0 {
+			notes := strings.Join(fileAttachmentNotes, "\n")
+			messageText = fmt.Sprintf("%s\n\n%s", messageText, notes)
 		}
 
 		msg := gateway.Message{
 			Gateway:     "discord",
 			ExternalID:  m.Author.ID,
-			Text:        m.Content,
+			Text:        messageText,
 			DisplayName: displayName,
 			GroupID:     groupID,
 			IsGroup:     isGroup,
@@ -214,4 +258,76 @@ func downloadImage(ctx context.Context, url string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+// downloadFile downloads file data from a URL.
+func downloadFile(ctx context.Context, url string, maxSize int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	// Set a User-Agent header to avoid being blocked by some servers
+	req.Header.Set("User-Agent", "FamClaw/1.0")
+
+	// Use a client with timeout to avoid hanging
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("downloading file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("file download failed with status: %d", resp.StatusCode)
+	}
+
+	// Read the file data
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading file data: %w", err)
+	}
+
+	// Validate file size
+	if int64(len(data)) > maxSize {
+		return nil, fmt.Errorf("file size %d exceeds %d byte limit", len(data), maxSize)
+	}
+
+	return data, nil
+}
+
+// writeAttachmentToFile writes attachment data to a file in the sandbox root.
+// Returns the relative path to the file in the sandbox.
+func writeAttachmentToFile(ctx context.Context, sandboxRoot string, fileName string, data []byte) (string, error) {
+	// Sanitize filename to prevent path traversal and invalid characters
+	sanitizedFileName := filepath.Clean(fileName)
+	
+	// Ensure we're not trying to escape the sandbox root
+	if strings.HasPrefix(sanitizedFileName, "..") {
+		sanitizedFileName = filepath.Base(sanitizedFileName) // Fallback to basename
+	}
+	
+	// Create full path in sandbox
+	fullPath := filepath.Join(sandboxRoot, sanitizedFileName)
+	
+	// Ensure the directory exists
+	dir := filepath.Dir(fullPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("creating directory for attachment: %w", err)
+	}
+	
+	// Write file to sandbox
+	if err := os.WriteFile(fullPath, data, 0o600); err != nil {
+		return "", fmt.Errorf("writing attachment to sandbox: %w", err)
+	}
+	
+	// Return relative path within sandbox
+	relPath, err := filepath.Rel(sandboxRoot, fullPath)
+	if err != nil {
+		return "", fmt.Errorf("calculating relative path: %w", err)
+	}
+	
+	return relPath, nil
 }
