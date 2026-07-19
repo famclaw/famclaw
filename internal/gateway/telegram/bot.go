@@ -5,9 +5,12 @@ package telegram
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"log"
 	"net/http"
@@ -17,10 +20,12 @@ import (
 
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/notify"
-	"github.com/famclaw/famclaw/internal/imageutil"
+	"golang.org/x/image/draw"
 )
+
 const maxImageBytes = 5 * 1024 * 1024 // 5MB cap (RPi-friendly)
-const maxImageDimension = 1280 // Maximum dimension in pixels (preserve aspect ratio)
+const maxImageWidth = 1280            // Maximum width in pixels (preserve aspect ratio)
+const maxImageHeight = 720            // Maximum height in pixels (preserve aspect ratio)
 // Bot is a Telegram gateway using the Bot API with long-polling.
 type Bot struct {
 	token    string
@@ -77,7 +82,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			if u.Message.Photo != nil && len(u.Message.Photo) > 0 {
 				// Get the largest photo (last one in the array)
 				photoSize := u.Message.Photo[len(u.Message.Photo)-1]
-				
+
 				// Download the photo file
 				fileInfo, err := b.getFile(ctx, photoSize.FileID)
 				if err != nil {
@@ -89,10 +94,10 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 						log.Printf("[telegram] failed to download file: %v", err)
 					} else {
 						// Resize image if needed
-						resizedData, err := imageutil.ResizeImage(origData, maxImageDimension)
+						resizedData, err := resizeImageToConstraints(origData)
 						if err != nil {
 							log.Printf("[telegram] failed to resize image: %v", err)
-							photoData = nil
+							photoData = origData
 						} else {
 							// Check if we actually resized
 							if len(resizedData) != len(origData) || !bytes.Equal(resizedData, origData) {
@@ -111,8 +116,8 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 					}
 					// Check the size after potential resize
 					if len(photoData) > maxImageBytes {
-						log.Printf("[telegram] image %d bytes exceeds %d cap, skipping", len(photoData), maxImageBytes)
-						photoData = nil
+						log.Printf("[telegram] image %d bytes exceeds %d cap, falling back to original", len(photoData), maxImageBytes)
+						photoData = origData
 					}
 				}
 			}
@@ -125,7 +130,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 					MIMEType: mimeType,
 				}}
 			}
-			
+
 			// Group info (moved after photo processing to maintain variable scope)
 			isGroup := u.Message.Chat.Type == "group" || u.Message.Chat.Type == "supergroup" || u.Message.Chat.Type == "channel"
 			groupID := ""
@@ -218,9 +223,9 @@ type tgUpdate struct {
 }
 
 type tgMessage struct {
-	Chat tgChat `json:"chat"`
-	From tgUser `json:"from"`
-	Text string `json:"text"`
+	Chat  tgChat    `json:"chat"`
+	From  tgUser    `json:"from"`
+	Text  string    `json:"text"`
 	Photo []tgPhoto `json:"photo,omitempty"`
 }
 
@@ -235,6 +240,7 @@ type tgUser struct {
 	LastName  string `json:"last_name,omitempty"`
 	Username  string `json:"username,omitempty"`
 }
+
 // tgPhoto represents a photo size.
 type tgPhoto struct {
 	FileID       string `json:"file_id"`
@@ -345,6 +351,7 @@ func (b *Bot) sendChatAction(ctx context.Context, chatID int64, action string) e
 	resp.Body.Close()
 	return nil
 }
+
 // getFile retrieves file information from the Telegram Bot API.
 func (b *Bot) getFile(ctx context.Context, fileID string) (*tgFile, error) {
 	u := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", b.endpoint, b.token, fileID)
@@ -361,7 +368,7 @@ func (b *Bot) getFile(ctx context.Context, fileID string) (*tgFile, error) {
 	defer resp.Body.Close()
 
 	var body []byte
-	
+
 	if resp.StatusCode != http.StatusOK {
 		body, err = io.ReadAll(resp.Body)
 		if err != nil {
@@ -371,8 +378,8 @@ func (b *Bot) getFile(ctx context.Context, fileID string) (*tgFile, error) {
 	}
 
 	var result struct {
-		OK     bool     `json:"ok"`
-		Result *tgFile  `json:"result"`
+		OK     bool    `json:"ok"`
+		Result *tgFile `json:"result"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("parsing getFile response: %w", err)
@@ -410,8 +417,90 @@ func (b *Bot) downloadFile(ctx context.Context, filePath string) ([]byte, error)
 
 // tgFile represents a file ready for download from Telegram.
 type tgFile struct {
-	FileID     string `json:"file_id"`
+	FileID       string `json:"file_id"`
 	FileUniqueID string `json:"file_unique_id"`
-	FileSize   int    `json:"file_size,omitempty"`
-	FilePath   string `json:"file_path"`
+	FileSize     int    `json:"file_size,omitempty"`
+	FilePath     string `json:"file_path"`
+}
+
+// resizeImageToConstraints resizes an image to fit within 1280x720 while preserving aspect ratio.
+// Returns the image data in the same format as the input.
+// For unsupported image formats, passes through the original data unchanged.
+func resizeImageToConstraints(imageData []byte) ([]byte, error) {
+	// Try to decode the image to determine if we can process it
+	img, imgFormat, err := image.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		// If we can't decode the image, pass through unchanged
+		return imageData, nil
+	}
+
+	// Check if we support the format - only JPEG and PNG are supported for resizing
+	// Other formats like GIF/WebP will be passed through unchanged
+	if imgFormat != "jpeg" && imgFormat != "png" {
+		// Unsupported format, pass through unchanged
+		return imageData, nil
+	}
+
+	// Get original dimensions
+	bounds := img.Bounds()
+	origWidth := bounds.Dx()
+	origHeight := bounds.Dy()
+
+	// Calculate new dimensions preserving aspect ratio
+	var newWidth, newHeight int
+	if origWidth > maxImageWidth || origHeight > maxImageHeight {
+		// Needs scaling
+		// Calculate scale factors for both dimensions
+		widthScale := float64(maxImageWidth) / float64(origWidth)
+		heightScale := float64(maxImageHeight) / float64(origHeight)
+
+		// Use the smaller scale to ensure both dimensions fit within constraints
+		scale := widthScale
+		if heightScale < widthScale {
+			scale = heightScale
+		}
+
+		// Calculate new dimensions
+		newWidth = int(float64(origWidth) * scale)
+		newHeight = int(float64(origHeight) * scale)
+	} else {
+		// Already within limits
+		newWidth = origWidth
+		newHeight = origHeight
+	}
+
+	// Ensure we don't go below 1 pixel
+	if newWidth < 1 {
+		newWidth = 1
+	}
+	if newHeight < 1 {
+		newHeight = 1
+	}
+
+	var resized image.Image
+	if newWidth == origWidth && newHeight == origHeight {
+		// No scaling needed, use original
+		resized = img
+	} else {
+		// Create a new image with the target dimensions
+		resizedImg := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
+		// Scale the image using Catmull-Rom resampling
+		draw.CatmullRom.Scale(resizedImg, resizedImg.Bounds(), img, img.Bounds(), draw.Over, nil)
+		resized = resizedImg
+	}
+
+	// Encode in the same format as the input
+	var buf bytes.Buffer
+	if imgFormat == "png" {
+		// For PNG, preserve transparency
+		err = png.Encode(&buf, resized)
+	} else {
+		// For JPEG, encode with quality
+		err = jpeg.Encode(&buf, resized, &jpeg.Options{Quality: 85})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("encoding image: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
