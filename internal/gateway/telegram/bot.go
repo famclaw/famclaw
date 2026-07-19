@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"image/png"
 	"io"
 	"log"
 	"net/http"
@@ -96,7 +97,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 						resizedData, err := resizeImageToConstraints(origData)
 						if err != nil {
 							log.Printf("[telegram] failed to resize image: %v", err)
-							photoData = nil
+							photoData = origData
 						} else {
 							// Check if we actually resized
 							if len(resizedData) != len(origData) || !bytes.Equal(resizedData, origData) {
@@ -115,8 +116,8 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 					}
 					// Check the size after potential resize
 					if len(photoData) > maxImageBytes {
-						log.Printf("[telegram] image %d bytes exceeds %d cap, skipping", len(photoData), maxImageBytes)
-						photoData = nil
+						log.Printf("[telegram] image %d bytes exceeds %d cap, falling back to original", len(photoData), maxImageBytes)
+						photoData = origData
 					}
 				}
 			}
@@ -423,7 +424,7 @@ type tgFile struct {
 }
 
 // resizeImageToConstraints resizes an image to fit within 1280x720 while preserving aspect ratio.
-// Returns the image data in JPEG format.
+// Returns the image data in the same format as the input.
 // For unsupported image formats, passes through the original data unchanged.
 func resizeImageToConstraints(imageData []byte) ([]byte, error) {
 	// Try to decode the image to determine if we can process it
@@ -488,9 +489,15 @@ func resizeImageToConstraints(imageData []byte) ([]byte, error) {
 		resized = resizedImg
 	}
 
-	// Encode to JPEG
+	// Encode in the same format as the input
 	var buf bytes.Buffer
-	err = jpeg.Encode(&buf, resized, &jpeg.Options{Quality: 85})
+	if imgFormat == "png" {
+		// For PNG, preserve transparency
+		err = png.Encode(&buf, resized)
+	} else {
+		// For JPEG, encode with quality
+		err = jpeg.Encode(&buf, resized, &jpeg.Options{Quality: 85})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("encoding image: %w", err)
 	}
