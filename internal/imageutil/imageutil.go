@@ -73,3 +73,11 @@ func ResizeImage(imageData []byte, maxDim int) ([]byte, error) {
 
 	return buf.Bytes(), nil
 }
+
+// MaxImageBytes is the maximum size in bytes for an image (5MB).
+const MaxImageBytes = 5 * 1024 * 1024
+
+// IsValidImageMIME checks if a MIME type represents a valid image.
+func IsValidImageMIME(mime string) bool {
+	return mime != "" && (mime == "image/jpeg" || mime == "image/jpg" || mime == "image/png" || mime == "image/gif" || mime == "image/webp")
+}

@@ -3,8 +3,11 @@ package discord
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -12,6 +15,8 @@ import (
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/notify"
 )
+
+const maxImageBytes = 5 * 1024 * 1024 // 5MB cap (RPi-friendly)
 
 // Bot is a Discord gateway.
 type Bot struct {
@@ -52,6 +57,37 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 		if isGroup {
 			groupID = m.ChannelID
 		}
+
+		// Process image attachments
+		var attachments []gateway.Attachment
+		if len(m.Message.Attachments) > 0 {
+			attachments = make([]gateway.Attachment, 0)
+			for _, attachment := range m.Message.Attachments {
+				// Check if it's an image attachment
+				if strings.HasPrefix(attachment.ContentType, "image/") {
+					// Validate size (5MB limit)
+					if attachment.Size > maxImageBytes {
+						log.Printf("[discord] image %d bytes exceeds %d cap, skipping", attachment.Size, maxImageBytes)
+						continue
+					}
+
+					// Download image data
+					imageData, err := downloadImage(attachment.URL)
+					if err != nil {
+						log.Printf("[discord] failed to download image: %v", err)
+						continue
+					}
+
+					// Base64 encode and add to attachments
+					attachments = append(attachments, gateway.Attachment{
+						Type:     "image",
+						Data:     base64.StdEncoding.EncodeToString(imageData),
+						MIMEType: attachment.ContentType,
+					})
+				}
+			}
+		}
+
 		msg := gateway.Message{
 			Gateway:     "discord",
 			ExternalID:  m.Author.ID,
@@ -59,6 +95,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			DisplayName: displayName,
 			GroupID:     groupID,
 			IsGroup:     isGroup,
+			Attachments: attachments,
 		}
 
 		// Typing indicator. Discord's typing state expires after ~10s, so
@@ -134,4 +171,19 @@ func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
 		}
 	}
 	return nil
+}
+
+// downloadImage downloads image data from a URL.
+func downloadImage(url string) ([]byte, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("downloading image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("image download failed with status: %d", resp.StatusCode)
+	}
+
+	return io.ReadAll(resp.Body)
 }
