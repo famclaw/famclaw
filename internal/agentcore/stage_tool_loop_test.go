@@ -10,14 +10,10 @@ import (
 
 func TestStageToolLoop(t *testing.T) {
 	tests := []struct {
-		name string
-		// initial turn state before the tool loop
-		initialTurn Turn
-		// the LLM response to return when ChatWithTools is called
-		llmResponse llm.Message
-		// expected turn.Output after the tool loop
-		expectedOutput string
-		// whether we expect any tool calls to have been made
+		name            string
+		initialTurn     Turn
+		llmResponse     llm.Message
+		expectedOutput  string
 		expectToolCalls bool
 	}{
 		{
@@ -27,9 +23,7 @@ func TestStageToolLoop(t *testing.T) {
 					Name:  "testuser",
 					Role:  "child",
 				},
-				Input: "Please save this file: hello.txt",
-				// Set the initial output to the LLM's reply so that if there are no tool calls,
-				// the output remains as the LLM's reply.
+				Input:  "Please save this file: hello.txt",
 				Output: "I will save the file now.",
 			},
 			llmResponse: llm.Message{
@@ -41,15 +35,15 @@ func TestStageToolLoop(t *testing.T) {
 						Function: llm.ToolCallFunction{
 							Name: "builtin__file_write",
 							Arguments: llm.ToolCallArguments(map[string]any{
-								"path":   "hello.txt",
+								"path":    "hello.txt",
 								"content": "Hello, World!",
 							}),
 						},
 					},
 				},
 			},
-			expectedOutput: "I have successfully used the builtin__file_write tool. ",
-			expectToolCalls:  true,
+			expectedOutput:  "I have successfully used the builtin__file_write tool. ",
+			expectToolCalls: true,
 		},
 		{
 			name: "hallucinated success with no tool call is neutralized",
@@ -58,17 +52,15 @@ func TestStageToolLoop(t *testing.T) {
 					Name:  "testuser",
 					Role:  "child",
 				},
-				Input: "Please save this file: hello.txt",
-				// Set the initial output to the LLM's reply so that if there are no tool calls,
-				// the output remains as the LLM's reply.
+				Input:  "Please save this file: hello.txt",
 				Output: "Done! I've saved the file.",
 			},
 			llmResponse: llm.Message{
-				Content: "Done! I've saved the file.",
+				Content:   "Done! I've saved the file.",
 				ToolCalls: []llm.ToolCall{}, // no tool calls
 			},
-			expectedOutput: "Done! I've saved the file.", // because no tool calls were made, we use the LLM's reply
-			expectToolCalls:  false,
+			expectedOutput:  "Done! I've saved the file.", // because no tool calls were made, we use the LLM's reply
+			expectToolCalls: false,
 		},
 	}
 

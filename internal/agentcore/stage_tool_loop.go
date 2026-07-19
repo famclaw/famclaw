@@ -205,16 +205,6 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						Content:    fmt.Sprintf("Error: tool %q not available", tc.Function.Name),
 						ToolCallID: tc.ID,
 					})
-				// Reject tools not in the turn's allowlist (prevents
-				// hallucinated/injected calls from bypassing role filtering).
-				// Do not record unavailable tool calls in turn.ToolCalls -
-				// treat them as if the LLM never made the request.
-				if len(turnAllowed) > 0 && !turnAllowed[tc.Function.Name] {
-					llmMsgs = append(llmMsgs, llm.Message{
-						Role:       "tool",
-						Content:    fmt.Sprintf("Error: tool %q not available", tc.Function.Name),
-						ToolCallID: tc.ID,
-					})
 					continue
 				}
 				// OPA tool_policy gate — replaces the older hardcoded keyword
