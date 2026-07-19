@@ -572,6 +572,11 @@ func (c *Config) Validate() error {
 // then renames the temporary file to the target path (atomic on POSIX systems).
 // Note: This rewrites the file and does not preserve comments or custom formatting.
 func (c *Config) Save(path string) error {
+	// Ensure the parent directory exists
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+	
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
