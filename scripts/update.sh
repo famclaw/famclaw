@@ -94,10 +94,10 @@ curl -fsSL "${RELEASE_BASE}/checksums.txt" -o "${TMP}/checksums.txt"
 # ── Verify checksum (goreleaser convention: single checksums.txt with all hashes) ──
 echo "  Verifying checksum..."
 sha_verify() {
-    if [ "$OS" = "darwin" ]; then
-        shasum -a 256 -c
-    else
+    if command -v sha256sum >/dev/null 2>&1; then
         sha256sum -c
+    else
+        shasum -a 256 -c
     fi >/dev/null 2>&1
 }
 (
