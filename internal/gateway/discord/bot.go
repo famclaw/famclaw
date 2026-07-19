@@ -13,10 +13,9 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/famclaw/famclaw/internal/gateway"
+	"github.com/famclaw/famclaw/internal/imageutil"
 	"github.com/famclaw/famclaw/internal/notify"
 )
-
-const maxImageBytes = 5 * 1024 * 1024 // 5MB cap (RPi-friendly)
 
 // Bot is a Discord gateway.
 type Bot struct {
@@ -66,8 +65,8 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				// Check if it's an image attachment
 				if strings.HasPrefix(attachment.ContentType, "image/") {
 					// Validate size (5MB limit)
-					if attachment.Size > maxImageBytes {
-						log.Printf("[discord] image %d bytes exceeds %d cap, skipping", attachment.Size, maxImageBytes)
+					if attachment.Size > imageutil.MaxImageBytes {
+						log.Printf("[discord] image %d bytes exceeds %d cap, skipping", attachment.Size, imageutil.MaxImageBytes)
 						continue
 					}
 
@@ -183,7 +182,10 @@ func downloadImage(ctx context.Context, url string) ([]byte, error) {
 	// Set a User-Agent header to avoid being blocked by some servers
 	req.Header.Set("User-Agent", "FamClaw/1.0")
 
-	client := &http.Client{}
+	// Use a client with timeout to avoid hanging
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("downloading image: %w", err)
@@ -207,9 +209,8 @@ func downloadImage(ctx context.Context, url string) ([]byte, error) {
 	}
 
 	// Validate image size (5MB limit)
-	maxImageBytes := 5 * 1024 * 1024 // 5MB cap
-	if len(data) > maxImageBytes {
-		return nil, fmt.Errorf("image size %d exceeds %d byte limit", len(data), maxImageBytes)
+	if len(data) > imageutil.MaxImageBytes {
+		return nil, fmt.Errorf("image size %d exceeds %d byte limit", len(data), imageutil.MaxImageBytes)
 	}
 
 	return data, nil
