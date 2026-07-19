@@ -205,6 +205,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						Content:    fmt.Sprintf("Error: tool %q not available", tc.Function.Name),
 						ToolCallID: tc.ID,
 					})
+					turn.ToolCalls = append(turn.ToolCalls, ToolResult{ToolName: tc.Function.Name, Args: tc.Function.Arguments, Error: ErrToolBlocked, Duration: time.Since(start)})
 					continue
 				}
 				// OPA tool_policy gate — replaces the older hardcoded keyword
