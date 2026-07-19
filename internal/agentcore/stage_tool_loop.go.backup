@@ -136,9 +136,6 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		// from turn.Output (the pre-loop assistant response); updated at the
 		// end of each iteration after ChatWithTools returns.
 		lastModelText := turn.Output
-		// Track whether the last LLM response had tool calls to determine
-		// whether to use LLM response or tool summary for final output.
-		lastLLMResponseHadToolCalls := false
 		toolCallStartLen := len(turn.ToolCalls)
 
 		// Execute tool calls
@@ -205,18 +202,15 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						Content:    fmt.Sprintf("Error: tool %q not available", tc.Function.Name),
 						ToolCallID: tc.ID,
 					})
-				// Reject tools not in the turn's allowlist (prevents
-				// hallucinated/injected calls from bypassing role filtering).
-				// Do not record unavailable tool calls in turn.ToolCalls -
-				// treat them as if the LLM never made the request.
-				if len(turnAllowed) > 0 && !turnAllowed[tc.Function.Name] {
-					llmMsgs = append(llmMsgs, llm.Message{
-						Role:       "tool",
-						Content:    fmt.Sprintf("Error: tool %q not available", tc.Function.Name),
-						ToolCallID: tc.ID,
+					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
+						ToolName: tc.Function.Name,
+						Args:     tc.Function.Arguments,
+						Error:    fmt.Errorf("tool %q not in turn allowlist", tc.Function.Name),
+						Duration: time.Since(start),
 					})
 					continue
 				}
+
 				// OPA tool_policy gate — replaces the older hardcoded keyword
 				// block. On evaluator error, fail closed and log the cause
 				// internally; never leak raw evaluator error text to the LLM
@@ -422,36 +416,25 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 			pendingCalls = msg.ToolCalls
 			lastModelText = msg.Content
-			lastLLMResponseHadToolCalls = len(msg.ToolCalls) > 0
 
 			if !deps.RebuildHistory && len(pendingCalls) > 0 {
 				llmMsgs = append(llmMsgs, *msg)
 			}
 		}
 
-		// After the tool loop, set turn.Output appropriately.
+		// After the tool loop, set turn.Output based on whether any tool calls were executed.
 		newToolCalls := turn.ToolCalls[toolCallStartLen:]
 		if len(newToolCalls) > 0 {
-			// If the last LLM response had no tool calls (we got a final response),
-			// use the LLM's response rather than a tool completion summary.
-			if !lastLLMResponseHadToolCalls {
-				// We received a final response from the LLM with no tool calls.
-				// Use that as the final output.
-				turn.Output = lastModelText
-			} else {
-				// We exited due to iteration limits or other conditions,
-				// so provide a tool completion summary.
-				// Build a summary from newToolCalls
-				var toolResultSummary strings.Builder
-				for _, tr := range newToolCalls {
-					if tr.Error != nil {
-						toolResultSummary.WriteString(fmt.Sprintf("I attempted to use the %s tool but it failed: %v. ", tr.ToolName, tr.Error))
-					} else {
-						toolResultSummary.WriteString(fmt.Sprintf("I have successfully used the %s tool. ", tr.ToolName))
-					}
+			// Build a summary from newToolCalls
+			var toolResultSummary strings.Builder
+			for _, tr := range newToolCalls {
+				if tr.Error != nil {
+					toolResultSummary.WriteString(fmt.Sprintf("I attempted to use the %s tool but it failed: %v. ", tr.ToolName, tr.Error))
+				} else {
+					toolResultSummary.WriteString(fmt.Sprintf("I have successfully used the %s tool. ", tr.ToolName))
 				}
-				turn.Output = toolResultSummary.String()
 			}
+			turn.Output = toolResultSummary.String()
 		} else {
 			// No tool calls were made in this turn, so we use the LLM's reply from the last iteration.
 			turn.Output = lastModelText
