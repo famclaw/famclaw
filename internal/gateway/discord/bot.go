@@ -72,7 +72,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 					}
 
 					// Download image data
-					imageData, err := downloadImage(attachment.URL)
+					imageData, err := downloadImage(ctx, attachment.URL)
 					if err != nil {
 						log.Printf("[discord] failed to download image: %v", err)
 						continue
@@ -174,8 +174,17 @@ func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
 }
 
 // downloadImage downloads image data from a URL.
-func downloadImage(url string) ([]byte, error) {
-	resp, err := http.Get(url)
+func downloadImage(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	
+	// Set a User-Agent header to avoid being blocked by some servers
+	req.Header.Set("User-Agent", "FamClaw/1.0")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("downloading image: %w", err)
 	}
@@ -185,5 +194,23 @@ func downloadImage(url string) ([]byte, error) {
 		return nil, fmt.Errorf("image download failed with status: %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	// Validate Content-Type is an image
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "image/") {
+		return nil, fmt.Errorf("downloaded file is not an image: %s", contentType)
+	}
+
+	// Read the image data
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading image data: %w", err)
+	}
+
+	// Validate image size (5MB limit)
+	maxImageBytes := 5 * 1024 * 1024 // 5MB cap
+	if len(data) > maxImageBytes {
+		return nil, fmt.Errorf("image size %d exceeds %d byte limit", len(data), maxImageBytes)
+	}
+
+	return data, nil
 }

@@ -192,7 +192,8 @@ func TestDownloadImage(t *testing.T) {
 	defer server.Close()
 
 	// Test successful download
-	data, err := downloadImage(server.URL)
+	ctx := context.Background()
+	data, err := downloadImage(ctx, server.URL)
 	if err != nil {
 		t.Fatalf("downloadImage failed: %v", err)
 	}
@@ -202,7 +203,7 @@ func TestDownloadImage(t *testing.T) {
 	}
 
 	// Test download failure
-	_, err = downloadImage("http://nonexistent.invalid")
+	_, err = downloadImage(ctx, "http://nonexistent.invalid")
 	if err == nil {
 		t.Error("downloadImage should have failed for invalid URL")
 	}
