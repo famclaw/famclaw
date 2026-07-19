@@ -676,7 +676,7 @@ func main() {
 	defer gwCancel()
 
 	// Gateway router
-	router := gateway.NewRouter(gwCtx, cfg, identStore, clf, evaluator, db, notifier, chatFn, reg)
+	router := gateway.NewRouter(gwCtx, cfg, identStore, clf, evaluator, db, notifier, chatFn, reg, *cfgPath)
 
 	// Gateway bots
 	var gateways []gateway.Gateway
