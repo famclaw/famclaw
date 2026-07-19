@@ -432,16 +432,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			} else {
 				// We exited due to iteration limits or other conditions,
 				// so provide a tool completion summary.
-				// Build a summary from newToolCalls
-				var toolResultSummary strings.Builder
-				for _, tr := range newToolCalls {
-					if tr.Error != nil {
-						toolResultSummary.WriteString(fmt.Sprintf("I attempted to use the %s tool but it failed: %v. ", tr.ToolName, tr.Error))
-					} else {
-						toolResultSummary.WriteString(fmt.Sprintf("I have successfully used the %s tool. ", tr.ToolName))
-					}
-				}
-				turn.Output = toolResultSummary.String()
+				turn.Output = lastModelText
 			}
 		} else {
 			// No tool calls were made in this turn, so we use the LLM's reply from the last iteration.
