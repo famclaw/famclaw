@@ -96,8 +96,11 @@ echo "  Verifying checksum..."
 sha_verify() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum -c
-    else
+    elif command -v shasum >/dev/null 2>&1; then
         shasum -a 256 -c
+    else
+        echo "error: no checksum tool available" >&2
+        exit 1
     fi >/dev/null 2>&1
 }
 (
