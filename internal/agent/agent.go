@@ -1384,14 +1384,29 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 		// puts age_8_12 in allowed_roles still has tool_policy denying
 		// web_fetch for that age.) The evaluator is in-memory; using a
 		// background context here is fine.
+		//
+		// However, to prevent over-deflection (where model thinks it can't
+		// use a tool even though it's allowed by role), we need to ensure
+		// that tools that are allowed by role are always advertised in the
+		// capabilities prompt, regardless of policy filtering for this specific
+		// user. This preserves the role-based allowance as a hint to the model.
 		var builtinNames []string
+		roleAllowedNames := make(map[string]bool) // Track tools allowed by role
+		builtinNameSet := make(map[string]bool) // Track what's already in builtinNames for O(1) lookup
 		for _, t := range a.builtinTools {
+			bare := strings.TrimPrefix(t.Name, "builtin__")
+			
+			// Check role allowance first
+			if t.AllowedForRole(a.user.Role) {
+				roleAllowedNames[bare] = true
+			}
+			
+			// Then apply policy filtering for prompt inclusion
 			if !t.AllowedForRole(a.user.Role) {
 				continue
 			}
-			bare := strings.TrimPrefix(t.Name, "builtin__")
 			if a.evaluator != nil {
-				dec, err := a.evaluator.EvaluateToolCall(context.Background(), policy.ToolCallInput{
+				dec, err := a.evaluator.EvaluateToolCall(ctx, policy.ToolCallInput{
 					User:     policy.UserInput{Role: a.user.Role, AgeGroup: a.user.AgeGroup, Name: a.user.Name},
 					ToolName: bare,
 				})
@@ -1400,6 +1415,17 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 				}
 			}
 			builtinNames = append(builtinNames, bare)
+			builtinNameSet[bare] = true
+		}
+		
+		// Ensure that tools allowed by role are included in prompt even if policy
+		// blocks them for this specific user. This prevents over-deflection.
+		// We don't want to duplicate entries, so we check if already included using a set.
+		for roleName, allowed := range roleAllowedNames {
+			if allowed && !builtinNameSet[roleName] {
+				builtinNames = append(builtinNames, roleName)
+				builtinNameSet[roleName] = true
+			}
 		}
 
 		systemPrompt = prompt.Build(prompt.BuildContext{

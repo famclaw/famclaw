@@ -15,12 +15,16 @@ import (
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/filetool"
 	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
+	"github.com/famclaw/famclaw/internal/todo"
+	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/webfetch"
+	"github.com/famclaw/famclaw/internal/websearch"
 	"github.com/famclaw/famclaw/internal/compress"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 )
@@ -1132,5 +1136,186 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 	// We'll just check that it's less than, say, 50 messages (should be much less for 200 history messages with small context).
 	if len(msgs) > 50 {
 		t.Errorf("Number of messages %d seems too large for context window %d", len(msgs), maxContextTokens)
+	}
+}
+
+// TestBuildMessagesRoleBasedToolAdvertisement tests that tools are properly
+// advertised in the system prompt based on role permissions, regardless of
+// policy filtering for specific users. This addresses the over-deflection bug
+// where tools allowed by role were not mentioned in prompts due to policy
+// filtering.
+func TestBuildMessagesRoleBasedToolAdvertisement(t *testing.T) {
+	tests := []struct {
+		name               string
+		userRole           string
+		userAgeGroup       string
+		webSearchEnabled   bool
+		expectedInPrompt   bool // whether web_search should be in the prompt
+		description        string
+	}{
+		{
+			name:               "Child role with web_search enabled",
+			userRole:           "child",
+			userAgeGroup:       "age_13_17",
+			webSearchEnabled:   true,
+			expectedInPrompt:   true,
+			description:       "Child role should see web_search in prompt when enabled",
+		},
+		{
+			name:               "Child role with web_search disabled",
+			userRole:           "child",
+			userAgeGroup:       "age_13_17",
+			webSearchEnabled:   false,
+			expectedInPrompt:   false,
+			description:       "Child role should not see web_search in prompt when disabled",
+		},
+		{
+			name:               "Parent role with web_search enabled",
+			userRole:           "parent",
+			userAgeGroup:       "", // parents don't have age restrictions
+			webSearchEnabled:   true,
+			expectedInPrompt:   true,
+			description:       "Parent role should see web_search in prompt when enabled",
+		},
+		{
+			name:               "Parent role with web_search disabled",
+			userRole:           "parent",
+			userAgeGroup:       "",
+			webSearchEnabled:   false,
+			expectedInPrompt:   false,
+			description:       "Parent role should not see web_search in prompt when disabled",
+		},
+		{
+			name:               "Young child (under_8) with web_search",
+			userRole:           "child",
+			userAgeGroup:       "under_8",
+			webSearchEnabled:   true,
+			expectedInPrompt:   true, // Still advertised in prompt even if policy blocks
+			description:       "Young child should see web_search advertised in prompt (role-based hint)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set up a mock HTTP server to capture LLM calls
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Echo back a simple response
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"choices":[{"message":{"content":"test response"}}]}`))
+			}))
+			defer ts.Close()
+
+			// Create a temporary database
+			db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			// Create policy evaluator
+			ev, err := policy.NewEvaluator("", "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Configure the test scenario
+			cfg := &config.Config{
+				LLM: config.LLMConfig{
+					BaseURL:           ts.URL,
+					Model:             "test",
+					Temperature:       0.7,
+					MaxResponseTokens: 100,
+				},
+				Users: []config.UserConfig{
+					{
+						Name:        "testuser",
+						DisplayName: "Test User",
+						Role:        tt.userRole,
+						AgeGroup:    tt.userAgeGroup,
+					},
+				},
+				Tools: config.ToolsConfig{
+					WebSearch: config.WebSearchConfig{
+						Enabled: tt.webSearchEnabled,
+					},
+				},
+			}
+
+			// Build the builtin tools list based on config (similar to main.go)
+			var builtinTools []agentcore.Tool
+			var registered []string
+			
+			// Start with spawn_agent tool
+			builtinTools = append(builtinTools, subagent.SpawnAgentTool())
+			registered = append(registered, "spawn_agent")
+			
+			// Add web_fetch if enabled
+			if cfg.Tools.WebFetch.Enabled {
+				builtinTools = append(builtinTools, webfetch.Tool(cfg.Tools.WebFetch.AllowedRoles))
+				registered = append(registered, "web_fetch")
+			}
+			
+			// Add family state tools (always available)
+			builtinTools = append(builtinTools, familystate.GetTool(), familystate.ProposeTool())
+			registered = append(registered, "get_family_state", "propose_family_fact")
+			
+			// Add todo tool (always available)
+			builtinTools = append(builtinTools, todo.Tool(nil))
+			registered = append(registered, "todo")
+			
+			// Add user memory tools (always available)
+			builtinTools = append(builtinTools,
+				usermemory.RememberDefinition(),
+				usermemory.RecallDefinition(),
+				usermemory.ForgetDefinition(),
+			)
+			registered = append(registered, "remember_user_memory", "recall_user_memory", "forget_user_memory")
+			
+			// Add web_search if enabled
+			if cfg.Tools.WebSearch.Enabled {
+				builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
+				registered = append(registered, "web_search")
+			}
+			
+			// Add file tools (always available)
+			builtinTools = append(builtinTools,
+				filetool.FileReadTool(),
+				filetool.FileWriteTool(),
+				filetool.FileStatTool(),
+				filetool.FileListTool(),
+			)
+			registered = append(registered, "file_read", "file_write", "file_stat", "file_list")
+			
+			// Create agent with the proper builtin tools
+			a := NewAgent(&cfg.Users[0], cfg, nil, ev, nil, db, AgentDeps{
+				BuiltinTools: builtinTools,
+				// We don't need most dependencies for this test
+			})
+
+			// Build messages
+			msgs := a.buildMessages(context.Background(), nil, "test message")
+			if len(msgs) == 0 {
+				t.Fatal("No messages returned")
+			}
+
+			// Check system prompt (first message)
+			if msgs[0].Role != "system" {
+				t.Fatalf("First message should be system prompt, got %s", msgs[0].Role)
+			}
+
+			systemPrompt := msgs[0].Content
+			hasWebSearch := strings.Contains(systemPrompt, "web_search")
+
+			if hasWebSearch != tt.expectedInPrompt {
+				t.Fatalf("Expected web_search in prompt: %v, but got: %v. Prompt: %s",
+					tt.expectedInPrompt, hasWebSearch, systemPrompt)
+			}
+
+			if tt.expectedInPrompt {
+				t.Logf("✓ web_search correctly advertised in prompt for %s (%s)", tt.userRole, tt.userAgeGroup)
+			} else {
+				t.Logf("✓ web_search correctly NOT advertised in prompt for %s (%s)", tt.userRole, tt.userAgeGroup)
+			}
+		})
 	}
 }
