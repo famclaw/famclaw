@@ -136,6 +136,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		// from turn.Output (the pre-loop assistant response); updated at the
 		// end of each iteration after ChatWithTools returns.
 		lastModelText := turn.Output
+		toolCallStartLen := len(turn.ToolCalls)
 
 		// Execute tool calls
 		for i := 0; i < deps.MaxIterations; i++ {
@@ -413,7 +414,6 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				return fmt.Errorf("LLM error in tool loop iteration %d: %w", i+1, err)
 			}
 
-			turn.Output = msg.Content
 			pendingCalls = msg.ToolCalls
 			lastModelText = msg.Content
 
@@ -422,6 +422,23 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			}
 		}
 
+		// After the tool loop, set turn.Output based on whether any tool calls were executed.
+		newToolCalls := turn.ToolCalls[toolCallStartLen:]
+		if len(newToolCalls) > 0 {
+			// Build a summary from newToolCalls
+			var toolResultSummary strings.Builder
+			for _, tr := range newToolCalls {
+				if tr.Error != nil {
+					toolResultSummary.WriteString(fmt.Sprintf("I attempted to use the %s tool but it failed: %v. ", tr.ToolName, tr.Error))
+				} else {
+					toolResultSummary.WriteString(fmt.Sprintf("I have successfully used the %s tool. ", tr.ToolName))
+				}
+			}
+			turn.Output = toolResultSummary.String()
+		} else {
+			// No tool calls were made in this turn, so we use the LLM's reply from the last iteration.
+			turn.Output = lastModelText
+		}
 		return nil
 	}
 }
