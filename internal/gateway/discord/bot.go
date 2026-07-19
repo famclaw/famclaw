@@ -3,13 +3,17 @@ package discord
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/famclaw/famclaw/internal/gateway"
+	"github.com/famclaw/famclaw/internal/imageutil"
 	"github.com/famclaw/famclaw/internal/notify"
 )
 
@@ -52,6 +56,37 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 		if isGroup {
 			groupID = m.ChannelID
 		}
+
+		// Process image attachments
+		var attachments []gateway.Attachment
+		if len(m.Message.Attachments) > 0 {
+			attachments = make([]gateway.Attachment, 0)
+			for _, attachment := range m.Message.Attachments {
+				// Check if it's an image attachment
+				if strings.HasPrefix(attachment.ContentType, "image/") {
+					// Validate size (5MB limit)
+					if attachment.Size > imageutil.MaxImageBytes {
+						log.Printf("[discord] image %d bytes exceeds %d cap, skipping", attachment.Size, imageutil.MaxImageBytes)
+						continue
+					}
+
+					// Download image data
+					imageData, err := downloadImage(ctx, attachment.URL)
+					if err != nil {
+						log.Printf("[discord] failed to download image: %v", err)
+						continue
+					}
+
+					// Base64 encode and add to attachments
+					attachments = append(attachments, gateway.Attachment{
+						Type:     "image",
+						Data:     base64.StdEncoding.EncodeToString(imageData),
+						MIMEType: attachment.ContentType,
+					})
+				}
+			}
+		}
+
 		msg := gateway.Message{
 			Gateway:     "discord",
 			ExternalID:  m.Author.ID,
@@ -59,6 +94,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			DisplayName: displayName,
 			GroupID:     groupID,
 			IsGroup:     isGroup,
+			Attachments: attachments,
 		}
 
 		// Typing indicator. Discord's typing state expires after ~10s, so
@@ -134,4 +170,48 @@ func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
 		}
 	}
 	return nil
+}
+
+// downloadImage downloads image data from a URL.
+func downloadImage(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	// Set a User-Agent header to avoid being blocked by some servers
+	req.Header.Set("User-Agent", "FamClaw/1.0")
+
+	// Use a client with timeout to avoid hanging
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("downloading image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("image download failed with status: %d", resp.StatusCode)
+	}
+
+	// Validate Content-Type is an image
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "image/") {
+		return nil, fmt.Errorf("downloaded file is not an image: %s", contentType)
+	}
+
+	// Read the image data
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading image data: %w", err)
+	}
+
+	// Validate image size (5MB limit)
+	if len(data) > imageutil.MaxImageBytes {
+		return nil, fmt.Errorf("image size %d exceeds %d byte limit", len(data), imageutil.MaxImageBytes)
+	}
+
+	return data, nil
 }
