@@ -424,11 +424,20 @@ type tgFile struct {
 
 // resizeImageToConstraints resizes an image to fit within 1280x720 while preserving aspect ratio.
 // Returns the image data in JPEG format.
+// For unsupported image formats, passes through the original data unchanged.
 func resizeImageToConstraints(imageData []byte) ([]byte, error) {
-	// Parse the original image
-	img, _, err := image.Decode(bytes.NewReader(imageData))
+	// Try to decode the image to determine if we can process it
+	img, imgFormat, err := image.Decode(bytes.NewReader(imageData))
 	if err != nil {
-		return nil, fmt.Errorf("decoding image: %w", err)
+		// If we can't decode the image, pass through unchanged
+		return imageData, nil
+	}
+
+	// Check if we support the format - only JPEG and PNG are supported for resizing
+	// Other formats like GIF/WebP will be passed through unchanged
+	if imgFormat != "jpeg" && imgFormat != "png" {
+		// Unsupported format, pass through unchanged
+		return imageData, nil
 	}
 
 	// Get original dimensions
