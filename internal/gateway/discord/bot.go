@@ -366,7 +366,7 @@ func writeAttachmentToFile(ctx context.Context, sandboxRoot string, fileName str
 	if strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("attachment filename attempts to escape sandbox: %q", fileName)
 	}
-	// Ensure the directory exists
+	// Ensure the sandbox directory (parent of file) exists with secure permissions before writing
 	dir := filepath.Dir(absTarget)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating directory for attachment: %w", err)
