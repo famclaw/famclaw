@@ -19,10 +19,40 @@ import (
 	"github.com/famclaw/famclaw/internal/notify"
 )
 
+// mimeToExtensions maps MIME types to allowed file extensions.
+var mimeToExtensions = map[string][]string{
+	"image/jpeg":      {`.jpg`, `.jpeg`},
+	"image/jpg":       {`.jpg`, `.jpeg`},
+	"image/png":       {`.png`},
+	"image/gif":       {`.gif`},
+	"image/webp":      {`.webp`},
+	"text/plain":      {`.txt`},
+	"application/pdf": {`.pdf`},
+	"application/zip": {`.zip`},
+	// Add more as needed
+}
+
+// validateMIMEExtension checks that the file extension matches the MIME type.
+func validateMIMEExtension(mimeType string, fileName string) error {
+	exts, ok := mimeToExtensions[mimeType]
+	if !ok {
+		// If we don't know the MIME type, we cannot validate.
+		// For security, we treat unknown MIME types as invalid.
+		return fmt.Errorf("unsupported MIME type: %s", mimeType)
+	}
+	ext := strings.ToLower(filepath.Ext(fileName))
+	for _, allowed := range exts {
+		if ext == allowed {
+			return nil
+		}
+	}
+	return fmt.Errorf("file extension %q does not match MIME type %s (allowed extensions: %v)", ext, mimeType, exts)
+}
+
 // Bot is a Discord gateway.
 type Bot struct {
-	token   string
-	session *discordgo.Session
+	token       string
+	session     *discordgo.Session
 	sandboxRoot string
 }
 
@@ -95,7 +125,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 				} else {
 					// Handle non-image attachments (files)
 					// Only process files under 100MB (reasonable limit)
-					const maxFileSize = 100 * 1024 * 1024 // 100MB
+					const maxFileSize = 25 * 1024 * 1024 // 25MB
 					if attachment.Size > maxFileSize {
 						log.Printf("[discord] file %d bytes exceeds %d cap, skipping", attachment.Size, maxFileSize)
 						continue
@@ -108,6 +138,12 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 						continue
 					}
 
+					// Validate MIME type and extension consistency
+					if err := validateMIMEExtension(attachment.ContentType, attachment.Filename); err != nil {
+						log.Printf("[discord] attachment MIME-extension mismatch: %v", err)
+						continue
+					}
+
 					// Write file to sandbox if sandbox is configured
 					if b.sandboxRoot != "" {
 						// Write to sandbox
@@ -116,7 +152,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 							log.Printf("[discord] failed to write file to sandbox: %v", err)
 							continue
 						}
-						
+
 						// Add note about saved file
 						fileAttachmentNotes = append(fileAttachmentNotes, fmt.Sprintf("Saved attachment: %s", relPath))
 					}
@@ -125,11 +161,15 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 		}
 
 		// Construct the message text with file attachment notes
-		messageText := m.Content
-		if len(fileAttachmentNotes) > 0 {
-			notes := strings.Join(fileAttachmentNotes, "\n")
-			messageText = fmt.Sprintf("%s\n\n%s", messageText, notes)
+		var parts []string
+		var messageText string
+		if m.Content != "" {
+			parts = append(parts, m.Content)
 		}
+		if len(fileAttachmentNotes) > 0 {
+			parts = append(parts, strings.Join(fileAttachmentNotes, "\n"))
+		}
+		messageText = strings.Join(parts, "\n\n")
 
 		msg := gateway.Message{
 			Gateway:     "discord",
@@ -303,31 +343,31 @@ func downloadFile(ctx context.Context, url string, maxSize int64) ([]byte, error
 func writeAttachmentToFile(ctx context.Context, sandboxRoot string, fileName string, data []byte) (string, error) {
 	// Sanitize filename to prevent path traversal and invalid characters
 	sanitizedFileName := filepath.Clean(fileName)
-	
+
 	// Ensure we're not trying to escape the sandbox root
 	if strings.HasPrefix(sanitizedFileName, "..") {
 		sanitizedFileName = filepath.Base(sanitizedFileName) // Fallback to basename
 	}
-	
+
 	// Create full path in sandbox
 	fullPath := filepath.Join(sandboxRoot, sanitizedFileName)
-	
+
 	// Ensure the directory exists
 	dir := filepath.Dir(fullPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating directory for attachment: %w", err)
 	}
-	
+
 	// Write file to sandbox
 	if err := os.WriteFile(fullPath, data, 0o600); err != nil {
 		return "", fmt.Errorf("writing attachment to sandbox: %w", err)
 	}
-	
+
 	// Return relative path within sandbox
 	relPath, err := filepath.Rel(sandboxRoot, fullPath)
 	if err != nil {
 		return "", fmt.Errorf("calculating relative path: %w", err)
 	}
-	
+
 	return relPath, nil
 }

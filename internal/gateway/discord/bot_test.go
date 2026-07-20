@@ -109,3 +109,24 @@ func ExampleNewWithSandbox() {
 	fmt.Println(bot.Name())
 	// Output: discord
 }
+
+func TestValidateMIMEExtension(t *testing.T) {
+	// Test matching MIME type and extension
+	assert.NoError(t, validateMIMEExtension("image/jpeg", "test.jpg"))
+	assert.NoError(t, validateMIMEExtension("image/jpeg", "test.jpeg"))
+	assert.NoError(t, validateMIMEExtension("image/png", "test.png"))
+	assert.NoError(t, validateMIMEExtension("image/gif", "test.gif"))
+	assert.NoError(t, validateMIMEExtension("image/webp", "test.webp"))
+	assert.NoError(t, validateMIMEExtension("text/plain", "test.txt"))
+	assert.NoError(t, validateMIMEExtension("application/pdf", "test.pdf"))
+	assert.NoError(t, validateMIMEExtension("application/zip", "test.zip"))
+
+	// Test mismatched extension
+	assert.Error(t, validateMIMEExtension("image/jpeg", "test.png"))
+	assert.Error(t, validateMIMEExtension("image/png", "test.jpg"))
+	assert.Error(t, validateMIMEExtension("text/plain", "test.pdf"))
+
+	// Test unsupported MIME type
+	assert.Error(t, validateMIMEExtension("application/octet-stream", "test.bin"))
+	assert.Error(t, validateMIMEExtension("unknown/type", "test.xyz"))
+}
