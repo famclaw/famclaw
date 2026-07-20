@@ -421,6 +421,18 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				llmMsgs = append(llmMsgs, *msg)
 			}
 		}
+		// Neutralize false success claims: if no tool succeeded this turn but the output
+		// claims success, append a correction.
+		var anySuccess bool
+		for _, tr := range turn.ToolCalls {
+			if tr.Error == nil {
+				anySuccess = true
+				break
+			}
+		}
+		if len(turn.ToolCalls) > 0 && !anySuccess && outputClaimsSuccess(turn.Output) {
+			turn.Output += "\n\n(Note: no action was actually performed — the tool was not run.)"
+		}
 
 		return nil
 	}
@@ -515,4 +527,27 @@ func rebuildResultLine(tr ToolResult) string {
 // the line-per-result contract of the rebuilt prompt block.
 func sanitizeHistoryText(s string) string {
 	return strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(s)
+}
+
+func outputClaimsSuccess(output string) bool {
+	// Convert to lowercase for case-insensitive matching
+	outputLower := strings.ToLower(output)
+	// Trim spaces
+	outputLower = strings.TrimSpace(outputLower)
+	// List of phrases that indicate success
+	successPhrases := []string{
+		"done",
+		"success",
+		"completed",
+		"finished",
+		"saved",
+		"all set",
+		"ready",
+	}
+	for _, phrase := range successPhrases {
+		if strings.Contains(outputLower, phrase) {
+			return true
+		}
+	}
+	return false
 }
