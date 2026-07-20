@@ -402,6 +402,14 @@ func TestHandleWebFetch(t *testing.T) {
 			wantOutSub: "ok",
 			wantCalled: true,
 		},
+	{
+		name:       "empty response returns error",
+		allowlist:  []string{"example.com"},
+		args:       map[string]any{"url": "https://example.com/x"},
+		fetcherRes: &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/plain", Text: ""},
+		wantErrSub: "web_fetch got an empty response from https://example.com/x (HTTP 200); the page returned no readable text",
+		wantCalled:  true,
+	},
 		{
 			name:       "empty allowlist denied (SSRF guard)",
 			allowlist:  nil,
