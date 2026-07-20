@@ -955,11 +955,14 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	result, err := a.webFetcher(ctx, rawURL, opts)
 	if err != nil {
 		log.Printf("[agent][%s] web_fetch url=%q err=%v", a.user.Name, rawURL, err)
-		return "", err
+		return "", fmt.Errorf("web_fetch failed for %s: %v", rawURL, err)
 	}
 	if result != nil {
 		log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v",
 			a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+		if strings.TrimSpace(result.Text) == "" {
+			return "", fmt.Errorf("web_fetch got an empty response from %s (HTTP %d); the page returned no readable text", rawURL, result.StatusCode)
+		}
 	}
 
 	// Spillover: when the cache is configured, payloads larger than the
