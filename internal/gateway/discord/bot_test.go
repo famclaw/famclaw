@@ -87,10 +87,11 @@ func TestWriteAttachmentToFileWithSubdir(t *testing.T) {
 	testContent := "Test file content"
 	filePath, err := writeAttachmentToFile(ctx, tempDir, "subdir/test.txt", []byte(testContent))
 	assert.NoError(t, err)
-	assert.Equal(t, "subdir/test.txt", filePath)
+	// Expect base name because writeAttachmentToFile strips directory parts for security
+	assert.Equal(t, "test.txt", filePath)
 
-	// Verify the file was written correctly
-	content, err := os.ReadFile(filepath.Join(tempDir, "subdir", "test.txt"))
+	// Verify the file was written correctly in the sandbox root
+	content, err := os.ReadFile(filepath.Join(tempDir, "test.txt"))
 	assert.NoError(t, err)
 	assert.Equal(t, testContent, string(content))
 }
@@ -129,4 +130,36 @@ func TestValidateMIMEExtension(t *testing.T) {
 	// Test unsupported MIME type
 	assert.Error(t, validateMIMEExtension("application/octet-stream", "test.bin"))
 	assert.Error(t, validateMIMEExtension("unknown/type", "test.xyz"))
+}
+
+func TestWriteAttachmentToFilePathTraversalRejected(t *testing.T) {
+	// Create a temporary directory for testing
+	tempDir, err := os.MkdirTemp("", "test_sandbox")
+	assert.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	ctx := context.Background()
+	testContent := "Test file content"
+
+	// Test case 1: relative path with traversal
+	filePath, err := writeAttachmentToFile(ctx, tempDir, "../../etc/passwd", []byte(testContent))
+	assert.NoError(t, err) // because we expect it to be contained
+	assert.Equal(t, "passwd", filePath)
+	// Verify file exists in sandbox
+	content, err := os.ReadFile(filepath.Join(tempDir, "passwd"))
+	assert.NoError(t, err)
+	assert.Equal(t, testContent, string(content))
+
+	// Test case 2: absolute path
+	filePath, err = writeAttachmentToFile(ctx, tempDir, "/etc/passwd", []byte(testContent))
+	assert.NoError(t, err)
+	assert.Equal(t, "passwd", filePath)
+	content, err = os.ReadFile(filepath.Join(tempDir, "passwd"))
+	assert.NoError(t, err)
+	assert.Equal(t, testContent, string(content))
+
+	// Test case 3: just ".."
+	_, err = writeAttachmentToFile(ctx, tempDir, "..", []byte(testContent))
+	assert.Error(t, err)
+	// No file should have been written; we rely on the error above.
 }

@@ -341,33 +341,44 @@ func downloadFile(ctx context.Context, url string, maxSize int64) ([]byte, error
 // writeAttachmentToFile writes attachment data to a file in the sandbox root.
 // Returns the relative path to the file in the sandbox.
 func writeAttachmentToFile(ctx context.Context, sandboxRoot string, fileName string, data []byte) (string, error) {
-	// Sanitize filename to prevent path traversal and invalid characters
-	sanitizedFileName := filepath.Clean(fileName)
-
-	// Ensure we're not trying to escape the sandbox root
-	if strings.HasPrefix(sanitizedFileName, "..") {
-		sanitizedFileName = filepath.Base(sanitizedFileName) // Fallback to basename
+	// Reduce filename to its base component to prevent path traversal
+	name := filepath.Base(fileName)
+	// Reject empty/dot names
+	if name == "" || name == "." || name == ".." {
+		return "", fmt.Errorf("invalid attachment filename: %q", fileName)
 	}
-
-	// Create full path in sandbox
-	fullPath := filepath.Join(sandboxRoot, sanitizedFileName)
-
+	// Build target path inside sandbox
+	target := filepath.Join(sandboxRoot, name)
+	target = filepath.Clean(target)
+	// Verify target is inside sandboxRoot (no path traversal)
+	absSandbox, err := filepath.Abs(sandboxRoot)
+	if err != nil {
+		return "", fmt.Errorf("getting absolute sandbox path: %w", err)
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return "", fmt.Errorf("getting absolute target path: %w", err)
+	}
+	rel, err := filepath.Rel(absSandbox, absTarget)
+	if err != nil {
+		return "", fmt.Errorf("getting relative path: %w", err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("attachment filename attempts to escape sandbox: %q", fileName)
+	}
 	// Ensure the directory exists
-	dir := filepath.Dir(fullPath)
+	dir := filepath.Dir(absTarget)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating directory for attachment: %w", err)
 	}
-
 	// Write file to sandbox
-	if err := os.WriteFile(fullPath, data, 0o600); err != nil {
+	if err := os.WriteFile(absTarget, data, 0o600); err != nil {
 		return "", fmt.Errorf("writing attachment to sandbox: %w", err)
 	}
-
 	// Return relative path within sandbox
-	relPath, err := filepath.Rel(sandboxRoot, fullPath)
+	relPath, err := filepath.Rel(sandboxRoot, absTarget)
 	if err != nil {
 		return "", fmt.Errorf("calculating relative path: %w", err)
 	}
-
 	return relPath, nil
 }
