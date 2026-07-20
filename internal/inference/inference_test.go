@@ -8,8 +8,8 @@ import (
 )
 
 func TestSidecarBaseURL(t *testing.T) {
-	s := NewSidecar(SidecarConfig{Port: 8081})
-	if s.BaseURL() != "http://example-host:8081/v1" {
+	s := NewSidecar(SidecarConfig{Port: 9000})
+	if s.BaseURL() != "http://localhost:9000/v1" {
 		t.Errorf("BaseURL = %q", s.BaseURL())
 	}
 }
