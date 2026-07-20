@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 )
 
-// TestChunkMessage was drafted by qwen3:14b (think:false), reviewed and
+// TestChunkMessage was drafted by a small-context model (think:false), reviewed and
 // finalized by hand. Cases trace cleanly:
 //   - "split on newlines": 500×"line\n" (2500 bytes), maxLen=2000.
 //     First iteration finds '\n' at byte 1999 (end of the 400th "line\n"),

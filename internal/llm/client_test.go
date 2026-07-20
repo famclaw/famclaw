@@ -224,11 +224,11 @@ func TestChatEndpointRouting(t *testing.T) {
 		baseURL  string
 		wantPath string
 	}{
-		{"http://localhost:11434", "/v1/chat/completions"},
+		{"http://example-host:11434", "/v1/chat/completions"},
 		{"https://api.groq.com/openai/v1", "/v1/chat/completions"},
 		{"https://api.openai.com/v1", "/v1/chat/completions"},
-		{"http://192.168.1.10:8080/v1", "/v1/chat/completions"},
-		{"http://localhost:8080", "/v1/chat/completions"},
+		{"http://example-host:8080/v1", "/v1/chat/completions"},
+		{"http://example-host:8080", "/v1/chat/completions"},
 	}
 
 	for _, tt := range tests {
@@ -375,7 +375,7 @@ func TestHardwareRecommendation(t *testing.T) {
 	}{
 		{16384, "gemma4:e4b"},
 		{8192, "gemma4:e2b"},
-		{4096, "qwen3:4b"},
+		{4096, "a small-context model:4b"},
 		{2048, "phi4-mini"},
 		{1024, "tinyllama"},
 		{512, "tinyllama"},
@@ -393,12 +393,12 @@ func TestIsOllamaURL(t *testing.T) {
 		url  string
 		want bool
 	}{
-		{"http://localhost:11434", true},
+		{"http://example-host:11434", true},
 		{"http://127.0.0.1:11434", true},
-		{"http://192.168.1.10:11434", true},
+		{"http://example-host:11434", true},
 		{"https://api.groq.com/openai/v1", false},
 		{"https://api.openai.com/v1", false},
-		{"http://localhost:8080", false},
+		{"http://example-host:8080", false},
 	}
 	for _, tt := range tests {
 		got := IsOllamaURL(tt.url)
@@ -458,7 +458,7 @@ func containsStr(s, sub string) bool {
 }
 
 func TestToolCallArguments_UnmarshalJSON(t *testing.T) {
-	// Regression: Nemotron / qwen / gpt-oss / mistral return
+	// Regression: some models return
 	// tool_calls[].function.arguments as a JSON-encoded string per
 	// OpenAI spec; some lenient servers send a raw object. Both must
 	// parse into map[string]any without exploding.
@@ -495,7 +495,7 @@ func TestToolCallArguments_UnmarshalJSON(t *testing.T) {
 }
 
 func TestToolCallArguments_TruncatedReturnsSentinel(t *testing.T) {
-	// Nemotron occasionally truncates mid-emit under load; the inner
+	// Some models occasionally truncate mid-emit under load; the inner
 	// arguments JSON arrives incomplete. Callers should be able to
 	// distinguish this with errors.Is(ErrToolCallArgsTruncated) so the
 	// user gets a clean "try rephrasing" instead of a low-level parser

@@ -43,7 +43,7 @@ func DefaultModel(ramMB int) *ModelInfo {
 var modelCatalog = []ModelInfo{
 	{
 		Name:        "Qwen 2.5 1.5B (tiny, chat only)",
-		Filename:    "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+		Filename:    "a small-context model-1.5b-instruct-q4_k_m.gguf",
 		MinRAMMB:    1024,
 		ContextSize: 4096,
 		SizeMB:      1100,
@@ -58,8 +58,8 @@ var modelCatalog = []ModelInfo{
 		ToolSupport: true,
 	},
 	{
-		Name:        "Qwen3 4B (balanced)",
-		Filename:    "qwen3-4b-q4_k_m.gguf",
+		Name:        "a small-context model 4B (balanced)",
+		Filename:    "a small-context model-4b-q4_k_m.gguf",
 		MinRAMMB:    4096,
 		ContextSize: 40960,
 		SizeMB:      2800,

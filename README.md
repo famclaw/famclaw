@@ -56,7 +56,7 @@ FamClaw talks to any OpenAI-compatible endpoint:
 ```yaml
 llm:
   primary:
-    base_url: "http://192.168.1.10:11434"  # Ollama on your Mac Mini
+    base_url: "http://example-host:11434"  # Example Ollama URL
     model: "llama3.2:3b"
 
   fallbacks:

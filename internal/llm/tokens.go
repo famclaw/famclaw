@@ -5,7 +5,7 @@ package llm
 // Reserves a safety margin so the model isn't forced to truncate mid-thought
 // when reasoning content alone could exceed the cap.
 //
-//	contextWindow:        total model ctx (e.g. 65536 for Nemotron at q3_k_m)
+//	contextWindow:        total model ctx (e.g. 65536 for a model at q3_k_m)
 //	promptTokens:         estimated tokens of the outgoing prompt (system +
 //	                      tools + user message). Use EstimatePromptTokens.
 //	reservedSafetyMargin: tokens to keep free between max-response and ctx

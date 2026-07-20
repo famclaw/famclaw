@@ -347,7 +347,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		}
 	}
 
-	// Empty-response guard. Local LLMs (Nemotron particularly) occasionally
+	// Empty-response guard. Local LLMs (e.g., a local reasoning model) occasionally
 	// emit an empty assistant message — no text, no tool_calls — when they
 	// can't resolve a prompt cleanly. Without this guard, the gateway sends
 	// "" to Discord/Telegram and the user sees nothing, indistinguishable
@@ -894,7 +894,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 
 	// Empty allowlist = deny-all. The previous "empty means any host"
 	// semantic was an SSRF footgun on home networks — a misconfigured
-	// deployment could let a jailbroken LLM reach 192.168.1.1/admin or
+	// deployment could let a jailbroken LLM reach example-host.1/admin or
 	// other LAN services. Operators must explicitly list the hosts they
 	// want web_fetch to reach.
 	if len(cfg.URLAllowlist) == 0 {
@@ -966,7 +966,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// current head budget get stored and only a budget-sized slice plus
 	// a tool_result_more invocation hint is returned to the LLM. This is
 	// the v0.5.9 overflow class fix — before this, the full ~256KB
-	// payload went straight into context and 400'd Nemotron at 16k ctx.
+	// payload went straight into context and 400'd a small-context model at 16k ctx.
 	if a.cache != nil {
 		budget := computeHeadBudget(a)
 		out, cerr := a.cache.Put(ctx, toolcache.PutInput{

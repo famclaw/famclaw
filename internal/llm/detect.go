@@ -24,14 +24,14 @@ var knownContextWindows = map[string]int{
 	// OpenRouter free
 	"google/gemma-3-4b-it:free":              8192,
 	"meta-llama/llama-3.3-70b-instruct:free": 131072,
-	"qwen/qwen3-8b:free":                     40960,
+	"qwen/a small-context model-8b:free":                     40960,
 	// Ollama defaults (can be overridden by /api/show)
 	"gemma4:e2b":  131072,
 	"gemma4:e4b":  131072,
 	"llama3.2:3b": 131072,
 	"llama3.1:8b": 131072,
-	"qwen3:4b":    40960,
-	"qwen3:8b":    40960,
+	"a small-context model:4b":    40960,
+	"a small-context model:8b":    40960,
 	"phi4-mini":   16384,
 	"mistral:7b":  32768,
 	"tinyllama":   2048,

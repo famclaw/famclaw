@@ -9,7 +9,7 @@ import (
 
 func TestSidecarBaseURL(t *testing.T) {
 	s := NewSidecar(SidecarConfig{Port: 8081})
-	if s.BaseURL() != "http://localhost:8081/v1" {
+	if s.BaseURL() != "http://example-host:8081/v1" {
 		t.Errorf("BaseURL = %q", s.BaseURL())
 	}
 }
@@ -31,7 +31,7 @@ func TestSidecarHealthy(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Can't easily test Healthy with httptest since it uses hardcoded localhost:port
+	// Can't easily test Healthy with httptest since it uses hardcoded example-host:port
 	// Test the logic indirectly
 	s := NewSidecar(SidecarConfig{Port: 8081})
 	if s.Running() {
@@ -57,7 +57,7 @@ func TestRecommendedModels(t *testing.T) {
 	}{
 		{512, 0},   // not enough for anything
 		{1024, 1},  // tiny model
-		{4096, 3},  // tiny + phi + qwen3
+		{4096, 3},  // tiny + phi + a small-context model
 		{8192, 5},  // all models
 		{16384, 5}, // still all models
 	}
@@ -77,7 +77,7 @@ func TestDefaultModel(t *testing.T) {
 	}{
 		{512, ""},
 		{1024, "Qwen 2.5 1.5B (tiny, chat only)"},
-		{4096, "Qwen3 4B (balanced)"},
+		{4096, "a small-context model 4B (balanced)"},
 		{8192, "Llama 3.1 8B (powerful)"}, // 8192 matches both gemma and llama, llama has same MinRAM
 	}
 

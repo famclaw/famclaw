@@ -46,11 +46,11 @@ type ollamaChatResp struct {
 func TestPrompt_BehavioralProbes(t *testing.T) {
 	baseURL := os.Getenv("OLLAMA_URL")
 	if baseURL == "" {
-		baseURL = "http://localhost:11434"
+		baseURL = "http://example-host:11434"
 	}
 	model := os.Getenv("OLLAMA_MODEL")
 	if model == "" {
-		model = "qwen3:14b"
+		model = "a small-context model:14b"
 	}
 
 	{

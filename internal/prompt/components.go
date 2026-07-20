@@ -137,7 +137,7 @@ func BehavioralRules() string {
 
 func behavioralRules() string {
 	return strings.Join([]string{
-		// Tool-call format guardrails. Nemotron and similar small models
+		// Tool-call format guardrails. Some local reasoning models and similar small models
 		// frequently violate the "tool call BEFORE prose, never after"
 		// rule and emit a trailing <tool_call> XML block; salvageInlineToolCalls
 		// rescues it on the client side, but reminding the model up front

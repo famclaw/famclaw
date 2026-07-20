@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Nemotron-3-Nano (and other models trained on the same chat template)
+// A model like a local reasoning model (and other models trained on the same chat template)
 // is instructed to emit tool calls in this XML-style form:
 //
 //	<tool_call>

@@ -186,7 +186,7 @@ func (a *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	pinBytes, err := a.vault.Decrypt(ct)
 	if err != nil {
-		// /login NEVER offers re-encrypt on machine mismatch — that affordance
+		// /login NEVER offers re-encrypt on a local machinehine mismatch — that affordance
 		// belongs to /api/setup/unlock only. Treat any decrypt failure as a
 		// generic 401 to preserve the constant response shape.
 		a.limiter.recordFailure(ip)

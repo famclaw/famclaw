@@ -33,7 +33,7 @@ func SpawnAgentTool() agentcore.Tool {
 				},
 				"profile": map[string]any{
 					"type":        "string",
-					"description": "LLM profile name to use (e.g., 'qwen3-local'). If empty, uses the default profile.",
+					"description": "LLM profile name to use (e.g., 'a small-context model-local'). If empty, uses the default profile.",
 				},
 				"max_turns": map[string]any{
 					"type":        "integer",

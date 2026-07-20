@@ -33,8 +33,8 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // present when LLM requests tool use
 	ToolCallID string     `json:"tool_call_id,omitempty"` // required on role=tool replies (OpenAI)
 
-	// ReasoningContent is the non-standard field reasoning models (qwen3,
-	// nemotron, gpt-oss harmony) sometimes use to ship the final response
+	// ReasoningContent is the non-standard field reasoning models (a small-context model,
+	// Some local reasoning models (e.g., local reasoning models) sometimes use to ship the final response
 	// while leaving Content empty. We DO NOT include it when sending the
 	// message back (omitempty), and at receive time the client merges it
 	// into Content when Content is empty — see mergeReasoning() below.
@@ -79,7 +79,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 }
 
 // mergeReasoning hoists ReasoningContent into Content when Content is
-// empty. Local reasoning models (qwen3-30b on Mac, nemotron-30b, gpt-oss)
+// empty. Local reasoning models (e.g., a small-context model-30b, a local reasoning model-30b, a local reasoning model)
 // frequently emit the final answer in reasoning_content with content="".
 // Consumers reading only .Content would see empty replies otherwise.
 func (m *Message) mergeReasoning() {
@@ -328,7 +328,7 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, e
 		for _, choice := range chunk.Choices {
 			token := choice.Delta.Content
 			if token == "" {
-				// Reasoning-content fallback: qwen3/nemotron/gpt-oss stream
+				// Reasoning-content fallback: e.g., a small-context model/a local reasoning model/a local reasoning model stream
 				// some final answers via reasoning_content with Content="".
 				token = choice.Delta.ReasoningContent
 			}
@@ -409,7 +409,7 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 	}
 
 	msg := &result.Choices[0].Message
-	// Reasoning models (qwen3, nemotron, gpt-oss harmony) sometimes ship
+	// Reasoning models sometimes ship
 	// the final answer in reasoning_content with content="". Merge before
 	// any further processing so the rest of the pipeline sees a populated
 	// Content field.
@@ -444,7 +444,7 @@ func (c *Client) ChatSync(ctx context.Context, messages []Message, temp float64,
 }
 
 // HardwareRecommendation returns a model recommendation based on available RAM.
-// Prefers models with native tool calling (Gemma 4, Qwen3, Phi-4).
+// Prefers models with native tool calling (Gemma 4, a small-context model, Phi-4).
 func HardwareRecommendation(ramMB int) string {
 	switch {
 	case ramMB >= 16384:
@@ -452,7 +452,7 @@ func HardwareRecommendation(ramMB int) string {
 	case ramMB >= 8192:
 		return "gemma4:e2b"
 	case ramMB >= 4096:
-		return "qwen3:4b"
+		return "a small-context model:4b"
 	case ramMB >= 2048:
 		return "phi4-mini"
 	default:

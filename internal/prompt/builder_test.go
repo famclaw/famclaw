@@ -295,7 +295,7 @@ func TestCapabilitiesComponent_BuiltinTools(t *testing.T) {
 	t.Run("behavioral rules included with tools", func(t *testing.T) {
 		text, _ := capabilitiesComponent(BuildContext{BuiltinTools: []string{"web_fetch"}})
 		// Tool-call format guardrail — prevents <tool_call> XML leak
-		// to user-visible reply (Nemotron-style trailing block).
+		// to user-visible reply (e.g., trailing block from some local reasoning models).
 		for _, want := range []string{"tool call FIRST", "do NOT append another tool_call", "Never write the literal text"} {
 			if !strings.Contains(text, want) {
 				t.Errorf("missing tool-format rule %q in capabilities text", want)
