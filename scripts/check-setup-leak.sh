@@ -8,6 +8,17 @@ PATTERNS="nemotron|qwen3|qwen2.5|gpt-oss|deepseek|llama-swap|litellm|192\.168\.|
 # Find all Go files in internal/ and cmd/ directories
 FILES=$(find internal/ cmd -type f -name "*.go" 2>/dev/null)
 
+# Also check README and GitHub workflows
+if [ -f "README.md" ]; then
+    FILES="$FILES README.md"
+fi
+if [ -d ".github/workflows" ]; then
+    WORKFLOW_FILES=$(find .github/workflows -type f \( -name "*.yaml" -o -name "*.yml" \) 2>/dev/null)
+    if [ -n "$WORKFLOW_FILES" ]; then
+        FILES="$FILES $WORKFLOW_FILES"
+    fi
+fi
+
 LEAK_FOUND=0
 
 for file in $FILES; do

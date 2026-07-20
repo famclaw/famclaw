@@ -155,7 +155,7 @@ See [`skills/image-understanding/SKILL.md`](skills/image-understanding/SKILL.md)
 
 ## Agent dispatch (`spawn_agent`)
 
-The parent LLM can delegate sub-tasks to a different LLM profile via a built-in tool. Use it to send research-style or compute-heavy work to a local model (e.g., Qwen3-14B on Ollama) while the parent stays on a fast/cloud model.
+The parent LLM can delegate sub-tasks to a different LLM profile via a built-in tool. Use it to send research-style or compute-heavy work to a local model (e.g., LocalModel-14B on Ollama) while the parent stays on a fast/cloud model.
 
 ```jsonc
 // Tool call from the parent LLM:
@@ -163,7 +163,7 @@ The parent LLM can delegate sub-tasks to a different LLM profile via a built-in 
   "name": "builtin__spawn_agent",
   "arguments": {
     "prompt": "Summarize the key risks in the attached log",
-    "profile": "qwen3-local",          // optional: omit to use the default profile
+    "profile": "local-model",          // optional: omit to use the default profile
     "timeout_seconds": 120,             // default 300, capped at 1800
     "tools": ["fs.read", "web.search"], // allowlist; omit for NO MCP tools (default-deny)
     "deny_tools": ["fs.write"]          // subtracted from the allowlist
@@ -251,7 +251,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 |----------|-------|-----|
 | Mac Mini M1+ 16GB | `gemma4:e4b` | Native tool calling, multimodal |
 | RPi 5 8GB | `gemma4:e2b` | Fits in 3GB Q4, tool calling |
-| RPi 4 4GB | `qwen3:4b` | Best efficiency |
+| RPi 4 4GB | `local-model:4b` | Best efficiency |
 | RPi 3 | Use remote | Gateway only |
 
 See [docs/BACKENDS.md](docs/BACKENDS.md) for inference engine comparison.
