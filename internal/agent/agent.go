@@ -1011,7 +1011,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (string, error) {
 	cfg := a.cfg.Tools.WebSearch
 	if !cfg.Enabled {
-		return "", fmt.Errorf("web_search is disabled in this deployment")
+		return "", fmt.Errorf("web_search is disabled; enable it via tools.web_search.enabled=true, with tools.web_fetch.enabled=true and the search endpoint host in tools.web_fetch.url_allowlist")
 	}
 	query, _ := args["query"].(string)
 	if strings.TrimSpace(query) == "" {
