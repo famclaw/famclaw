@@ -452,7 +452,7 @@ func applyDefaults(c *Config) {
 	}
 	// Enable browser by default to align with the expectation that a family
 	// assistant should be able to browse websites
-	if !c.Tools.Browser.Enabled {
+	if !c.Tools.Browser.Enabled && strings.TrimSpace(c.Tools.Browser.Endpoint) != "" {
 		c.Tools.Browser.Enabled = true
 	}
 }
