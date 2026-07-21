@@ -87,6 +87,32 @@ func (p *Pool) RegisterFromConfig(servers map[string]config.MCPServerConfig, cre
 	}
 }
 
+// sandboxDecision encapsulates the logic for determining whether to proceed with sandboxing
+// based on kernel support and allow_unconfined configuration.
+// Returns: (proceed bool, warn bool, err error)
+//   - proceed: whether to proceed with sandboxing
+//   - warn: whether to log a warning about the decision
+//   - err: error if sandboxing should be denied (fail-closed)
+func sandboxDecision(allowUnconfined, landlockOK, seccompOK bool) (proceed bool, warn bool, err error) {
+	// Both support present -> (true,false,nil)
+	if landlockOK && seccompOK {
+		return true, false, nil
+	}
+	
+	// Support missing AND allowUnconfined=false -> (false,false,<fail-closed error>)
+	if !allowUnconfined {
+		if !landlockOK {
+			return false, false, fmt.Errorf("sandbox: kernel lacks landlock support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.allow_unconfined=true to allow unconfined execution as explicit opt-in)")
+		}
+		if !seccompOK {
+			return false, false, fmt.Errorf("sandbox: kernel lacks seccomp support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.allow_unconfined=true to allow unconfined execution as explicit opt-in)")
+		}
+	}
+	
+	// Support missing AND allowUnconfined=true -> (true,true,nil)
+	return true, true, nil
+}
+
 // StartAll starts all registered MCP servers and maps their tools by name.
 // Failed servers are kept in the map for later retry — not removed.
 //
@@ -101,19 +127,14 @@ func (p *Pool) StartAll(ctx context.Context) error {
 	defer p.mu.Unlock()
 
 	if p.Sandbox {
-		if !checkLandlockSupport() {
-			if !p.AllowUnconfined {
-				return fmt.Errorf("sandbox: kernel lacks landlock support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.allow_unconfined=true to allow unconfined execution as explicit opt-in)")
-			}
-			log.Printf("⚠️  sandbox: kernel lacks landlock support but tools.sandbox.allow_unconfined=true — running MCP servers without OS sandboxing (EXPLICIT OPT-IN, NOT RECOMMENDED FOR PRODUCTION)")
+		proceed, warn, err := sandboxDecision(p.AllowUnconfined, checkLandlockSupport(), checkSeccompSupport())
+		if err != nil {
+			return err
 		}
-		if !checkSeccompSupport() {
-			if !p.AllowUnconfined {
-				return fmt.Errorf("sandbox: kernel lacks seccomp support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.allow_unconfined=true to allow unconfined execution as explicit opt-in)")
-			}
-			log.Printf("⚠️  sandbox: kernel lacks seccomp support but tools.sandbox.allow_unconfined=true — running MCP servers without OS sandboxing (EXPLICIT OPT-IN, NOT RECOMMENDED FOR PRODUCTION)")
+		if warn {
+			log.Printf("⚠️  sandbox: kernel lacks support but tools.sandbox.allow_unconfined=true — running MCP servers without OS sandboxing (EXPLICIT OPT-IN, NOT RECOMMENDED FOR PRODUCTION)")
 		}
-		if checkLandlockSupport() && checkSeccompSupport() {
+		if proceed {
 			log.Printf("sandbox: kernel support verified (landlock + seccomp-BPF) ✅")
 		}
 	}

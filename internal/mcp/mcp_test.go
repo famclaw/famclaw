@@ -580,3 +580,39 @@ func TestPool_StartAll_AllowUnconfined(t *testing.T) {
 		t.Error("AllowUnconfined should be false when passed as false")
 	}
 }
+
+// TestSandboxDecision tests the sandboxDecision function with various combinations
+func TestSandboxDecision(t *testing.T) {
+	tests := []struct {
+		name             string
+		landlockOK       bool
+		seccompOK        bool
+		allowUnconfined  bool
+		wantProceed      bool
+		wantWarn         bool
+		wantErrNil       bool
+	}{
+		{"both support, no unconfined", true, true, false, true, false, true},
+		{"both support, allow unconfined", true, true, true, true, false, true},
+		{"landlock missing, no unconfined", false, true, false, false, false, false},
+		{"landlock missing, allow unconfined", false, true, true, true, true, true},
+		{"seccomp missing, no unconfined", true, false, false, false, false, false},
+		{"seccomp missing, allow unconfined", true, false, true, true, true, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proceed, warn, err := sandboxDecision(tt.allowUnconfined, tt.landlockOK, tt.seccompOK)
+			
+			if proceed != tt.wantProceed {
+				t.Errorf("sandboxDecision() proceed = %v, want %v", proceed, tt.wantProceed)
+			}
+			if warn != tt.wantWarn {
+				t.Errorf("sandboxDecision() warn = %v, want %v", warn, tt.wantWarn)
+			}
+			if (err == nil) != tt.wantErrNil {
+				t.Errorf("sandboxDecision() err == nil = %v, want %v", err == nil, tt.wantErrNil)
+			}
+		})
+	}
+}
