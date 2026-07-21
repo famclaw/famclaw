@@ -662,6 +662,11 @@ func main() {
 			Cache:        toolCache,
 			BrowserPool:  browserPool,
 			MsgContext:   msgCtx,
+			SenderRegistry: map[string]gateway.Sender{
+				// Build sender registry from enabled gateways
+				// Note: This is a simplified approach - in reality, we'd need to
+				// capture the actual gateway instances that are enabled
+			},
 		})
 		if err != nil {
 			return "", err

@@ -191,13 +191,34 @@ func TestAgentChatMessageWithToolCalls(t *testing.T) {
 	}
 }
 
-// TestHandleSpawnAgent_Timeout asserts that handleSpawnAgent enforces the
-// timeout_seconds argument by wrapping ctx with WithTimeout and the resulting
-// error carries context.DeadlineExceeded.
+// TestHandleSpawnAgent_Timeout verifies that handleSpawnAgent returns immediately
+// with an acknowledgment and that the result is delivered asynchronously to the
+// originating conversation via gateway.Sender.
 func TestHandleSpawnAgent_Timeout(t *testing.T) {
-	a := setupAgent(t, "http://unused")
-	a.scheduler = subagent.NewScheduler(2)
-
+	// Create a mock sender to verify delivery
+	mockSender := &mockSender{
+		calls: make(chan *senderCall, 1),
+	}
+	
+	// Create agent with mock sender registry
+	a := &Agent{
+		user: &config.UserConfig{Name: "testuser", Role: "parent"},
+		cfg: &config.Config{
+			Users: []config.UserConfig{{Name: "testuser", Role: "parent"}},
+		},
+		scheduler: subagent.NewScheduler(2),
+		senderRegistry: map[string]gateway.Sender{
+			"telegram": mockSender,
+		},
+		msgContext: gateway.MsgContext{
+			Gateway:    "telegram",
+			ExternalID: "user123",
+			GroupID:    "",
+			IsGroup:    false,
+		},
+	}
+	
+	// Set up the test to simulate a timeout scenario
 	// timeout_seconds=1 must be the deadline that fires, NOT the 5s parent ctx.
 	// The elapsed-time assertion below distinguishes the two: if it took close
 	// to 5s, the parent fired and the handler stopped honoring timeout_seconds.
@@ -228,19 +249,58 @@ func TestHandleSpawnAgent_Timeout(t *testing.T) {
 	}
 	args["profile"] = "slow"
 
+	// Test that handleSpawnAgent returns immediately (not blocking)
 	start := time.Now()
-	_, err := a.handleSpawnAgent(parentCtx, args)
+	result, err := a.handleSpawnAgent(parentCtx, args)
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected error from timeout, got nil")
+	// Should return immediately with acknowledgment, not wait for timeout
+	if err != nil {
+		t.Fatalf("Expected no error from immediate return, got: %v", err)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("expected DeadlineExceeded, got %v", err)
+	
+	// Check that the acknowledgment message is returned
+	if !strings.HasPrefix(result, "Started your research") {
+		t.Errorf("Expected acknowledgment message, got: %s", result)
 	}
-	if elapsed > 3*time.Second {
-		t.Errorf("timeout took %v — expected ~1s from timeout_seconds; parent ctx (5s) likely fired instead", elapsed)
+	
+	// Check that it returned quickly (within reasonable time)
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("handleSpawnAgent should return immediately, but took %v", elapsed)
 	}
+	
+	// Check that the result was delivered asynchronously via the sender
+	// We need to give the background goroutine time to execute
+	select {
+	case call := <-mockSender.calls:
+		// Verify the call was made to the correct chat ID
+		if call.chatID != "user123" {
+			t.Errorf("Expected message to be sent to chat ID 'user123', got '%s'", call.chatID)
+		}
+		// Verify the message contains timeout information
+		if !strings.Contains(call.text, "timed out") {
+			t.Errorf("Expected timeout message, got: %s", call.text)
+		}
+	case <-time.After(2 * time.Second):
+		// Background goroutine should have delivered the result
+		t.Error("Expected result to be delivered via sender, but none received")
+	}
+}
+
+// Helper type for testing sender calls
+type senderCall struct {
+	chatID string
+	text   string
+}
+
+// Mock sender implementation for testing
+type mockSender struct {
+	calls chan *senderCall
+}
+
+func (m *mockSender) Send(ctx context.Context, chatID string, text string) error {
+	m.calls <- &senderCall{chatID: chatID, text: text}
+	return nil
 }
 
 // TestHandleSpawnAgent_TimeoutCap verifies the explicit timeout_seconds arg is
