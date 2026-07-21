@@ -111,6 +111,201 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 			},
 			wantOutputExact: "I am doing well, thank you! All set.", // must be unchanged
 		},
+		{
+			name: "Japanese false success",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("builtin failed")
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__fail"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__fail", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final result when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "タスクが完了しました"}, // Japanese for "task completed"
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputNotEqual: "タスクが完了しました",
+			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+		},
+		{
+			name: "Spanish false success",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("builtin failed")
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__fail"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__fail", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "Tarea completada"}, // Spanish for "task completed"
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputNotEqual: "Tarea completada",
+			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+		},
+		{
+			name: "German false success",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("builtin failed")
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__fail"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__fail", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var count int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "Aufgabe erledigt"}, // German for "task completed"
+						},
+						callCount: &count,
+					}
+				}
+			},
+			wantOutputNotEqual: "Aufgabe erledigt",
+			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+		},
+		{
+			name: "Japanese genuine success",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that succeeds
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "成功", nil // Japanese for "success"
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__ok"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__ok", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "タスクが完了しました"}, // Japanese for "task completed"
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputExact: "タスクが完了しました",
+		},
+		{
+			name: "Spanish genuine success",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that succeeds
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "éxito", nil // Spanish for "success"
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__ok"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__ok", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "Tarea completada"}, // Spanish for "task completed"
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputExact: "Tarea completada",
+		},
+		{
+			name: "German genuine success",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that succeeds
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "erfolgreich", nil // German for "success"
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__ok"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__ok", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "Aufgabe erledigt"}, // German for "task completed"
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputExact: "Aufgabe erledigt",
+		},
 	}
 
 	for _, tc := range cases {
