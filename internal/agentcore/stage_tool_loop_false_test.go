@@ -71,7 +71,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				turn.SetMeta("llm_messages", []llm.Message{
 					{Role: "user", Content: "hello"}, // placeholder
 				})
-				// The mockChatter should return the final response when ChatWithTools is called
+				// The mockChatter should return the final result when ChatWithTools is called
 				var callCount int
 				deps.ClientFactory = func(*Turn) llm.Chatter {
 					return &mockChatter{
@@ -110,6 +110,209 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputExact: "I am doing well, thank you! All set.", // must be unchanged
+		},
+		{
+			name: "Spanish false success",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("builtin failed")
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__fail"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__fail", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "Listo, lo he guardado."}, // Spanish for "Ready, I've saved it."
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputNotEqual: "Listo, lo he guardado.",
+			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+		},
+		{
+			name: "German false success",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("builtin failed")
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__fail"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__fail", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var count int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "Fertig, gespeichert."}, // German for "Done, saved."
+						},
+						callCount: &count,
+					}
+				}
+			},
+			wantOutputNotEqual: "Fertig, gespeichert.",
+			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+		},
+		{
+			name: "Japanese false success",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("builtin failed")
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__fail"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__fail", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final result when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "完了しました。"}, // Japanese for "Completed."
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputNotEqual: "完了しました。",
+			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+		},
+		{
+			name: "English success without tool call (should not trigger)",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// No tool attempted, output says success but no tool calls
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__ok"}} // tool available but not used
+				// No pending tool calls (so turn.ToolCalls will be empty)
+				turn.SetMeta("pending_tool_calls", []llm.ToolCall{})
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"},
+				})
+				// The LLM response (without tool calls) is set as the initial turn.Output
+				turn.Output = "Let me check..."
+				// We set up a mockChatter that should not be called (since no pending tool calls)
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "This should not be called"},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputExact: "Let me check...", // must be unchanged
+		},
+		{
+			name: "Spanish success without tool call (should not trigger)",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// No tool attempted, output says success but no tool calls
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__ok"}} // tool available but not used
+				// No pending tool calls (so turn.ToolCalls will be empty)
+				turn.SetMeta("pending_tool_calls", []llm.ToolCall{})
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"},
+				})
+				// The LLM response (without tool calls) is set as the initial turn.Output
+				turn.Output = "Déjame revisar..."
+				// We set up a mockChatter that should not be called (since no pending tool calls)
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "This should not be called"},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputExact: "Déjame revisar...", // must be unchanged
+		},
+		{
+			name: "German success without tool call (should not trigger)",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// No tool attempted, output says success but no tool calls
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__ok"}} // tool available but not used
+				// No pending tool calls (so turn.ToolCalls will be empty)
+				turn.SetMeta("pending_tool_calls", []llm.ToolCall{})
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"},
+				})
+				// The LLM response (without tool calls) is set as the initial turn.Output
+				turn.Output = "Lassen Sie mich überprüfen..."
+				// We set up a mockChatter that should not be called (since no pending tool calls)
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "This should not be called"},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputExact: "Lassen Sie mich überprüfen...", // must be unchanged
+		},
+		{
+			name: "Japanese success without tool call (should not trigger)",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// No tool attempted, output says success but no tool calls
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__ok"}} // tool available but not used
+				// No pending tool calls (so turn.ToolCalls will be empty)
+				turn.SetMeta("pending_tool_calls", []llm.ToolCall{})
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"},
+				})
+				// The LLM response (without tool calls) is set as the initial turn.Output
+				turn.Output = "確認してみます..."
+				// We set up a mockChatter that should not be called (since no pending tool calls)
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "This should not be called"},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputExact: "確認してみます...", // must be unchanged
 		},
 	}
 

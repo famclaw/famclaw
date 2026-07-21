@@ -14,6 +14,8 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 )
 
+
+
 // toolPolicyInput shapes a per-call OPA input from the turn user.
 func toolPolicyInput(turn *Turn, toolName string) policy.ToolCallInput {
 	return policy.ToolCallInput{
@@ -534,7 +536,8 @@ func outputClaimsSuccess(output string) bool {
 	outputLower := strings.ToLower(output)
 	// Trim spaces
 	outputLower = strings.TrimSpace(outputLower)
-	// List of phrases that indicate success
+	// Enhanced success detection - supports more robust indicators
+	// and makes the guard less English-only by including common patterns
 	successPhrases := []string{
 		"done",
 		"success",
@@ -543,11 +546,41 @@ func outputClaimsSuccess(output string) bool {
 		"saved",
 		"all set",
 		"ready",
+		// Remove "ok", "yes", "true" as they can false-positive on normal replies
+		"achieved",
+		"resolved",
+		"solved",
+		"fixed",
+		"complete",
+		"finished",
+		"successful",
+		// Add non-English success words
+		"hecho",      // Spanish
+		"completado", // Spanish
+		"listo",      // Spanish
+		"terminado",  // Spanish
+		"guardado",   // Spanish
+		"éxito",      // Spanish
+		"realizado",  // Spanish
+		"fertig",     // German
+		"erledigt",   // German
+		"abgeschlossen", // German
+		"gespeichert", // German
+		"bereit",     // German
+		"erfolgreich", // German
+		"完了",       // Japanese
+		"成功",       // Japanese
+		"終わりました", // Japanese
+		"保存しました", // Japanese
+		"できました", // Japanese
+		"完成",       // Japanese
 	}
+
 	for _, phrase := range successPhrases {
 		if strings.Contains(outputLower, phrase) {
 			return true
 		}
 	}
+
 	return false
 }
