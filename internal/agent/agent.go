@@ -139,6 +139,9 @@ func sanitizeDirName(s string) (string, error) {
 	if s == "." || s == ".." {
 		return "", fmt.Errorf("identity %q is reserved after sanitization", s)
 	}
+	if len(s) > 255 {
+		return "", fmt.Errorf("identity %q exceeds 255 characters", s)
+	}
 	return s, nil
 }
 

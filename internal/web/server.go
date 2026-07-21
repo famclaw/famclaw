@@ -327,7 +327,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("[ws] failed to create agent for %s: %v", userCfg.DisplayName, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	for {
@@ -365,7 +365,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			lastRole = currentRole
 			if err != nil {
 				log.Printf("[ws] failed to recreate agent for %s: %v", userCfg.DisplayName, err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
 			}
 			lastAgeGroup = currentAgeGroup
@@ -554,7 +554,8 @@ func (s *Server) handleDecideLink(w http.ResponseWriter, r *http.Request) {
 		status = "denied"
 	}
 	if err := s.db.DecideApproval(id, status, "parent-link"); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Printf("[web] decide approval error: %v", err)
+		http.Error(w, "Internal server error", http.StatusBadRequest)
 		return
 	}
 
