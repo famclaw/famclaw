@@ -450,6 +450,11 @@ func applyDefaults(c *Config) {
 	if len(c.Tools.Browser.AllowedRoles) == 0 {
 		c.Tools.Browser.AllowedRoles = []string{"parent"}
 	}
+	// Enable browser by default to align with the expectation that a family
+	// assistant should be able to browse websites
+	if !c.Tools.Browser.Enabled && strings.TrimSpace(c.Tools.Browser.Endpoint) != "" {
+		c.Tools.Browser.Enabled = true
+	}
 }
 
 // Validate checks that critical config values are set and safe.
