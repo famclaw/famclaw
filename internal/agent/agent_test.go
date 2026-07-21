@@ -887,6 +887,7 @@ func TestStreamedOutputGate(t *testing.T) {
 			}
 			user := &cfg.Users[0]
 			client := llm.NewClient(server.URL, "test", "")
+			clf := classifier.New()
 			agent, err := NewAgent(user, cfg, client, ev, clf, db, AgentDeps{})
 			if err != nil {
 				t.Fatalf("failed to create agent: %v", err)
