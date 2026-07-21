@@ -31,6 +31,11 @@ type Pool struct {
 	// MCP subprocesses must set Tools.Sandbox.Enabled=false in config
 	// — the default is true (secure-by-default).
 	Sandbox bool
+	// AllowUnconfined == true means the pool will allow running MCP
+	// servers without OS sandboxing when kernel support is missing.
+	// This is an explicit opt-in for platforms like macOS that lack
+	// landlock/seccomp, with a loud warning at startup.
+	AllowUnconfined bool
 }
 
 type managedClient struct {
@@ -46,11 +51,12 @@ type managedClient struct {
 // for file-tool sandboxing; sandboxEnabled mirrors Tools.Sandbox.Enabled
 // in config and gates the per-server launcher (when true, every stdio
 // MCP server runs through the landlock+seccomp re-exec).
-func NewPool(sandboxRoot string, sandboxEnabled bool) *Pool {
+func NewPool(sandboxRoot string, sandboxEnabled bool, allowUnconfined bool) *Pool {
 	return &Pool{
-		clients:     make(map[string]*managedClient),
-		SandboxRoot: sandboxRoot,
-		Sandbox:     sandboxEnabled,
+		clients:         make(map[string]*managedClient),
+		SandboxRoot:     sandboxRoot,
+		Sandbox:         sandboxEnabled,
+		AllowUnconfined: allowUnconfined,
 	}
 }
 
@@ -68,7 +74,7 @@ func (p *Pool) RegisterFromConfig(servers map[string]config.MCPServerConfig, cre
 			log.Printf("[mcp-pool] skip %s: %v", name, err)
 			continue
 		}
-		c := NewTransportClient(name, cfg, p.SandboxRoot, p.Sandbox)
+		c := NewTransportClient(name, cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
 		if creds, ok := credentials[name]; ok {
 			c.env = creds
 		}
@@ -96,12 +102,20 @@ func (p *Pool) StartAll(ctx context.Context) error {
 
 	if p.Sandbox {
 		if !checkLandlockSupport() {
-			return fmt.Errorf("sandbox: kernel lacks landlock support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.enabled=false to run unconfined — NOT recommended)")
+			if !p.AllowUnconfined {
+				return fmt.Errorf("sandbox: kernel lacks landlock support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.allow_unconfined=true to allow unconfined execution as explicit opt-in)")
+			}
+			log.Printf("⚠️  sandbox: kernel lacks landlock support but tools.sandbox.allow_unconfined=true — running MCP servers without OS sandboxing (EXPLICIT OPT-IN, NOT RECOMMENDED FOR PRODUCTION)")
 		}
 		if !checkSeccompSupport() {
-			return fmt.Errorf("sandbox: kernel lacks seccomp support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.enabled=false to run unconfined — NOT recommended)")
+			if !p.AllowUnconfined {
+				return fmt.Errorf("sandbox: kernel lacks seccomp support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.allow_unconfined=true to allow unconfined execution as explicit opt-in)")
+			}
+			log.Printf("⚠️  sandbox: kernel lacks seccomp support but tools.sandbox.allow_unconfined=true — running MCP servers without OS sandboxing (EXPLICIT OPT-IN, NOT RECOMMENDED FOR PRODUCTION)")
 		}
-		log.Printf("sandbox: kernel support verified (landlock + seccomp-BPF) ✅")
+		if checkLandlockSupport() && checkSeccompSupport() {
+			log.Printf("sandbox: kernel support verified (landlock + seccomp-BPF) ✅")
+		}
 	}
 
 	toolAliases := make(map[string]*managedClient)
@@ -157,7 +171,7 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 		log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
 		mc.restartCnt++
 		mc.client.Stop()
-		mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox)
+		mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
 		mc.client.env = mc.env
 		if startErr := mc.client.Start(ctx); startErr != nil {
 			return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)

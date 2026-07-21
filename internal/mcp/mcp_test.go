@@ -79,7 +79,7 @@ func newTestClient(t *testing.T) *Client {
 
 func TestNewTransportClient_Stdio(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "stdio", Command: "echo"}
-	c := NewTransportClient("test", cfg, "", false)
+	c := NewTransportClient("test", cfg, "", false, false)
 	if c.transportType != "stdio" {
 		t.Errorf("transport = %q, want stdio", c.transportType)
 	}
@@ -87,7 +87,7 @@ func TestNewTransportClient_Stdio(t *testing.T) {
 
 func TestNewTransportClient_HTTP(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "http", URL: "http://localhost:9999/mcp"}
-	c := NewTransportClient("test", cfg, "", false)
+	c := NewTransportClient("test", cfg, "", false, false)
 	if c.transportType != "http" {
 		t.Errorf("transport = %q, want http", c.transportType)
 	}
@@ -95,7 +95,7 @@ func TestNewTransportClient_HTTP(t *testing.T) {
 
 func TestNewTransportClient_SSE(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "sse", URL: "http://localhost:9999/sse"}
-	c := NewTransportClient("test", cfg, "", false)
+	c := NewTransportClient("test", cfg, "", false, false)
 	if c.transportType != "sse" {
 		t.Errorf("transport = %q, want sse", c.transportType)
 	}
@@ -103,7 +103,7 @@ func TestNewTransportClient_SSE(t *testing.T) {
 
 func TestNewTransportClient_DefaultStdio(t *testing.T) {
 	cfg := config.MCPServerConfig{Command: "some-cmd"}
-	c := NewTransportClient("test", cfg, "", false)
+	c := NewTransportClient("test", cfg, "", false, false)
 	if c.transportType != "stdio" {
 		t.Errorf("empty transport with command should default to stdio, got %q", c.transportType)
 	}
@@ -111,7 +111,7 @@ func TestNewTransportClient_DefaultStdio(t *testing.T) {
 
 func TestNewTransportClient_DefaultHTTP(t *testing.T) {
 	cfg := config.MCPServerConfig{URL: "http://example.com/mcp"}
-	c := NewTransportClient("test", cfg, "", false)
+	c := NewTransportClient("test", cfg, "", false, false)
 	if c.transportType != "http" {
 		t.Errorf("empty transport with url should default to http, got %q", c.transportType)
 	}
@@ -119,7 +119,7 @@ func TestNewTransportClient_DefaultHTTP(t *testing.T) {
 
 func TestNewTransportClient_UnknownTransportFails(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "grpc", URL: "localhost:50051"}
-	c := NewTransportClient("test", cfg, "", false)
+	c := NewTransportClient("test", cfg, "", false, false)
 	err := c.Start(context.Background())
 	if err == nil {
 		t.Error("expected error for unknown transport")
@@ -128,7 +128,7 @@ func TestNewTransportClient_UnknownTransportFails(t *testing.T) {
 
 func TestNewTransportClient_StdioFailsBadBinary(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "stdio", Command: "nonexistent-binary-xyz"}
-	c := NewTransportClient("test", cfg, "", false)
+	c := NewTransportClient("test", cfg, "", false, false)
 	err := c.Start(context.Background())
 	if err == nil {
 		t.Error("expected error for bad binary")
@@ -205,14 +205,14 @@ func TestClientStopNilsInner(t *testing.T) {
 // ── Pool tests ───────────────────────────────────────────────────────────────
 
 func TestPoolHasTool(t *testing.T) {
-	pool := NewPool("", false)
+	pool := NewPool("", false, false)
 	if pool.HasTool("nonexistent") {
 		t.Error("empty pool should not have any tools")
 	}
 }
 
 func TestPoolCallToolUnknown(t *testing.T) {
-	pool := NewPool("", false)
+	pool := NewPool("", false, false)
 	_, err := pool.CallTool(context.Background(), "ghost", nil)
 	if err == nil {
 		t.Error("expected error for unknown tool")
@@ -226,12 +226,12 @@ func TestMaxToolCallIterations(t *testing.T) {
 }
 
 func TestPoolStopAllEmpty(t *testing.T) {
-	pool := NewPool("", false)
+	pool := NewPool("", false, false)
 	pool.StopAll()
 }
 
 func TestPoolListToolsEmpty(t *testing.T) {
-	pool := NewPool("", false)
+	pool := NewPool("", false, false)
 	tools := pool.ListTools()
 	if len(tools) != 0 {
 		t.Errorf("expected 0 tools, got %d", len(tools))
@@ -271,7 +271,7 @@ func TestValidateMCPServer(t *testing.T) {
 }
 
 func TestPoolRegisterFromConfig(t *testing.T) {
-	pool := NewPool("", false)
+	pool := NewPool("", false, false)
 	servers := map[string]config.MCPServerConfig{
 		"enabled":  {Transport: "stdio", Command: "echo"},
 		"disabled": {Transport: "stdio", Command: "nope", Disabled: true},
@@ -287,7 +287,7 @@ func TestPoolRegisterFromConfig(t *testing.T) {
 // the per-call fail-closed path activates when the operator enabled
 // the sandbox in config.
 func TestPoolRegisterFromConfig_PropagatesSandboxFlag(t *testing.T) {
-	pool := NewPool("/var/sandbox", true)
+	pool := NewPool("/var/sandbox", true, false)
 	pool.RegisterFromConfig(map[string]config.MCPServerConfig{
 		"a": {Transport: "stdio", Command: "/bin/true"},
 	}, nil)
@@ -312,7 +312,7 @@ func TestPoolRegisterFromConfig_PropagatesSandboxFlag(t *testing.T) {
 // actually has both landlock and seccomp the probe succeeds and the
 // test is skipped — guarding against environment-dependent flips.
 func TestPool_StartAll_FailClosedOnSandboxKernelGap(t *testing.T) {
-	pool := NewPool(t.TempDir(), true)
+	pool := NewPool(t.TempDir(), true, false)
 	// Register one synthetic stdio server so StartAll has something to
 	// iterate over if the kernel probe passes; the test skips in that
 	// case so we never actually try to spawn the fake binary.
@@ -547,7 +547,7 @@ func TestBuildAllowlist_Exported(t *testing.T) {
 // fail-closed error rather than silently launching unsandboxed.
 func TestClient_Start_FailClosedWhenSandboxRequired(t *testing.T) {
 	cfg := config.MCPServerConfig{Transport: "stdio", Command: "/bin/true"}
-	c := NewTransportClient("fail-closed-test", cfg, "/tmp", true)
+	c := NewTransportClient("fail-closed-test", cfg, "/tmp", true, false)
 	// Force the gate to trip by patching support to false on this call.
 	if checkLandlockSupport() && checkSeccompSupport() {
 		t.Skip("kernel has both landlock and seccomp — cannot exercise fail-closed path here")
@@ -558,5 +558,25 @@ func TestClient_Start_FailClosedWhenSandboxRequired(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "lacks required sandboxing support") {
 		t.Fatalf("expected sandboxing-support error, got %v", err)
+	}
+}
+
+// TestPool_StartAll_AllowUnconfined tests the new AllowUnconfined functionality
+func TestPool_StartAll_AllowUnconfined(t *testing.T) {
+	// Test that the new parameter is accepted and handled
+	_ = NewPool(t.TempDir(), true, true)  // Should compile and work
+	_ = NewPool(t.TempDir(), false, true)  // Should compile and work
+	_ = NewPool(t.TempDir(), true, false)  // Should compile and work
+	_ = NewPool(t.TempDir(), false, false) // Should compile and work
+	
+	// Test that AllowUnconfined field is properly set
+	pool := NewPool(t.TempDir(), true, true)
+	if !pool.AllowUnconfined {
+		t.Error("AllowUnconfined should be true when passed as true")
+	}
+	
+	pool = NewPool(t.TempDir(), true, false)
+	if pool.AllowUnconfined {
+		t.Error("AllowUnconfined should be false when passed as false")
 	}
 }

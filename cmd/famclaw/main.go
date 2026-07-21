@@ -258,7 +258,7 @@ var Version = "dev"
 // Errors from StartAll are non-fatal and logged; the pool is returned
 // even if some servers failed to start (caller logs and continues).
 func initMCPPool(ctx context.Context, cfg *config.Config, sandboxRoot string) (*mcp.Pool, []string, error) {
-	pool := mcp.NewPool(sandboxRoot, cfg.Tools.Sandbox.IsEnabled())
+	pool := mcp.NewPool(sandboxRoot, cfg.Tools.Sandbox.IsEnabled(), cfg.Tools.Sandbox.AllowUnconfined)
 	var skippedMCPs []string
 
 	if len(cfg.Skills.MCPServers) > 0 {
