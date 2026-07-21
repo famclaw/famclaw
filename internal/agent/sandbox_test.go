@@ -13,6 +13,7 @@ import (
 
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
 )
@@ -228,5 +229,71 @@ func TestIsWithinDir(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("isWithinDir(%q, %q) = %v, want %v", tc.path, tc.dir, got, tc.want)
 		}
+	}
+}
+
+// TestComputeEffectiveSandboxRoot_PerUserPerGroup tests the computeEffectiveSandboxRoot function
+// with the exact requirements from the task.
+func TestComputeEffectiveSandboxRoot_PerUserPerGroup(t *testing.T) {
+	base := t.TempDir()
+
+	newCfg := func(scope string) *config.Config {
+		c := &config.Config{}
+		c.Tools.SandboxRoot = base
+		c.Tools.SandboxScope = scope
+		return c
+	}
+
+	// user scope: two different users get two different roots, both under base
+	userCfg := newCfg("user")
+	rootA, err := computeEffectiveSandboxRoot(userCfg, gateway.MsgContext{ExternalID: "userA"})
+	if err != nil {
+		t.Fatalf("userA: %v", err)
+	}
+	rootB, err := computeEffectiveSandboxRoot(userCfg, gateway.MsgContext{ExternalID: "userB"})
+	if err != nil {
+		t.Fatalf("userB: %v", err)
+	}
+	if rootA == rootB {
+		t.Fatalf("distinct users must NOT share a sandbox root: both got %q", rootA)
+	}
+	if !strings.HasPrefix(rootA, base) || !strings.HasPrefix(rootB, base) {
+		t.Fatalf("user roots must live under base %q: A=%q B=%q", base, rootA, rootB)
+	}
+
+	// same user -> stable, identical root
+	rootA2, err := computeEffectiveSandboxRoot(userCfg, gateway.MsgContext{ExternalID: "userA"})
+	if err != nil {
+		t.Fatalf("userA repeat: %v", err)
+	}
+	if rootA != rootA2 {
+		t.Fatalf("same user must get the same root: %q vs %q", rootA, rootA2)
+	}
+
+	// group scope: members of the same group SHARE one root; different groups differ
+	groupCfg := newCfg("group")
+	g1a, err := computeEffectiveSandboxRoot(groupCfg, gateway.MsgContext{GroupID: "fam1"})
+	if err != nil {
+		t.Fatalf("group fam1 memberA: %v", err)
+	}
+	g1b, err := computeEffectiveSandboxRoot(groupCfg, gateway.MsgContext{GroupID: "fam1"})
+	if err != nil {
+		t.Fatalf("group fam1 memberB: %v", err)
+	}
+	if g1a != g1b {
+		t.Fatalf("members of the same group must SHARE a root: %q vs %q", g1a, g1b)
+	}
+	g2, err := computeEffectiveSandboxRoot(groupCfg, gateway.MsgContext{GroupID: "fam2"})
+	if err != nil {
+		t.Fatalf("group fam2: %v", err)
+	}
+	if g1a == g2 {
+		t.Fatalf("different groups must NOT share a root: both got %q", g1a)
+	}
+
+	// a traversal-laden identity must not escape base (sanitized or rejected)
+	esc, err := computeEffectiveSandboxRoot(userCfg, gateway.MsgContext{ExternalID: "../../etc"})
+	if err == nil && !strings.HasPrefix(esc, base) {
+		t.Fatalf("traversal identity escaped the base dir: %q", esc)
 	}
 }
