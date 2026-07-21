@@ -7,7 +7,6 @@ import (
 	"log"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/famclaw/famclaw/internal/compress"
 	"github.com/famclaw/famclaw/internal/llm"
@@ -15,74 +14,7 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 )
 
-var falseCompletionStopWords = map[string]bool{
-	"error": true, "calling": true, "the": true, "a": true, "an": true, "and": true, "or": true, "but": true,
-	"in": true, "on": true, "at": true, "to": true, "for": true, "of": true, "with": true, "by": true,
-	"is": true, "are": true, "was": true, "were": true, "be": true, "been": true, "being": true,
-	"have": true, "has": true, "had": true, "do": true, "does": true, "did": true, "will": true,
-	"would": true, "should": true, "could": true, "can": true, "may": true, "might": true, "must": true,
-	"shall": true, "i": true, "you": true, "he": true, "she": true, "it": true, "we": true, "they": true,
-	"me": true, "him": true, "her": true, "us": true, "them": true, "my": true, "your": true, "his": true,
-	"its": true, "our": true, "their": true, "mine": true, "yours": true, "hers": true,
-	"ours": true, "theirs": true, "this": true, "that": true, "these": true, "those": true,
-}
 
-// extractErrorKeywords splits the input string into words (Unicode letters only),
-// converts to lowercase, and returns a set of keywords with stop words removed.
-func extractErrorKeywords(s string) map[string]bool {
-	keywords := make(map[string]bool)
-	// FieldsFunc splits on any Unicode code point where the function returns true.
-	// We split on non-letter characters.
-	words := strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) })
-	for _, w := range words {
-		if w == "" {
-			continue
-		}
-		kw := strings.ToLower(w)
-		if !falseCompletionStopWords[kw] {
-			keywords[kw] = true
-		}
-	}
-	return keywords
-}
-
-// outputAcknowledgesFailure reports whether the given output acknowledges the
-// failure of the tool calls in the turn. It returns true if the output contains
-// any keyword from the error messages of the failed tool calls (after removing
-// stop words). If no keywords can be extracted, it falls back to checking for
-// English success phrases (to preserve existing behavior).
-func outputAcknowledgesFailure(turn *Turn, output string) bool {
-	// Collect error messages from failed tool calls.
-	var errorMessages []string
-	for _, tr := range turn.ToolCalls {
-		if tr.Error != nil {
-			errorMessages = append(errorMessages, tr.Error.Error())
-		}
-	}
-	if len(errorMessages) == 0 {
-		// No failed tool calls (should not happen when called from the condition)
-		return false
-	}
-	// Extract keywords from all error messages.
-	allKeywords := make(map[string]bool)
-	for _, msg := range errorMessages {
-		for kw := range extractErrorKeywords(msg) {
-			allKeywords[kw] = true
-		}
-	}
-	if len(allKeywords) == 0 {
-		// Fallback to the original success phrase check.
-		return outputClaimsSuccess(output)
-	}
-	// Check if any keyword appears in the output (lowercased).
-	outputLower := strings.ToLower(output)
-	for kw := range allKeywords {
-		if strings.Contains(outputLower, kw) {
-			return true
-		}
-	}
-	return false
-}
 
 // toolPolicyInput shapes a per-call OPA input from the turn user.
 func toolPolicyInput(turn *Turn, toolName string) policy.ToolCallInput {
@@ -500,7 +432,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				break
 			}
 		}
-		if len(turn.ToolCalls) > 0 && !anySuccess && !outputAcknowledgesFailure(turn, turn.Output) {
+		if len(turn.ToolCalls) > 0 && !anySuccess && outputClaimsSuccess(turn.Output) {
 			turn.Output += "\n\n(Note: no action was actually performed — the tool was not run.)"
 		}
 
@@ -624,6 +556,26 @@ func outputClaimsSuccess(output string) bool {
 		"complete",
 		"finished",
 		"successful",
+		// Add non-English success words
+		"hecho",      // Spanish
+		"completado", // Spanish
+		"listo",      // Spanish
+		"terminado",  // Spanish
+		"guardado",   // Spanish
+		"éxito",      // Spanish
+		"realizado",  // Spanish
+		"fertig",     // German
+		"erledigt",   // German
+		"abgeschlossen", // German
+		"gespeichert", // German
+		"bereit",     // German
+		"erfolgreich", // German
+		"完了",       // Japanese
+		"成功",       // Japanese
+		"終わりました", // Japanese
+		"保存しました", // Japanese
+		"できました", // Japanese
+		"完成",       // Japanese
 	}
 
 	for _, phrase := range successPhrases {
