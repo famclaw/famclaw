@@ -35,6 +35,10 @@ type Client struct {
 	// (explicit opt-out) or because the per-server config did not pick
 	// the stdio sandbox path.
 	Sandbox bool
+	// AllowUnconfined == true means this client will allow running without
+	// OS sandboxing when kernel support is missing. This is an explicit opt-in
+	// for platforms like macOS that lack landlock/seccomp, with a loud warning.
+	AllowUnconfined bool
 	env     map[string]string // per-skill credential env vars
 	inner   client.MCPClient
 	tools   []mcp.Tool
@@ -62,7 +66,7 @@ func checkSeccompSupport() bool {
 // in config). It is recorded on the client so Start() can refuse to launch
 // when kernel support is missing, instead of silently downgrading to an
 // unsandboxed process.
-func NewTransportClient(name string, cfg config.MCPServerConfig, sandboxRoot string, sandboxEnabled bool) *Client {
+func NewTransportClient(name string, cfg config.MCPServerConfig, sandboxRoot string, sandboxEnabled bool, allowUnconfined bool) *Client {
 	t := cfg.Transport
 	if t == "" {
 		if cfg.Command != "" {
@@ -72,11 +76,12 @@ func NewTransportClient(name string, cfg config.MCPServerConfig, sandboxRoot str
 		}
 	}
 	return &Client{
-		name:          name,
-		transportType: t,
-		cfg:           cfg,
-		SandboxRoot:   sandboxRoot,
-		Sandbox:       sandboxEnabled,
+		name:            name,
+		transportType:   t,
+		cfg:             cfg,
+		SandboxRoot:     sandboxRoot,
+		Sandbox:         sandboxEnabled,
+		AllowUnconfined: allowUnconfined,
 	}
 }
 
@@ -112,24 +117,32 @@ func (c *Client) Start(ctx context.Context) error {
 			if c.SandboxRoot == "" {
 				return fmt.Errorf("sandbox root not set for sandboxed MCP server %q", c.name)
 			}
-			if !checkLandlockSupport() || !checkSeccompSupport() {
-				return fmt.Errorf("kernel lacks required sandboxing support (landlock=%v, seccomp=%v); refusing to launch MCP server %q unsandboxed",
-					checkLandlockSupport(), checkSeccompSupport(), c.name)
-			}
-			opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
-				launcherArgs := []string{
-					"-sandbox-launcher",
-					"--sandbox-root", c.SandboxRoot,
-					"--",
-					command,
+			landlockOK := checkLandlockSupport()
+			seccompOK := checkSeccompSupport()
+			if !landlockOK || !seccompOK {
+				if !c.AllowUnconfined {
+					return fmt.Errorf("kernel lacks required sandboxing support (landlock=%v, seccomp=%v); refusing to launch MCP server %q unsandboxed (set tools.sandbox.allow_unconfined=true to allow as explicit opt-in)",
+						landlockOK, seccompOK, c.name)
 				}
-				launcherArgs = append(launcherArgs, args...)
+				log.Printf("⚠️  kernel lacks required sandboxing support (landlock=%v, seccomp=%v) but tools.sandbox.allow_unconfined=true — launching MCP server %q without OS sandboxing (EXPLICIT OPT-IN, NOT RECOMMENDED FOR PRODUCTION)",
+					landlockOK, seccompOK, c.name)
+				// Skip adding sandbox launcher - fall through to default mcp-go exec
+			} else {
+				opts = append(opts, transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
+					launcherArgs := []string{
+						"-sandbox-launcher",
+						"--sandbox-root", c.SandboxRoot,
+						"--",
+						command,
+					}
+					launcherArgs = append(launcherArgs, args...)
 
-				cmd := exec.CommandContext(ctx, os.Args[0], launcherArgs...)
-				// Build environment: base allowlist + skill-declared vars + per-skill credentials
-				cmd.Env = env
-				return cmd, nil
-			}))
+					cmd := exec.CommandContext(ctx, os.Args[0], launcherArgs...)
+					// Build environment: base allowlist + skill-declared vars + per-skill credentials
+					cmd.Env = env
+					return cmd, nil
+				}))
+			}
 		}
 		// Tools.Sandbox.Enabled=false branch: the sandbox launcher is
 		// skipped and the subprocess is started without landlock/seccomp
