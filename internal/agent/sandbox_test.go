@@ -44,11 +44,12 @@ func newFileAgent(t *testing.T, sandboxRoot string) *Agent {
 		},
 	}
 	return &Agent{
-		user:       &cfg.Users[0],
-		cfg:        cfg,
-		evaluator:  ev,
-		classifier: classifier.New(),
-		db:         db,
+		user:                 &cfg.Users[0],
+		cfg:                  cfg,
+		evaluator:          ev,
+		classifier:           classifier.New(),
+		db:                   db,
+		effectiveSandboxRoot: sandboxRoot,
 	}
 }
 

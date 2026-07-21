@@ -202,9 +202,10 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		um = usermemory.NewStore(db)
 	}
 	// Compute the effective sandbox root based on the message context.
-	effectiveSandboxRoot, err := computeEffectiveSandboxRoot(cfg, deps.MsgContext)
-	if err != nil {
-		return nil, fmt.Errorf("computing effective sandbox root: %w", err)
+	effectiveSandboxRoot, sbErr := computeEffectiveSandboxRoot(cfg, deps.MsgContext)
+	if sbErr != nil {
+		log.Printf("computeEffectiveSandboxRoot: %v", sbErr)
+		effectiveSandboxRoot = ""
 	}
 
 	return &Agent{
