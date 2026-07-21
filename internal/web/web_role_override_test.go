@@ -52,6 +52,7 @@ func TestServerResolveUserRoleFromDB(t *testing.T) {
 			{Name: "emma", DisplayName: "Emma", Role: "child", AgeGroup: "age_8_12"},
 		},
 	}
+	cfg.Tools.SandboxRoot = t.TempDir()
 
 	identStore := identity.NewStore(db)
 	clf := classifier.New()
@@ -164,6 +165,7 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 			{Name: "emma", DisplayName: "Emma", Role: "child", AgeGroup: "age_8_12"},
 		},
 	}
+	cfg.Tools.SandboxRoot = t.TempDir()
 
 	identStore := identity.NewStore(db)
 	// Link emma to a telegram external ID so the identity store resolves her.

@@ -29,14 +29,15 @@ type Config struct {
 
 // ToolsConfig groups configuration for built-in tools registered with the LLM.
 type ToolsConfig struct {
-	WebFetch    WebFetchConfig  `yaml:"web_fetch,omitempty"`
-	WebSearch   WebSearchConfig `yaml:"web_search,omitempty"`
-	Browser     BrowserConfig   `yaml:"browser,omitempty"`
-	ToolCache   ToolCacheConfig `yaml:"tool_cache,omitempty"`
-	FileRead    FileReadConfig  `yaml:"file_read,omitempty"`
-	FileList    FileListConfig  `yaml:"file_list,omitempty"`
-	SandboxRoot string          `yaml:"sandbox_root,omitempty"`
-	Sandbox     SandboxConfig   `yaml:"sandbox,omitempty"`
+	WebFetch     WebFetchConfig  `yaml:"web_fetch,omitempty"`
+	WebSearch    WebSearchConfig `yaml:"web_search,omitempty"`
+	Browser      BrowserConfig   `yaml:"browser,omitempty"`
+	ToolCache    ToolCacheConfig `yaml:"tool_cache,omitempty"`
+	FileRead     FileReadConfig  `yaml:"file_read,omitempty"`
+	FileList     FileListConfig  `yaml:"file_list,omitempty"`
+	SandboxRoot  string          `yaml:"sandbox_root,omitempty"`
+	SandboxScope string          `yaml:"sandbox_scope,omitempty"`
+	Sandbox      SandboxConfig   `yaml:"sandbox,omitempty"`
 }
 
 // SandboxConfig controls the sandboxing of MCP servers.
@@ -568,6 +569,16 @@ func (c *Config) Validate() error {
 		}
 		// Optionally, ensure the parent directory exists? Not required; we can create later.
 		c.Tools.SandboxRoot = cleaned
+	}
+	// Validate sandbox scope if set.
+	if c.Tools.SandboxScope == "" {
+		c.Tools.SandboxScope = "user" // default to user
+	}
+	switch c.Tools.SandboxScope {
+	case "user", "group", "global":
+		// valid
+	default:
+		return fmt.Errorf("tools.sandbox_scope must be one of \"user\", \"group\", or \"global\" (got %q)", c.Tools.SandboxScope)
 	}
 	return nil
 }

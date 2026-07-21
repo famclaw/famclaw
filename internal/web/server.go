@@ -23,6 +23,7 @@ import (
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/credstore"
 	"github.com/famclaw/famclaw/internal/familystate"
+	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/llm/claudecli"
@@ -319,11 +320,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		ep := s.cfg.LLMEndpointFor(userCfg)
 		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 	}
-	a := agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
+	a, err := agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
 		Skills: s.skills,
 		Pool:   s.pool,
+		MsgContext: gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
 	})
-
+	if err != nil {
+		log.Printf("[ws] failed to create agent for %s: %v", userCfg.DisplayName, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 	for {
 		var msg WsMessage
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -351,11 +357,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			copied.Role = currentRole
 			copied.AgeGroup = currentAgeGroup
 			adjustedUser := &copied
-			a = agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
+			a, err = agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
 				Skills: s.skills,
 				Pool:   s.pool,
+				MsgContext: gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
 			})
 			lastRole = currentRole
+			if err != nil {
+				log.Printf("[ws] failed to recreate agent for %s: %v", userCfg.DisplayName, err)
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				return
+			}
 			lastAgeGroup = currentAgeGroup
 		}
 
@@ -542,7 +554,8 @@ func (s *Server) handleDecideLink(w http.ResponseWriter, r *http.Request) {
 		status = "denied"
 	}
 	if err := s.db.DecideApproval(id, status, "parent-link"); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Printf("[web] decide approval error: %v", err)
+		http.Error(w, "Internal server error", http.StatusBadRequest)
 		return
 	}
 
@@ -659,7 +672,7 @@ func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 	var unknown any
 	if s.identStore != nil {
 		u, err := s.identStore.ListUnknown(ctx)
-if err != nil {
+		if err != nil {
 			log.Printf("[web] dashboard broadcast list unknown: %v", err)
 			return
 		} else {

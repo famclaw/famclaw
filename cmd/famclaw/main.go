@@ -652,7 +652,7 @@ func main() {
 			ep := cfg.LLMEndpointFor(user)
 			llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
 		}
-		a := agent.NewAgent(user, cfg, llmClient, evaluator, clf, db, agent.AgentDeps{
+		a, err := agent.NewAgent(user, cfg, llmClient, evaluator, clf, db, agent.AgentDeps{
 			Pool:         mcpPool,
 			Skills:       enabledSkills,
 			Quarantine:   quarantine,
@@ -663,6 +663,9 @@ func main() {
 			BrowserPool:  browserPool,
 			MsgContext:   msgCtx,
 		})
+		if err != nil {
+			return "", err
+		}
 		resp, err := a.Chat(ctx, text, nil)
 		if err != nil {
 			return "", err

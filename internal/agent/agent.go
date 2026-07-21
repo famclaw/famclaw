@@ -88,8 +88,8 @@ type Agent struct {
 	// LLM. When nil, the legacy inline-everything path runs.
 	cache *toolcache.Cache
 
-// browserPool drives the builtin__browser_* tools when configured.
-// nil = browser tools disabled.
+	// browserPool drives the builtin__browser_* tools when configured.
+	// nil = browser tools disabled.
 	browserPool *browser.Pool
 
 	// todoStore is the per-user todo store.
@@ -98,7 +98,8 @@ type Agent struct {
 	// msgContext holds the gateway-specific context for the current message
 	// (gateway, external_id, group_id, is_group). Used by outbound tools
 	// like reminders to know where to send the notification.
-	msgContext gateway.MsgContext
+	msgContext           gateway.MsgContext
+	effectiveSandboxRoot string
 }
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
@@ -111,18 +112,78 @@ type AgentDeps struct {
 	Scanner      skillbridge.Scanner
 	Scheduler    *subagent.Scheduler
 	BuiltinTools []agentcore.Tool
-	Gateway      string           // gateway name (telegram, discord, web, etc.) for audit logs
-	Cache        *toolcache.Cache // tool-result spillover cache; nil disables spillover (legacy inline path)
-	BrowserPool  *browser.Pool    // backs builtin__browser_*; nil disables browser tools
+	Gateway      string             // gateway name (telegram, discord, web, etc.) for audit logs
+	Cache        *toolcache.Cache   // tool-result spillover cache; nil disables spillover (legacy inline path)
+	BrowserPool  *browser.Pool      // backs builtin__browser_*; nil disables browser tools
 	MsgContext   gateway.MsgContext // gateway-specific context for outbound tools (reminders, etc.)
 }
 
 // NewAgent creates an Agent for the given user. Optional dependencies
 // (MCP pool, skills, scanner, scheduler, etc.) are passed in deps —
 // any field left as zero value disables that capability for this Agent.
+// sanitizeDirName returns a string safe to use as a directory name component.
+// It replaces path separators with underscores and ensures the result is not
+// "." or "..".
+func sanitizeDirName(s string) (string, error) {
+	if s == "" {
+		return "", fmt.Errorf("identity cannot be empty")
+	}
+	// Replace path separators with underscore to prevent directory traversal.
+	s = strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, s)
+	// Disallow . and .. after replacement.
+	if s == "." || s == ".." {
+		return "", fmt.Errorf("identity %q is reserved after sanitization", s)
+	}
+	if len(s) > 255 {
+		return "", fmt.Errorf("identity %q exceeds 255 characters", s)
+	}
+	return s, nil
+}
+
+// computeEffectiveSandboxRoot returns the sandbox root to use for the given
+// message context, based on the configured base sandbox root and sandbox scope.
+func computeEffectiveSandboxRoot(cfg *config.Config, msgCtx gateway.MsgContext) (string, error) {
+	base := cfg.Tools.SandboxRoot
+	if base == "" {
+		return "", fmt.Errorf("sandbox root not configured")
+	}
+	scope := cfg.Tools.SandboxScope
+	if scope == "" {
+		scope = "user" // default to user
+	}
+	switch scope {
+	case "global":
+		return base, nil
+	case "group":
+		if msgCtx.GroupID == "" {
+			return "", fmt.Errorf("group ID is empty for group scope")
+		}
+		groupID, err := sanitizeDirName(msgCtx.GroupID)
+		if err != nil {
+			return "", fmt.Errorf("sanitizing group ID: %w", err)
+		}
+		return filepath.Join(base, "groups", groupID), nil
+	case "user":
+		if msgCtx.ExternalID == "" {
+			return "", fmt.Errorf("external ID is empty for user scope")
+		}
+		externalID, err := sanitizeDirName(msgCtx.ExternalID)
+		if err != nil {
+			return "", fmt.Errorf("sanitizing external ID: %w", err)
+		}
+		return filepath.Join(base, "users", externalID), nil
+	default:
+		return "", fmt.Errorf("invalid sandbox scope %q", scope)
+	}
+}
 func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter,
 	evaluator *policy.Evaluator, clf *classifier.Classifier, db *store.DB,
-	deps AgentDeps) *Agent {
+	deps AgentDeps) (*Agent, error) {
 
 	day := time.Now().UTC().Format("2006-01-02")
 	h := sha256.Sum256([]byte(user.Name + ":" + day))
@@ -136,37 +197,44 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	}
 
 	var fs *familystate.Store
-		var ts *todo.Store
+	var ts *todo.Store
 	var um *usermemory.Store
 	if db != nil {
 		fs = familystate.NewStore(db)
 		ts = todo.NewStore(db)
 		um = usermemory.NewStore(db)
 	}
+	// Compute the effective sandbox root based on the message context.
+	effectiveSandboxRoot, sbErr := computeEffectiveSandboxRoot(cfg, deps.MsgContext)
+	if sbErr != nil {
+		log.Printf("computeEffectiveSandboxRoot: %v", sbErr)
+		effectiveSandboxRoot = ""
+	}
 
 	return &Agent{
-		user:         user,
-		cfg:          cfg,
-		llmClient:    llmClient,
-		evaluator:    evaluator,
-		classifier:   clf,
-		db:           db,
-		pool:         deps.Pool,
-		skills:       deps.Skills,
-		quarantine:   deps.Quarantine,
-		scanner:      deps.Scanner,
-		scheduler:    deps.Scheduler,
-		builtinTools: builtins,
-		convID:       convID,
-		gateway:      deps.Gateway,
-		familyState:  fs,
-		todoStore:    ts,
-		userMemory:   um,
-		webFetcher:   webfetch.Fetch,
-		cache:        deps.Cache,
-		browserPool:  deps.BrowserPool,
-		msgContext:   deps.MsgContext,
-	}
+		user:                 user,
+		cfg:                  cfg,
+		llmClient:            llmClient,
+		evaluator:            evaluator,
+		classifier:           clf,
+		db:                   db,
+		pool:                 deps.Pool,
+		skills:               deps.Skills,
+		quarantine:           deps.Quarantine,
+		scanner:              deps.Scanner,
+		scheduler:            deps.Scheduler,
+		builtinTools:         builtins,
+		convID:               convID,
+		gateway:              deps.Gateway,
+		familyState:          fs,
+		todoStore:            ts,
+		userMemory:           um,
+		webFetcher:           webfetch.Fetch,
+		cache:                deps.Cache,
+		browserPool:          deps.BrowserPool,
+		msgContext:           deps.MsgContext,
+		effectiveSandboxRoot: effectiveSandboxRoot,
+	}, nil
 }
 
 // Chat processes a single user message and returns a Response.
@@ -477,10 +545,10 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 }
 
 func (a *Agent) confinePath(path string) (string, error) {
-	if a.cfg.Tools.SandboxRoot == "" {
+	if a.effectiveSandboxRoot == "" {
 		return "", fmt.Errorf("sandbox root not configured")
 	}
-	sandboxRoot := a.cfg.Tools.SandboxRoot
+	sandboxRoot := a.effectiveSandboxRoot
 	var err error
 	// Ensure sandbox root is absolute and evaluated for symlinks
 	if sandboxRoot, err = filepath.EvalSymlinks(filepath.Clean(sandboxRoot)); err != nil {
@@ -1481,7 +1549,7 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 		msgs = make([]llm.Message, 0, len(compressed))
 		for _, cm := range compressed {
 			msgs = append(msgs, llm.Message{
-				Role:  cm.Role,
+				Role:    cm.Role,
 				Content: cm.Content,
 			})
 		}
