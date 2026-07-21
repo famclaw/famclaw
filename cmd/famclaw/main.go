@@ -671,9 +671,6 @@ func main() {
 			return "", err
 		}
 		return resp.Content, nil
-			return "", err
-		}
-		return resp.Content, nil
 	}
 
 	// Gateway lifecycle context — shared between the session pool and bots.

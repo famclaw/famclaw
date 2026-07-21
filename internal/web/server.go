@@ -323,9 +323,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Skills: s.skills,
 		Pool:   s.pool,
 	})
-
 	if err != nil {
 		log.Printf("[ws] failed to create agent for %s: %v", userCfg.DisplayName, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	for {
@@ -362,6 +362,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			lastRole = currentRole
 			if err != nil {
 				log.Printf("[ws] failed to recreate agent for %s: %v", userCfg.DisplayName, err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
 			}
 			lastAgeGroup = currentAgeGroup
 		}
@@ -666,7 +668,7 @@ func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 	var unknown any
 	if s.identStore != nil {
 		u, err := s.identStore.ListUnknown(ctx)
-if err != nil {
+		if err != nil {
 			log.Printf("[web] dashboard broadcast list unknown: %v", err)
 			return
 		} else {

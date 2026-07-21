@@ -29,15 +29,15 @@ type Config struct {
 
 // ToolsConfig groups configuration for built-in tools registered with the LLM.
 type ToolsConfig struct {
-	WebFetch    WebFetchConfig  `yaml:"web_fetch,omitempty"`
-	WebSearch   WebSearchConfig `yaml:"web_search,omitempty"`
-	Browser     BrowserConfig   `yaml:"browser,omitempty"`
-	ToolCache   ToolCacheConfig `yaml:"tool_cache,omitempty"`
-	FileRead    FileReadConfig  `yaml:"file_read,omitempty"`
-	FileList    FileListConfig  `yaml:"file_list,omitempty"`
-	SandboxRoot string          `yaml:"sandbox_root,omitempty"`
-    SandboxScope string          `yaml:"sandbox_scope,omitempty"`
-	Sandbox     SandboxConfig   `yaml:"sandbox,omitempty"`
+	WebFetch     WebFetchConfig  `yaml:"web_fetch,omitempty"`
+	WebSearch    WebSearchConfig `yaml:"web_search,omitempty"`
+	Browser      BrowserConfig   `yaml:"browser,omitempty"`
+	ToolCache    ToolCacheConfig `yaml:"tool_cache,omitempty"`
+	FileRead     FileReadConfig  `yaml:"file_read,omitempty"`
+	FileList     FileListConfig  `yaml:"file_list,omitempty"`
+	SandboxRoot  string          `yaml:"sandbox_root,omitempty"`
+	SandboxScope string          `yaml:"sandbox_scope,omitempty"`
+	Sandbox      SandboxConfig   `yaml:"sandbox,omitempty"`
 }
 
 // SandboxConfig controls the sandboxing of MCP servers.

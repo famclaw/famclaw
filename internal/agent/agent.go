@@ -88,8 +88,8 @@ type Agent struct {
 	// LLM. When nil, the legacy inline-everything path runs.
 	cache *toolcache.Cache
 
-// browserPool drives the builtin__browser_* tools when configured.
-// nil = browser tools disabled.
+	// browserPool drives the builtin__browser_* tools when configured.
+	// nil = browser tools disabled.
 	browserPool *browser.Pool
 
 	// todoStore is the per-user todo store.
@@ -98,7 +98,7 @@ type Agent struct {
 	// msgContext holds the gateway-specific context for the current message
 	// (gateway, external_id, group_id, is_group). Used by outbound tools
 	// like reminders to know where to send the notification.
-	msgContext gateway.MsgContext
+	msgContext           gateway.MsgContext
 	effectiveSandboxRoot string
 }
 
@@ -112,9 +112,9 @@ type AgentDeps struct {
 	Scanner      skillbridge.Scanner
 	Scheduler    *subagent.Scheduler
 	BuiltinTools []agentcore.Tool
-	Gateway      string           // gateway name (telegram, discord, web, etc.) for audit logs
-	Cache        *toolcache.Cache // tool-result spillover cache; nil disables spillover (legacy inline path)
-	BrowserPool  *browser.Pool    // backs builtin__browser_*; nil disables browser tools
+	Gateway      string             // gateway name (telegram, discord, web, etc.) for audit logs
+	Cache        *toolcache.Cache   // tool-result spillover cache; nil disables spillover (legacy inline path)
+	BrowserPool  *browser.Pool      // backs builtin__browser_*; nil disables browser tools
 	MsgContext   gateway.MsgContext // gateway-specific context for outbound tools (reminders, etc.)
 }
 
@@ -194,7 +194,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	}
 
 	var fs *familystate.Store
-		var ts *todo.Store
+	var ts *todo.Store
 	var um *usermemory.Store
 	if db != nil {
 		fs = familystate.NewStore(db)
@@ -208,27 +208,27 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	}
 
 	return &Agent{
-		user:         user,
-		cfg:          cfg,
-		llmClient:    llmClient,
-		evaluator:    evaluator,
-		classifier:   clf,
-		db:           db,
-		pool:         deps.Pool,
-		skills:       deps.Skills,
-		quarantine:   deps.Quarantine,
-		scanner:      deps.Scanner,
-		scheduler:    deps.Scheduler,
-		builtinTools: builtins,
-		convID:       convID,
-		gateway:      deps.Gateway,
-		familyState:  fs,
-		todoStore:    ts,
-		userMemory:   um,
-		webFetcher:   webfetch.Fetch,
-		cache:        deps.Cache,
-		browserPool:  deps.BrowserPool,
-		msgContext:   deps.MsgContext,
+		user:                 user,
+		cfg:                  cfg,
+		llmClient:            llmClient,
+		evaluator:            evaluator,
+		classifier:           clf,
+		db:                   db,
+		pool:                 deps.Pool,
+		skills:               deps.Skills,
+		quarantine:           deps.Quarantine,
+		scanner:              deps.Scanner,
+		scheduler:            deps.Scheduler,
+		builtinTools:         builtins,
+		convID:               convID,
+		gateway:              deps.Gateway,
+		familyState:          fs,
+		todoStore:            ts,
+		userMemory:           um,
+		webFetcher:           webfetch.Fetch,
+		cache:                deps.Cache,
+		browserPool:          deps.BrowserPool,
+		msgContext:           deps.MsgContext,
 		effectiveSandboxRoot: effectiveSandboxRoot,
 	}, nil
 }
@@ -1545,7 +1545,7 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 		msgs = make([]llm.Message, 0, len(compressed))
 		for _, cm := range compressed {
 			msgs = append(msgs, llm.Message{
-				Role:  cm.Role,
+				Role:    cm.Role,
 				Content: cm.Content,
 			})
 		}
