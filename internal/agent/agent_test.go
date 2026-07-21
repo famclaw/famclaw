@@ -17,6 +17,7 @@ import (
 	"github.com/famclaw/famclaw/internal/compress"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
+	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/skillbridge"
