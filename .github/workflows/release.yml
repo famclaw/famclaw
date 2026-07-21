@@ -170,9 +170,10 @@ jobs:
       # need to install OPA or set policies.dir.
       - name: Start FamClaw server
         run: |
+          SERVER_PORT=$(shuf -i 20000-30000 -n 1)
           cat > /tmp/test-config.yaml << 'TESTCFG'
           server:
-            port: 8080
+            port: ${SERVER_PORT}
             secret: "post-release-test-secret-32chars!!"
           llm:
             base_url: ""
@@ -182,29 +183,30 @@ jobs:
             db_path: /tmp/famclaw-test.db
           TESTCFG
           dist/famclaw --config /tmp/test-config.yaml &
-          for i in $(seq 1 15); do
-            curl -sf http://localhost:8080/ > /dev/null 2>&1 && break
+          echo "SERVER_PORT=${SERVER_PORT}" >> $GITHUB_ENV
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:${SERVER_PORT}/api/health >/dev/null 2>&1 && break
             sleep 1
           done
 
       - name: "Smoke: root redirects to /setup"
         run: |
-          status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/)
+          status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${{ env.SERVER_PORT }}/)
           echo "Root: HTTP $status"
           [ "$status" = "307" ] || (echo "FAIL: expected 307" && exit 1)
 
       - name: "Smoke: /setup serves wizard"
         run: |
-          curl -sf http://localhost:8080/setup | grep -q "FamClaw" || \
+          curl -sf http://localhost:${{ env.SERVER_PORT }}/setup | grep -q "FamClaw" || \
             (echo "FAIL: /setup missing" && exit 1)
 
       - name: "Smoke: GET /login serves login page (regression for v0.5.2 405 bug)"
         run: |
-          curl -sf -L http://localhost:8080/login | grep -q "FamClaw" || \
+          curl -sf -L http://localhost:${{ env.SERVER_PORT }}/login | grep -q "FamClaw" || \
             (echo "FAIL: GET /login did not serve a usable login page (followed redirect)" && exit 1)
       - name: "Smoke: hardware detect API"
         run: |
-          curl -sf http://localhost:8080/api/setup/detect | jq -e '.os' || \
+          curl -sf http://localhost:${{ env.SERVER_PORT }}/api/setup/detect | jq -e '.os' || \
             (echo "FAIL: detect API" && exit 1)
 
       # Post-v0.5.1 (PR #129): auth model is cookie-based sessions, not per-request
@@ -213,13 +215,13 @@ jobs:
 
       - name: "Smoke: protected /api/settings returns 401 without session"
         run: |
-          status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/settings)
+          status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${{ env.SERVER_PORT }}/api/settings)
           echo "Anonymous GET /api/settings: HTTP $status"
           [ "$status" = "401" ] || (echo "FAIL: expected 401 (session-gated), got $status" && exit 1)
 
       - name: "Smoke: wizard PIN bootstrap seats famclaw_session cookie"
         run: |
-          curl -sf -c /tmp/famclaw-cookies.txt -X POST http://localhost:8080/api/setup/pin \
+          curl -sf -c /tmp/famclaw-cookies.txt -X POST http://localhost:${{ env.SERVER_PORT }}/api/setup/pin \
             -H 'Content-Type: application/json' \
             -d '{"pin":"9999"}' || (echo "FAIL: /api/setup/pin POST" && exit 1)
           grep -q famclaw_session /tmp/famclaw-cookies.txt || \
@@ -228,12 +230,12 @@ jobs:
 
       - name: "Smoke: settings API (with session)"
         run: |
-          curl -sf -b /tmp/famclaw-cookies.txt http://localhost:8080/api/settings | jq -e '.llm' || \
+          curl -sf -b /tmp/famclaw-cookies.txt http://localhost:${{ env.SERVER_PORT }}/api/settings | jq -e '.llm' || \
             (echo "FAIL: settings GET with session" && exit 1)
 
       - name: "Smoke: wizard setup flow (with session)"
         run: |
-          curl -sf -b /tmp/famclaw-cookies.txt -X POST http://localhost:8080/api/settings \
+          curl -sf -b /tmp/famclaw-cookies.txt -X POST http://localhost:${{ env.SERVER_PORT }}/api/settings \
             -H 'Content-Type: application/json' \
             -d '{
               "llm": {"base_url": "http://localhost:11434", "model": "test"},
@@ -251,7 +253,7 @@ jobs:
       - name: "Smoke: session enforcement — POST /api/settings without cookie returns 401"
         run: |
           status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-            http://localhost:8080/api/settings \
+            http://localhost:${{ env.SERVER_PORT }}/api/settings \
             -H 'Content-Type: application/json' \
             -d '{"llm":{"base_url":"http://evil.com","model":"x"}}')
           echo "Anonymous POST /api/settings: HTTP $status"
