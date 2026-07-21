@@ -546,9 +546,7 @@ func outputClaimsSuccess(output string) bool {
 		"saved",
 		"all set",
 		"ready",
-		"ok",
-		"yes",
-		"true",
+		// Remove "ok", "yes", "true" as they can false-positive on normal replies
 		"achieved",
 		"resolved",
 		"solved",
@@ -582,23 +580,6 @@ func outputClaimsSuccess(output string) bool {
 		if strings.Contains(outputLower, phrase) {
 			return true
 		}
-	}
-
-	// Additional robustness: if output isn't empty and doesn't contain
-	// error-like indicators, assume success
-	if len(strings.TrimSpace(output)) > 0 {
-		// Check for error indicators to exclude them
-		errorIndicators := []string{
-			"error", "fail", "exception", "problem", "issue", "broken", "dead",
-			"invalid", "bad", "wrong", "incorrect", "not working", "not available", "not found",
-		}
-
-		for _, indicator := range errorIndicators {
-			if strings.Contains(outputLower, indicator) {
-				return false
-			}
-		}
-		return true // If not empty and not error-like, assume success
 	}
 
 	return false
