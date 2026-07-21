@@ -947,7 +947,14 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 			// Subagent completed (success or error)
 			var message string
 			if result.Error != nil {
-				message = fmt.Sprintf("❌ Research task %s failed: %v", agentID, result.Error)
+				// Check if the subagent context deadline was exceeded (timeout takes precedence)
+				if subCtx.Err() != nil && errors.Is(subCtx.Err(), context.DeadlineExceeded) {
+					// This is a timeout - deliver timeout message instead of generic failure
+					message = fmt.Sprintf("⏰ Research task %s timed out after %d seconds", agentID, timeoutSec)
+				} else {
+					// This is a genuine error, not a timeout
+					message = fmt.Sprintf("❌ Research task %s failed: %v", agentID, result.Error)
+				}
 			} else {
 				message = fmt.Sprintf("🔬 Research task %s completed:\n%s", agentID, result.Output)
 			}
