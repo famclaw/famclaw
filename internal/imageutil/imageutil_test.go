@@ -5,6 +5,9 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
+	"image/gif"
+	"io"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -176,3 +179,61 @@ func TestResizeImageDifferentMaxDims(t *testing.T) {
 		assert.True(t, width <= 640 && height <= 640)
 	})
 }
+func TestResizeImage_Formats(t *testing.T) {
+	tests := []struct {
+		name     string
+		encode   func(io.Writer, image.Image) error
+		mime     string
+	}{
+		{"PNG", func(w io.Writer, m image.Image) error { return png.Encode(w, m) }, "image/png"},
+		{"GIF", func(w io.Writer, m image.Image) error { return gif.Encode(w, m, nil) }, "image/gif"},
+		{"JPEG", func(w io.Writer, m image.Image) error { return jpeg.Encode(w, m, nil) }, "image/jpeg"},
+		// WebP is skipped because there is no standard library encoder.
+		// {"WebP", nil, "image/webp"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a small test image (40x30)
+			src := image.NewRGBA(image.Rect(0, 0, 40, 30))
+			// Fill with a simple pattern to make it non-trivial
+			for y := 0; y < 30; y++ {
+				for x := 0; x < 40; x++ {
+					// Red gradient
+					src.Set(x, y, color.RGBA{R: uint8(x * 255 / 39), G: 0, B: 0, A: 255})
+				}
+			}
+
+			var buf bytes.Buffer
+			if err := tt.encode(&buf, src); err != nil {
+				t.Fatalf("failed to encode %s: %v", tt.name, err)
+			}
+			srcData := buf.Bytes()
+
+			// Resize to max dimension 20
+			resizedData, err := ResizeImage(srcData, 20)
+			if err != nil {
+				t.Errorf("ResizeImage failed for %s: %v", tt.name, err)
+				return
+			}
+
+			// Decode the result (should be JPEG)
+			decoded, err := jpeg.Decode(bytes.NewReader(resizedData))
+			if err != nil {
+				t.Errorf("failed to decode resized %s as JPEG: %v", tt.name, err)
+				return
+			}
+
+			// Check that dimensions are within the max dimension
+			bounds := decoded.Bounds()
+			width := bounds.Dx()
+			height := bounds.Dy()
+			if width > 20 || height > 20 {
+				t.Errorf("resized %s dimensions (%dx%d) exceed max dimension 20", tt.name, width, height)
+			}
+		})
+	}
+}
+
+
+
