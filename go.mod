@@ -22,6 +22,8 @@ require (
 	golang.org/x/sys v0.47.0
 )
 
+require github.com/fsnotify/fsnotify v1.10.1 // indirect
+
 require (
 	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

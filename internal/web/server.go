@@ -73,6 +73,14 @@ type WsMessage struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+// UpdateConfig replaces the server's configuration with the provided config.
+// Must be called with the config mutex held for writing by callers.
+func (s *Server) UpdateConfig(newCfg *config.Config) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	s.cfg = newCfg
+}
+
 func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store.SessionStore, vault *credstore.Vault,
 	identStore *identity.Store, evaluator *policy.Evaluator, clf *classifier.Classifier, notifier *notify.MultiNotifier,
 	skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool) *Server {

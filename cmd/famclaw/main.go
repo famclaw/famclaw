@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+
 	"github.com/elastic/go-seccomp-bpf"
 	landlock "github.com/landlock-lsm/go-landlock/landlock"
 	landlocksyscall "github.com/landlock-lsm/go-landlock/landlock/syscall"
@@ -770,6 +772,65 @@ func main() {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 10 * time.Minute, // streaming LLM responses
 		IdleTimeout:  120 * time.Second,
+	}
+
+	// Set up config file watcher for hot-reload
+	configWatcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Printf("Failed to create config watcher: %v", err)
+	} else {
+		defer configWatcher.Close()
+		// Watch the config file for changes
+		if err := configWatcher.Add(*cfgPath); err != nil {
+			log.Printf("Failed to watch config file %s: %v", *cfgPath, err)
+		} else {
+			// Start goroutine to handle config events
+			go func() {
+				for {
+					select {
+					case <-gwCtx.Done():
+						return
+					case event, ok := <-configWatcher.Events:
+						if !ok {
+							return
+						}
+						if event.Op&fsnotify.Write == fsnotify.Write {
+							// Config file was written to, reload it
+							newCfg, err := config.Load(*cfgPath)
+							if err != nil {
+								log.Printf("Error reloading config: %v", err)
+								continue
+							}
+							// Validate the new config
+							if err := newCfg.Validate(); err != nil {
+								log.Printf("Invalid config change (keeping current config): %v", err)
+								continue
+							}
+							if err := newCfg.LLM.ValidateProvider(); err != nil {
+								log.Printf("Invalid LLM provider in config change (keeping current config): %v", err)
+								continue
+							}
+							// Config is valid, update the router and server
+							log.Printf("Config file changed, reloading configuration...")
+							router.UpdateConfig(newCfg)
+							srv.UpdateConfig(newCfg)
+							
+							// Update MCP pool with new server configuration
+							mcpPool.UpdateFromConfig(newCfg.Skills.MCPServers, newCfg.Skills.Credentials)
+							
+							// Update the config variable used for new agent creations
+							cfg = newCfg
+							log.Printf("Configuration reloaded successfully")
+						}
+					case err, ok := <-configWatcher.Errors:
+						if !ok {
+							return
+						}
+						log.Printf("Config watcher error: %v", err)
+					}
+				}
+			}()
+		}
 	}
 
 	// mDNS removed in v0.5.x — see #110. Use the device IP address.
