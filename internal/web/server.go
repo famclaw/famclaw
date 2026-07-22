@@ -74,7 +74,7 @@ type WsMessage struct {
 }
 
 // UpdateConfig replaces the server's configuration with the provided config.
-// Must be called with the config mutex held for writing by callers.
+// It locks the config mutex internally, so callers must NOT already hold it.
 func (s *Server) UpdateConfig(newCfg *config.Config) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
