@@ -926,6 +926,7 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 		return subagent.Execute(ctx, cfg, execDeps)
 	})
 	if err != nil {
+		cancel()
 		return "", fmt.Errorf("spawning subagent: %w", err)
 	}
 
