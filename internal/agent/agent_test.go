@@ -1203,3 +1203,49 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 		t.Errorf("Number of messages %d seems too large for context window %d", len(msgs), maxContextTokens)
 	}
 }
+
+// TestHandleWebFetch_BrowserFallbackDecision covers the browser-fallback DECISION
+// logic in handleWebFetch that is unit-testable without a live browser: config
+// gating and the nil-pool guard, both of which must surface an honest error
+// rather than attempt (or crash on) a fallback. The actual Playwright navigation
+// path uses a concrete *browser.Pool and needs a live browser, so it is exercised
+// by integration testing, not here.
+func TestHandleWebFetch_BrowserFallbackDecision(t *testing.T) {
+	newAgent := func(fallback bool) *Agent {
+		return &Agent{
+			user: &config.UserConfig{Name: "testuser", Role: "parent"},
+			cfg: &config.Config{
+				Tools: config.ToolsConfig{
+					WebFetch: config.WebFetchConfig{
+						Enabled:               true,
+						URLAllowlist:          []string{"example.com"},
+						MaxBytes:              256 * 1024,
+						TimeoutSec:            5,
+						FallbackToBrowser:     fallback,
+						FallbackMinTextLength: 10,
+					},
+				},
+			},
+			webFetcher: func(context.Context, string, webfetch.Options) (*webfetch.Result, error) {
+				return &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: ""}, nil
+			},
+			// browserPool intentionally nil.
+		}
+	}
+	cases := []struct {
+		name     string
+		fallback bool
+	}{
+		{"fallback disabled -> honest empty-response error", false},
+		{"fallback enabled but no browser pool -> honest empty-response error (nil-guard)", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAgent(tc.fallback)
+			_, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+			if err == nil || !strings.Contains(err.Error(), "empty response") {
+				t.Fatalf("want honest empty-response error, got: %v", err)
+			}
+		})
+	}
+}

@@ -1126,7 +1126,31 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	if result != nil {
 		log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v",
 			a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
-		if strings.TrimSpace(result.Text) == "" {
+		text := strings.TrimSpace(result.Text)
+		minLength := a.cfg.Tools.WebFetch.FallbackMinTextLength
+		if minLength == 0 {
+			minLength = 10
+		}
+		if len(text) < minLength && a.browserPool != nil && a.cfg.Tools.WebFetch.FallbackToBrowser {
+			// Attempt browser fallback for JS-heavy sites.
+			browserResult, err := a.fetchWithBrowser(ctx, rawURL, hostAllowed)
+			if err != nil {
+				return "", fmt.Errorf("web_fetch browser fallback failed for %s: %v", rawURL, err)
+			}
+			if strings.TrimSpace(browserResult.Text) == "" {
+				return "", fmt.Errorf("web_fetch browser fallback got an empty response from %s", rawURL)
+			}
+			result = &webfetch.Result{
+				URL:         browserResult.URL,
+				StatusCode:  browserResult.StatusCode,
+				ContentType: browserResult.ContentType,
+				Bytes:       browserResult.Bytes,
+				Truncated:   browserResult.Truncated,
+				Text:        browserResult.Text,
+			}
+			log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback)",
+				a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+		} else if len(text) == 0 {
 			return "", fmt.Errorf("web_fetch got an empty response from %s (HTTP %d); the page returned no readable text", rawURL, result.StatusCode)
 		}
 	}
@@ -1170,6 +1194,46 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// Legacy path: no cache configured, or cache write failed.
 	return fmt.Sprintf("URL: %s\nStatus: %d\nContent-Type: %s\nTruncated: %v\n\n%s",
 		result.URL, result.StatusCode, result.ContentType, result.Truncated, result.Text), nil
+}
+
+// fetchWithBrowser uses the browser pool to navigate to a URL and extract text,
+// for JS-heavy sites where the plain HTTP fetch returns too little text. The same
+// host-allowlist check is applied to navigation and extraction.
+func (a *Agent) fetchWithBrowser(ctx context.Context, rawURL string, hostAllowed func(string) bool) (*webfetch.Result, error) {
+	hostCheck := func(host string) error {
+		if !hostAllowed(host) {
+			return fmt.Errorf("host %q not in url_allowlist", host)
+		}
+		return nil
+	}
+	if _, err := a.browserPool.Exec(ctx, browser.ExecInput{
+		User:      a.user.Name,
+		ToolName:  "builtin__browser_navigate",
+		Args:      map[string]any{"url": rawURL},
+		HostCheck: hostCheck,
+	}); err != nil {
+		return nil, fmt.Errorf("browser navigate: %w", err)
+	}
+	out, err := a.browserPool.Exec(ctx, browser.ExecInput{
+		User:      a.user.Name,
+		ToolName:  "builtin__browser_extract",
+		Args:      map[string]any{"mode": "text"},
+		HostCheck: hostCheck,
+	});
+	if err != nil {
+		return nil, fmt.Errorf("browser extract: %w", err)
+	}
+	// The browser extract tool returns plain text; status/content-type are not
+	// available from the browser path, so use sensible defaults.
+	text := string(out)
+	return &webfetch.Result{
+		URL:         rawURL,
+		StatusCode:  200,
+		ContentType: "text/html",
+		Bytes:       int64(len(text)),
+		Truncated:   false,
+		Text:        text,
+	}, nil
 }
 
 // handleWebSearch dispatches the builtin__web_search tool. Auth boundary:

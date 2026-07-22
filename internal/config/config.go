@@ -103,6 +103,13 @@ type WebFetchConfig struct {
 	// or hostile-LAN deployments where the bot must not reach internal
 	// addresses even when they appear in url_allowlist.
 	BlockPrivateNetworks bool `yaml:"block_private_networks,omitempty"`
+	// FallbackToBrowser enables using the browser pool as a fallback for JS-heavy
+	// sites when the plain fetch returns insufficient text.
+	FallbackToBrowser bool `yaml:"fallback_to_browser,omitempty"`
+	// FallbackMinTextLength is the minimum plain-fetch text length (chars) to treat
+	// as sufficient; below it, and with FallbackToBrowser, the browser fallback runs.
+	// Zero means use the default of 10.
+	FallbackMinTextLength int `yaml:"fallback_min_text_length,omitempty"`
 }
 
 // InferenceConfig controls local LLM inference via llama-server sidecar.
@@ -411,6 +418,9 @@ func applyDefaults(c *Config) {
 	// unconditionally so the values are usable if a runtime toggle ever exists.
 	if c.Tools.WebFetch.MaxBytes == 0 {
 		c.Tools.WebFetch.MaxBytes = 256 * 1024
+	}
+	if c.Tools.WebFetch.FallbackMinTextLength == 0 {
+		c.Tools.WebFetch.FallbackMinTextLength = 10
 	}
 	if c.Tools.WebFetch.TimeoutSec == 0 {
 		c.Tools.WebFetch.TimeoutSec = 15
