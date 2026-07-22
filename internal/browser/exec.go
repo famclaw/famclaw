@@ -186,6 +186,16 @@ func (p *Pool) doNavigate(_ context.Context, sess *userSession, args map[string]
 	if err != nil {
 		return "", fmt.Errorf("browser_navigate: %w", err)
 	}
+	// Re-validate the host after any redirects: page.Goto follows 3xx redirects,
+	// so an allowlisted initial URL could land on a disallowed host. Mirrors the
+	// redirect-time host check the HTTP web_fetch path enforces.
+	if hostCheck != nil {
+		if finalURL, perr := url.Parse(sess.page.URL()); perr == nil {
+			if cerr := hostCheck(finalURL.Hostname()); cerr != nil {
+				return "", fmt.Errorf("browser_navigate: redirected to disallowed host: %w", cerr)
+			}
+		}
+	}
 	sess.prevRefs = nil // page navigation invalidates ref continuity
 	return p.snapshotReply(sess)
 }

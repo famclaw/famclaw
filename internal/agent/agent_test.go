@@ -200,7 +200,7 @@ func TestHandleSpawnAgent_Timeout(t *testing.T) {
 	mockSender := &mockSender{
 		calls: make(chan *senderCall, 1),
 	}
-	
+
 	// Create agent with mock sender registry
 	a := &Agent{
 		user: &config.UserConfig{Name: "testuser", Role: "parent"},
@@ -218,7 +218,7 @@ func TestHandleSpawnAgent_Timeout(t *testing.T) {
 			IsGroup:    false,
 		},
 	}
-	
+
 	// Set up the test to simulate a timeout scenario
 	// timeout_seconds=1 must be the deadline that fires, NOT the 5s parent ctx.
 	// The elapsed-time assertion below distinguishes the two: if it took close
@@ -259,17 +259,17 @@ func TestHandleSpawnAgent_Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error from immediate return, got: %v", err)
 	}
-	
+
 	// Check that the acknowledgment message is returned
 	if !strings.HasPrefix(result, "Started your research") {
 		t.Errorf("Expected acknowledgment message, got: %s", result)
 	}
-	
+
 	// Check that it returned quickly (within reasonable time)
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("handleSpawnAgent should return immediately, but took %v", elapsed)
 	}
-	
+
 	// Check that the result was delivered asynchronously via the sender
 	// We need to give the background goroutine time to execute
 	select {
@@ -1201,5 +1201,75 @@ func TestBuildMessagesContextWindow(t *testing.T) {
 	// We'll just check that it's less than, say, 50 messages (should be much less for 200 history messages with small context).
 	if len(msgs) > 50 {
 		t.Errorf("Number of messages %d seems too large for context window %d", len(msgs), maxContextTokens)
+	}
+}
+
+// TestHandleWebFetch_BrowserFallbackDecision covers the browser-fallback DECISION
+// logic in handleWebFetch that is unit-testable without a live browser: config
+// gating and the nil-pool guard, both of which must surface an honest error
+// rather than attempt (or crash on) a fallback. The actual Playwright navigation
+// path uses a concrete *browser.Pool and needs a live browser, so it is exercised
+// by integration testing, not here.
+func TestHandleWebFetch_BrowserFallbackDecision(t *testing.T) {
+	newAgent := func(fallback bool) *Agent {
+		return &Agent{
+			user: &config.UserConfig{Name: "testuser", Role: "parent"},
+			cfg: &config.Config{
+				Tools: config.ToolsConfig{
+					WebFetch: config.WebFetchConfig{
+						Enabled:               true,
+						URLAllowlist:          []string{"example.com"},
+						MaxBytes:              256 * 1024,
+						TimeoutSec:            5,
+						FallbackToBrowser:     fallback,
+						FallbackMinTextLength: 10,
+					},
+				},
+			},
+			webFetcher: func(context.Context, string, webfetch.Options) (*webfetch.Result, error) {
+				return &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: ""}, nil
+			},
+			// browserPool intentionally nil.
+		}
+	}
+	cases := []struct {
+		name     string
+		fallback bool
+	}{
+		{"fallback disabled -> honest empty-response error", false},
+		{"fallback enabled but no browser pool -> honest empty-response error (nil-guard)", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAgent(tc.fallback)
+			_, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+			if err == nil || !strings.Contains(err.Error(), "empty response") {
+				t.Fatalf("want honest empty-response error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestHandleWebFetch_BrowserFallbackGracefulDegrade verifies that when the
+// browser fallback is wanted but unavailable (nil pool), a short-but-non-empty
+// HTTP result is returned as-is rather than turned into an error.
+func TestHandleWebFetch_BrowserFallbackGracefulDegrade(t *testing.T) {
+	a := &Agent{
+		user: &config.UserConfig{Name: "u", Role: "parent"},
+		cfg: &config.Config{Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+			Enabled: true, URLAllowlist: []string{"example.com"}, MaxBytes: 256 * 1024, TimeoutSec: 5,
+			FallbackToBrowser: true, FallbackMinTextLength: 10,
+		}}},
+		// browserPool nil: fallback wanted but unavailable -> degrade to the thin HTTP text.
+		webFetcher: func(context.Context, string, webfetch.Options) (*webfetch.Result, error) {
+			return &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "thin"}, nil
+		},
+	}
+	out, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+	if err != nil {
+		t.Fatalf("expected graceful degradation to thin text, got error: %v", err)
+	}
+	if !strings.Contains(out, "thin") {
+		t.Errorf("expected original thin text returned, got %q", out)
 	}
 }

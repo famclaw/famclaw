@@ -101,9 +101,9 @@ type Agent struct {
 	// like reminders to know where to send the notification.
 	msgContext           gateway.MsgContext
 	effectiveSandboxRoot string
-	
+
 	// senderRegistry maps gateway names to their respective sender implementations.
-	senderRegistry map[string]gateway.Sender
+	senderRegistry   map[string]gateway.Sender
 	senderRegistryMu sync.RWMutex // protects senderRegistry access
 }
 
@@ -111,16 +111,16 @@ type Agent struct {
 // safe to leave nil — the Agent degrades gracefully (no MCP tools,
 // no skills, no scanning, no subagents).
 type AgentDeps struct {
-	Pool         *mcp.Pool
-	Skills       []*skillbridge.Skill
-	Quarantine   *skillbridge.Quarantine
-	Scanner      skillbridge.Scanner
-	Scheduler    *subagent.Scheduler
-	BuiltinTools []agentcore.Tool
-	Gateway      string             // gateway name (telegram, discord, web, etc.) for audit logs
-	Cache        *toolcache.Cache   // tool-result spillover cache; nil disables spillover (legacy inline path)
-	BrowserPool  *browser.Pool      // backs builtin__browser_*; nil disables browser tools
-	MsgContext   gateway.MsgContext // gateway-specific context for outbound tools (reminders, etc.)
+	Pool           *mcp.Pool
+	Skills         []*skillbridge.Skill
+	Quarantine     *skillbridge.Quarantine
+	Scanner        skillbridge.Scanner
+	Scheduler      *subagent.Scheduler
+	BuiltinTools   []agentcore.Tool
+	Gateway        string                    // gateway name (telegram, discord, web, etc.) for audit logs
+	Cache          *toolcache.Cache          // tool-result spillover cache; nil disables spillover (legacy inline path)
+	BrowserPool    *browser.Pool             // backs builtin__browser_*; nil disables browser tools
+	MsgContext     gateway.MsgContext        // gateway-specific context for outbound tools (reminders, etc.)
 	SenderRegistry map[string]gateway.Sender // map of gateway name (e.g., "telegram", "discord") to Sender implementation
 }
 
@@ -133,14 +133,14 @@ func sanitizeDirName(s string) (string, error) {
 	if s == "" {
 		return "", fmt.Errorf("identity cannot be empty")
 	}
-	
+
 	// Strict allowlist: only [A-Za-z0-9._-] characters are permitted
 	for _, r := range s {
 		if !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '.' && r != '_' && r != '-' {
 			return "", fmt.Errorf("identity %q contains disallowed characters", s)
 		}
 	}
-	
+
 	// Disallow . and .. after replacement.
 	if s == "." || s == ".." {
 		return "", fmt.Errorf("identity %q is reserved after sanitization", s)
@@ -956,15 +956,15 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 
 	// Return immediately with an acknowledgment instead of waiting for result
 	ackMsg := fmt.Sprintf("Started your research (task %s). Ask me for its status anytime; I'll post the result here when it's done.", agentID)
-	
+
 	// Launch background goroutine to handle result delivery
 	go func() {
 		// Capture the msgContext for later use in result delivery
 		msgCtx := a.msgContext
-		
+
 		// Add defer cancel to ensure the outer context is properly cleaned up
 		defer cancel()
-		
+
 		// Use the outer subCtx that was created in the parent function
 		// This fixes the issue where the inner subCtx was shadowing the outer one
 		// and causing the wrong context to be checked for timeout
@@ -984,17 +984,17 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 			} else {
 				message = fmt.Sprintf("🔬 Research task %s completed:\n%s", agentID, result.Output)
 			}
-			
+
 			// Deliver result to originating conversation
 			a.deliverResultToOrigin(agentID, message, msgCtx)
-			
+
 		case <-subCtx.Done():
 			// Timeout
 			message := fmt.Sprintf("⏰ Research task %s timed out after %d seconds", agentID, timeoutSec)
 			a.deliverResultToOrigin(agentID, message, msgCtx)
 		}
 	}()
-	
+
 	return ackMsg, nil
 }
 
@@ -1008,19 +1008,19 @@ func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gat
 	a.senderRegistryMu.RLock()
 	sender, ok := a.senderRegistry[msgCtx.Gateway]
 	a.senderRegistryMu.RUnlock()
-	
+
 	if !ok {
 		// No sender registered for this gateway - log and skip
 		log.Printf("[agent][%s] No sender registered for gateway %s", a.user.Name, msgCtx.Gateway)
 		return
 	}
-	
+
 	// Compute chatID: use GroupID if IsGroup and GroupID is not empty, otherwise use ExternalID
 	chatID := msgCtx.ExternalID
 	if msgCtx.IsGroup && msgCtx.GroupID != "" {
 		chatID = msgCtx.GroupID
 	}
-	
+
 	// Send the message
 	ctx, cancel := context.WithTimeout(context.Background(), deliverySendTimeout)
 	defer cancel()
@@ -1126,6 +1126,31 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	if result != nil {
 		log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v",
 			a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+		text := strings.TrimSpace(result.Text)
+		minLength := a.cfg.Tools.WebFetch.FallbackMinTextLength
+		if minLength == 0 {
+			minLength = 10
+		}
+		if len(text) < minLength && a.browserPool != nil && a.cfg.Tools.WebFetch.FallbackToBrowser {
+			// Attempt browser fallback for JS-heavy sites.
+			browserResult, err := a.fetchWithBrowser(ctx, rawURL, hostAllowed)
+			if err != nil {
+				log.Printf("[agent][%s] web_fetch browser fallback failed for %s, using original result: %v", a.user.Name, rawURL, err)
+			} else if strings.TrimSpace(browserResult.Text) == "" {
+				log.Printf("[agent][%s] web_fetch browser fallback returned empty for %s, using original result", a.user.Name, rawURL)
+			} else {
+				result = &webfetch.Result{
+					URL:         browserResult.URL,
+					StatusCode:  browserResult.StatusCode,
+					ContentType: browserResult.ContentType,
+					Bytes:       browserResult.Bytes,
+					Truncated:   browserResult.Truncated,
+					Text:        browserResult.Text,
+				}
+				log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback)",
+					a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+			}
+		}
 		if strings.TrimSpace(result.Text) == "" {
 			return "", fmt.Errorf("web_fetch got an empty response from %s (HTTP %d); the page returned no readable text", rawURL, result.StatusCode)
 		}
@@ -1170,6 +1195,46 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// Legacy path: no cache configured, or cache write failed.
 	return fmt.Sprintf("URL: %s\nStatus: %d\nContent-Type: %s\nTruncated: %v\n\n%s",
 		result.URL, result.StatusCode, result.ContentType, result.Truncated, result.Text), nil
+}
+
+// fetchWithBrowser uses the browser pool to navigate to a URL and extract text,
+// for JS-heavy sites where the plain HTTP fetch returns too little text. The same
+// host-allowlist check is applied to navigation and extraction.
+func (a *Agent) fetchWithBrowser(ctx context.Context, rawURL string, hostAllowed func(string) bool) (*webfetch.Result, error) {
+	hostCheck := func(host string) error {
+		if !hostAllowed(host) {
+			return fmt.Errorf("host %q not in url_allowlist", host)
+		}
+		return nil
+	}
+	if _, err := a.browserPool.Exec(ctx, browser.ExecInput{
+		User:      a.user.Name,
+		ToolName:  "builtin__browser_navigate",
+		Args:      map[string]any{"url": rawURL},
+		HostCheck: hostCheck,
+	}); err != nil {
+		return nil, fmt.Errorf("browser navigate: %w", err)
+	}
+	out, err := a.browserPool.Exec(ctx, browser.ExecInput{
+		User:      a.user.Name,
+		ToolName:  "builtin__browser_extract",
+		Args:      map[string]any{"mode": "text"},
+		HostCheck: hostCheck,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("browser extract: %w", err)
+	}
+	// The browser extract tool returns plain text; status/content-type are not
+	// available from the browser path, so use sensible defaults.
+	text := string(out)
+	return &webfetch.Result{
+		URL:         rawURL,
+		StatusCode:  200,
+		ContentType: "text/html",
+		Bytes:       int64(len(text)),
+		Truncated:   false,
+		Text:        text,
+	}, nil
 }
 
 // handleWebSearch dispatches the builtin__web_search tool. Auth boundary:
@@ -1561,15 +1626,15 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 		// user. This preserves the role-based allowance as a hint to the model.
 		var builtinNames []string
 		roleAllowedNames := make(map[string]bool) // Track tools allowed by role
-		builtinNameSet := make(map[string]bool) // Track what's already in builtinNames for O(1) lookup
+		builtinNameSet := make(map[string]bool)   // Track what's already in builtinNames for O(1) lookup
 		for _, t := range a.builtinTools {
 			bare := strings.TrimPrefix(t.Name, "builtin__")
-			
+
 			// Check role allowance first
 			if t.AllowedForRole(a.user.Role) {
 				roleAllowedNames[bare] = true
 			}
-			
+
 			// Then apply policy filtering for prompt inclusion
 			if !t.AllowedForRole(a.user.Role) {
 				continue
@@ -1586,7 +1651,7 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 			builtinNames = append(builtinNames, bare)
 			builtinNameSet[bare] = true
 		}
-		
+
 		// Ensure that tools allowed by role are included in prompt even if policy
 		// blocks them for this specific user. This prevents over-deflection.
 		// We don't want to duplicate entries, so we check if already included using a set.
