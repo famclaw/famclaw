@@ -122,19 +122,19 @@ type AgentDeps struct {
 // (MCP pool, skills, scanner, scheduler, etc.) are passed in deps —
 // any field left as zero value disables that capability for this Agent.
 // sanitizeDirName returns a string safe to use as a directory name component.
-// It replaces path separators with underscores and ensures the result is not
-// "." or "..".
+// It uses a strict allowlist approach: only [A-Za-z0-9._-] characters are permitted.
 func sanitizeDirName(s string) (string, error) {
 	if s == "" {
 		return "", fmt.Errorf("identity cannot be empty")
 	}
-	// Replace path separators with underscore to prevent directory traversal.
-	s = strings.Map(func(r rune) rune {
-		if r == '/' || r == '\\' {
-			return '_'
+	
+	// Strict allowlist: only [A-Za-z0-9._-] characters are permitted
+	for _, r := range s {
+		if !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '.' && r != '_' && r != '-' {
+			return "", fmt.Errorf("identity %q contains disallowed characters", s)
 		}
-		return r
-	}, s)
+	}
+	
 	// Disallow . and .. after replacement.
 	if s == "." || s == ".." {
 		return "", fmt.Errorf("identity %q is reserved after sanitization", s)
@@ -167,7 +167,18 @@ func computeEffectiveSandboxRoot(cfg *config.Config, msgCtx gateway.MsgContext) 
 		if err != nil {
 			return "", fmt.Errorf("sanitizing group ID: %w", err)
 		}
-		return filepath.Join(base, "groups", groupID), nil
+		root := filepath.Join(base, "groups", groupID)
+		// Defense-in-depth: ensure computed root is still within base
+		cleaned := filepath.Clean(root)
+		if cleaned == base {
+			// This shouldn't happen, but let's be defensive
+			return "", fmt.Errorf("computed sandbox root escaped base: %q", root)
+		}
+		// Verify the cleaned path is still within base
+		if !strings.HasPrefix(cleaned, filepath.Clean(base)+string(os.PathSeparator)) {
+			return "", fmt.Errorf("computed sandbox root escaped base: %q", root)
+		}
+		return root, nil
 	case "user":
 		if msgCtx.ExternalID == "" {
 			return "", fmt.Errorf("external ID is empty for user scope")
@@ -176,7 +187,18 @@ func computeEffectiveSandboxRoot(cfg *config.Config, msgCtx gateway.MsgContext) 
 		if err != nil {
 			return "", fmt.Errorf("sanitizing external ID: %w", err)
 		}
-		return filepath.Join(base, "users", externalID), nil
+		root := filepath.Join(base, "users", externalID)
+		// Defense-in-depth: ensure computed root is still within base
+		cleaned := filepath.Clean(root)
+		if cleaned == base {
+			// This shouldn't happen, but let's be defensive
+			return "", fmt.Errorf("computed sandbox root escaped base: %q", root)
+		}
+		// Verify the cleaned path is still within base
+		if !strings.HasPrefix(cleaned, filepath.Clean(base)+string(os.PathSeparator)) {
+			return "", fmt.Errorf("computed sandbox root escaped base: %q", root)
+		}
+		return root, nil
 	default:
 		return "", fmt.Errorf("invalid sandbox scope %q", scope)
 	}
