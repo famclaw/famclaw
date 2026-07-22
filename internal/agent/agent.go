@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/agent/tools/admin"
@@ -100,6 +101,10 @@ type Agent struct {
 	// like reminders to know where to send the notification.
 	msgContext           gateway.MsgContext
 	effectiveSandboxRoot string
+	
+	// senderRegistry maps gateway names to their respective sender implementations.
+	senderRegistry map[string]gateway.Sender
+	senderRegistryMu sync.RWMutex // protects senderRegistry access
 }
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
@@ -116,6 +121,7 @@ type AgentDeps struct {
 	Cache        *toolcache.Cache   // tool-result spillover cache; nil disables spillover (legacy inline path)
 	BrowserPool  *browser.Pool      // backs builtin__browser_*; nil disables browser tools
 	MsgContext   gateway.MsgContext // gateway-specific context for outbound tools (reminders, etc.)
+	SenderRegistry map[string]gateway.Sender // map of gateway name (e.g., "telegram", "discord") to Sender implementation
 }
 
 // NewAgent creates an Agent for the given user. Optional dependencies
@@ -256,6 +262,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		browserPool:          deps.BrowserPool,
 		msgContext:           deps.MsgContext,
 		effectiveSandboxRoot: effectiveSandboxRoot,
+		senderRegistry:       deps.SenderRegistry,
 	}, nil
 }
 
@@ -934,26 +941,86 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	}
 
 	subCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
-	defer cancel()
+	// Remove the defer cancel() since we need to keep the outer context alive for the subagent lifetime
+	// The outer cancel() will be called by the defer in the goroutine below
 
 	agentID, resultCh, err := a.scheduler.Submit(subCtx, cfg, func(ctx context.Context, cfg subagent.Config) (string, error) {
 		return subagent.Execute(ctx, cfg, execDeps)
 	})
 	if err != nil {
+		cancel()
 		return "", fmt.Errorf("spawning subagent: %w", err)
 	}
 
 	log.Printf("[agent][%s] spawned subagent %s on profile %q (timeout=%ds)", a.user.Name, agentID, profile, timeoutSec)
 
-	select {
-	case result := <-resultCh:
-		if result.Error != nil {
-			return "", fmt.Errorf("subagent %s failed: %w", result.AgentID, result.Error)
+	// Return immediately with an acknowledgment instead of waiting for result
+	ackMsg := fmt.Sprintf("Started your research (task %s). Ask me for its status anytime; I'll post the result here when it's done.", agentID)
+	
+	// Launch background goroutine to handle result delivery
+	go func() {
+		// Capture the msgContext for later use in result delivery
+		msgCtx := a.msgContext
+		
+		// Add defer cancel to ensure the outer context is properly cleaned up
+		defer cancel()
+		
+		// Use the outer subCtx that was created in the parent function
+		// This fixes the issue where the inner subCtx was shadowing the outer one
+		// and causing the wrong context to be checked for timeout
+		select {
+		case result := <-resultCh:
+			// Subagent completed (success or error)
+			var message string
+			if result.Error != nil {
+				// Check if the subagent context deadline was exceeded (timeout takes precedence)
+				if subCtx.Err() != nil && errors.Is(subCtx.Err(), context.DeadlineExceeded) {
+					// This is a timeout - deliver timeout message instead of generic failure
+					message = fmt.Sprintf("⏰ Research task %s timed out after %d seconds", agentID, timeoutSec)
+				} else {
+					// This is a genuine error, not a timeout
+					message = fmt.Sprintf("❌ Research task %s failed: %v", agentID, result.Error)
+				}
+			} else {
+				message = fmt.Sprintf("🔬 Research task %s completed:\n%s", agentID, result.Output)
+			}
+			
+			// Deliver result to originating conversation
+			a.deliverResultToOrigin(agentID, message, msgCtx)
+			
+		case <-subCtx.Done():
+			// Timeout
+			message := fmt.Sprintf("⏰ Research task %s timed out after %d seconds", agentID, timeoutSec)
+			a.deliverResultToOrigin(agentID, message, msgCtx)
 		}
-		log.Printf("[agent][%s] subagent %s completed (%d chars)", a.user.Name, result.AgentID, len(result.Output))
-		return result.Output, nil
-	case <-subCtx.Done():
-		return "", fmt.Errorf("subagent timed out: %w", subCtx.Err())
+	}()
+	
+	return ackMsg, nil
+}
+
+// deliverResultToOrigin sends a message to the originating conversation
+func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gateway.MsgContext) {
+	// Look up the sender by gateway name
+	a.senderRegistryMu.RLock()
+	sender, ok := a.senderRegistry[msgCtx.Gateway]
+	a.senderRegistryMu.RUnlock()
+	
+	if !ok {
+		// No sender registered for this gateway - log and skip
+		log.Printf("[agent][%s] No sender registered for gateway %s", a.user.Name, msgCtx.Gateway)
+		return
+	}
+	
+	// Compute chatID: use GroupID if IsGroup and GroupID is not empty, otherwise use ExternalID
+	chatID := msgCtx.ExternalID
+	if msgCtx.IsGroup && msgCtx.GroupID != "" {
+		chatID = msgCtx.GroupID
+	}
+	
+	// Send the message
+	ctx := context.Background()
+	if err := sender.Send(ctx, chatID, message); err != nil {
+		log.Printf("[agent][%s] Failed to send result for agent %s to %s: %v", a.user.Name, agentID, chatID, err)
 	}
 }
 
