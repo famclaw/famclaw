@@ -96,8 +96,11 @@ func HandleRemember(ctx context.Context, store *Store, userName, category, label
 	if len(value) > 2048 {
 		return "value too long (max 2048 chars)", nil
 	}
-	if hasDisallowedControlChar(category, false) || hasDisallowedControlChar(label, false) {
-		return "category and label must not contain control characters", nil
+	if hasDisallowedControlChar(category, false) {
+		return "category must not contain control characters", nil
+	}
+	if hasDisallowedControlChar(label, false) {
+		return "label must not contain control characters", nil
 	}
 	if hasDisallowedControlChar(value, true) {
 		return "value must not contain control characters", nil

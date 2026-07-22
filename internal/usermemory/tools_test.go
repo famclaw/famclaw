@@ -11,6 +11,10 @@ func TestHandleRemember_RejectsControlChars(t *testing.T) {
 		{"null in label", "prefs", "co\x00ffee", "black"},
 		{"unit separator in value", "prefs", "coffee", "black\x1fsugar"},
 		{"control char in category", "pr\x07efs", "coffee", "black"},
+		{"control char at start of value", "prefs", "coffee", "\x01black"},
+		{"control char at end of value", "prefs", "coffee", "black\x1b"},
+		{"control char at start of label", "prefs", "\x02coffee", "black"},
+		{"control char at end of category", "prefs\x1f", "coffee", "black"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
