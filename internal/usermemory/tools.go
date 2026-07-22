@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 )
@@ -69,6 +70,21 @@ func ForgetDefinition() agentcore.Tool {
 	}
 }
 
+// hasDisallowedControlChar reports whether s contains a control character.
+// When allowWhitespace is true, tab and newline are permitted (free-text values);
+// short identifier fields (category, label) allow none.
+func hasDisallowedControlChar(s string, allowWhitespace bool) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			if allowWhitespace && (r == '\t' || r == '\n') {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // HandleRemember dispatches the remember_user_memory tool.
 func HandleRemember(ctx context.Context, store *Store, userName, category, label, value string) (string, error) {
 	if category == "" || label == "" || value == "" {
@@ -79,6 +95,15 @@ func HandleRemember(ctx context.Context, store *Store, userName, category, label
 	}
 	if len(value) > 2048 {
 		return "value too long (max 2048 chars)", nil
+	}
+	if hasDisallowedControlChar(category, false) {
+		return "category must not contain control characters", nil
+	}
+	if hasDisallowedControlChar(label, false) {
+		return "label must not contain control characters", nil
+	}
+	if hasDisallowedControlChar(value, true) {
+		return "value must not contain control characters", nil
 	}
 
 	m := &Memory{
