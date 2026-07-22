@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -163,6 +164,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/skills", s.protect(s.handleSkills))
 	mux.Handle("/api/skills/install", s.protect(s.handleSkillInstall))
 	mux.Handle("/api/skills/remove", s.protect(s.handleSkillRemove))
+		mux.Handle("/api/mcp", s.protect(s.handleMCP))
+		mux.Handle("/api/mcp/add", s.protect(s.handleMCPAdd))
+		mux.Handle("/api/mcp/remove", s.protect(s.handleMCPRemove))
 	mux.Handle("/api/unknown-accounts", s.protect(s.handleUnknownAccounts))
 	mux.Handle("/api/unknown-accounts/link", s.protect(s.handleUnknownAccountLink))
 	mux.Handle("/api/unknown-accounts/dismiss", s.protect(s.handleUnknownAccountDismiss))
@@ -591,6 +595,88 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, skills)
+}
+func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	var names []string
+	for name := range s.cfg.Skills.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	jsonOK(w, map[string][]string{"servers": names})
+}
+
+func (s *Server) handleMCPAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Name string            `json:"name"`
+		Config config.MCPServerConfig `json:"config"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonErr(w, fmt.Errorf("decoding body: %w", err), http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		jsonErr(w, fmt.Errorf("name is required"), http.StatusBadRequest)
+		return
+	}
+	if err := config.ValidateMCPServer(name, body.Config); err != nil {
+		jsonErr(w, err, http.StatusBadRequest)
+		return
+	}
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	if _, exists := s.cfg.Skills.MCPServers[name]; exists {
+		jsonErr(w, fmt.Errorf("an MCP server named %q already exists", name), http.StatusBadRequest)
+		return
+	}
+	if s.cfg.Skills.MCPServers == nil {
+		s.cfg.Skills.MCPServers = make(map[string]config.MCPServerConfig)
+	}
+	s.cfg.Skills.MCPServers[name] = body.Config
+	if err := s.cfg.Save(s.cfgPath); err != nil {
+		jsonErr(w, fmt.Errorf("saving config: %w", err), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]string{"status": "saved"})
+}
+
+func (s *Server) handleMCPRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonErr(w, fmt.Errorf("decoding body: %w", err), http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		jsonErr(w, fmt.Errorf("name is required"), http.StatusBadRequest)
+		return
+	}
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	if s.cfg.Skills.MCPServers != nil {
+		delete(s.cfg.Skills.MCPServers, name)
+	}
+	if err := s.cfg.Save(s.cfgPath); err != nil {
+		jsonErr(w, fmt.Errorf("saving config: %w", err), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]string{"status": "removed", "name": name})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
