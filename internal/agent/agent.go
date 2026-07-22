@@ -1159,6 +1159,10 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	}
 
 	// Legacy path: no cache configured, or cache write failed.
+	// Log when browser fallback is wanted but pool is unavailable
+	if len(result.Text) < 1000 && a.browserPool == nil {
+		log.Printf("[agent][%s] web_fetch: browser fallback is enabled but no browser pool is configured; cannot fall back for %s", a.user.Name, rawURL)
+	}
 	return fmt.Sprintf("URL: %s\nStatus: %d\nContent-Type: %s\nTruncated: %v\n\n%s",
 		result.URL, result.StatusCode, result.ContentType, result.Truncated, result.Text), nil
 }
