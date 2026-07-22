@@ -200,7 +200,7 @@ func TestHandleSpawnAgent_Timeout(t *testing.T) {
 	mockSender := &mockSender{
 		calls: make(chan *senderCall, 1),
 	}
-	
+
 	// Create agent with mock sender registry
 	a := &Agent{
 		user: &config.UserConfig{Name: "testuser", Role: "parent"},
@@ -218,7 +218,7 @@ func TestHandleSpawnAgent_Timeout(t *testing.T) {
 			IsGroup:    false,
 		},
 	}
-	
+
 	// Set up the test to simulate a timeout scenario
 	// timeout_seconds=1 must be the deadline that fires, NOT the 5s parent ctx.
 	// The elapsed-time assertion below distinguishes the two: if it took close
@@ -259,17 +259,17 @@ func TestHandleSpawnAgent_Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error from immediate return, got: %v", err)
 	}
-	
+
 	// Check that the acknowledgment message is returned
 	if !strings.HasPrefix(result, "Started your research") {
 		t.Errorf("Expected acknowledgment message, got: %s", result)
 	}
-	
+
 	// Check that it returned quickly (within reasonable time)
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("handleSpawnAgent should return immediately, but took %v", elapsed)
 	}
-	
+
 	// Check that the result was delivered asynchronously via the sender
 	// We need to give the background goroutine time to execute
 	select {
@@ -1247,5 +1247,29 @@ func TestHandleWebFetch_BrowserFallbackDecision(t *testing.T) {
 				t.Fatalf("want honest empty-response error, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestHandleWebFetch_BrowserFallbackGracefulDegrade verifies that when the
+// browser fallback is wanted but unavailable (nil pool), a short-but-non-empty
+// HTTP result is returned as-is rather than turned into an error.
+func TestHandleWebFetch_BrowserFallbackGracefulDegrade(t *testing.T) {
+	a := &Agent{
+		user: &config.UserConfig{Name: "u", Role: "parent"},
+		cfg: &config.Config{Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+			Enabled: true, URLAllowlist: []string{"example.com"}, MaxBytes: 256 * 1024, TimeoutSec: 5,
+			FallbackToBrowser: true, FallbackMinTextLength: 10,
+		}}},
+		// browserPool nil: fallback wanted but unavailable -> degrade to the thin HTTP text.
+		webFetcher: func(context.Context, string, webfetch.Options) (*webfetch.Result, error) {
+			return &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "thin"}, nil
+		},
+	}
+	out, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+	if err != nil {
+		t.Fatalf("expected graceful degradation to thin text, got error: %v", err)
+	}
+	if !strings.Contains(out, "thin") {
+		t.Errorf("expected original thin text returned, got %q", out)
 	}
 }
