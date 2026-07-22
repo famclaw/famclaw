@@ -1018,7 +1018,12 @@ func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gat
 	}
 	
 	// Send the message
-	ctx := context.Background()
+	// Bound the delivery send with a timeout so a stuck gateway cannot hang this
+	// background goroutine forever. context.Background() (not the research subCtx)
+	// is the correct parent: delivery must outlive the possibly-cancelled research
+	// context so a timed-out task can still deliver its "timed out" message.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	if err := sender.Send(ctx, chatID, message); err != nil {
 		log.Printf("[agent][%s] Failed to send result for agent %s to %s: %v", a.user.Name, agentID, chatID, err)
 	}
