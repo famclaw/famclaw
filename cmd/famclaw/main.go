@@ -642,6 +642,11 @@ func main() {
 	}
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
+	// senderRegistry maps gateway name -> outbound Sender, populated after the
+	// gateways are built below and captured by the closure so async research
+	// results can be delivered back to the originating conversation.
+	senderRegistry := make(map[string]gateway.Sender)
+	
 	// Chat function for gateway router - combining incoming changes with our multimodal support
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		var llmClient llm.Chatter
@@ -662,11 +667,7 @@ func main() {
 			Cache:        toolCache,
 			BrowserPool:  browserPool,
 			MsgContext:   msgCtx,
-			SenderRegistry: map[string]gateway.Sender{
-				// Build sender registry from enabled gateways
-				// Note: This is a simplified approach - in reality, we'd need to
-				// capture the actual gateway instances that are enabled
-			},
+			SenderRegistry: senderRegistry,
 		})
 		if err != nil {
 			return "", err
@@ -702,6 +703,13 @@ func main() {
 	}
 
 	if len(gateways) > 0 {
+		// Wire every enabled gateway that can send outbound messages into the
+		// agent's sender registry, keyed by gateway name (e.g. "telegram").
+		for _, g := range gateways {
+			if s, ok := g.(gateway.Sender); ok {
+				senderRegistry[g.Name()] = s
+			}
+		}
 		gateway.StartAll(gwCtx, gateways, router.Handle)
 		log.Printf("Gateways: %d started", len(gateways))
 	}
