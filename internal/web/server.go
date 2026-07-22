@@ -635,6 +635,10 @@ func (s *Server) handleMCPAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
+	if _, exists := s.cfg.Skills.MCPServers[name]; exists {
+		jsonErr(w, fmt.Errorf("an MCP server named %q already exists", name), http.StatusBadRequest)
+		return
+	}
 	if s.cfg.Skills.MCPServers == nil {
 		s.cfg.Skills.MCPServers = make(map[string]config.MCPServerConfig)
 	}
