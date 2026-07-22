@@ -998,6 +998,10 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	return ackMsg, nil
 }
 
+// deliverySendTimeout bounds how long a single async-result delivery Send may
+// block before it is abandoned, so a stuck gateway cannot hang the goroutine.
+const deliverySendTimeout = 30 * time.Second
+
 // deliverResultToOrigin sends a message to the originating conversation
 func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gateway.MsgContext) {
 	// Look up the sender by gateway name
@@ -1018,14 +1022,14 @@ func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gat
 	}
 	
 	// Send the message
-	// Bound the delivery send with a timeout so a stuck gateway cannot hang this
-	// background goroutine forever. context.Background() (not the research subCtx)
-	// is the correct parent: delivery must outlive the possibly-cancelled research
-	// context so a timed-out task can still deliver its "timed out" message.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deliverySendTimeout)
 	defer cancel()
 	if err := sender.Send(ctx, chatID, message); err != nil {
-		log.Printf("[agent][%s] Failed to send result for agent %s to %s: %v", a.user.Name, agentID, chatID, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("[agent][%s] Timed out after %s sending result for agent %s to %s", a.user.Name, deliverySendTimeout, agentID, chatID)
+		} else {
+			log.Printf("[agent][%s] Failed to send result for agent %s to %s: %v", a.user.Name, agentID, chatID, err)
+		}
 	}
 }
 
