@@ -919,7 +919,8 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	}
 
 	subCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
-	defer cancel()
+	// Remove the defer cancel() since we need to keep the outer context alive for the subagent lifetime
+	// The outer cancel() will be called by the defer in the goroutine below
 
 	agentID, resultCh, err := a.scheduler.Submit(subCtx, cfg, func(ctx context.Context, cfg subagent.Config) (string, error) {
 		return subagent.Execute(ctx, cfg, execDeps)
@@ -938,10 +939,12 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 		// Capture the msgContext for later use in result delivery
 		msgCtx := a.msgContext
 		
-		// Create a new context for the background operation (use the same timeout)
-		subCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+		// Add defer cancel to ensure the outer context is properly cleaned up
 		defer cancel()
 		
+		// Use the outer subCtx that was created in the parent function
+		// This fixes the issue where the inner subCtx was shadowing the outer one
+		// and causing the wrong context to be checked for timeout
 		select {
 		case result := <-resultCh:
 			// Subagent completed (success or error)
