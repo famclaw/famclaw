@@ -9,6 +9,8 @@ import (
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
+	_ "image/gif"
+	_ "image/png"
 )
 
 // ResizeImage resizes an image to fit within maxDim while preserving aspect ratio.
