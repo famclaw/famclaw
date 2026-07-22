@@ -616,3 +616,112 @@ func TestSandboxDecision(t *testing.T) {
 		})
 	}
 }
+
+// TestPool_UpdateFromConfig tests the UpdateFromConfig method for hot-reloading MCP server configurations
+func TestPool_UpdateFromConfig(t *testing.T) {
+	// Create a pool with sandbox root in a temp dir
+	sandboxRoot := t.TempDir()
+	pool := NewPool(sandboxRoot, false, false) // No sandbox for simplicity in test
+	
+	// Initial server configuration
+	initialServers := map[string]config.MCPServerConfig{
+		"server1": {Transport: "stdio", Command: "echo", Args: []string{"hello"}},
+		"server2": {Transport: "http", URL: "http://localhost:8080"},
+	}
+	initialCredentials := map[string]map[string]string{
+		"server1": {"KEY1": "VALUE1"},
+		"server2": {"KEY2": "VALUE2"},
+	}
+	
+	// Register initial configuration
+	pool.UpdateFromConfig(initialServers, initialCredentials)
+	
+	// Verify initial servers are present (check by server name matching)
+	if _, exists := pool.clients["server1"]; !exists {
+		t.Error("server1 not found in pool clients")
+	} else if mc := pool.clients["server1"]; mc.name != "server1" {
+		t.Error("server1 entry is not a server entry (tool alias?)")
+	}
+	if _, exists := pool.clients["server2"]; !exists {
+		t.Error("server2 not found in pool clients")
+	} else if mc := pool.clients["server2"]; mc.name != "server2" {
+		t.Error("server2 entry is not a server entry (tool alias?)")
+	}
+	
+	// New server configuration - add server3, change server2, remove server1
+	newServers := map[string]config.MCPServerConfig{
+		"server2": {Transport: "stdio", Command: "echo", Args: []string{"world"}}, // Changed
+		"server3": {Transport: "http", URL: "http://localhost:9090"},              // Added
+	}
+	newCredentials := map[string]map[string]string{
+		"server2": {"KEY2": "NEW_VALUE2"}, // Changed
+		"server3": {"KEY3": "VALUE3"},     // Added
+	}
+	
+	// Update with new configuration
+	pool.UpdateFromConfig(newServers, newCredentials)
+	
+	// Verify updated state
+	// server1 should be removed
+	if _, exists := pool.clients["server1"]; exists {
+		t.Error("server1 should have been removed but still exists")
+	}
+	
+	// server2 should be present and updated
+	if mc, exists := pool.clients["server2"]; !exists || mc.name != "server2" {
+		t.Error("server2 not found or not a server entry after update")
+	} else {
+		if mc.cfg.Command != "echo" {
+			t.Errorf("server2 command not updated: got %q, want echo", mc.cfg.Command)
+		}
+		if len(mc.cfg.Args) != 1 || mc.cfg.Args[0] != "world" {
+			t.Errorf("server2 args not updated: got %v, want [world]", mc.cfg.Args)
+		}
+		if mc.env["KEY2"] != "NEW_VALUE2" {
+			t.Errorf("server2 credential not updated: got %q, want NEW_VALUE2", mc.env["KEY2"])
+		}
+	}
+	
+	// server3 should be present and added
+	if mc, exists := pool.clients["server3"]; !exists || mc.name != "server3" {
+		t.Error("server3 not found or not a server entry after update")
+	} else {
+		if mc.cfg.URL != "http://localhost:9090" {
+			t.Errorf("server3 URL not correct: got %q, want http://localhost:9090", mc.cfg.URL)
+		}
+		if mc.env["KEY3"] != "VALUE3" {
+			t.Errorf("server3 credential not correct: got %q, want VALUE3", mc.env["KEY3"])
+		}
+	}
+	
+	// Test edge case: empty configuration
+	pool.UpdateFromConfig(map[string]config.MCPServerConfig{}, map[string]map[string]string{})
+	// After empty config, there should be no server entries
+	foundServer := false
+	for name, mc := range pool.clients {
+		if mc.name == name { // This is a server entry
+			foundServer = true
+			t.Errorf("unexpected server %s found after empty config", name)
+			break
+		}
+	}
+	if foundServer {
+		t.Error("expected no server entries after empty config")
+	}
+	
+	// Test edge case: nil credentials
+	serversWithNilCred := map[string]config.MCPServerConfig{
+		"server4": {Transport: "stdio", Command: "test"},
+	}
+	pool.UpdateFromConfig(serversWithNilCred, nil)
+	if _, exists := pool.clients["server4"]; !exists {
+		t.Error("server4 not found with nil credentials")
+	} else if mc := pool.clients["server4"]; mc.name != "server4" {
+		t.Error("server4 entry is not a server entry (tool alias?)")
+	} else {
+		// env should be empty or nil when credentials input is nil
+		if mc.env != nil && len(mc.env) > 0 {
+			t.Error("server4 should have nil or empty env with nil credentials input")
+		}
+	}
+}

@@ -38,6 +38,125 @@ type Pool struct {
 	AllowUnconfined bool
 }
 
+// UpdateFromConfig synchronizes the pool's MCP servers with the provided configuration.
+// It adds new servers, updates existing ones that have changed, and removes servers
+// that are no longer present in the configuration.
+func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, credentials map[string]map[string]string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// First, update or add servers that are in the new config
+	for name, newCfg := range servers {
+		if newCfg.Disabled {
+			continue
+		}
+		if err := config.ValidateMCPServer(name, newCfg); err != nil {
+			log.Printf("[mcp-pool] skip %s: %v", name, err)
+			continue
+		}
+
+		if mc, exists := p.clients[name]; exists {
+			// Check if the config has changed
+			if mc.cfg.Command != newCfg.Command ||
+				!sliceEqual(mc.cfg.Args, newCfg.Args) ||
+				mc.cfg.URL != newCfg.URL ||
+				!mapEqual(mc.cfg.Headers, newCfg.Headers) ||
+				!mapEqual(mc.env, credentials[name]) {
+
+				// Stop the existing client
+				mc.client.Stop()
+
+				// Create a new client with the updated config
+				c := NewTransportClient(name, newCfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
+				if creds, ok := credentials[name]; ok {
+					c.env = creds
+				}
+				p.clients[name] = &managedClient{
+					client: c,
+					name:   name,
+					cfg:    newCfg,
+					env:    c.env,
+				}
+			}
+			// If config hasn't changed, we keep the existing client
+		} else {
+			// New server - add it
+			c := NewTransportClient(name, newCfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
+			if creds, ok := credentials[name]; ok {
+				c.env = creds
+			}
+			p.clients[name] = &managedClient{
+				client: c,
+				name:   name,
+				cfg:    newCfg,
+				env:    c.env,
+			}
+		}
+	}
+
+	// Remove servers that are no longer in the config
+	for name, mc := range p.clients {
+		// Skip tool-name aliases (we identify them by mc.name != name)
+		if mc.name != name {
+			continue
+		}
+		if _, exists := servers[name]; !exists {
+			// Stop and remove the server
+			if mc != nil {
+				mc.client.Stop()
+				delete(p.clients, name)
+			}
+		}
+	}
+
+	// Rebuild tool-name aliases
+	toolAliases := make(map[string]*managedClient)
+	for name, mc := range p.clients {
+		// Skip tool-name aliases (we identify them by mc.name != name)
+		if mc.name != name {
+			continue
+		}
+		for _, tool := range mc.client.Tools() {
+			toolAliases[tool.Name] = mc
+		}
+	}
+	// Add tool-name aliases, but never overwrite a server entry
+	for toolName, mc := range toolAliases {
+		// Check if toolName exists as a server entry
+		if existingMc, exists := p.clients[toolName]; exists && existingMc.name == toolName {
+			log.Printf("[mcp-pool] tool %q shadows server name — skipping alias", toolName)
+			continue
+		}
+		p.clients[toolName] = mc
+	}
+}
+
+// sliceEqual compares two slices for equality.
+func sliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// mapEqual compares two maps for equality.
+func mapEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 type managedClient struct {
 	mu         sync.Mutex
 	client     *Client

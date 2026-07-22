@@ -52,6 +52,14 @@ type Router struct {
 	pendingRegs map[string]*pendingRegistration
 }
 
+// UpdateConfig replaces the router's configuration with the provided config.
+// It locks the config mutex internally, so callers must NOT already hold it.
+func (r *Router) UpdateConfig(newCfg *config.Config) {
+	r.cfgMu.Lock()
+	defer r.cfgMu.Unlock()
+	r.cfg = newCfg
+}
+
 // NewRouter creates a Router with all required dependencies.
 // The ctx is used as the parent for the session pool's shutdown context;
 // passing the application lifecycle context lets session goroutines exit
