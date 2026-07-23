@@ -187,6 +187,8 @@ If the host kernel lacks landlock or seccomp support, FamClaw refuses to start r
 
 The built-in file tools (`file_read`, `file_write`, `file_stat`, `file_list`) are confined to the sandbox root via path resolution in the agent layer. Any attempt to access a path outside the sandbox root results in an error.
 
+**Per-user / per-group isolation.** Each user (and group, where applicable) is confined to its own subdirectory under the sandbox root, so one family member's file tools cannot read another's files. The sandbox identity is allowlisted and containment is asserted before any file operation.
+
 ### Configuration
 
 - `tools.sandbox.root`: Absolute path to the sandbox directory. Defaults to `<database_directory>/skill_sandbox`.

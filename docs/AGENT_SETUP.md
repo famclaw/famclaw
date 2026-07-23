@@ -140,6 +140,7 @@ This feature is **optional but recommended** for a family assistant to help ensu
 - **Parent notifications:** Configure alert channels under `notifications:` in `config.yaml` (email, Slack, Discord, SMS, ntfy) to receive alerts about quarantined tools, approval requests, etc.
 - **MCP servers:** Enable multi-tool servers by configuring `skills.mcp_servers` in `config.yaml` (see the example in the default config).
 - **Web tools:** The built-in web tools (`web_fetch`, `web_search`, `browser`) can be enabled under `tools:` in `config.yaml`. Note: `web_fetch` requires a non-empty `url_allowlist` to prevent SSRF attacks; an empty list denies all fetches.
+- **Config hot-reload:** FamClaw watches `config.yaml` and reloads non-destructive changes in place — including MCP server add/remove, gateway toggles, and tool config — without a restart. The file watcher stops cleanly on shutdown.
 ## Next Steps
 
 After successful setup, FamClaw will:
