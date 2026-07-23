@@ -315,6 +315,20 @@ func TestCapabilitiesComponent_BuiltinTools(t *testing.T) {
 			t.Errorf("toolless capabilities should not include tool-call rules, got: %q", text)
 		}
 	})
+	t.Run("web_search only", func(t *testing.T) {
+		text, ok := capabilitiesComponent(BuildContext{BuiltinTools: []string{"web_search"}})
+		if !ok || text == "" {
+			t.Fatalf("expected included, got ok=%v text=%q", ok, text)
+		}
+		// Check for the specific hint
+		if !strings.Contains(text, "Search the web via web_search") {
+			t.Errorf("expected web_search hint in: %q", text)
+		}
+		// Ensure it does not contain the generic fallback
+		if strings.Contains(text, "Use the web_search tool when relevant") {
+			t.Errorf("should not contain generic web_search hint: %q", text)
+		}
+	})
 }
 
 func TestBehavioralRules_Exported(t *testing.T) {
