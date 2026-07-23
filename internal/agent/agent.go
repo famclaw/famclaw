@@ -949,135 +949,131 @@ func (a *Agent) handleSetReminder(ctx context.Context, args map[string]any) (str
 		return "", fmt.Errorf("set_reminder requires a 'request' argument")
 	}
 
-	// Parse the reminder request to extract due time and message
-	// For simplicity, we'll support basic formats:
-	// - "in X seconds/minutes/hours/days"
-	// - "at HH:MM" (today or tomorrow if time has passed)
-	// - "tomorrow HH:MM"
-	// - "YYYY-MM-DD HH:MM"
-	//
-	// In a production implementation, we would use a proper natural language
-	// parsing library, but for now we'll implement a simple parser.
-
-	var dueAt int64
-	var message string
-	now := time.Now()
-
-	// Try to parse "in X [unit]" format
-	if strings.HasPrefix(strings.ToLower(request), "in ") {
-		parts := strings.Fields(request)
-		if len(parts) >= 3 {
-			amountStr := parts[1]
-			unit := strings.ToLower(parts[2])
-			message = strings.TrimPrefix(request, parts[0]+" "+parts[1]+" "+parts[2]+" ")
-
-			amount, err := strconv.Atoi(amountStr)
-			if err != nil {
-				return "", fmt.Errorf("invalid amount in reminder request: %w", err)
-			}
-
-			var duration time.Duration
-			switch unit {
-			case "second", "seconds":
-				duration = time.Duration(amount) * time.Second
-			case "minute", "minutes":
-				duration = time.Duration(amount) * time.Minute
-			case "hour", "hours":
-				duration = time.Duration(amount) * time.Hour
-			case "day", "days":
-				duration = time.Duration(amount) * 24 * time.Hour
-			default:
-				return "", fmt.Errorf("unsupported time unit: %s", unit)
-			}
-
-			dueAt = now.Add(duration).Unix()
-		} else {
-			return "", fmt.Errorf("invalid reminder format. Expected: 'in X [unit] [message]'")
-		}
-	} else if strings.HasPrefix(strings.ToLower(request), "at ") {
-		// Parse "at HH:MM" format
-		timeStr := strings.TrimPrefix(request, "at ")
-		t, err := time.Parse("15:04", timeStr)
-		if err != nil {
-			return "", fmt.Errorf("invalid time format. Expected: 'at HH:MM'")
-		}
-
-		// Set to today at the specified time
-		dueTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
-
-		// If the time has already passed today, set for tomorrow
-		if dueTime.Before(now) {
-			dueTime = dueTime.Add(24 * time.Hour)
-		}
-
-		// Extract message (everything after the time specification)
-		// For "at HH:MM message", the message starts after the time
-		if len(request) > len("at "+timeStr) {
-			message = strings.TrimSpace(request[len("at "+timeStr):])
-		} else {
-			message = "Reminder"
-		}
-
-		dueAt = dueTime.Unix()
-	} else if strings.HasPrefix(strings.ToLower(request), "tomorrow ") {
-		// Parse "tomorrow HH:MM" format
-		rest := strings.TrimPrefix(request, "tomorrow ")
-		parts := strings.Fields(rest)
-		if len(parts) >= 2 {
-			timeStr := parts[0]
-			message = strings.TrimPrefix(rest, parts[0]+" ")
-			
-			t, err := time.Parse("15:04", timeStr)
-			if err != nil {
-				return "", fmt.Errorf("invalid time format. Expected: 'tomorrow HH:MM [message]'")
-			}
-
-			// Set to tomorrow at the specified time
-			dueTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
-			dueTime = dueTime.Add(24 * time.Hour)
-
-			if len(rest) > len(timeStr) {
-				message = strings.TrimSpace(rest[len(timeStr):])
-			} else {
-				message = "Reminder"
-			}
-
-			dueAt = dueTime.Unix()
-		} else {
-			return "", fmt.Errorf("invalid reminder format. Expected: 'tomorrow HH:MM [message]'")
-		}
-	} else {
-		// Try to parse as "YYYY-MM-DD HH:MM [message]"
-		parts := strings.Fields(request)
-		if len(parts) >= 2 {
-			dateTimeStr := parts[0] + " " + parts[1]
-			t, err := time.Parse("2006-01-02 15:04", dateTimeStr)
-			if err != nil {
-				return "", fmt.Errorf("invalid date/time format. Expected: 'YYYY-MM-DD HH:MM [message]'")
-			}
-
-			dueAt = t.Unix()
-			if len(request) > len(dateTimeStr) {
-				message = strings.TrimSpace(request[len(dateTimeStr):])
-			} else {
-				message = "Reminder"
-			}
-		} else {
-			// If we can't parse it as a timed reminder, treat the whole thing as a message
-			// to be delivered immediately (or in 1 minute as a fallback)
-			dueAt = now.Add(time.Minute).Unix()
-			message = request
-		}
+	// Parse the reminder request to extract due time and message.
+	dueAt, message, err := parseReminderRequest(request, time.Now())
+	if err != nil {
+		return "", err
 	}
 
 	// Store the reminder
-	if err := a.db.CreateReminder(a.user.Name, message, dueAt); err != nil {
+	id, err := a.db.CreateReminder(a.user.Name, message, dueAt)
+	if err != nil {
 		return "", fmt.Errorf("failed to create reminder: %w", err)
 	}
 
 	// Format the due time for user feedback
 	dueTime := time.Unix(dueAt, 0)
-	return fmt.Sprintf("Reminder set for %s: %s", dueTime.Format("Mon Jan 2 15:04:05"), message), nil
+	return fmt.Sprintf("Reminder #%d set for %s: %s", id, dueTime.Format("Mon Jan 2 15:04:05"), message), nil
+}
+
+// parseReminderRequest parses a natural-language reminder request into a
+// due time (Unix seconds) and message text. `now` is the reference time for
+// relative computations ("in X minutes", "at HH:MM"). Extracted from
+// handleSetReminder so it can be unit-tested as a pure function without a
+// full Agent/db.
+func parseReminderRequest(request string, now time.Time) (dueAt int64, message string, err error) {
+	request = strings.TrimSpace(request)
+	if request == "" {
+		return 0, "", fmt.Errorf("empty reminder request")
+	}
+
+	lower := strings.ToLower(request)
+	parts := strings.Fields(request)
+
+	// "in X [unit] [message]"
+	if strings.HasPrefix(lower, "in ") {
+		if len(parts) < 3 {
+			return 0, "", fmt.Errorf("invalid reminder format. Expected: 'in X [unit] [message]'")
+		}
+		amount, aErr := strconv.Atoi(parts[1])
+		if aErr != nil {
+			return 0, "", fmt.Errorf("invalid amount %q: %w", parts[1], aErr)
+		}
+		unit := strings.ToLower(parts[2])
+		var duration time.Duration
+		switch unit {
+		case "second", "seconds":
+			duration = time.Duration(amount) * time.Second
+		case "minute", "minutes":
+			duration = time.Duration(amount) * time.Minute
+		case "hour", "hours":
+			duration = time.Duration(amount) * time.Hour
+		case "day", "days":
+			duration = time.Duration(amount) * 24 * time.Hour
+		default:
+			return 0, "", fmt.Errorf("unsupported time unit: %s", unit)
+		}
+		dueAt = now.Add(duration).Unix()
+		if len(parts) > 3 {
+			message = strings.Join(parts[3:], " ")
+		} else {
+			message = "Reminder"
+		}
+		return dueAt, message, nil
+	}
+
+	// "at HH:MM [message]" — today, or tomorrow if the time has passed.
+	if strings.HasPrefix(lower, "at ") {
+		if len(parts) < 2 {
+			return 0, "", fmt.Errorf("invalid reminder format. Expected: 'at HH:MM [message]'")
+		}
+		t, pErr := time.Parse("15:04", parts[1])
+		if pErr != nil {
+			return 0, "", fmt.Errorf("invalid time format, expected 'at HH:MM': %w", pErr)
+		}
+		dueTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
+		if dueTime.Before(now) {
+			dueTime = dueTime.Add(24 * time.Hour)
+		}
+		dueAt = dueTime.Unix()
+		if len(parts) > 2 {
+			message = strings.Join(parts[2:], " ")
+		} else {
+			message = "Reminder"
+		}
+		return dueAt, message, nil
+	}
+
+	// "tomorrow HH:MM [message]"
+	if strings.HasPrefix(lower, "tomorrow ") {
+		if len(parts) < 2 {
+			return 0, "", fmt.Errorf("invalid reminder format. Expected: 'tomorrow HH:MM [message]'")
+		}
+		t, pErr := time.Parse("15:04", parts[1])
+		if pErr != nil {
+			return 0, "", fmt.Errorf("invalid time format, expected 'tomorrow HH:MM': %w", pErr)
+		}
+		dueTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
+		dueTime = dueTime.Add(24 * time.Hour)
+		dueAt = dueTime.Unix()
+		if len(parts) > 2 {
+			message = strings.Join(parts[2:], " ")
+		} else {
+			message = "Reminder"
+		}
+		return dueAt, message, nil
+	}
+
+	// "YYYY-MM-DD HH:MM [message]"
+	if len(parts) >= 2 {
+		dateTimeStr := parts[0] + " " + parts[1]
+		t, pErr := time.Parse("2006-01-02 15:04", dateTimeStr)
+		if pErr == nil {
+			dueAt = t.Unix()
+			if len(parts) > 2 {
+				message = strings.Join(parts[2:], " ")
+			} else {
+				message = "Reminder"
+			}
+			return dueAt, message, nil
+		}
+		// Not a parseable date — fall through to the default message.
+	}
+
+	// Fallback: treat the whole request as a message due in 1 minute.
+	dueAt = now.Add(time.Minute).Unix()
+	message = request
+	return dueAt, message, nil
 }
 // proposalApprovalID makes a stable, per-proposal id derived from the
 // proposing user, subject, label, and the current day. Re-proposing the

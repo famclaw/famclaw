@@ -3,8 +3,10 @@ package discord
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -15,6 +17,8 @@ import (
 // Bot is a Discord gateway.
 type Bot struct {
 	token string
+	mu    sync.RWMutex
+	session *discordgo.Session
 }
 
 // New creates a Discord bot with the given token.
@@ -24,6 +28,31 @@ func New(token string) *Bot {
 
 func (b *Bot) Name() string { return "discord" }
 
+// SendMessage delivers a bot-initiated (proactive) message to a user's
+// Discord DM. externalID is the user's Discord snowflake ID. The gateway
+// creates (or reuses) a DM channel with that user, then sends the text
+// in chunks at Discord's 2000-character limit. Implements gateway.Sender
+// so the reminder scheduler can fire reminders without an inbound message.
+func (b *Bot) SendMessage(ctx context.Context, externalID, text string) error {
+	b.mu.RLock()
+	session := b.session
+	b.mu.RUnlock()
+	if session == nil {
+		return fmt.Errorf("discord session not started")
+	}
+	// Create (or fetch) a DM channel with the user.
+	dm, err := session.UserChannelCreate(externalID)
+	if err != nil {
+		return fmt.Errorf("discord DM channel for %s: %w", externalID, err)
+	}
+	for _, chunk := range gateway.ChunkMessage(text, 2000) {
+		if _, err := session.ChannelMessageSend(dm.ID, chunk); err != nil {
+			return fmt.Errorf("discord send to %s: %w", externalID, err)
+		}
+	}
+	return nil
+}
+
 // Start connects to Discord and listens for messages. Blocks until ctx is cancelled.
 func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg gateway.Message) gateway.Reply) error {
 	session, err := discordgo.New("Bot " + b.token)
@@ -32,6 +61,11 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 	}
 
 	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsDirectMessages | discordgo.IntentsMessageContent
+
+	// Store the session so SendMessage (proactive delivery) can use it.
+	b.mu.Lock()
+	b.session = session
+	b.mu.Unlock()
 
 	session.AddHandler(func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		// Ignore own messages
@@ -112,6 +146,14 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 		return err
 	}
 	defer session.Close()
+
+	// Clear the session reference on shutdown so SendMessage returns a
+	// clear error rather than panicking on a closed session.
+	defer func() {
+		b.mu.Lock()
+		b.session = nil
+		b.mu.Unlock()
+	}()
 
 	log.Printf("[discord] connected as %s", session.State.User.Username)
 

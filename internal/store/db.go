@@ -288,6 +288,17 @@ func (d *DB) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_family_facts_subject  ON family_facts(subject);
 	CREATE INDEX IF NOT EXISTS idx_family_facts_category ON family_facts(category);
+
+	CREATE TABLE IF NOT EXISTS reminders (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_name  TEXT NOT NULL,
+		message    TEXT NOT NULL,
+		due_at     INTEGER NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_reminders_due_at ON reminders(due_at);
+	CREATE INDEX IF NOT EXISTS idx_reminders_user_name ON reminders(user_name);
 	`)
 	if err != nil {
 		return err
@@ -1071,4 +1082,84 @@ func (d *DB) DeleteRoleOverride(ctx context.Context, userName string) error {
 		return fmt.Errorf("delete role override: %w", err)
 	}
 	return nil
+}
+
+// ── Reminders ─────────────────────────────────────────────────────────────────
+
+// Reminder is a scheduled message to be delivered to a user at a future time.
+type Reminder struct {
+	ID        int64
+	UserName  string
+	Message   string
+	DueAt     int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// CreateReminder stores a reminder for delivery to userName at dueAt (Unix seconds).
+func (d *DB) CreateReminder(userName, message string, dueAt int64) (int64, error) {
+	now := time.Now().Unix()
+	res, err := d.sql.Exec(`
+		INSERT INTO reminders (user_name, message, due_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		userName, message, dueAt, now, now)
+	if err != nil {
+		return 0, fmt.Errorf("creating reminder: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("reminder last insert id: %w", err)
+	}
+	return id, nil
+}
+
+// GetDueReminders returns reminders for userName whose due_at is <= now.
+// Used by the agent's on-next-message delivery path.
+func (d *DB) GetDueReminders(ctx context.Context, userName string) ([]Reminder, error) {
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT id, user_name, message, due_at, created_at, updated_at
+		 FROM reminders WHERE user_name = ? AND due_at <= ? ORDER BY due_at ASC`,
+		userName, time.Now().Unix())
+	if err != nil {
+		return nil, fmt.Errorf("querying due reminders: %w", err)
+	}
+	defer rows.Close()
+	return scanReminders(rows)
+}
+
+// GetDueRemindersAllUsers returns reminders for every user whose due_at is <= now.
+// Used by the proactive scheduler.
+func (d *DB) GetDueRemindersAllUsers(ctx context.Context, now int64) ([]Reminder, error) {
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT id, user_name, message, due_at, created_at, updated_at
+		 FROM reminders WHERE due_at <= ? ORDER BY due_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("querying due reminders: %w", err)
+	}
+	defer rows.Close()
+	return scanReminders(rows)
+}
+
+// DeleteReminder removes a reminder by ID.
+func (d *DB) DeleteReminder(id int64) error {
+	_, err := d.sql.Exec(`DELETE FROM reminders WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("deleting reminder: %w", err)
+	}
+	return nil
+}
+
+func scanReminders(rows *sql.Rows) ([]Reminder, error) {
+	out := make([]Reminder, 0)
+	for rows.Next() {
+		var r Reminder
+		if err := rows.Scan(&r.ID, &r.UserName, &r.Message, &r.DueAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning reminder row: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating reminder rows: %w", err)
+	}
+	return out, nil
 }

@@ -359,17 +359,25 @@ reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallCon
 	gwCtx, gwCancel := context.WithCancel(context.Background())
 	defer gwCancel()
 
-	// Gateway router
-	router := gateway.NewRouter(gwCtx, cfg, identStore, clf, evaluator, db, notifier, chatFn, reg)
+	// Gateway router. The senders map is populated with each gateway that
+	// implements gateway.Sender (Telegram, Discord) so the reminder
+	// scheduler can deliver proactively at the due time. Gateways that do
+	// not implement Sender (e.g. WhatsApp placeholder) are simply absent
+	// from the map — those users fall back to on-next-message delivery.
+	var senders = map[string]gateway.Sender{}
 
 	// Gateway bots
 	var gateways []gateway.Gateway
 	if cfg.Gateways.Telegram.Enabled && cfg.Gateways.Telegram.Token != "" {
-		gateways = append(gateways, telegram.New(cfg.Gateways.Telegram.Token))
+		tg := telegram.New(cfg.Gateways.Telegram.Token)
+		gateways = append(gateways, tg)
+		senders["telegram"] = tg
 		log.Printf("Gateway: Telegram enabled")
 	}
 	if cfg.Gateways.Discord.Enabled && cfg.Gateways.Discord.Token != "" {
-		gateways = append(gateways, discord.New(cfg.Gateways.Discord.Token))
+		dg := discord.New(cfg.Gateways.Discord.Token)
+		gateways = append(gateways, dg)
+		senders["discord"] = dg
 		log.Printf("Gateway: Discord enabled")
 	}
 	if cfg.Gateways.WhatsApp.Enabled {
@@ -377,10 +385,19 @@ reg := skillbridge.NewRegistry(cfg.Skills.Dir, hbScanner, skillbridge.InstallCon
 		log.Printf("Gateway: WhatsApp enabled (placeholder)")
 	}
 
+	router := gateway.NewRouter(gwCtx, cfg, identStore, clf, evaluator, db, notifier, chatFn, reg, senders)
+
 	if len(gateways) > 0 {
 		gateway.StartAll(gwCtx, gateways, router.Handle)
 		log.Printf("Gateways: %d started", len(gateways))
 	}
+
+	// Reminder scheduler — proactively delivers reminders at their due
+	// time via the router's SendTo. Polling every 30s; on shutdown the
+	// scheduler goroutine exits via gwCtx cancellation.
+	reminderScheduler := gateway.NewReminderScheduler(db, router, gateway.RealClock(), 30*time.Second)
+	reminderScheduler.Start(gwCtx)
+	log.Printf("Reminders: scheduler started (poll interval=30s)")
 
 	// Session store + credential vault for the web admin auth flow.
 	// SessionStore needs the raw *sql.DB underlying store.DB. The vault is

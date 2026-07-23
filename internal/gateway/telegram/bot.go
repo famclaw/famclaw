@@ -41,6 +41,25 @@ func New(token string) *Bot {
 
 func (b *Bot) Name() string { return "telegram" }
 
+// SendMessage delivers a bot-initiated (proactive) message to a user's
+// Telegram DM. externalID is the user's Telegram numeric ID (which is
+// also the chat_id for a direct message). Implements gateway.Sender so
+// the reminder scheduler can fire reminders without an inbound message.
+func (b *Bot) SendMessage(ctx context.Context, externalID, text string) error {
+	chatID, err := strconv.ParseInt(externalID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid telegram external id %q: %w", externalID, err)
+	}
+	const chunkBudget = 3800
+	for _, raw := range gateway.ChunkMessage(text, chunkBudget) {
+		chunk := markdownToTelegramHTML(raw)
+		if err := b.sendMessage(ctx, chatID, chunk); err != nil {
+			return fmt.Errorf("telegram send to %s: %w", externalID, err)
+		}
+	}
+	return nil
+}
+
 // Start begins long-polling for updates. Blocks until ctx is cancelled.
 func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg gateway.Message) gateway.Reply) error {
 	offset := 0

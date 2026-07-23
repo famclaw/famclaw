@@ -49,6 +49,7 @@ type Router struct {
 	chatFn     ChatFunc
 	pool       *SessionPool
 	registry   *skillbridge.Registry
+	senders    map[string]Sender
 
 	pendingMu   sync.Mutex
 	pendingRegs map[string]*pendingRegistration
@@ -68,6 +69,7 @@ func NewRouter(
 	notifier *notify.MultiNotifier,
 	chatFn ChatFunc,
 	registry *skillbridge.Registry,
+	senders map[string]Sender,
 ) *Router {
 	r := &Router{
 		cfg:         cfg,
@@ -78,6 +80,7 @@ func NewRouter(
 		notifier:    notifier,
 		chatFn:      chatFn,
 		registry:    registry,
+		senders:     senders,
 		pendingRegs: make(map[string]*pendingRegistration),
 	}
 	// Session pool dispatches heavy work (classify → policy → LLM) per-user
@@ -252,6 +255,29 @@ func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, ca
 			denyURL := fmt.Sprintf("%s/decide?id=%s&action=deny&token=%s",
 				baseURL, a.ID, notify.GenerateToken(a.ID, "deny", r.cfg.Server.Secret))
 			r.notifier.Notify(ctx, a, approveURL, denyURL)
+		}
+	}
+	return nil
+}
+
+// SendTo delivers a bot-initiated (proactive) message to a user by resolving
+// their linked gateway accounts and dispatching through the matching Sender.
+// Used by the reminder scheduler. If a user has no sender registered for their
+// gateway (e.g. WhatsApp placeholder), the delivery for that account is skipped
+// and logged. Returns nil if at least one message was attempted.
+func (r *Router) SendTo(ctx context.Context, userName, text string) error {
+	accounts, err := r.db.ListGatewayAccountsByUser(ctx, userName)
+	if err != nil {
+		return fmt.Errorf("listing gateway accounts for %s: %w", userName, err)
+	}
+	for _, acc := range accounts {
+		sender, ok := r.senders[acc.Gateway]
+		if !ok {
+			log.Printf("[router] no sender registered for gateway %q (user %s)", acc.Gateway, userName)
+			continue
+		}
+		if err := sender.SendMessage(ctx, acc.ExternalID, text); err != nil {
+			log.Printf("[router] proactive send to %s/%s failed: %v", acc.Gateway, acc.ExternalID, err)
 		}
 	}
 	return nil
