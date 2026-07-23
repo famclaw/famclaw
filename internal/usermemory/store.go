@@ -36,6 +36,8 @@ type Memory struct {
 // UNIQUE(user_name, category, label) determines upsert key;
 // value/updated_at overwritten on conflict.
 // On return, *m is fully reloaded from the persisted row.
+const maxMemoriesPerUser = 100
+
 func (s *Store) UpsertMemory(ctx context.Context, m *Memory) error {
 	tx, err := s.db.SQL().BeginTx(ctx, nil)
 	if err != nil {
@@ -71,6 +73,19 @@ func (s *Store) UpsertMemory(ctx context.Context, m *Memory) error {
 		&id, &userName, &category, &label, &value, &createdAt, &updatedAt); err != nil {
 		return fmt.Errorf("upsert memory reload: %w", err)
 	}
+
+	// Enforce the per-user cap: keep the most-recently-updated rows, evict the rest.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM user_memories
+		WHERE user_name = ? AND id NOT IN (
+			SELECT id FROM user_memories
+			WHERE user_name = ?
+			ORDER BY updated_at DESC, id DESC
+			LIMIT ?
+		)`, m.UserName, m.UserName, maxMemoriesPerUser); err != nil {
+		return fmt.Errorf("upsert memory evict: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("upsert memory commit: %w", err)
 	}

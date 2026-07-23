@@ -349,3 +349,46 @@ func TestHandleForget(t *testing.T) {
 		t.Errorf("expected 0 memories after forget, got %d", len(memories))
 	}
 }
+
+func TestStore_UpsertEnforcesPerUserCap(t *testing.T) {
+	dbPath := "/tmp/usermemory_evict_test_" + time.Now().Format("20060102150405.000000") + ".db"
+	defer os.Remove(dbPath)
+
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	s := NewStore(db)
+	ctx := context.Background()
+
+	// Upsert well over the cap for one user; distinct labels => distinct rows.
+	total := maxMemoriesPerUser + 25
+	for i := 0; i < total; i++ {
+		m := &Memory{
+			UserName: "dep",
+			Category: "fact",
+			Label:    fmt.Sprintf("k%04d", i),
+			Value:    fmt.Sprintf("v%d", i),
+		}
+		if err := s.UpsertMemory(ctx, m); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+
+	got, err := s.ListMemories(ctx, "dep", "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != maxMemoriesPerUser {
+		t.Fatalf("per-user cap not enforced: got %d memories, want %d", len(got), maxMemoriesPerUser)
+	}
+	// Survivors must be the most-recently-upserted (highest labels); the oldest were evicted.
+	cutoff := fmt.Sprintf("k%04d", total-maxMemoriesPerUser)
+	for _, m := range got {
+		if m.Label < cutoff {
+			t.Errorf("evicted wrong rows: found stale label %q (should have been evicted)", m.Label)
+		}
+	}
+}
