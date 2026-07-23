@@ -273,6 +273,86 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `Config.LLMClientFor` — duplicate of `LLMEndpointFor` with no callers.
 - `SecCheckConfig.{Sandbox, Timeout, OSVAPI}` legacy fields — never read.
 
+## v0.7.0 — 2026-07-23
+
+### Added
+- **Config hot-reload.** `config.yaml` is watched with an fsnotify file
+  watcher; on a write that revalidates cleanly, the router, web server, and
+  MCP pool configs are updated in place under their respective mutexes —
+  no restart required. The watcher goroutine stops cleanly on shutdown via
+  the gateway context. (#261)
+- **MCP server management web API.** Three new session-authenticated endpoints
+  manage configured MCP servers: `GET /api/mcp` (list), `POST /api/mcp/add`,
+  and `POST /api/mcp/remove` (duplicate names rejected with 400). (#258)
+- **MCP server management chat commands.** `.mcp list` / `.mcp add` /
+  `.mcp remove` chat commands, parent-gated and persisted, in the gateway
+  router. (#231)
+- **Async research dispatch.** `spawn_agent` research jobs can run
+  asynchronously and deliver their result back into the originating
+  conversation; the delivery send is bounded by a timeout and correctly
+  classified. (#253)
+- **Per-user / per-group file-tool sandbox isolation.** Each user/group gets
+  a confined sandbox root for `file_*` tools and the MCP child cwd, with
+  containment asserted and the sandbox identity allowlisted. (#250, #254)
+- **Explicit unsandboxed MCP opt-in (macOS).** `tools.sandbox.allow_unconfined:
+  true` runs MCP servers unsandboxed where OS sandboxing is unavailable
+  (e.g. macOS). Secure-by-default (fail-closed) with a loud startup warning
+  and an actionable error. (#252)
+- **Web_fetch browser fallback for JS-heavy sites.** When HTML→text
+  extraction yields too little content, `web_fetch` falls back to a
+  Playwright browser (reusing the browser tool's host allowlist) with
+  graceful degradation and post-redirect host re-checking. (#260)
+- **Image understanding for Discord.** Discord image attachments are
+  decoded and sent to the LLM alongside text, matching the Telegram image
+  path. (#236)
+- **Telegram image downscaling.** Large Telegram images are downscaled
+  before reaching the LLM via the new `imageutil` package (WebP/GIF-aware,
+  Catmull-Rom), preserving PNG transparency and passing unsupported formats
+  through unchanged. (#235, #225)
+- **Discord file attachment persistence.** Discord message attachments are
+  persisted to the agent sandbox with extension-MIME consistency, a size
+  cap, path-traversal-safe writes, and secure directory permissions. (#237)
+- **macOS checksum verification in update.sh.** The update script now
+  verifies release checksums on macOS. (#223)
+- **Web search hinted in the system prompt.** When `web_search` is registered
+  for a user, the PromptBuilder's capabilities section names it with a
+  concrete usage hint, fixing the "I can't search the web" failure mode for
+  equipped agents. (#262)
+
+### Changed
+- **Browser tool enabled by default.** The built-in `browser` tool is now
+  enabled by default. (#248)
+
+### Fixed
+- **Serialized WebSocket writes per connection.** WebSocket writes are
+  serialized per connection, fixing a data race on concurrent writes. (#264)
+- **Per-user memory cap.** User memories are capped with oldest-eviction on
+  upsert, preventing unbounded growth. (#263)
+- **Async delivery timeout.** Async research-result delivery send is bounded
+  by a timeout. (#256)
+- **Control-character rejection in user memories.** Control characters are
+  rejected in `remember` fields. (#259)
+- **GIF/PNG decoder registration.** All accepted image MIME types, including
+  GIF and PNG, now decode cleanly. (#255)
+- **Honest web_fetch errors.** `web_fetch` returns the actual fetch error
+  instead of confabulating a response. (#238)
+- **Multilingual false-completion detection.** The stage-tool-loop
+  false-completion detector triggers only on explicit success phrases, now
+  covering multilingual success claims instead of a catch-all. (#249)
+- **Web search disabled-state message.** The `web_search` disabled-state
+  message now gives generic guidance instead of a tool-specific hint. (#243)
+- **False tool-completion claims neutralized.** The stage-tool-loop no longer
+  emits false tool-completion claims; success matching is explicit and
+  multilingual. (#240)
+- **Role-allowed tools always advertised.** Role-allowed tools are now always
+  advertised in prompts. (#230)
+- **Context-aware history compression.** The initial LLM call uses
+  context-aware history compression. (#226)
+- **sandbox_root validation errors.** Invalid `sandbox_root` config now
+  includes the offending path in validation error messages. (#234, #222)
+- **Portable checksum verification.** Update-script checksum verification
+  works on both GNU and BSD systems. (#233)
+
 ## v0.5.0 — 2026-05-01
 
 ### Added

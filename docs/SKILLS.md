@@ -195,3 +195,27 @@ skills:
 ```
 
 Servers are enabled by default. Add `disabled: true` to skip without removing.
+
+### MCP server management
+
+You can list, add, and remove MCP servers at runtime — no `config.yaml` edit required. Changes are persisted to `config.yaml` and take effect immediately (the MCP pool is reloaded in place; see *Configuration hot-reload* in `docs/AGENT_SETUP.md`).
+
+**Web API** (session-authenticated, parent role required):
+
+| Method | Endpoint | Body |
+|---|---|---|
+| `GET`    | `/api/mcp`        | — lists configured servers |
+| `POST`   | `/api/mcp/add`    | `{"name": "<name>", "config": { ...MCPServerConfig... }}`; rejects duplicate names with `400` |
+| `POST`   | `/api/mcp/remove` | `{"name": "<name>"}` |
+
+These are also surfaced on the dashboard **Skills** card.
+
+**Chat commands** (parent-gated, from any linked gateway):
+
+```
+.mcp list                          # list configured servers
+.mcp add <name> <transport> <k=v>  # add a server
+.mcp remove <name>                 # remove a server
+```
+
+`<transport>` is `stdio`, `http`, or `sse`. Supported keys: `command`, `args` (comma-separated), `url`, `headers` (comma-separated `Key=Value`), `disabled` (`true`/`false`).

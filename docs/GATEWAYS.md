@@ -63,6 +63,8 @@ gateways:
 
 Same as Telegram — each family member sends a message in the Discord server. The bot logs unknown accounts. Link them in the web dashboard.
 
+**File attachments.** Discord message attachments are persisted to the agent sandbox (path-traversal-safe, extension/MIME-consistent, size-capped) so the agent can inspect images and files you upload. See `docs/SECURITY.md` for sandbox confinement details.
+
 ---
 
 ## WhatsApp

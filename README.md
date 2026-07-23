@@ -173,6 +173,8 @@ The parent LLM can delegate sub-tasks to a different LLM profile via a built-in 
 
 Concurrency is bounded by the scheduler (`subagent.NewScheduler(2)` in `cmd/famclaw/main.go`). Each `spawn_agent` invocation gets a dedicated result channel — concurrent calls do not cross-deliver. The tool is parent-only (role-gated via `turn.Tools`) and has no MCP tool access unless the parent explicitly allowlists. Lives in `internal/subagent/`.
 
+Research subagents run asynchronously: the parent acknowledges the task immediately ("Started your research (task N). I'll post the result here when it's done.") and, when the subagent finishes, posts its result back into the originating conversation on the gateway it came from (Telegram, Discord, web). Delivery is bounded by a 30-second timeout per send.
+
 ---
 
 ## Web fetch (`web_fetch`)
@@ -202,6 +204,8 @@ Defense in depth:
 - **Size + timeout caps** in `internal/webfetch` — `MaxBytes` enforced via `io.LimitReader`, redirect chain capped at 5 hops, request `Timeout` from config.
 
 The fetcher itself is in `internal/webfetch/`; the agent handler lives in `internal/agent/agent.go` (`handleWebFetch`).
+
+For JS-heavy sites where HTML→text extraction yields too little content, `web_fetch` falls back to a headless browser (the built-in `browser` tool), reusing the same host allowlist. If no browser is available, it degrades gracefully and returns whatever HTML→text content it could extract.
 
 ---
 
