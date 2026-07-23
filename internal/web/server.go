@@ -55,8 +55,8 @@ type Server struct {
 	familyState   *familystate.Store    // Phase 3.3 — nil disables /api/family-state/*
 	staticHandler http.Handler          // embedded static file server
 	upgrader      websocket.Upgrader
-	cfgMu         sync.RWMutex               // guards cfg during settings reads/writes
-	clients       map[*websocket.Conn]string // conn → userName
+	cfgMu         sync.RWMutex                  // guards cfg during settings reads/writes
+	clients       map[*websocket.Conn]*wsClient // conn → client (writeMu serializes writes to that conn)
 	clientsMu     sync.RWMutex
 
 	// Session-based auth wiring (Phase 6).
@@ -65,6 +65,16 @@ type Server struct {
 	auth          *AuthHandler
 	vaultMismatch bool // protected by vaultMu — true once a probe finds the on-disk vault was sealed by a different machine
 	vaultMu       sync.RWMutex
+}
+
+// wsClient is a connected web chat client. Its writeMu serializes all writes
+// to the underlying *websocket.Conn: the handleChat handler goroutine and the
+// broadcast goroutines both write to the same connection, and a gorilla
+// websocket Conn only supports a single concurrent writer.
+type wsClient struct {
+	conn     *websocket.Conn
+	userName string
+	writeMu  sync.Mutex
 }
 
 // wsMessage is a WebSocket protocol message.
@@ -102,7 +112,7 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store
 		skills:        skills,
 		skillRegistry: skillRegistry,
 		familyState:   fs,
-		clients:       make(map[*websocket.Conn]string),
+		clients:       make(map[*websocket.Conn]*wsClient),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				// Allow connections from LAN — all origins on local network
@@ -313,8 +323,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	client := &wsClient{conn: conn, userName: userName}
 	s.clientsMu.Lock()
-	s.clients[conn] = userName
+	s.clients[conn] = client
 	s.clientsMu.Unlock()
 	defer func() {
 		s.clientsMu.Lock()
@@ -393,12 +404,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Send "typing" indicator
-			s.sendWS(conn, "typing", map[string]bool{"typing": true})
+			s.sendWS(client, "typing", map[string]bool{"typing": true})
 
 			// Stream tokens back to client
 			var full strings.Builder
 			onToken := func(token string) {
-				s.sendWS(conn, "token", map[string]string{"token": token})
+				s.sendWS(client, "token", map[string]string{"token": token})
 				full.WriteString(token)
 			}
 
@@ -410,13 +421,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				if chatCtx.Err() != nil {
 					errMsg = "The AI took too long to respond. Check that your AI service is running, or try a different one in Settings."
 				}
-				s.sendWS(conn, "error", map[string]string{"error": errMsg})
+				s.sendWS(client, "error", map[string]string{"error": errMsg})
 				continue
 			}
 
 			// If it was a policy block, we didn't stream — send full message now
 			if resp.PolicyAction != "allow" {
-				s.sendWS(conn, "message", map[string]any{
+				s.sendWS(client, "message", map[string]any{
 					"role":          "assistant",
 					"content":       resp.Content,
 					"policy_action": resp.PolicyAction,
@@ -424,7 +435,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				})
 			} else {
 				// Signal end of stream
-				s.sendWS(conn, "done", map[string]any{
+				s.sendWS(client, "done", map[string]any{
 					"policy_action": resp.PolicyAction,
 					"category":      resp.Category,
 				})
@@ -439,18 +450,23 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			go s.broadcastDashboardUpdate(context.Background())
 
 		case "ping":
-			s.sendWS(conn, "pong", nil)
+			s.sendWS(client, "pong", nil)
 		}
 	}
 }
 
-func (s *Server) sendWS(conn *websocket.Conn, msgType string, payload any) {
+func (s *Server) sendWS(client *wsClient, msgType string, payload any) {
+	if client == nil {
+		return
+	}
 	var raw json.RawMessage
 	if payload != nil {
 		b, _ := json.Marshal(payload)
 		raw = b
 	}
-	conn.WriteJSON(WsMessage{Type: msgType, Payload: raw}) //nolint:errcheck
+	client.writeMu.Lock()
+	defer client.writeMu.Unlock()
+	_ = client.conn.WriteJSON(WsMessage{Type: msgType, Payload: raw})
 }
 
 // ── REST API ──────────────────────────────────────────────────────────────────
@@ -785,9 +801,10 @@ func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()
-	for conn, userName := range s.clients {
-		_ = userName
-		conn.WriteJSON(WsMessage{Type: "dashboard_update", Payload: payload}) //nolint:errcheck
+	for _, client := range s.clients {
+		client.writeMu.Lock()
+		_ = client.conn.WriteJSON(WsMessage{Type: "dashboard_update", Payload: payload})
+		client.writeMu.Unlock()
 	}
 }
 

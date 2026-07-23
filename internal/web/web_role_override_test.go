@@ -179,7 +179,7 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 		clf:        clf,
 		notifier:   &notify.MultiNotifier{},
 		cfgMu:      sync.RWMutex{},
-		clients:    make(map[*websocket.Conn]string),
+		clients:    make(map[*websocket.Conn]*wsClient),
 	}
 
 	// Start the test server.
