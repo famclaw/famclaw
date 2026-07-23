@@ -115,6 +115,8 @@ func capabilitiesComponent(c BuildContext) (string, bool) {
 			switch tool {
 			case "spawn_agent":
 				hints = append(hints, "Delegate research tasks to a subagent via spawn_agent — pass tools: [\"web_fetch\"] so the subagent can browse. Use it for parallel comparisons (\"compare A and B\" → one spawn per option) or deep multi-source research. NOT for simple factual questions you can answer directly.")
+			case "web_search":
+				hints = append(hints, "Search the web via web_search — pass a plain-English query and get back a numbered list of title/url/snippet hits. Use it FIRST whenever you don't already have a specific URL; the snippets are often enough to answer directly, so cite the URLs. Do NOT use web_fetch to search — call web_search first, then web_fetch only when a snippet isn't enough.")
 			case "web_fetch":
 				hints = append(hints, "Fetch a URL and read its text content via web_fetch — useful for current events, weather, or public docs.")
 			default:
