@@ -171,7 +171,7 @@ jobs:
       - name: Start FamClaw server
         run: |
           SERVER_PORT=$(shuf -i 20000-30000 -n 1)
-          cat > /tmp/test-config.yaml << 'TESTCFG'
+          cat > /tmp/test-config.yaml << TESTCFG
           server:
             port: ${SERVER_PORT}
             secret: "post-release-test-secret-32chars!!"
