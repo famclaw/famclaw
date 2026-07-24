@@ -302,6 +302,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, input Input) (Decision, error)
 
 	actionResults, err := e.actionQuery.Eval(ctx, rego.EvalInput(inputMap))
 	if err != nil {
+		// Fail-closed: on policy evaluation error, default to blocking
 		return Decision{Action: "block", Reason: "Policy evaluation error"}, fmt.Errorf("evaluating action: %w", err)
 	}
 

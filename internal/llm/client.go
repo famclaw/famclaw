@@ -294,6 +294,8 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 	if resp.StatusCode != http.StatusOK {
 		b, err := io.ReadAll(resp.Body)
 		if err != nil {
+			// Log the error for debugging while still returning the status error
+			log.Printf("LLM returned %d: failed to read error body: %v", resp.StatusCode, err)
 			return "", fmt.Errorf("LLM returned %d: reading error body: %w", resp.StatusCode, err)
 		}
 		return "", fmt.Errorf("LLM returned %d: %s", resp.StatusCode, string(b))
