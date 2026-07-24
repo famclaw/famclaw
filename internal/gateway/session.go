@@ -118,6 +118,7 @@ func (p *SessionPool) runSession(userName string, sess *userSession) {
 				case <-p.shutdownCtx.Done():
 					cancel()
 				case <-ctx.Done():
+					return
 				}
 			}()
 			
