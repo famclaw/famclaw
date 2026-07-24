@@ -59,6 +59,12 @@ type Server struct {
 	clients       map[*websocket.Conn]*wsClient // conn → client (writeMu serializes writes to that conn)
 	clientsMu     sync.RWMutex
 
+	// bgWG tracks fire-and-forget goroutines spawned by handlers
+	// (approval notifications, dashboard broadcasts). Shutdown callers wait on
+	// it so that no background work touches the DB / WebSocket connections after
+	// the server is torn down — preventing TempDir cleanup races.
+	bgWG sync.WaitGroup
+
 	// Session-based auth wiring (Phase 6).
 	sessions      *store.SessionStore
 	vault         *credstore.Vault
@@ -443,10 +449,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 			// Notify parent if approval needed
 			if resp.PolicyAction == "request_approval" {
-				go s.requestApproval(userCfg, string(resp.Category), payload.Text)
+				s.bgWG.Add(1)
+			go s.requestApproval(userCfg, string(resp.Category), payload.Text)
 			}
 
 			// Broadcast dashboard update
+			s.bgWG.Add(1)
 			go s.broadcastDashboardUpdate(context.Background())
 
 		case "ping":
@@ -538,6 +546,7 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.bgWG.Add(1)
 	go s.broadcastDashboardUpdate(context.Background())
 	jsonOK(w, map[string]string{"status": status})
 }
@@ -587,6 +596,7 @@ func (s *Server) handleDecideLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.bgWG.Add(1)
 	go s.broadcastDashboardUpdate(context.Background())
 
 	icon := "✅"
@@ -745,6 +755,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func (s *Server) requestApproval(user *config.UserConfig, category, queryText string) {
+	defer s.bgWG.Done()
 	import_approval_id := agent.ApprovalID(user.Name, category)
 	a := &store.Approval{
 		ID:          import_approval_id,
@@ -770,7 +781,27 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 	}
 }
 
+// WaitForBackground blocks until all fire-and-forget goroutines spawned by
+// the server (approval notifications, dashboard broadcasts) have exited, or
+// until ctx is cancelled. Call this during teardown so no background work
+// touches the DB / WebSocket connections (and thus the temp directory) after
+// the server and DB have been shut down.
+func (s *Server) WaitForBackground(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		s.bgWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for background goroutines: %w", ctx.Err())
+	}
+}
+
 func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
+	defer s.bgWG.Done()
 	if s.db == nil {
 		return
 	}
