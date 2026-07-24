@@ -154,6 +154,9 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 			// like a hung bot.
 			stopTyping := make(chan struct{})
 			go func(chatID int64) {
+				ctx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				
 				select {
 				case <-ctx.Done():
 					return

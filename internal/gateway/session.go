@@ -111,6 +111,8 @@ func (p *SessionPool) runSession(userName string, sess *userSession) {
 			}
 			ctx, cancel := context.WithCancel(req.ctx)
 			defer cancel()
+			
+			// Ensure the context is cancelled when the parent shutdown context is cancelled
 			go func() {
 				select {
 				case <-p.shutdownCtx.Done():
@@ -118,6 +120,7 @@ func (p *SessionPool) runSession(userName string, sess *userSession) {
 				case <-ctx.Done():
 				}
 			}()
+			
 			reply := p.process(ctx, req.msg)
 			select {
 			case req.reply <- reply:
