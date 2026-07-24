@@ -6,11 +6,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestEvaluator(t *testing.T) {
-	t.Run("constructor works", func(t *testing.T) {
-		// Test that we can at least construct an evaluator
-		evaluator, err := NewEvaluator("", "", "")
-		assert.NoError(t, err)
-		assert.NotNil(t, evaluator)
-	})
+func TestEvaluatorBasic(t *testing.T) {
+	// Basic test to ensure evaluator can be constructed
+	evaluator, err := NewEvaluator("", "", "")
+	assert.NoError(t, err)
+	assert.NotNil(t, evaluator)
 }
