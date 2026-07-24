@@ -3,8 +3,7 @@ package telegram
 import (
 	"context"
 	"log"
-	"strings"
-	"time"
+	"strconv"
 
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/notify"
@@ -57,18 +56,19 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 
 		// Convert Telegram message to our internal format
 		msg := gateway.Message{
-			Gateway:    "telegram",
-			ExternalID: c.Message().ID,
-			Text:       c.Message().Text,
-			User:       c.Sender().Username,
-			ChatID:     c.Message().Chat.ID,
+			Gateway:     "telegram",
+			ExternalID:  strconv.FormatInt(int64(c.Message().ID), 10),
+			Text:        c.Message().Text,
+			DisplayName: c.Sender().Username,
+			GroupID:     strconv.FormatInt(c.Message().Chat.ID, 10),
+			IsGroup:     c.Message().Chat.Type == "group" || c.Message().Chat.Type == "supergroup" || c.Message().Chat.Type == "channel",
 		}
 
 		// Process the message
 		reply := handleMsg(ctx, msg)
 		if reply.Text != "" {
 			// Send reply
-			_, err := c.Send(reply.Text)
+			err := c.Send(reply.Text)
 			if err != nil {
 				log.Printf("[telegram] error sending reply: %v", err)
 			}
