@@ -87,7 +87,7 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 - Where is the notification sent? → `internal/notify/notifier.go:Notify` (line 58)
 - Where is the agent chat function defined? → `cmd/famclaw/main.go:303` (line 303)
 - Where is the family state stored? → `internal/familystate/store.go` (line 11)
-- Where is the session authenticated? → `internal/web/middleware/with_session.go` (line 20)
+- Where is the session authenticated? → `internal/web/middleware/session.go` (line 20)
 - Where is the tool cache used? → `internal/agent/agent.go:Chat` (line 45)
 - Where is the tool result audited? → `internal/store/db.go:LogAudit` (line 967)
 - Where is the parent PIN stored? → `internal/store/db.go:Vault` (line 224)
