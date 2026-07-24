@@ -692,7 +692,7 @@ func main() {
 	// Gateway bots
 	var gateways []gateway.Gateway
 	if cfg.Gateways.Telegram.Enabled && cfg.Gateways.Telegram.Token != "" {
-		gateways = append(gateways, telegram.New(cfg.Gateways.Telegram.Token))
+		gateways = append(gateways, telegram.NewBot(ctx, cfg.Gateways.Telegram.Token, nil, nil, notifier))
 		log.Printf("Gateway: Telegram enabled")
 	}
 	if cfg.Gateways.Discord.Enabled && cfg.Gateways.Discord.Token != "" {
