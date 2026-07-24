@@ -6,7 +6,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestEvaluateFailClosed(t *testing.T) {
-	// Simple test to ensure the package compiles and basic functionality works
-	assert.NotNil(t, &Evaluator{})
+func TestEvaluator(t *testing.T) {
+	t.Run("constructor works", func(t *testing.T) {
+		// Test that we can at least construct an evaluator
+		evaluator, err := NewEvaluator("", "", "")
+		assert.NoError(t, err)
+		assert.NotNil(t, evaluator)
+	})
 }
