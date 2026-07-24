@@ -105,6 +105,10 @@ type Agent struct {
 	// senderRegistry maps gateway names to their respective sender implementations.
 	senderRegistry   map[string]gateway.Sender
 	senderRegistryMu sync.RWMutex // protects senderRegistry access
+
+	// nowFn returns the current time. Defaults to time.Now; injectable in tests
+	// to make research-status timestamps (incl. timeout recording) deterministic.
+	nowFn func() time.Time
 }
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
@@ -122,6 +126,10 @@ type AgentDeps struct {
 	BrowserPool    *browser.Pool             // backs builtin__browser_*; nil disables browser tools
 	MsgContext     gateway.MsgContext        // gateway-specific context for outbound tools (reminders, etc.)
 	SenderRegistry map[string]gateway.Sender // map of gateway name (e.g., "telegram", "discord") to Sender implementation
+
+	// NowFn, when non-nil, is used to timestamp research status records.
+	// Optional — defaults to time.Now.
+	NowFn func() time.Time
 }
 
 // NewAgent creates an Agent for the given user. Optional dependencies
@@ -263,7 +271,17 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		msgContext:           deps.MsgContext,
 		effectiveSandboxRoot: effectiveSandboxRoot,
 		senderRegistry:       deps.SenderRegistry,
+		nowFn:                deps.NowFn,
 	}, nil
+}
+
+// now returns the current time, using the injectable nowFn when set
+// (tests) so research-status timestamps are deterministic.
+func (a *Agent) now() time.Time {
+	if a.nowFn != nil {
+		return a.nowFn()
+	}
+	return time.Now()
 }
 
 // Chat processes a single user message and returns a Response.
@@ -476,6 +494,8 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		switch name {
 		case "builtin__spawn_agent":
 			return a.handleSpawnAgent(ctx, args)
+		case "builtin__research_status":
+			return a.handleResearchStatus(ctx, args)
 		case "builtin__web_fetch":
 			return a.handleWebFetch(ctx, args)
 		case "builtin__web_search":
@@ -949,49 +969,37 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	})
 	if err != nil {
 		cancel()
+		// No task id exists yet, so there is nothing to persist; the error is
+		// returned to the LLM (not swallowed) so the user sees the failure.
 		return "", fmt.Errorf("spawning subagent: %w", err)
 	}
+
+	// Record the "running" status so a crash/timeout/delivery failure leaves a
+	// queryable trace even if the background goroutine never completes.
+	a.persistResearchStart(agentID, cfg.Prompt, timeoutSec, a.msgContext)
 
 	log.Printf("[agent][%s] spawned subagent %s on profile %q (timeout=%ds)", a.user.Name, agentID, profile, timeoutSec)
 
 	// Return immediately with an acknowledgment instead of waiting for result
-	ackMsg := fmt.Sprintf("Started your research (task %s). Ask me for its status anytime; I'll post the result here when it's done.", agentID)
+	ackMsg := fmt.Sprintf("Started your research (task %s). I'll post the result here when it's done; if I can't deliver it, the result is saved and you can check it with: research status %s.", agentID, agentID)
 
 	// Launch background goroutine to handle result delivery
 	go func() {
 		// Capture the msgContext for later use in result delivery
 		msgCtx := a.msgContext
+		prompt := cfg.Prompt
 
 		// Add defer cancel to ensure the outer context is properly cleaned up
 		defer cancel()
 
-		// Use the outer subCtx that was created in the parent function
-		// This fixes the issue where the inner subCtx was shadowing the outer one
-		// and causing the wrong context to be checked for timeout
 		select {
 		case result := <-resultCh:
-			// Subagent completed (success or error)
-			var message string
-			if result.Error != nil {
-				// Check if the subagent context deadline was exceeded (timeout takes precedence)
-				if subCtx.Err() != nil && errors.Is(subCtx.Err(), context.DeadlineExceeded) {
-					// This is a timeout - deliver timeout message instead of generic failure
-					message = fmt.Sprintf("⏰ Research task %s timed out after %d seconds", agentID, timeoutSec)
-				} else {
-					// This is a genuine error, not a timeout
-					message = fmt.Sprintf("❌ Research task %s failed: %v", agentID, result.Error)
-				}
-			} else {
-				message = fmt.Sprintf("🔬 Research task %s completed:\n%s", agentID, result.Output)
-			}
-
-			// Deliver result to originating conversation
-			a.deliverResultToOrigin(agentID, message, msgCtx)
-
+			// Subagent completed (success, error, or timeout).
+			state, resultText := classifySubagentResult(result, subCtx)
+			a.finalizeResearch(ctx, agentID, state, resultText, timeoutSec, prompt, msgCtx)
 		case <-subCtx.Done():
 			// Timeout
-			message := fmt.Sprintf("⏰ Research task %s timed out after %d seconds", agentID, timeoutSec)
-			a.deliverResultToOrigin(agentID, message, msgCtx)
+			a.finalizeResearch(ctx, agentID, store.ResearchStatusTimedOut, subCtx.Err().Error(), timeoutSec, prompt, msgCtx)
 		}
 	}()
 
@@ -1002,17 +1010,20 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 // block before it is abandoned, so a stuck gateway cannot hang the goroutine.
 const deliverySendTimeout = 30 * time.Second
 
-// deliverResultToOrigin sends a message to the originating conversation
-func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gateway.MsgContext) {
+// deliverResultToOrigin sends a message to the originating conversation.
+// It returns whether the message was delivered and any error. A missing sender
+// or a failed Send is NOT silently swallowed: the caller (finalizeResearch)
+// records the failure in the persistent status and surfaces it to the user.
+func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gateway.MsgContext) (bool, error) {
 	// Look up the sender by gateway name
 	a.senderRegistryMu.RLock()
 	sender, ok := a.senderRegistry[msgCtx.Gateway]
 	a.senderRegistryMu.RUnlock()
 
 	if !ok {
-		// No sender registered for this gateway - log and skip
-		log.Printf("[agent][%s] No sender registered for gateway %s", a.user.Name, msgCtx.Gateway)
-		return
+		err := fmt.Errorf("no sender registered for gateway %q", msgCtx.Gateway)
+		log.Printf("[agent][%s] %v for agent %s", a.user.Name, err, agentID)
+		return false, err
 	}
 
 	// Compute chatID: use GroupID if IsGroup and GroupID is not empty, otherwise use ExternalID
@@ -1027,10 +1038,12 @@ func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gat
 	if err := sender.Send(ctx, chatID, message); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			log.Printf("[agent][%s] Timed out after %s sending result for agent %s to %s", a.user.Name, deliverySendTimeout, agentID, chatID)
-		} else {
-			log.Printf("[agent][%s] Failed to send result for agent %s to %s: %v", a.user.Name, agentID, chatID, err)
+			return false, fmt.Errorf("send timed out after %s: %w", deliverySendTimeout, err)
 		}
+		log.Printf("[agent][%s] Failed to send result for agent %s to %s: %v", a.user.Name, agentID, chatID, err)
+		return false, fmt.Errorf("send to %s: %w", chatID, err)
 	}
+	return true, nil
 }
 
 // handleWebFetch dispatches the builtin__web_fetch tool. Auth boundary:

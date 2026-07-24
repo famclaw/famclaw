@@ -191,6 +191,25 @@ func (d *DB) migrate() error {
 		blocked_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS research_tasks (
+		user_name    TEXT NOT NULL,
+		agent_id     TEXT NOT NULL,
+		prompt       TEXT NOT NULL,
+		status       TEXT NOT NULL,                  -- running|completed|failed|timed_out
+		result       TEXT,                           -- subagent output (completed) or error text (failed/timed_out)
+		deliverable  TEXT,                           -- formatted message intended for the originating conversation
+		delivered    INTEGER NOT NULL DEFAULT 0,     -- whether the result reached the originating channel
+		delivery_err TEXT,                           -- delivery failure reason when not delivered
+		gateway      TEXT,                           -- originating gateway name
+		chat_id      TEXT,                           -- originating chat id
+		created_at   INTEGER NOT NULL,               -- unix seconds
+		started_at   INTEGER NOT NULL,               -- unix seconds
+		ended_at     INTEGER                         -- unix seconds; null while running
+	);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_research_tasks_pk ON research_tasks(user_name, agent_id);
+	CREATE INDEX IF NOT EXISTS idx_research_tasks_status ON research_tasks(status);
+	CREATE INDEX IF NOT EXISTS idx_research_tasks_user ON research_tasks(user_name);
+
 	CREATE TABLE IF NOT EXISTS audit_log (
 		id          INTEGER PRIMARY KEY AUTOINCREMENT,
 		actor_name  TEXT NOT NULL,
@@ -1385,4 +1404,155 @@ func (d *DB) DeleteReminder(ctx context.Context, id int64) error {
 		return fmt.Errorf("deleting reminder: %w", err)
 	}
 	return nil
+}
+
+// ── Research Task Status ──────────────────────────────────────────────────────
+//
+// Async research (spawn_agent) writes a persistent status record per task so
+// that a delivery failure (e.g. a gateway returning 404) is never silently
+// lost — the user can always look up the terminal result via the
+// research_status builtin tool or see it resurface in their conversation
+// history. The primary key is (user_name, agent_id) so each user's "agent-N"
+// IDs are unique even though the in-memory scheduler counter resets on restart.
+
+// ResearchStatusState is the lifecycle state of a research task.
+type ResearchStatusState string
+
+const (
+	ResearchStatusRunning  ResearchStatusState = "running"
+	ResearchStatusCompleted ResearchStatusState = "completed"
+	ResearchStatusFailed   ResearchStatusState = "failed"
+	ResearchStatusTimedOut ResearchStatusState = "timed_out"
+)
+
+// ResearchStatus is a persistent record of a spawned research task.
+type ResearchStatus struct {
+	AgentID     string
+	UserName    string
+	Prompt      string
+	Status      ResearchStatusState
+	Result      string // subagent output (completed) or error text (failed/timed_out)
+	Deliverable string // formatted message for the originating conversation
+	Delivered   bool
+	DeliveryErr string
+	Gateway     string
+	ChatID      string
+	CreatedAt   time.Time
+	StartedAt   time.Time
+	EndedAt     *time.Time
+}
+
+// UpsertResearchStatus inserts or updates a research task row. The
+// (user_name, agent_id) tuple is the conflict key; on conflict the mutable
+// terminal fields (status/result/deliverable/delivered/delivery_err/ended_at)
+// are updated while created_at/started_at are preserved so the original start
+// time survives the running→terminal transition.
+func (d *DB) UpsertResearchStatus(r *ResearchStatus) error {
+	delivered := 0
+	if r.Delivered {
+		delivered = 1
+	}
+	var ended sql.NullInt64
+	if r.EndedAt != nil {
+		ended = sql.NullInt64{Int64: r.EndedAt.Unix(), Valid: true}
+	}
+	_, err := d.sql.ExecContext(context.Background(), `
+		INSERT INTO research_tasks
+			(user_name, agent_id, prompt, status, result, deliverable,
+			 delivered, delivery_err, gateway, chat_id, created_at, started_at, ended_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_name, agent_id) DO UPDATE SET
+			prompt       = excluded.prompt,
+			status       = excluded.status,
+			result       = excluded.result,
+			deliverable  = excluded.deliverable,
+			delivered    = excluded.delivered,
+			delivery_err = excluded.delivery_err,
+			ended_at     = excluded.ended_at`,
+		r.UserName, r.AgentID, r.Prompt, string(r.Status), r.Result, r.Deliverable,
+		delivered, r.DeliveryErr, r.Gateway, r.ChatID,
+		r.CreatedAt.Unix(), r.StartedAt.Unix(), ended)
+	if err != nil {
+		return fmt.Errorf("upsert research status: %w", err)
+	}
+	return nil
+}
+
+// GetResearchStatus returns the status record for a specific task owned by
+// the given user, or nil if none exists.
+func (d *DB) GetResearchStatus(ctx context.Context, userName, agentID string) (*ResearchStatus, error) {
+	var r ResearchStatus
+	var delivered int
+	var ended sql.NullInt64
+	var createdAt, startedAt int64
+	err := d.sql.QueryRowContext(ctx, `
+		SELECT user_name, agent_id, prompt, status,
+		       COALESCE(result,''), COALESCE(deliverable,''),
+		       delivered, COALESCE(delivery_err,''),
+		       COALESCE(gateway,''), COALESCE(chat_id,''),
+		       created_at, started_at, ended_at
+		FROM research_tasks
+		WHERE user_name = ? AND agent_id = ?`,
+		userName, agentID).Scan(
+		&r.UserName, &r.AgentID, &r.Prompt, &r.Status,
+		&r.Result, &r.Deliverable, &delivered, &r.DeliveryErr,
+		&r.Gateway, &r.ChatID, &createdAt, &startedAt, &ended)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get research status: %w", err)
+	}
+	r.Delivered = delivered == 1
+	r.CreatedAt = time.Unix(createdAt, 0).UTC()
+	r.StartedAt = time.Unix(startedAt, 0).UTC()
+	if ended.Valid {
+		t := time.Unix(ended.Int64, 0).UTC()
+		r.EndedAt = &t
+	}
+	return &r, nil
+}
+
+// ListResearchStatusByUser returns the most recent research tasks for a user,
+// newest first. A non-positive limit is clamped to 20.
+func (d *DB) ListResearchStatusByUser(ctx context.Context, userName string, limit int) ([]*ResearchStatus, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT user_name, agent_id, prompt, status,
+		       COALESCE(result,''), COALESCE(deliverable,''),
+		       delivered, COALESCE(delivery_err,''),
+		       COALESCE(gateway,''), COALESCE(chat_id,''),
+		       created_at, started_at, ended_at
+		FROM research_tasks
+		WHERE user_name = ?
+		ORDER BY created_at DESC, agent_id DESC
+		LIMIT ?`, userName, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list research status: %w", err)
+	}
+	defer rows.Close()
+	var out []*ResearchStatus
+	for rows.Next() {
+		r := &ResearchStatus{}
+		var delivered int
+		var ended sql.NullInt64
+		var createdAt, startedAt int64
+		if err := rows.Scan(
+			&r.UserName, &r.AgentID, &r.Prompt, &r.Status,
+			&r.Result, &r.Deliverable, &delivered, &r.DeliveryErr,
+			&r.Gateway, &r.ChatID, &createdAt, &startedAt, &ended); err != nil {
+			return nil, fmt.Errorf("scan research status: %w", err)
+		}
+		r.Delivered = delivered == 1
+		r.CreatedAt = time.Unix(createdAt, 0).UTC()
+		r.StartedAt = time.Unix(startedAt, 0).UTC()
+		if ended.Valid {
+			t := time.Unix(ended.Int64, 0).UTC()
+			r.EndedAt = &t
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
