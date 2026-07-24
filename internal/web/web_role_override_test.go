@@ -142,7 +142,11 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	defer db.Close()
+	// Close the DB last — after the server, the WebSocket reader, and the
+	// background goroutines (approval notifications, dashboard broadcasts)
+	// have all exited. Registered first so t.Cleanup (LIFO) runs it last,
+	// before t.TempDir()'s RemoveAll.
+	t.Cleanup(func() { _ = db.Close() })
 
 	ev, err := policy.NewEvaluator("", "", "")
 	if err != nil {
@@ -182,9 +186,15 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 		clients:    make(map[*websocket.Conn]*wsClient),
 	}
 
+	// Wait for background goroutines (approval notifications, dashboard
+	// broadcasts) to exit before the DB is closed. Registered after the
+	// DB-close cleanup above and before the server/conn cleanups, so the
+	// LIFO run order is: connClose + readerWait → tsClose → waitBg → dbClose.
+	t.Cleanup(func() { _ = s.WaitForBackground(context.Background()) })
+
 	// Start the test server.
 	ts := httptest.NewServer(s.Handler())
-	defer ts.Close()
+	t.Cleanup(ts.Close)
 
 	// Prepare WebSocket URL.
 	u, err := url.Parse(ts.URL)
@@ -203,7 +213,11 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+
+	// Track the reader goroutine so teardown can wait for it to drain before
+	// closing the server and DB.
+	var readerDone sync.WaitGroup
+	readerDone.Add(1)
 
 	// Channel to receive incoming WebSocket messages.
 	msgChan := make(chan struct {
@@ -214,17 +228,24 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 
 	// Goroutine to read WebSocket messages.
 	go func() {
+		defer readerDone.Done()
 		for {
 			msgType, data, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					// Ignore unexpected close error.
 				}
-				msgChan <- struct {
+				// Non-blocking send: once the conn is closed we no longer
+				// care about messages; avoid blocking (and leaking) if the
+				// buffered channel is full.
+				select {
+				case msgChan <- struct {
 					msgType int
 					data    []byte
 					err     error
-				}{msgType: -1, data: nil, err: err}
+				}{msgType: -1, data: nil, err: err}:
+				default:
+				}
 				return
 			}
 			msgChan <- struct {
@@ -234,6 +255,16 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 			}{msgType: msgType, data: data, err: nil}
 		}
 	}()
+
+	// Close the client connection first: this makes the server's handleChat
+	// goroutine and the reader goroutine exit. Waiting for the reader ensures
+	// no goroutine is still reading from conn (or touching the DB via the
+	// handler) when we shut down the server/DB. Registered last so it runs
+	// first (t.Cleanup is LIFO).
+	t.Cleanup(func() {
+		_ = conn.Close()
+		readerDone.Wait()
+	})
 
 	// Helper to wait for a message of a given type (text) and optionally check its content.
 	waitForMessage := func(expectedType string, timeout time.Duration) (*WsMessage, error) {

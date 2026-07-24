@@ -64,6 +64,7 @@ func (s *Server) handleUnknownAccountLink(w http.ResponseWriter, r *http.Request
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
 	}
+	s.bgWG.Add(1)
 	go s.broadcastDashboardUpdate(context.Background())
 	jsonOK(w, map[string]string{"status": "linked"})
 }
@@ -90,6 +91,7 @@ func (s *Server) handleUnknownAccountDismiss(w http.ResponseWriter, r *http.Requ
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
 	}
+	s.bgWG.Add(1)
 	go s.broadcastDashboardUpdate(context.Background())
 	jsonOK(w, map[string]string{"status": "dismissed"})
 }
