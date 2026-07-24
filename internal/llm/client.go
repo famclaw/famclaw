@@ -25,13 +25,13 @@ var ErrToolCallArgsTruncated = errors.New("tool call arguments JSON truncated")
 
 // Message is a conversation turn.
 type Message struct {
-	Role       string     `json:"role"` // system | user | assistant | tool
-	Content    string     `json:"content,omitempty"`
-	// For multimodal content (images, etc.). If set (non-nil and non-empty), 
+	Role    string `json:"role"` // system | user | assistant | tool
+	Content string `json:"content,omitempty"`
+	// For multimodal content (images, etc.). If set (non-nil and non-empty),
 	// takes precedence over Content when marshaling to JSON.
 	ContentParts []any
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // present when LLM requests tool use
-	ToolCallID string     `json:"tool_call_id,omitempty"` // required on role=tool replies (OpenAI)
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`   // present when LLM requests tool use
+	ToolCallID   string     `json:"tool_call_id,omitempty"` // required on role=tool replies (OpenAI)
 
 	// ReasoningContent is the non-standard field reasoning models (qwen3,
 	// nemotron, gpt-oss harmony) sometimes use to ship the final response
@@ -40,6 +40,7 @@ type Message struct {
 	// into Content when Content is empty — see mergeReasoning() below.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
+
 // MarshalJSON implements custom JSON marshaling for Message.
 // If ContentParts is set (non-nil and non-empty), it is used for the "content" field.
 // Otherwise, the Content string field is used. This maintains backward compatibility
@@ -48,32 +49,32 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	// If ContentParts is set and non-empty, use it
 	if m.ContentParts != nil && len(m.ContentParts) > 0 {
 		return json.Marshal(struct {
-			Role       string  `json:"role"`
-			Content    []any   `json:"content"`
-			ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-			ToolCallID string  `json:"tool_call_id,omitempty"`
-			ReasoningContent string `json:"reasoning_content,omitempty"`
+			Role             string     `json:"role"`
+			Content          []any      `json:"content"`
+			ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+			ToolCallID       string     `json:"tool_call_id,omitempty"`
+			ReasoningContent string     `json:"reasoning_content,omitempty"`
 		}{
-			Role:       m.Role,
-			Content:    m.ContentParts,
-			ToolCalls:  m.ToolCalls,
-			ToolCallID: m.ToolCallID,
+			Role:             m.Role,
+			Content:          m.ContentParts,
+			ToolCalls:        m.ToolCalls,
+			ToolCallID:       m.ToolCallID,
 			ReasoningContent: m.ReasoningContent,
 		})
 	}
-	
+
 	// Otherwise, fall back to the original behavior using Content string
 	return json.Marshal(struct {
-		Role       string  `json:"role"`
-		Content    string  `json:"content,omitempty"`
-		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-		ToolCallID string  `json:"tool_call_id,omitempty"`
-		ReasoningContent string `json:"reasoning_content,omitempty"`
+		Role             string     `json:"role"`
+		Content          string     `json:"content,omitempty"`
+		ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+		ToolCallID       string     `json:"tool_call_id,omitempty"`
+		ReasoningContent string     `json:"reasoning_content,omitempty"`
 	}{
-		Role:       m.Role,
-		Content:    m.Content,
-		ToolCalls:  m.ToolCalls,
-		ToolCallID: m.ToolCallID,
+		Role:             m.Role,
+		Content:          m.Content,
+		ToolCalls:        m.ToolCalls,
+		ToolCallID:       m.ToolCallID,
 		ReasoningContent: m.ReasoningContent,
 	})
 }
@@ -202,6 +203,16 @@ func NewClient(baseURL, model, apiKey string) *Client {
 		},
 		defaultTimeout: 5 * time.Minute,
 	}
+}
+
+// WithTimeout sets a per-call timeout for LLM requests. The timeout applies
+// to each individual Chat, ChatMessage, and ChatWithTools call via a context
+// deadline. If not called, the default 5-minute timeout is used.
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	if d > 0 {
+		c.defaultTimeout = d
+	}
+	return c
 }
 
 // setAuth sets the Authorization header on a request.

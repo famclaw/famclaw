@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -390,10 +391,67 @@ func TestHardwareRecommendation(t *testing.T) {
 }
 
 func TestClientTimeout(t *testing.T) {
-	// Test that the client uses the configured default timeout
-	client := NewClient("http://localhost:11434", "test-model", "")
-	if client.defaultTimeout != 5*time.Minute {
-		t.Errorf("Expected default timeout of 5 minutes, got %v", client.defaultTimeout)
+	t.Run("default", func(t *testing.T) {
+		client := NewClient("http://localhost:11434", "test-model", "")
+		if client.defaultTimeout != 5*time.Minute {
+			t.Errorf("Expected default timeout of 5 minutes, got %v", client.defaultTimeout)
+		}
+	})
+
+	t.Run("with_timeout", func(t *testing.T) {
+		client := NewClient("http://localhost:11434", "test-model", "")
+		client.WithTimeout(30 * time.Second)
+		if client.defaultTimeout != 30*time.Second {
+			t.Errorf("Expected timeout of 30 seconds, got %v", client.defaultTimeout)
+		}
+	})
+
+	t.Run("zero_or_negative_noop", func(t *testing.T) {
+		client := NewClient("http://localhost:11434", "test-model", "")
+		client.WithTimeout(0)
+		if client.defaultTimeout != 5*time.Minute {
+			t.Errorf("Expected unchanged default timeout, got %v", client.defaultTimeout)
+		}
+		client.WithTimeout(-1 * time.Second)
+		if client.defaultTimeout != 5*time.Minute {
+			t.Errorf("Expected unchanged default timeout, got %v", client.defaultTimeout)
+		}
+	})
+}
+
+func TestClientTimeoutCancelsSlowRequest(t *testing.T) {
+	// A server that never responds should trigger the per-call context
+	// deadline. This verifies the timeout is actually wired into the
+	// request path, not just stored as a field.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(openaiResponse{
+			Choices: []openaiChoice{{
+				Message:      Message{Role: "assistant", Content: "hi"},
+				FinishReason: "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test", "")
+	client.WithTimeout(100 * time.Millisecond)
+
+	start := time.Now()
+	_, err := client.ChatMessage(context.Background(), []Message{
+		{Role: "user", Content: "hi"},
+	}, 0.7, 100)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "deadline exceeded") && !strings.Contains(err.Error(), "context deadline") {
+		t.Errorf("expected deadline-exceeded error, got: %v", err)
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("timeout took too long: %v (should be ~100ms)", elapsed)
 	}
 }
 

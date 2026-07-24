@@ -126,7 +126,7 @@ func Execute(ctx context.Context, cfg Config, deps ExecutorDeps) (string, error)
 		return "", fmt.Errorf("LLM profile %q not found or incomplete", cfg.LLMProfile)
 	}
 
-	client := llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
+	client := llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
 
 	systemPrompt := buildSystemPrompt(cfg.Prompt)
 

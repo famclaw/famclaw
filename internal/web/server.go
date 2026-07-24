@@ -13,8 +13,8 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -188,9 +188,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/skills", s.protect(s.handleSkills))
 	mux.Handle("/api/skills/install", s.protect(s.handleSkillInstall))
 	mux.Handle("/api/skills/remove", s.protect(s.handleSkillRemove))
-		mux.Handle("/api/mcp", s.protect(s.handleMCP))
-		mux.Handle("/api/mcp/add", s.protect(s.handleMCPAdd))
-		mux.Handle("/api/mcp/remove", s.protect(s.handleMCPRemove))
+	mux.Handle("/api/mcp", s.protect(s.handleMCP))
+	mux.Handle("/api/mcp/add", s.protect(s.handleMCPAdd))
+	mux.Handle("/api/mcp/remove", s.protect(s.handleMCPRemove))
 	mux.Handle("/api/unknown-accounts", s.protect(s.handleUnknownAccounts))
 	mux.Handle("/api/unknown-accounts/link", s.protect(s.handleUnknownAccountLink))
 	mux.Handle("/api/unknown-accounts/dismiss", s.protect(s.handleUnknownAccountDismiss))
@@ -347,11 +347,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		llmClient = claudecli.New()
 	default:
 		ep := s.cfg.LLMEndpointFor(userCfg)
-		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
+		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
 	}
 	a, err := agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
-		Skills: s.skills,
-		Pool:   s.pool,
+		Skills:     s.skills,
+		Pool:       s.pool,
 		MsgContext: gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
 	})
 	if err != nil {
@@ -387,8 +387,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			copied.AgeGroup = currentAgeGroup
 			adjustedUser := &copied
 			a, err = agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
-				Skills: s.skills,
-				Pool:   s.pool,
+				Skills:     s.skills,
+				Pool:       s.pool,
 				MsgContext: gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
 			})
 			lastRole = currentRole
@@ -450,7 +450,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			// Notify parent if approval needed
 			if resp.PolicyAction == "request_approval" {
 				s.bgWG.Add(1)
-			go s.requestApproval(userCfg, string(resp.Category), payload.Text)
+				go s.requestApproval(userCfg, string(resp.Category), payload.Text)
 			}
 
 			// Broadcast dashboard update
@@ -651,7 +651,7 @@ func (s *Server) handleMCPAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name string            `json:"name"`
+		Name   string                 `json:"name"`
 		Config config.MCPServerConfig `json:"config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
