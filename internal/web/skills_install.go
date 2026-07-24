@@ -77,6 +77,7 @@ func (s *Server) handleSkillInstall(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
 	}
+	s.bgWG.Add(1)
 	go s.broadcastDashboardUpdate(context.Background())
 	jsonOK(w, skill)
 }
@@ -107,6 +108,7 @@ func (s *Server) handleSkillRemove(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
 	}
+	s.bgWG.Add(1)
 	go s.broadcastDashboardUpdate(context.Background())
 	jsonOK(w, map[string]string{"status": "removed", "name": name})
 }
