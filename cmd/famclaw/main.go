@@ -582,8 +582,8 @@ func main() {
 	}
 
 	// Builtin tools available to the LLM
-	builtinTools := []agentcore.Tool{subagent.SpawnAgentTool()}
-	registered := []string{"spawn_agent"}
+	builtinTools := []agentcore.Tool{subagent.SpawnAgentTool(), agent.ResearchStatusTool()}
+	registered := []string{"spawn_agent", "research_status"}
 	if cfg.Tools.WebFetch.Enabled {
 		builtinTools = append(builtinTools, webfetch.Tool(cfg.Tools.WebFetch.AllowedRoles))
 		registered = append(registered, "web_fetch")

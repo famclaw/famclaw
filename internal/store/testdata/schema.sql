@@ -18,6 +18,12 @@ CREATE INDEX idx_reminders_due_at ON reminders(due_at);
 
 CREATE INDEX idx_reminders_user_dispatched ON reminders(user_name, dispatched);
 
+CREATE UNIQUE INDEX idx_research_tasks_pk ON research_tasks(user_name, agent_id);
+
+CREATE INDEX idx_research_tasks_status ON research_tasks(status);
+
+CREATE INDEX idx_research_tasks_user ON research_tasks(user_name);
+
 CREATE INDEX idx_todos_user ON todos(user_name);
 
 CREATE INDEX idx_todos_user_completed ON todos(user_name, completed);
@@ -154,6 +160,22 @@ CREATE TABLE reminders (
 		dispatched     INTEGER NOT NULL DEFAULT 0,
 		dispatched_at  TEXT DEFAULT '',
 		created_at     TEXT NOT NULL
+	);
+
+CREATE TABLE research_tasks (
+		user_name    TEXT NOT NULL,
+		agent_id     TEXT NOT NULL,
+		prompt       TEXT NOT NULL,
+		status       TEXT NOT NULL,                  -- running|completed|failed|timed_out
+		result       TEXT,                           -- subagent output (completed) or error text (failed/timed_out)
+		deliverable  TEXT,                           -- formatted message intended for the originating conversation
+		delivered    INTEGER NOT NULL DEFAULT 0,     -- whether the result reached the originating channel
+		delivery_err TEXT,                           -- delivery failure reason when not delivered
+		gateway      TEXT,                           -- originating gateway name
+		chat_id      TEXT,                           -- originating chat id
+		created_at   INTEGER NOT NULL,               -- unix seconds
+		started_at   INTEGER NOT NULL,               -- unix seconds
+		ended_at     INTEGER                         -- unix seconds; null while running
 	);
 
 CREATE TABLE seccheck_reports (
