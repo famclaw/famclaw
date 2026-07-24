@@ -439,7 +439,7 @@ func main() {
 	// LLM health check (skip for claude_cli — no HTTP endpoint to ping)
 	if cfg.LLM.Provider != "claude_cli" {
 		hcEP := cfg.LLMEndpointFor(nil)
-		llmClient := llm.NewClient(hcEP.BaseURL, hcEP.Model, hcEP.APIKey)
+		llmClient := llm.NewClient(hcEP.BaseURL, hcEP.Model, hcEP.APIKey).WithTimeout(hcEP.Timeout)
 		ctx5s, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := llmClient.Ping(ctx5s); err != nil {
 			log.Printf("⚠️  LLM not ready: %v", err)
@@ -648,7 +648,7 @@ func main() {
 	// gateways are built below and captured by the closure so async research
 	// results can be delivered back to the originating conversation.
 	senderRegistry := make(map[string]gateway.Sender)
-	
+
 	// Chat function for gateway router - combining incoming changes with our multimodal support
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		var llmClient llm.Chatter
@@ -657,18 +657,18 @@ func main() {
 			llmClient = claudecli.New()
 		default: // "" or "openai"
 			ep := cfg.LLMEndpointFor(user)
-			llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
+			llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
 		}
 		a, err := agent.NewAgent(user, cfg, llmClient, evaluator, clf, db, agent.AgentDeps{
-			Pool:         mcpPool,
-			Skills:       enabledSkills,
-			Quarantine:   quarantine,
-			Scanner:      hbScanner,
-			Scheduler:    agentScheduler,
-			BuiltinTools: builtinTools,
-			Cache:        toolCache,
-			BrowserPool:  browserPool,
-			MsgContext:   msgCtx,
+			Pool:           mcpPool,
+			Skills:         enabledSkills,
+			Quarantine:     quarantine,
+			Scanner:        hbScanner,
+			Scheduler:      agentScheduler,
+			BuiltinTools:   builtinTools,
+			Cache:          toolCache,
+			BrowserPool:    browserPool,
+			MsgContext:     msgCtx,
 			SenderRegistry: senderRegistry,
 		})
 		if err != nil {
@@ -814,10 +814,10 @@ func main() {
 							log.Printf("Config file changed, reloading configuration...")
 							router.UpdateConfig(newCfg)
 							srv.UpdateConfig(newCfg)
-							
+
 							// Update MCP pool with new server configuration
 							mcpPool.UpdateFromConfig(newCfg.Skills.MCPServers, newCfg.Skills.Credentials)
-							
+
 							// Update the config variable used for new agent creations
 							cfg = newCfg
 							log.Printf("Configuration reloaded successfully")

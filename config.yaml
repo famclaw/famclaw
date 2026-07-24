@@ -24,6 +24,10 @@ llm:
   #   Anthropic:        https://api.anthropic.com/v1
   base_url: ""
   model: ""
+  # Per-call LLM request timeout in seconds. Each chat/tool call gets its
+  # own context deadline. Default: 300 (5 minutes). Raise for slow models
+  # on Raspberry Pi; lower for faster hardware.
+  timeout_seconds: 300
   # api_key: ""  # required for cloud providers, omit for Ollama
   # Prefer: export FAMCLAW_LLM_API_KEY=<key> (env overrides YAML, no plaintext warning)
 

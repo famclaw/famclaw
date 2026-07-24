@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"path/filepath"
 
@@ -190,6 +191,11 @@ type LLMConfig struct {
 	MaxContextTokens  int     `yaml:"max_context_tokens"`
 	MaxResponseTokens int     `yaml:"max_response_tokens"`
 	Temperature       float64 `yaml:"temperature"`
+	// TimeoutSeconds is the per-call LLM timeout in seconds. Each Chat,
+	// ChatMessage, and ChatWithTools call gets its own context deadline.
+	// Defaults to 300 (5 minutes). Operators on slow hardware or with
+	// large models may raise this; fast hardware may lower it.
+	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
 }
 
 type UserConfig struct {
@@ -386,6 +392,9 @@ func applyDefaults(c *Config) {
 	if c.LLM.Temperature == 0 {
 		c.LLM.Temperature = 0.7
 	}
+	if c.LLM.TimeoutSeconds == 0 {
+		c.LLM.TimeoutSeconds = 300
+	}
 	if c.Approval.ExpiryHours == 0 {
 		c.Approval.ExpiryHours = 24
 	}
@@ -487,6 +496,9 @@ func (c *Config) Validate() error {
 				u.Name, len(u.PIN),
 			)
 		}
+	}
+	if c.LLM.TimeoutSeconds <= 0 {
+		return fmt.Errorf("llm.timeout_seconds must be > 0 (got %d)", c.LLM.TimeoutSeconds)
 	}
 	for name, mcpCfg := range c.Skills.MCPServers {
 		if mcpCfg.Disabled {
@@ -602,7 +614,7 @@ func (c *Config) Save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
-	
+
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
@@ -638,27 +650,29 @@ type LLMEndpoint struct {
 	BaseURL string
 	Model   string
 	APIKey  string
+	Timeout time.Duration
 }
 
 // LLMEndpointFor resolves the full LLM endpoint for a user.
 // Priority: user.LLMProfile → cfg.LLM.Default → legacy cfg.LLM.BaseURL/Model.
 func (c *Config) LLMEndpointFor(user *UserConfig) LLMEndpoint {
+	timeout := time.Duration(c.LLM.TimeoutSeconds) * time.Second
 	// Try user's profile override
 	if user != nil && user.LLMProfile != "" {
 		if p, ok := c.LLM.Profiles[user.LLMProfile]; ok {
-			return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey}
+			return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey, Timeout: timeout}
 		}
 		log.Printf("[config] warning: user %q references unknown LLM profile %q, falling back", user.Name, user.LLMProfile)
 	}
 	// Try default profile
 	if c.LLM.Default != "" {
 		if p, ok := c.LLM.Profiles[c.LLM.Default]; ok {
-			return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey}
+			return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey, Timeout: timeout}
 		}
 		log.Printf("[config] warning: default LLM profile %q not found, using legacy config", c.LLM.Default)
 	}
 	// Fall back to legacy single-endpoint config
-	ep := LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.ModelFor(user), APIKey: c.LLM.APIKey}
+	ep := LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.ModelFor(user), APIKey: c.LLM.APIKey, Timeout: timeout}
 	if ep.BaseURL == "" {
 		userName := "<nil>"
 		if user != nil {
@@ -672,14 +686,15 @@ func (c *Config) LLMEndpointFor(user *UserConfig) LLMEndpoint {
 // LLMEndpointForProfile resolves an LLM endpoint by profile name directly.
 // Used by subagents that specify a target LLM profile rather than a user.
 func (c *Config) LLMEndpointForProfile(profileName string) LLMEndpoint {
+	timeout := time.Duration(c.LLM.TimeoutSeconds) * time.Second
 	if profileName == "" {
 		return c.LLMEndpointFor(nil) // use default
 	}
 	if p, ok := c.LLM.Profiles[profileName]; ok {
-		return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey}
+		return LLMEndpoint{BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey, Timeout: timeout}
 	}
 	log.Printf("[config] warning: LLM profile %q not found", profileName)
-	ep := LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.LLM.Model, APIKey: c.LLM.APIKey}
+	ep := LLMEndpoint{BaseURL: c.LLM.BaseURL, Model: c.LLM.Model, APIKey: c.LLM.APIKey, Timeout: timeout}
 	if ep.BaseURL == "" {
 		log.Printf("[config] warning: LLM endpoint is empty for profile %q — check llm.base_url in config", profileName)
 	}

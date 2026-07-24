@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveLLMAPIKey(t *testing.T) {
@@ -322,6 +323,7 @@ func TestValidate_SandboxRootErrors(t *testing.T) {
 		MaxContextTokens:  4096,
 		MaxResponseTokens: 512,
 		Temperature:       0.7,
+		TimeoutSeconds:    300,
 	}
 	approvalCfg := ApprovalConfig{
 		ExpiryHours: 24,
@@ -414,6 +416,100 @@ func TestValidate_SandboxRootErrors(t *testing.T) {
 					if !strings.Contains(err.Error(), sandboxRoot) {
 						t.Errorf("error %q does not contain sandboxRoot %q", err.Error(), sandboxRoot)
 					}
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestLLMTimeoutDefaultAndEndpoint(t *testing.T) {
+	tests := []struct {
+		name           string
+		timeoutSeconds int
+		wantTimeout    time.Duration
+	}{
+		{
+			name:           "zero defaults to 300s",
+			timeoutSeconds: 0,
+			wantTimeout:    300 * time.Second,
+		},
+		{
+			name:           "explicit 60s",
+			timeoutSeconds: 60,
+			wantTimeout:    60 * time.Second,
+		},
+		{
+			name:           "explicit 120s",
+			timeoutSeconds: 120,
+			wantTimeout:    120 * time.Second,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Config{
+				LLM: LLMConfig{
+					BaseURL:        "http://localhost:11434",
+					Model:          "llama3",
+					TimeoutSeconds: tt.timeoutSeconds,
+				},
+			}
+			applyDefaults(c)
+			if c.LLM.TimeoutSeconds != int(tt.wantTimeout.Seconds()) {
+				t.Errorf("TimeoutSeconds = %d, want %d", c.LLM.TimeoutSeconds, int(tt.wantTimeout.Seconds()))
+			}
+			ep := c.LLMEndpointFor(nil)
+			if ep.Timeout != tt.wantTimeout {
+				t.Errorf("endpoint Timeout = %v, want %v", ep.Timeout, tt.wantTimeout)
+			}
+		})
+	}
+}
+
+func TestLLMTimeoutValidation(t *testing.T) {
+	tests := []struct {
+		name           string
+		timeoutSeconds int
+		wantErr        bool
+		errContains    string
+	}{
+		{
+			name:           "zero is valid after defaults",
+			timeoutSeconds: 0,
+			wantErr:        false,
+		},
+		{
+			name:           "positive is valid",
+			timeoutSeconds: 300,
+			wantErr:        false,
+		},
+		{
+			name:           "negative is invalid",
+			timeoutSeconds: -5,
+			wantErr:        true,
+			errContains:    "must be > 0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Config{
+				LLM: LLMConfig{
+					BaseURL:        "http://localhost:11434",
+					Model:          "llama3",
+					TimeoutSeconds: tt.timeoutSeconds,
+				},
+			}
+			applyDefaults(c)
+			err := c.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.errContains)
 				}
 			} else {
 				if err != nil {

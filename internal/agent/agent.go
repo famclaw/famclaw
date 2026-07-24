@@ -321,7 +321,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		if ep.BaseURL == "" || ep.Model == "" {
 			return nil
 		}
-		return llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey)
+		return llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
 	}
 
 	// Populate available tools on the Turn

@@ -55,12 +55,15 @@ FamClaw talks to any OpenAI-compatible endpoint:
 
 ```yaml
 llm:
-  primary:
-    base_url: "http://192.168.1.10:11434"  # Ollama on your Mac Mini
-    model: "llama3.2:3b"
+  base_url: "http://192.168.1.10:11434"  # Ollama on your Mac Mini
+  model: "llama3.2:3b"
+  # Per-call LLM request timeout in seconds. Each chat/tool call gets its
+  # own context deadline. Default: 300 (5 minutes).
+  timeout_seconds: 300
 
-  fallbacks:
-    - base_url: "https://api.openai.com/v1"
+  profiles:
+    cloud:
+      base_url: "https://api.openai.com/v1"
       model: "gpt-4o-mini"
       api_key: "${OPENAI_API_KEY}"
 ```
