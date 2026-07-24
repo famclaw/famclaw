@@ -24,8 +24,6 @@ require (
 
 require github.com/fsnotify/fsnotify v1.10.1
 
-require github.com/stretchr/objx v0.5.2 // indirect
-
 require (
 	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
