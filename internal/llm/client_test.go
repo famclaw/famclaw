@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestNewClientAuthHeader(t *testing.T) {
@@ -385,6 +386,14 @@ func TestHardwareRecommendation(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("HardwareRecommendation(%d) = %q, want %q", tt.ramMB, got, tt.want)
 		}
+	}
+}
+
+func TestClientTimeout(t *testing.T) {
+	// Test that the client uses the configured default timeout
+	client := NewClient("http://localhost:11434", "test-model", "")
+	if client.defaultTimeout != 5*time.Minute {
+		t.Errorf("Expected default timeout of 5 minutes, got %v", client.defaultTimeout)
 	}
 }
 

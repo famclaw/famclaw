@@ -184,6 +184,8 @@ type Client struct {
 	model   string
 	apiKey  string
 	http    *http.Client
+	// Default timeout for LLM calls (5 minutes is too long for many operations)
+	defaultTimeout time.Duration
 }
 
 // NewClient creates a new LLM client with API key auth.
@@ -198,6 +200,7 @@ func NewClient(baseURL, model, apiKey string) *Client {
 		http: &http.Client{
 			Timeout: 5 * time.Minute, // LLMs can be slow on RPi
 		},
+		defaultTimeout: 5 * time.Minute,
 	}
 }
 
@@ -281,7 +284,8 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	// Use a configurable per-call timeout instead of the global client timeout
+	ctx, cancel := context.WithTimeout(ctx, c.defaultTimeout)
 	defer cancel()
 	httpReq = httpReq.WithContext(ctx)
 
@@ -381,7 +385,8 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	// Use a configurable per-call timeout instead of the global client timeout
+	ctx, cancel := context.WithTimeout(ctx, c.defaultTimeout)
 	defer cancel()
 	httpReq = httpReq.WithContext(ctx)
 
