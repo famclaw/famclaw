@@ -701,3 +701,157 @@ func TestToolCallArguments_TruncatedReturnsSentinel(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeReasoningFields(t *testing.T) {
+	// Several local models (Gemma-4-26b, qwen3.6-27b via LiteLLM/Ollama,
+	// qwen3, nemotron, gpt-oss) ship the final answer in a reasoning field
+	// while leaving content empty. The client must surface that text as the
+	// message content, but only when content is empty — never overwrite a
+	// real reply.
+	tests := []struct {
+		name    string
+		rawResp string
+		want    string
+	}{
+		{
+			name:    "empty content + plain reasoning field",
+			rawResp: `{"choices":[{"message":{"role":"assistant","content":"","reasoning":"The answer is 42"}}]}`,
+			want:    "The answer is 42",
+		},
+		{
+			name:    "empty content + reasoning_content field",
+			rawResp: `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"The answer is 42"}}]}`,
+			want:    "The answer is 42",
+		},
+		{
+			name:    "non-empty content ignores reasoning fields",
+			rawResp: `{"choices":[{"message":{"role":"assistant","content":"Hello!","reasoning":"The answer is 42","reasoning_content":"ignored"}}]}`,
+			want:    "Hello!",
+		},
+		{
+			name:    "whitespace content falls back to reasoning",
+			rawResp: `{"choices":[{"message":{"role":"assistant","content":"   ","reasoning":"The answer is 42"}}]}`,
+			want:    "The answer is 42",
+		},
+		{
+			name:    "empty content no reasoning stays empty",
+			rawResp: `{"choices":[{"message":{"role":"assistant","content":""}}]}`,
+			want:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(tt.rawResp))
+			}))
+			defer server.Close()
+
+			client := NewClient(server.URL, "test", "")
+			msg, err := client.ChatMessage(context.Background(), []Message{
+				{Role: "user", Content: "hi"},
+			}, 0.7, 100)
+			if err != nil {
+				t.Fatalf("ChatMessage: %v", err)
+			}
+			if msg.Content != tt.want {
+				t.Errorf("content = %q, want %q", msg.Content, tt.want)
+			}
+			// Reasoning fields must be cleared after the merge so they
+			// never leak into downstream serialization.
+			if msg.Reasoning != "" {
+				t.Errorf("Reasoning should be cleared, got %q", msg.Reasoning)
+			}
+			if msg.ReasoningContent != "" {
+				t.Errorf("ReasoningContent should be cleared, got %q", msg.ReasoningContent)
+			}
+		})
+	}
+}
+
+func TestChatStreamReasoningFallback(t *testing.T) {
+	// Streaming path: when delta.content is empty, the token must come from
+	// reasoning_content (qwen3/nemotron/gpt-oss) or the plain "reasoning"
+	// field (Gemma-4-26b, qwen3.6-27b via LiteLLM), never both.
+	tests := []struct {
+		name   string
+		field  string
+		tokens []string
+		want   string
+	}{
+		{name: "plain reasoning field", field: "reasoning", tokens: []string{"Hello", " ", "world"}, want: "Hello world"},
+		{name: "reasoning_content field", field: "reasoning_content", tokens: []string{"Bonjour", " ", "monde"}, want: "Bonjour monde"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				for _, tok := range tt.tokens {
+					delta := openaiDelta{}
+					if tt.field == "reasoning" {
+						delta.Reasoning = tok
+					} else {
+						delta.ReasoningContent = tok
+					}
+					chunk := openaiStreamChunk{
+						Choices: []openaiStreamChoice{{Delta: delta}},
+					}
+					data, _ := json.Marshal(chunk)
+					fmt.Fprintf(w, "data: %s\n\n", data)
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer server.Close()
+
+			var got string
+			client := NewClient(server.URL, "test", "")
+			result, err := client.Chat(context.Background(), []Message{
+				{Role: "user", Content: "hi"},
+			}, 0.7, 100, func(tok string) { got += tok })
+			if err != nil {
+				t.Fatalf("Chat: %v", err)
+			}
+			if result != tt.want {
+				t.Errorf("result = %q, want %q", result, tt.want)
+			}
+			if got != tt.want {
+				t.Errorf("collected tokens = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestChatStreamContentTakesPrecedence(t *testing.T) {
+	// When a delta carries BOTH content and reasoning, content must win —
+	// we never leak a reasoning trace into a reply that already has real
+	// content.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		delta := openaiDelta{
+			Content:          "visible",
+			ReasoningContent: "hidden",
+			Reasoning:        "also-hidden",
+		}
+		chunk := openaiStreamChunk{
+			Choices: []openaiStreamChoice{{Delta: delta}},
+		}
+		data, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	var got string
+	client := NewClient(server.URL, "test", "")
+	result, err := client.Chat(context.Background(), []Message{
+		{Role: "user", Content: "hi"},
+	}, 0.7, 100, func(tok string) { got += tok })
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if result != "visible" {
+		t.Errorf("result = %q, want 'visible' (content must take precedence over reasoning)", result)
+	}
+}
