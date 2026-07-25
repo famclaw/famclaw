@@ -290,10 +290,22 @@ func conversationID(userName string) string {
 }
 
 // StartAll starts all enabled gateway bots as goroutines.
+// It returns a stop function that blocks until every gateway goroutine has
+// exited. Cancel the context to signal shutdown, then call the stop function
+// to wait for clean exit — ensuring no gateway goroutine outlives shutdown.
+//
 // Panics are recovered. Failed gateways restart with exponential backoff.
-func StartAll(ctx context.Context, gateways []Gateway, handler func(ctx context.Context, msg Message) Reply) {
+func StartAll(ctx context.Context, gateways []Gateway, handler func(ctx context.Context, msg Message) Reply) func() {
+	var wg sync.WaitGroup
 	for _, gw := range gateways {
-		go runGateway(ctx, gw, handler)
+		wg.Add(1)
+		go func(gw Gateway) {
+			defer wg.Done()
+			runGateway(ctx, gw, handler)
+		}(gw)
+	}
+	return func() {
+		wg.Wait()
 	}
 }
 
