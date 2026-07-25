@@ -39,6 +39,13 @@ type Message struct {
 	// message back (omitempty), and at receive time the client merges it
 	// into Content when Content is empty — see mergeReasoning() below.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// Reasoning captures the plain "reasoning" field emitted by some
+	// Ollama/LiteLLM gateways (e.g. Gemma-4-26b, qwen3.6-27b) that ship the
+	// final answer there while leaving content empty. Like ReasoningContent,
+	// it is only used as a fallback when Content is empty and is cleared
+	// after merging — see mergeReasoning() below. It is not sent back in
+	// requests because MarshalJSON omits it.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshaling for Message.
@@ -79,15 +86,22 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// mergeReasoning hoists ReasoningContent into Content when Content is
-// empty. Local reasoning models (qwen3-30b on Mac, nemotron-30b, gpt-oss)
+// mergeReasoning hoists reasoning fields into Content when Content is
+// empty (or whitespace). Local reasoning models (qwen3, nemotron, gpt-oss)
 // frequently emit the final answer in reasoning_content with content="".
-// Consumers reading only .Content would see empty replies otherwise.
+// Some Ollama/LiteLLM gateways (Gemma-4-26b, qwen3.6-27b) go further and
+// use the plain "reasoning" field for the same purpose. Consumers reading
+// only .Content would see empty replies otherwise.
 func (m *Message) mergeReasoning() {
-	if m.Content == "" && m.ReasoningContent != "" {
-		m.Content = m.ReasoningContent
+	if strings.TrimSpace(m.Content) == "" {
+		if m.ReasoningContent != "" {
+			m.Content = m.ReasoningContent
+		} else if m.Reasoning != "" {
+			m.Content = m.Reasoning
+		}
 	}
 	m.ReasoningContent = ""
+	m.Reasoning = ""
 }
 
 // ToolCall represents a tool invocation requested by the LLM.
@@ -267,6 +281,7 @@ type openaiDelta struct {
 	Role             string     `json:"role,omitempty"`
 	Content          string     `json:"content,omitempty"`
 	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	Reasoning        string     `json:"reasoning,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -346,8 +361,13 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, e
 			token := choice.Delta.Content
 			if token == "" {
 				// Reasoning-content fallback: qwen3/nemotron/gpt-oss stream
-				// some final answers via reasoning_content with Content="".
+				// some final answers via reasoning_content or the plain
+				// "reasoning" field (Gemma-4-26b, qwen3.6-27b via LiteLLM)
+				// with Content="".
 				token = choice.Delta.ReasoningContent
+				if token == "" {
+					token = choice.Delta.Reasoning
+				}
 			}
 			if token != "" {
 				full.WriteString(token)
