@@ -281,6 +281,31 @@ func TestChatHTTPError(t *testing.T) {
 	if !contains(err.Error(), "429") {
 		t.Errorf("error should mention 429: %v", err)
 	}
+	if !contains(err.Error(), "rate limited") {
+		t.Errorf("error should include body detail: %v", err)
+	}
+}
+
+func TestChatMessageHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":{"message":"model overloaded"}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test", "")
+	_, err := client.ChatMessage(context.Background(), []Message{
+		{Role: "user", Content: "hi"},
+	}, 0.7, 100)
+	if err == nil {
+		t.Fatal("expected error for 500")
+	}
+	if !contains(err.Error(), "500") {
+		t.Errorf("error should mention status 500: %v", err)
+	}
+	if !contains(err.Error(), "model overloaded") {
+		t.Errorf("error should include body detail: %v", err)
+	}
 }
 
 func TestChatEmptyChoices(t *testing.T) {
@@ -506,6 +531,78 @@ func TestMessage_ToolCallIDJSON(t *testing.T) {
 			}
 			if tt.wantOmit && contains(s, "tool_call_id") {
 				t.Errorf("expected tool_call_id to be omitted; got %s", s)
+			}
+		})
+	}
+}
+
+// failingReadCloser always fails on Read, simulating a body-read error
+// (e.g. connection reset mid-response).
+type failingReadCloser struct{}
+
+func (failingReadCloser) Read([]byte) (int, error) {
+	return 0, errors.New("simulated body read failure")
+}
+
+func (failingReadCloser) Close() error { return nil }
+
+// stubTransport returns a canned response without making a real request.
+type stubTransport struct{ status int }
+
+func (t stubTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: t.status,
+		Body:       failingReadCloser{},
+		Header:     make(http.Header),
+	}, nil
+}
+
+// TestHTTPErrorBodyReadFailure verifies that when io.ReadAll fails on the
+// error response body, the returned error still includes the status code
+// and the read error — it is never silently swallowed.
+func TestHTTPErrorBodyReadFailure(t *testing.T) {
+	client := &Client{
+		baseURL:        "http://fake",
+		model:          "test",
+		http:           &http.Client{Transport: stubTransport{status: http.StatusBadGateway}},
+		defaultTimeout: 5 * time.Minute,
+	}
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "Chat",
+			call: func() error {
+				_, err := client.Chat(context.Background(), []Message{
+					{Role: "user", Content: "hi"},
+				}, 0.7, 100, nil)
+				return err
+			},
+		},
+		{
+			name: "chatFull",
+			call: func() error {
+				_, err := client.ChatMessage(context.Background(), []Message{
+					{Role: "user", Content: "hi"},
+				}, 0.7, 100)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call()
+			if err == nil {
+				t.Fatal("expected error for body read failure")
+			}
+			if !contains(err.Error(), "502") {
+				t.Errorf("error should mention status 502: %v", err)
+			}
+			if !contains(err.Error(), "simulated body read failure") {
+				t.Errorf("error should include read error: %v", err)
 			}
 		})
 	}
