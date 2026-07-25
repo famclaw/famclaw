@@ -320,7 +320,7 @@ func TestStartAll(t *testing.T) {
 		},
 	}
 
-	StartAll(ctx, []Gateway{gw}, func(ctx context.Context, msg Message) Reply {
+	stop := StartAll(ctx, []Gateway{gw}, func(ctx context.Context, msg Message) Reply {
 		return Reply{Text: "ok"}
 	})
 
@@ -330,6 +330,56 @@ func TestStartAll(t *testing.T) {
 		t.Errorf("expected mock, got %q", name)
 	}
 	cancel()
+	// stop() blocks until the goroutine exits — proves no leak.
+	stop()
+}
+
+// TestStartAllStopsOnCancel proves that the goroutines launched by StartAll
+// exit promptly when the context is cancelled — no leak, no hang. It
+// exercises multiple gateways to confirm every goroutine drains.
+func TestStartAllStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	const n = 5
+	started := make(chan struct{}, n)
+
+	gws := make([]Gateway, 0, n)
+	for i := 0; i < n; i++ {
+		gws = append(gws, &mockGateway{
+			name: fmt.Sprintf("gw-%d", i),
+			startFn: func(ctx context.Context, h func(context.Context, Message) Reply) error {
+				started <- struct{}{}
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		})
+	}
+
+	stop := StartAll(ctx, gws, func(context.Context, Message) Reply {
+		return Reply{Text: "ok"}
+	})
+
+	// Wait for all gateways to signal they are running.
+	for i := 0; i < n; i++ {
+		<-started
+	}
+
+	// Signal shutdown.
+	cancel()
+
+	// The stop function should return promptly — every goroutine exits
+	// on context cancellation.
+	done := make(chan struct{})
+	go func() {
+		stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// All gateway goroutines exited cleanly — no leak.
+	case <-time.After(2 * time.Second):
+		t.Fatal("gateway goroutines did not stop within 2s after context cancellation")
+	}
 }
 
 type mockGateway struct {
@@ -1113,7 +1163,7 @@ func TestRunGatewayPanicRecovery(t *testing.T) {
 	}})
 	defer log.SetOutput(os.Stderr)
 
-	StartAll(ctx, []Gateway{panicGw}, func(ctx context.Context, msg Message) Reply {
+	stop := StartAll(ctx, []Gateway{panicGw}, func(ctx context.Context, msg Message) Reply {
 		return Reply{Text: "ok"}
 	})
 
@@ -1125,8 +1175,8 @@ func TestRunGatewayPanicRecovery(t *testing.T) {
 	}
 	cancel()
 
-	// Give goroutine time to notice cancellation.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the gateway goroutine to exit cleanly.
+	stop()
 }
 
 // panicLogger writes to a callback function.

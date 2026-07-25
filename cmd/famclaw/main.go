@@ -704,6 +704,7 @@ func main() {
 		log.Printf("Gateway: WhatsApp enabled (placeholder)")
 	}
 
+	stopGateways := func() {}
 	if len(gateways) > 0 {
 		// Wire every enabled gateway that can send outbound messages into the
 		// agent's sender registry, keyed by gateway name (e.g. "telegram").
@@ -712,7 +713,7 @@ func main() {
 				senderRegistry[g.Name()] = s
 			}
 		}
-		gateway.StartAll(gwCtx, gateways, router.Handle)
+		stopGateways = gateway.StartAll(gwCtx, gateways, router.Handle)
 		log.Printf("Gateways: %d started", len(gateways))
 	}
 
@@ -881,7 +882,20 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down…")
-	gwCancel()             // stop gateway bots + cancel session pool shutdownCtx
+	gwCancel() // stop gateway bots + cancel session pool shutdownCtx
+	// Wait for gateway goroutines to exit so they don't outlive the
+	// shutdown sequence. Bounded by a timeout so a gateway that ignores
+	// context cancellation can't hang the process indefinitely.
+	gwStopped := make(chan struct{})
+	go func() {
+		stopGateways()
+		close(gwStopped)
+	}()
+	select {
+	case <-gwStopped:
+	case <-time.After(15 * time.Second):
+		log.Println("gateway shutdown timed out after 15s")
+	}
 	router.Shutdown()      // cancel in-flight session processing
 	sessionCleanupCancel() // stop session-cleanup goroutine
 
