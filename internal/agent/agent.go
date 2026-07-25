@@ -1593,11 +1593,28 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 
 	var systemPrompt string
 	if a.cfg.LLM.SystemPrompt != "" {
-		// Operator override — keep legacy behavior verbatim, but always
-		// append the behavioral guardrails (tool-call format + grounding
-		// rules) so deployments that set a custom system_prompt still get
-		// the leak/hallucination protection.
-		systemPrompt = a.cfg.LLM.SystemPrompt + "\n\n" + ageContextPrompt(a.user) + "\n\n" + prompt.BehavioralRules()
+		// Operator override — start from the custom prompt, then always
+		// append the age-appropriate context and the capabilities section so
+		// the model knows about its tools (web_search/web_fetch/spawn_agent)
+		// even under a custom system_prompt.
+		systemPrompt = a.cfg.LLM.SystemPrompt + "\n\n" + ageContextPrompt(a.user)
+
+		// Compute the builtin tools the model should be told about.
+		var builtinNames []string
+		for _, t := range a.builtinTools {
+			if t.AllowedForRole(a.user.Role) {
+				builtinNames = append(builtinNames, strings.TrimPrefix(t.Name, "builtin__"))
+			}
+		}
+		// When builtin tools are present, capabilitiesComponent bundles the
+		// behavioral guardrails (tool-call format + grounding); when there
+		// are none, fall back to the standalone rules to preserve leak/
+		// hallucination protection.
+		if len(builtinNames) > 0 {
+			systemPrompt += "\n\n" + prompt.Capabilities(prompt.BuildContext{BuiltinTools: builtinNames})
+		} else {
+			systemPrompt += "\n\n" + prompt.BehavioralRules()
+		}
 		if len(a.skills) > 0 {
 			// When evaluator is available, use the policy-checked version
 			if a.evaluator != nil {

@@ -331,6 +331,42 @@ func TestCapabilitiesComponent_BuiltinTools(t *testing.T) {
 	})
 }
 
+func TestCapabilities_Exported(t *testing.T) {
+	t.Run("includes builtin tool hints", func(t *testing.T) {
+		text := Capabilities(BuildContext{BuiltinTools: []string{"web_search", "web_fetch", "spawn_agent"}})
+		for _, want := range []string{"web_search", "web_fetch", "spawn_agent", "Search the web via web_search", "Fetch a URL", "Delegate research tasks"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("expected %q in capabilities text: %q", want, text)
+			}
+		}
+	})
+	t.Run("includes behavioral rules with tools", func(t *testing.T) {
+		text := Capabilities(BuildContext{BuiltinTools: []string{"web_fetch"}})
+		for _, want := range []string{"tool call FIRST", "ONLY summarize"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("expected %q in capabilities text: %q", want, text)
+			}
+		}
+	})
+	t.Run("baseline without tools omits behavioral rules", func(t *testing.T) {
+		text := Capabilities(BuildContext{})
+		if !strings.Contains(text, "You can hold conversations") {
+			t.Errorf("expected baseline in %q", text)
+		}
+		if strings.Contains(text, "ONLY summarize") {
+			t.Errorf("baseline without tools should not include behavioral rules: %q", text)
+		}
+	})
+	t.Run("includes skill hints", func(t *testing.T) {
+		text := Capabilities(BuildContext{Skills: []string{"seccheck", "honeybadger"}})
+		for _, want := range []string{"seccheck", "honeybadger", "skills available"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("expected %q in capabilities text: %q", want, text)
+			}
+		}
+	})
+}
+
 func TestBehavioralRules_Exported(t *testing.T) {
 	rules := BehavioralRules()
 	if rules == "" {

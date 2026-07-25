@@ -405,6 +405,54 @@ func TestBuildMessages_OperatorOverrideKept(t *testing.T) {
 	}
 }
 
+func TestBuildMessages_OperatorOverrideIncludesCapabilities(t *testing.T) {
+	cfg := &config.Config{
+		LLM: config.LLMConfig{SystemPrompt: "You are a pirate."},
+		Users: []config.UserConfig{
+			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+	a := &Agent{
+		cfg:  cfg,
+		user: &cfg.Users[0],
+		builtinTools: []agentcore.Tool{
+			{Name: "builtin__web_search", Source: "builtin"},
+			{Name: "builtin__web_fetch", Source: "builtin"},
+			{Name: "builtin__spawn_agent", Source: "builtin"},
+		},
+	}
+	msgs := a.buildMessages(context.Background(), nil, "hi")
+	sys := msgs[0].Content
+
+	// The custom operator prompt must still take effect verbatim.
+	if !strings.HasPrefix(sys, "You are a pirate.") {
+		t.Errorf("operator override should be verbatim at start, got: %q", sys)
+	}
+
+	// Bug fix: the capabilities section must be present even under a
+	// custom system_prompt. Without it the model never learns about its
+	// own tools and refuses to use web_search/web_fetch/spawn_agent.
+	for _, want := range []string{"web_search", "web_fetch", "spawn_agent"} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("system prompt missing tool capability %q:\\n%s", want, sys)
+		}
+	}
+
+	// The behavioral guardrails are bundled into the capabilities
+	// section when tools are available.
+	for _, want := range []string{"tool call FIRST", "ONLY summarize"} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("system prompt missing behavioral rule %q:\\n%s", want, sys)
+		}
+	}
+
+	// The standalone behavioral rules must not be duplicated now that
+	// the capabilities section carries them.
+	if c := strings.Count(sys, "ONLY summarize what the tool actually returned"); c != 1 {
+		t.Errorf("behavioral guardrails appear %d times, want 1 (no duplication):\n%s", c, sys)
+	}
+}
+
 func TestHandleWebFetch(t *testing.T) {
 	newAgent := func(allowlist []string, fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
 		return &Agent{

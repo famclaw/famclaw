@@ -129,6 +129,17 @@ func capabilitiesComponent(c BuildContext) (string, bool) {
 	return strings.Join(parts, " "), true
 }
 
+// Capabilities returns the capabilities component text: the always-on
+// tool-capability description (baseline + skills + builtin tool hints +
+// behavioral guardrails when tools are present). Exported so the
+// operator-override path in agent.go can include it alongside a custom
+// system_prompt — without this, custom-prompt deployments run blind to
+// their own tools (web_search/web_fetch/spawn_agent).
+func Capabilities(c BuildContext) string {
+	text, _ := capabilitiesComponent(c)
+	return text
+}
+
 // BehavioralRules returns the always-on guardrails for any model that
 // has tools available. Used by both the structured prompt builder
 // (capabilitiesComponent) and the operator-override path in agent.go so
