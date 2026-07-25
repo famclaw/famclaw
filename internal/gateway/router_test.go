@@ -307,6 +307,71 @@ func TestRouterChatError(t *testing.T) {
 	}
 }
 
+// TestRouterIdentityResolutionError verifies that when identity resolution
+// fails (e.g. the backing DB is unavailable), both Handle and process
+// return a Reply with PolicyAction "error" rather than silently discarding
+// the error.
+//
+// An error-handling audit flagged these two sites: Handle was said to log
+// the error but send a generic reply "hiding the failure", and process
+// was said to discard its re-resolution error. Both sites already log the
+// error and return Reply{PolicyAction:"error"}; this test locks that
+// behavior in so it cannot silently regress.
+//
+// The test closes the router's DB to force Resolve to error (a closed
+// *sql.DB makes QueryRowContext return an error rather than sql.ErrNoRows,
+// so identity.Store.Resolve surfaces a non-nil error), then asserts both
+// entry points return an error reply and never reach the LLM (panicChat
+// would panic if invoked).
+func TestRouterIdentityResolutionError(t *testing.T) {
+	router, identStore := setupRouter(t, panicChat)
+
+	// Link a user so the test exercises a *known* identity whose resolution
+	// fails — proving the error isn't mistaken for an unknown account
+	// (which would return onboarding instead of error).
+	if err := identStore.LinkAccount("emma", "telegram", "err-emma-123"); err != nil {
+		t.Fatalf("LinkAccount: %v", err)
+	}
+
+	// Close the DB so the next Resolve call errors out.
+	if err := router.db.Close(); err != nil {
+		t.Fatalf("db.Close: %v", err)
+	}
+
+	ctx := context.Background()
+	msg := Message{Gateway: "telegram", ExternalID: "err-emma-123", Text: "hello"}
+
+	cases := []struct {
+		name       string
+		call       func(context.Context, Message) Reply
+		wantAction string
+	}{
+		{
+			name:       "Handle",
+			call:       router.Handle,
+			wantAction: "error",
+		},
+		{
+			name:       "process",
+			call:       router.process,
+			wantAction: "error",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reply := tc.call(ctx, msg)
+			if reply.PolicyAction != tc.wantAction {
+				t.Errorf("PolicyAction = %q, want %q — identity error must not be silently discarded",
+					reply.PolicyAction, tc.wantAction)
+			}
+			if !strings.Contains(reply.Text, "Something went wrong") {
+				t.Errorf("reply text = %q, want it to contain 'Something went wrong'", reply.Text)
+			}
+		})
+	}
+}
+
 func TestStartAll(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
