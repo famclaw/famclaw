@@ -462,18 +462,29 @@ func (c *Client) ChatSync(ctx context.Context, messages []Message, temp float64,
 }
 
 // HardwareRecommendation returns a model recommendation based on available RAM.
-// Prefers models with native tool calling (Gemma 4, Qwen3, Phi-4).
+//
+// Picks are from the community default benchmark (see
+// data/fc-model-benchmark/report.md): only qwen3-family models with proven
+// native tool calling. gemma4:e4b (8.9 GB) is excluded because it cannot fit
+// an 8 GB Pi 5, gemma4:e2b is borderline, and phi4-mini is excluded because
+// it fakes tool calls (0/3). qwen3:1.7b (1.3 GB) is the Pi-class default;
+// qwen3:4b is offered when there is comfortable headroom (16 GB+).
 func HardwareRecommendation(ramMB int) string {
 	switch {
 	case ramMB >= 16384:
-		return "gemma4:e4b"
-	case ramMB >= 8192:
-		return "gemma4:e2b"
-	case ramMB >= 4096:
+		// 16 GB+: qwen3:4b (2.3 GB) fits with comfortable headroom and is
+		// the benchmark's richer-prose runner-up.
 		return "qwen3:4b"
+	case ramMB >= 8192:
+		// 8-16 GB: Pi 5 class — qwen3:1.7b (1.3 GB, ~2 GB RAM) is the
+		// benchmark-proven default with real tool calls.
+		return "qwen3:1.7b"
 	case ramMB >= 2048:
-		return "phi4-mini"
+		// 2-8 GB: qwen3:1.7b still fits (~2 GB) with headroom, so prefer it
+		// over the larger qwen3:4b to avoid OOM on constrained RAM.
+		return "qwen3:1.7b"
 	default:
+		// < 2 GB: no qwen3 tier fits comfortably; fall back to a tiny model.
 		return "tinyllama"
 	}
 }

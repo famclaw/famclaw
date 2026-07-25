@@ -375,10 +375,23 @@ func TestHardwareRecommendation(t *testing.T) {
 		ramMB int
 		want  string
 	}{
-		{16384, "gemma4:e4b"},
-		{8192, "gemma4:e2b"},
-		{4096, "qwen3:4b"},
-		{2048, "phi4-mini"},
+		// >= 16384 MB: qwen3:4b (stronger model, comfortable headroom)
+		{65536, "qwen3:4b"},
+		{32768, "qwen3:4b"},
+		{16384, "qwen3:4b"},
+		// 8192-16383 MB: Pi 5 class — qwen3:1.7b (1.3 GB, benchmark default)
+		{16383, "qwen3:1.7b"},
+		{12288, "qwen3:1.7b"},
+		{8192, "qwen3:1.7b"},
+		// 2048-8191 MB: qwen3:1.7b still fits (~2 GB) with headroom
+		{8191, "qwen3:1.7b"},
+		{6144, "qwen3:1.7b"},
+		{4096, "qwen3:1.7b"},
+		{4095, "qwen3:1.7b"},
+		{3072, "qwen3:1.7b"},
+		{2048, "qwen3:1.7b"},
+		// < 2048 MB: tiny fallback (no tool calling)
+		{2047, "tinyllama"},
 		{1024, "tinyllama"},
 		{512, "tinyllama"},
 	}
