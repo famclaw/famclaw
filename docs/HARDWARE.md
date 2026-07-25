@@ -6,10 +6,11 @@ FamClaw runs on Raspberry Pi and Mac Mini. This guide helps you choose the right
 
 | Hardware | RAM | LLM Model | Notes |
 |----------|-----|-----------|-------|
-| **Mac Mini M1+ (16GB)** | 16GB | `gemma4:e4b` | Fastest home setup, native tool calling |
-| **RPi 5 (8GB)** | 8GB | `gemma4:e2b` | Best Pi experience, multimodal |
-| **RPi 5/4 (4GB)** | 4GB | `qwen3:4b` | Great efficiency, Apache 2.0 |
-| **RPi 4 (2GB)** | 2GB | `phi4-mini` | Edge-optimized |
+| **64 GB Mac** | 64GB | `gemma4:31b` | Best quality & creative writing, 3/3 tool calls |
+| **Mac Mini M1+ (16GB)** | 16GB | `qwen3:4b` | Apache 2.0, 3/3 tool calls |
+| **RPi 5 (8GB)** | 8GB | `qwen3:1.7b` | Best Pi experience, 3/3 tool calls |
+| **RPi 5/4 (4GB)** | 4GB | `qwen3:1.7b` | Fits comfortably, Apache 2.0 |
+| **RPi 4 (2GB)** | 2GB | Use remote | No recommended model fits 2 GB — gateway only |
 | **RPi 3B+** | 1GB | Use remote | Gateway only — point to LAN or cloud |
 | **Old Android** | Varies | Use remote | Gateway only — no local LLM |
 
