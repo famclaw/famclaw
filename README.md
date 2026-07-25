@@ -254,12 +254,20 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 
 ### Recommended models
 
-| Hardware | Model | Why |
-|----------|-------|-----|
-| Mac Mini M1+ 16GB | `gemma4:e4b` | Native tool calling, multimodal |
-| RPi 5 8GB | `gemma4:e2b` | Fits in 3GB Q4, tool calling |
-| RPi 4 4GB | `qwen3:4b` | Best efficiency |
-| RPi 3 | Use remote | Gateway only |
+These picks come from on-device benchmarks — **real tool-call tests**, not just
+speed/size numbers. FamClaw's #1 requirement is reliable structured tool calling,
+since the policy engine delegates hard tasks (web search, calendar, etc.) to the LLM
+through tools. Every recommended model passes the tool-call test (3/3 real calls).
+
+| Hardware | Ollama tag | Size | Why |
+|----------|------------|------|-----|
+| Raspberry Pi 5 / ≤8 GB RAM | `qwen3:1.7b` | 1.3 GB | Fits a Pi 5 *and* makes real tool calls (3/3), with good writing + warmth |
+| 16 GB machines | `qwen3:4b` | 2.3 GB | Richer prose, still 3/3 tool calls, comfortable on 16 GB |
+| Capable box / 64 GB Mac | `gemma4:31b` | ~20 GB | Apache-2.0, 3/3 tool calls, best age-appropriate creative writing |
+| Pi 3 / ≤2 GB | (remote) | — | Gateway only — no recommended model fits this RAM |
+
+> **Avoid:** `phi4-mini` fakes tool calls (0/3 in testing) and `gemma4:e4b`/`gemma4:e2b`
+> are too large for a Pi 5's 8 GB RAM.
 
 See [docs/BACKENDS.md](docs/BACKENDS.md) for inference engine comparison.
 

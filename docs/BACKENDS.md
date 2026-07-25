@@ -18,22 +18,24 @@ FamClaw works with any OpenAI-compatible API. No code changes needed — just se
 
 | Hardware | Engine | Model | Config |
 |----------|--------|-------|--------|
-| Mac Mini M4+ 16GB | Ollama 0.19+ | gemma4:e4b | `base_url: http://localhost:11434` |
-| Mac Mini M1 16GB | Ollama or vllm-mlx | gemma4:e4b | `base_url: http://localhost:11434` |
-| RPi 5 8GB | Ollama or llama.cpp | gemma4:e2b | `base_url: http://localhost:11434` |
-| RPi 4 4GB | Ollama | qwen3:4b | `base_url: http://localhost:11434` |
+| Mac Mini M4+ 16GB | Ollama 0.19+ | qwen3:4b | `base_url: http://localhost:11434` |
+| Mac Mini M1 16GB | Ollama or vllm-mlx | qwen3:4b | `base_url: http://localhost:11434` |
+| RPi 5 8GB | Ollama or llama.cpp | qwen3:1.7b | `base_url: http://localhost:11434` |
+| RPi 4 4GB | Ollama | qwen3:1.7b | `base_url: http://localhost:11434` |
 | RPi 3 1GB | N/A (use remote) | — | Point to LAN or cloud |
-| NVIDIA GPU | vLLM | gemma4:e4b+ | `base_url: http://localhost:8000/v1` |
+| NVIDIA GPU | vLLM | gemma4:31b | `base_url: http://localhost:8000/v1` |
 | Cloud only | — | Any | `base_url: https://api.openai.com/v1` |
 
 ## Recommended Models
 
+All recommended models are Apache-2.0 and pass real on-device tool-call tests (3/3).
+Sizes are Q4_K_M. See the README for full benchmark methodology.
+
 | Model | Params | RAM (Q4) | Tool Calling | License | Best for |
 |-------|--------|----------|-------------|---------|----------|
-| **gemma4:e4b** | 4B | ~5GB | Native | Apache 2.0 | Default — best tool calling + multimodal |
-| **gemma4:e2b** | 2B | ~3GB | Native | Apache 2.0 | RPi 5 / low RAM |
-| **qwen3:4b** | 4B | ~2.75GB | Native | Apache 2.0 | Best efficiency/size ratio |
-| **phi4-mini** | ~3.8B | ~3GB | Native | MIT | Edge-optimized |
+| **qwen3:1.7b** | 2.0B | ~2 GB | 3/3 real | Apache 2.0 | Pi 5 (8 GB) / ≤8 GB default |
+| **qwen3:4b** | 4.0B | ~3.5 GB | 3/3 real | Apache 2.0 | 16 GB+ machines |
+| **gemma4:31b** | 31B | ~20 GB | 3/3 real | Apache 2.0 | 64 GB Mac / capable box |
 | **deepseek-r1:7b** | 7B | ~5GB | Yes | MIT | Best reasoning |
 | tinyllama | 1.1B | ~600MB | Limited | Apache 2.0 | Last resort |
 
@@ -62,7 +64,7 @@ llm:
 
 ```bash
 # Ollama (recommended)
-ollama pull gemma4:e2b
+ollama pull qwen3:1.7b
 ./famclaw  # wizard detects hardware, recommends model
 
 # llama.cpp (RPi performance)

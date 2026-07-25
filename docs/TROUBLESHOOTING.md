@@ -72,9 +72,10 @@
 - Multiple family members chatting simultaneously → this is normal, each gets their own queue
 
 **Recommended models by hardware:**
-- RPi 5 8GB: `gemma4:e2b`
-- RPi 4 4GB: `qwen3:4b`
-- Mac Mini: `gemma4:e4b`
+- RPi 5 8GB: `qwen3:1.7b`
+- RPi 4 4GB: `qwen3:1.7b`
+- 16 GB Mac: `qwen3:4b`
+- 64 GB Mac: `gemma4:31b`
 
 ---
 
