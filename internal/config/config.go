@@ -186,6 +186,13 @@ type LLMConfig struct {
 	// Named profiles (takes precedence when set)
 	Default  string                `yaml:"default,omitempty"`
 	Profiles map[string]LLMProfile `yaml:"profiles,omitempty"`
+	// VisionProfile names an LLM profile to use when an inbound message
+	// carries image attachments. A text-only message always uses the
+	// normal per-user endpoint (via LLMEndpointFor). When set, messages
+	// with attachments are routed to this profile so a vision-capable
+	// model reads the image. When empty, the per-user endpoint is used
+	// for both (handy when the main model is itself vision-capable).
+	VisionProfile string `yaml:"vision_profile,omitempty"`
 	// Common settings
 	SystemPrompt      string  `yaml:"system_prompt"`
 	MaxContextTokens  int     `yaml:"max_context_tokens"`
@@ -681,6 +688,17 @@ func (c *Config) LLMEndpointFor(user *UserConfig) LLMEndpoint {
 		log.Printf("[config] warning: LLM endpoint is empty for user %q — check llm.base_url in config", userName)
 	}
 	return ep
+}
+
+// VisionEndpointFor resolves the LLM endpoint to use for a message that
+// carries image attachments. If a vision_profile is configured, it is used;
+// otherwise the user's normal endpoint is returned (so a vision-capable
+// main model still works without extra config).
+func (c *Config) VisionEndpointFor(user *UserConfig) LLMEndpoint {
+	if c.LLM.VisionProfile != "" {
+		return c.LLMEndpointForProfile(c.LLM.VisionProfile)
+	}
+	return c.LLMEndpointFor(user)
 }
 
 // LLMEndpointForProfile resolves an LLM endpoint by profile name directly.

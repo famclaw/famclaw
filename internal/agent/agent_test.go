@@ -1321,3 +1321,99 @@ func TestHandleWebFetch_BrowserFallbackGracefulDegrade(t *testing.T) {
 		t.Errorf("expected original thin text returned, got %q", out)
 	}
 }
+
+// TestBuildMessagesMultimodal verifies that when an inbound message carries
+// image attachments, buildMessages builds the user message with multimodal
+// ContentParts (text + image_url data URI) — the exact shape the existing
+// llm.Message.MarshalJSON already serializes (see llm/multimodal_test.go).
+// Uses neutral synthetic content — no real user data.
+func TestBuildMessagesMultimodal(t *testing.T) {
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			SystemPrompt: "", // use default prompt builder
+		},
+		Users: []config.UserConfig{
+			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+	a := &Agent{
+		cfg: cfg,
+		user: &cfg.Users[0],
+		msgContext: gateway.MsgContext{
+			Attachments: []gateway.Attachment{
+				{
+					Type:     "image",
+					Data:     "iVBtb2NrLWJhc2U2NA", // neutral synthetic base64
+					MIMEType: "image/png",
+				},
+			},
+		},
+	}
+	msgs := a.buildMessages(context.Background(), nil, "what is in this picture")
+
+	if len(msgs) < 2 {
+		t.Fatalf("expected system + user messages, got %d", len(msgs))
+	}
+	userMsg := msgs[len(msgs)-1]
+	if userMsg.Role != "user" {
+		t.Fatalf("last message should be user, got %q", userMsg.Role)
+	}
+
+	// ContentParts must be set (not the plain Content string).
+	if len(userMsg.ContentParts) != 2 {
+		t.Fatalf("expected 2 content parts (text + image), got %d: %+v", len(userMsg.ContentParts), userMsg.ContentParts)
+	}
+
+	// First part: text.
+	textPart, ok := userMsg.ContentParts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("part 0 is not a map: %T", userMsg.ContentParts[0])
+	}
+	if textPart["type"] != "text" {
+		t.Errorf("part 0 type = %q, want %q", textPart["type"], "text")
+	}
+	if textPart["text"] != "what is in this picture" {
+		t.Errorf("part 0 text = %q, want %q", textPart["text"], "what is in this picture")
+	}
+
+	// Second part: image_url with data URI.
+	imgPart, ok := userMsg.ContentParts[1].(map[string]any)
+	if !ok {
+		t.Fatalf("part 1 is not a map: %T", userMsg.ContentParts[1])
+	}
+	if imgPart["type"] != "image_url" {
+		t.Errorf("part 1 type = %q, want %q", imgPart["type"], "image_url")
+	}
+	imgURL, ok := imgPart["image_url"].(map[string]any)
+	if !ok {
+		t.Fatalf("image_url is not a map: %T", imgPart["image_url"])
+	}
+	wantURL := "data:image/png;base64,iVBtb2NrLWJhc2U2NA"
+	if imgURL["url"] != wantURL {
+		t.Errorf("image url = %q, want %q", imgURL["url"], wantURL)
+	}
+}
+
+// TestBuildMessagesTextOnlyUnchanged verifies that when no attachments are
+// present, buildMessages produces the same text-only user message as before
+// (Content set, ContentParts nil). This is the no-regression guarantee.
+func TestBuildMessagesTextOnlyUnchanged(t *testing.T) {
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+	a := &Agent{cfg: cfg, user: &cfg.Users[0]} // msgContext has nil Attachments
+	msgs := a.buildMessages(context.Background(), nil, "hello world")
+
+	userMsg := msgs[len(msgs)-1]
+	if userMsg.Role != "user" {
+		t.Fatalf("last message should be user, got %q", userMsg.Role)
+	}
+	if userMsg.Content != "hello world" {
+		t.Errorf("Content = %q, want %q", userMsg.Content, "hello world")
+	}
+	if len(userMsg.ContentParts) != 0 {
+		t.Errorf("text-only message should have 0 content parts, got %d: %+v", len(userMsg.ContentParts), userMsg.ContentParts)
+	}
+}

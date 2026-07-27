@@ -18,9 +18,10 @@ func NewStageCompress(contextWindow int) Stage {
 		msgs := make([]compress.Message, len(turn.Messages))
 		for i, m := range turn.Messages {
 			msgs[i] = compress.Message{
-				Role:    m.Role,
-				Content: m.Content,
-				Pinned:  m.Role == "system", // system prompt always pinned
+				Role:         m.Role,
+				Content:      m.Content,
+				ContentParts: m.ContentParts,
+				Pinned:       m.Role == "system", // system prompt always pinned
 			}
 		}
 
@@ -33,8 +34,9 @@ func NewStageCompress(contextWindow int) Stage {
 		turn.Messages = make([]Message, len(compressed))
 		for i, m := range compressed {
 			turn.Messages[i] = Message{
-				Role:    m.Role,
-				Content: m.Content,
+				Role:         m.Role,
+				Content:      m.Content,
+				ContentParts: m.ContentParts,
 			}
 		}
 

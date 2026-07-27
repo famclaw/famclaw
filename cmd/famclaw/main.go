@@ -654,10 +654,22 @@ func main() {
 		var llmClient llm.Chatter
 		switch cfg.LLM.Provider {
 		case "claude_cli":
+			// claude_cli (Claude 3.5/3.7) is vision-capable by default.
 			llmClient = claudecli.New()
 		default: // "" or "openai"
-			ep := cfg.LLMEndpointFor(user)
-			llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
+			// When a message carries image attachments, route to the
+			// vision profile (cfg.LLM.VisionProfile) so a
+			// vision-capable model reads the image. If no vision
+			// profile is configured, fall back to the per-user endpoint
+			// (handy when the main model is itself vision-capable).
+			// Text-only messages always use the normal per-user endpoint.
+			if len(msgCtx.Attachments) > 0 {
+				ep := cfg.VisionEndpointFor(user)
+				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
+			} else {
+				ep := cfg.LLMEndpointFor(user)
+				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
+			}
 		}
 		a, err := agent.NewAgent(user, cfg, llmClient, evaluator, clf, db, agent.AgentDeps{
 			Pool:           mcpPool,

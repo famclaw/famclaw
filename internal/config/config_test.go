@@ -519,3 +519,63 @@ func TestLLMTimeoutValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestVisionEndpointFor(t *testing.T) {
+	// Neutral synthetic endpoint config — no real credentials or URLs.
+	user := &UserConfig{Name: "testuser"}
+	tests := []struct {
+		name      string
+		cfg       LLMConfig
+		wantModel string
+		wantBase  string
+	}{
+		{
+			name: "vision_profile configured",
+			cfg: LLMConfig{
+				VisionProfile: "vision",
+				Default:       "text",
+				Profiles: map[string]LLMProfile{
+					"text":   {BaseURL: "http://text:8080", Model: "qwen3:1.7b"},
+					"vision": {BaseURL: "http://vision:8080", Model: "qwen2.5-vl:7b"},
+				},
+			},
+			wantModel: "qwen2.5-vl:7b",
+			wantBase:  "http://vision:8080",
+		},
+		{
+			name: "no vision_profile falls back to user endpoint",
+			cfg: LLMConfig{
+				Default: "text",
+				Profiles: map[string]LLMProfile{
+					"text": {BaseURL: "http://text:8080", Model: "qwen3:1.7b"},
+				},
+			},
+			wantModel: "qwen3:1.7b",
+			wantBase:  "http://text:8080",
+		},
+		{
+			name: "empty vision_profile falls back to user endpoint",
+			cfg: LLMConfig{
+				VisionProfile: "",
+				Default:       "text",
+				Profiles: map[string]LLMProfile{
+					"text": {BaseURL: "http://text:8080", Model: "qwen3:1.7b"},
+				},
+			},
+			wantModel: "qwen3:1.7b",
+			wantBase:  "http://text:8080",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Config{LLM: tt.cfg}
+			ep := c.VisionEndpointFor(user)
+			if ep.Model != tt.wantModel {
+				t.Errorf("Model = %q, want %q", ep.Model, tt.wantModel)
+			}
+			if ep.BaseURL != tt.wantBase {
+				t.Errorf("BaseURL = %q, want %q", ep.BaseURL, tt.wantBase)
+			}
+		})
+	}
+}

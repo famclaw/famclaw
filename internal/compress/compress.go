@@ -2,10 +2,11 @@ package compress
 
 // Message mirrors the conversation message format.
 type Message struct {
-	Role     string
-	Content  string
-	Pinned   bool // pinned messages survive truncation
-	Prunable bool // prefer-drop messages (typically tool results) — Tier 0 evicts before non-Prunable
+	Role         string
+	Content      string
+	ContentParts []any // multimodal content (images) — preserved through compression
+	Pinned       bool  // pinned messages survive truncation
+	Prunable     bool  // prefer-drop messages (typically tool results) — Tier 0 evicts before non-Prunable
 }
 
 // Options controls compression behavior.
