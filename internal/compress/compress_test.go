@@ -232,3 +232,67 @@ func TestTotalTokens(t *testing.T) {
 		t.Errorf("totalTokens = %d, want 38", total)
 	}
 }
+
+// TestTotalTokensWithContentParts verifies that messages with
+// multimodal ContentParts (text + image_url) have their tokens estimated
+// — text parts via the estimator, image parts via a per-image estimate.
+// Without this, an image-only message would count as ~4 tokens.
+func TestTotalTokensWithContentParts(t *testing.T) {
+	est := &SimpleEstimator{}
+	text := strings.Repeat("x", 40) // 10 tokens
+	msgs := []Message{
+		{
+			Role: "user",
+			// Content is empty when ContentParts is used (MarshalJSON
+			// uses ContentParts instead).
+			Content: "",
+			ContentParts: []any{
+				map[string]any{"type": "text", "text": text}, // 10 tokens
+				map[string]any{"type": "image_url", "image_url": map[string]any{
+					"url": "data:image/png;base64,iVBtb2Nr",
+				}}, // 1000 tokens (fixed per-image estimate)
+			},
+		},
+	}
+	total := totalTokens(msgs, est)
+	// 0 (empty Content) + 4 (overhead) + 10 (text part) + 1000 (image) = 1014
+	if total != 1014 {
+		t.Errorf("totalTokens = %d, want 1014", total)
+	}
+}
+
+// TestCompressKeepsImageMessageWithinBudget verifies that when an image
+// message's token cost is counted, the compressor correctly accounts for it.
+// The image message is the last message and thus protected (keepEnd=3),
+// so it should always survive compression.
+func TestCompressKeepsImageMessageWithinBudget(t *testing.T) {
+	est := &SimpleEstimator{}
+	imgMsg := Message{
+		Role:         "user",
+		ContentParts: []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,x"}}},
+	}
+	// Add enough text-only history to force compression.
+	var msgs []Message
+	msgs = append(msgs, Message{Role: "system", Content: "sys"})
+	for i := 0; i < 10; i++ {
+		msgs = append(msgs, Message{
+			Role: "user", Content: strings.Repeat("x", 80),
+		})
+		msgs = append(msgs, Message{
+			Role: "assistant", Content: strings.Repeat("y", 80),
+		})
+	}
+	msgs = append(msgs, imgMsg)
+
+	compressed := Compress(msgs, Options{
+		ContextWindow:  200,
+		Estimator:      est,
+		EstimatorMargin: 0,
+	})
+
+	// The image message (last) should always be preserved.
+	last := compressed[len(compressed)-1]
+	if len(last.ContentParts) != 1 || last.ContentParts[0].(map[string]any)["type"] != "image_url" {
+		t.Error("image message was dropped by compression — should be protected as last message")
+	}
+}

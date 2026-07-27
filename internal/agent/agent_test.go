@@ -1417,3 +1417,61 @@ func TestBuildMessagesTextOnlyUnchanged(t *testing.T) {
 		t.Errorf("text-only message should have 0 content parts, got %d: %+v", len(userMsg.ContentParts), userMsg.ContentParts)
 	}
 }
+
+// TestNewAgentPropagatesMsgContext verifies that NewAgent wires
+// AgentDeps.MsgContext into the agent's msgContext field so that
+// buildMessages (called from Chat) can read attachments. This test
+// FAILS if msgContext is not propagated — the exact gap a reviewer
+// flagged as critical. It closes the loop: router → chatFn →
+// AgentDeps.MsgContext → NewAgent → a.msgContext → buildMessages.
+func TestNewAgentPropagatesMsgContext(t *testing.T) {
+	msgCtx := gateway.MsgContext{
+		Gateway:    "telegram",
+		ExternalID: "parent-123",
+		Attachments: []gateway.Attachment{
+			{
+				Type:     "image",
+				Data:     "iVBtb2NrLWJhc2U2NA", // neutral synthetic base64
+				MIMEType: "image/png",
+			},
+		},
+	}
+	user := &config.UserConfig{
+		Name:     "parent",
+		Role:     "parent",
+		AgeGroup: "",
+	}
+	cfg := &config.Config{
+		Users: []config.UserConfig{*user},
+	}
+
+	// NewAgent with nil db / deps — the only thing we're testing is
+	// msgContext propagation.
+	a, err := NewAgent(user, cfg, nil, nil, nil, nil, AgentDeps{
+		MsgContext: msgCtx,
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	if a.msgContext.Gateway != "telegram" {
+		t.Errorf("msgContext.Gateway = %q, want %q", a.msgContext.Gateway, "telegram")
+	}
+	if a.msgContext.ExternalID != "parent-123" {
+		t.Errorf("msgContext.ExternalID = %q, want %q", a.msgContext.ExternalID, "parent-123")
+	}
+	if len(a.msgContext.Attachments) != 1 {
+		t.Fatalf("expected 1 attachment in msgContext, got %d", len(a.msgContext.Attachments))
+	}
+	if a.msgContext.Attachments[0] != (gateway.Attachment{
+		Type: "image", Data: "iVBtb2NrLWJhc2U2NA", MIMEType: "image/png",
+	}) {
+		t.Errorf("attachment mismatch: got %+v", a.msgContext.Attachments[0])
+	}
+
+	// End-to-end: buildMessages must consume the propagated attachments.
+	msgs := a.buildMessages(context.Background(), nil, "what is this")
+	userMsg := msgs[len(msgs)-1]
+	if len(userMsg.ContentParts) != 2 {
+		t.Fatalf("expected 2 content parts (text+image), got %d", len(userMsg.ContentParts))
+	}
+}

@@ -1722,6 +1722,14 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 	// URIs) so image content reaches a vision-capable model. The gateway
 	// adapters already base64-encoded the image into gateway.Attachment.Data
 	// with the correct MIMEType.
+	//
+	// NOTE on the replace-vs-append below: Chat() calls SaveMessage() for the
+	// current user message BEFORE GetConversationHistory(), so the current
+	// message is always the last entry in `history` (Role == "user"). That
+	// means the history loop above already appended it as the last message in
+	// `msgs`. When attachments are present we must replace that text-only
+	// copy with the multimodal version rather than append a duplicate;
+	// without attachments we leave it as-is (text-only, byte-identical).
 	var userMsg llm.Message
 	if len(a.msgContext.Attachments) > 0 {
 		parts := []any{
