@@ -73,7 +73,8 @@ llm:
   # endpoint. Set this to a vision-capable model (e.g. qwen2.5-vl,
   # llama3.2-vision, gemma3). When empty, the per-user endpoint is used
   # for both image and text (handy if your main model is itself vision-
-  # capable). Images are processed locally and never sent off-device.
+  # capable). Images are sent to the configured LLM endpoint, which may be
+  # remote — they stay on-device only when that endpoint is local.
   vision_profile: ""
 ```
 

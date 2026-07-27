@@ -35,7 +35,8 @@ llm:
   # (a photo sent on Telegram or Discord). Text-only messages always use the
   # normal per-user model. Set to the name of a profile below, or leave empty
   # to use the per-user endpoint for both (use when your main model is itself
-  # vision-capable). Images are processed locally and never sent off-device.
+  # vision-capable). Images are sent to the configured LLM endpoint, which
+  # may be remote — they stay on-device only when that endpoint is local.
   # vision_profile: "vision"
 
   # Named LLM endpoints — override per-user model selection.
