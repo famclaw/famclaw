@@ -230,10 +230,11 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		return r.handleMCPCommand(ctx, adjustedUser.Name, fields)
 	}
 	response, err := r.chatFn(ctx, adjustedUser, msg.Text, MsgContext{
-		Gateway:    msg.Gateway,
-		ExternalID: msg.ExternalID,
-		GroupID:    msg.GroupID,
-		IsGroup:    msg.IsGroup,
+		Gateway:     msg.Gateway,
+		ExternalID:  msg.ExternalID,
+		GroupID:     msg.GroupID,
+		IsGroup:     msg.IsGroup,
+		Attachments: msg.Attachments,
 	})
 	if err != nil {
 		log.Printf("[router] chat error: %v", err)

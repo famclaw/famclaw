@@ -2,10 +2,11 @@ package compress
 
 // Message mirrors the conversation message format.
 type Message struct {
-	Role     string
-	Content  string
-	Pinned   bool // pinned messages survive truncation
-	Prunable bool // prefer-drop messages (typically tool results) — Tier 0 evicts before non-Prunable
+	Role         string
+	Content      string
+	ContentParts []any // multimodal content (images) — preserved through compression
+	Pinned       bool  // pinned messages survive truncation
+	Prunable     bool  // prefer-drop messages (typically tool results) — Tier 0 evicts before non-Prunable
 }
 
 // Options controls compression behavior.
@@ -140,7 +141,7 @@ func currentTotalWithMask(messages []Message, keepMask []bool, est TokenEstimato
 	total := 0
 	for i, m := range messages {
 		if keepMask[i] {
-			total += est.Estimate(m.Content) + 4
+			total += messageTokens(m, est)
 		}
 	}
 	return total
@@ -149,7 +150,44 @@ func currentTotalWithMask(messages []Message, keepMask []bool, est TokenEstimato
 func totalTokens(messages []Message, est TokenEstimator) int {
 	total := 0
 	for _, m := range messages {
-		total += est.Estimate(m.Content) + 4 // ~4 tokens overhead per message
+		total += messageTokens(m, est)
+	}
+	return total
+}
+
+// messageTokens estimates the token count for a single message, including
+// both the Content string and any multimodal ContentParts. Without this,
+// messages that carry only ContentParts (e.g. a user image whose Content is
+// empty) would count as ~4 tokens — the image's real cost is hidden and
+// context-window management would keep too many messages, overshooting n_ctx.
+func messageTokens(m Message, est TokenEstimator) int {
+	tokens := est.Estimate(m.Content) + 4 // ~4 tokens overhead per message
+	if len(m.ContentParts) > 0 {
+		tokens += contentPartsTokens(m.ContentParts, est)
+	}
+	return tokens
+}
+
+// contentPartsTokens estimates tokens for multimodal content parts.
+// Text parts use the same estimator as Content; image_url parts use a
+// fixed per-image estimate. Vision language models typically charge
+// ~1000 tokens per image regardless of base64 byte length, so this is a
+// conservative budget estimate that keeps truncation decisions sound.
+func contentPartsTokens(parts []any, est TokenEstimator) int {
+	total := 0
+	for _, p := range parts {
+		m, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch m["type"] {
+		case "text":
+			if t, ok := m["text"].(string); ok {
+				total += est.Estimate(t)
+			}
+		case "image_url":
+			total += 1000
+		}
 	}
 	return total
 }

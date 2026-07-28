@@ -305,8 +305,9 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// Convert messages to agentcore format
 	for _, m := range messages {
 		turn.Messages = append(turn.Messages, agentcore.Message{
-			Role:    m.Role,
-			Content: m.Content,
+			Role:         m.Role,
+			Content:      m.Content,
+			ContentParts: m.ContentParts,
 		})
 	}
 
@@ -1716,8 +1717,46 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 		}
 	}
 
+	// Build the current user message. When the inbound message carries
+	// attachments, build multimodal ContentParts (text + image_url data
+	// URIs) so image content reaches a vision-capable model. The gateway
+	// adapters already base64-encoded the image into gateway.Attachment.Data
+	// with the correct MIMEType.
+	//
+	// NOTE on the replace-vs-append below: Chat() calls SaveMessage() for the
+	// current user message BEFORE GetConversationHistory(), so the current
+	// message is always the last entry in `history` (Role == "user"). That
+	// means the history loop above already appended it as the last message in
+	// `msgs`. When attachments are present we must replace that text-only
+	// copy with the multimodal version rather than append a duplicate;
+	// without attachments we leave it as-is (text-only, byte-identical).
+	var userMsg llm.Message
+	if len(a.msgContext.Attachments) > 0 {
+		parts := []any{
+			map[string]any{"type": "text", "text": currentMessage},
+		}
+		for _, att := range a.msgContext.Attachments {
+			if att.Type == "image" && att.Data != "" {
+				parts = append(parts, map[string]any{
+					"type": "image_url",
+					"image_url": map[string]any{
+						"url": "data:" + att.MIMEType + ";base64," + att.Data,
+					},
+				})
+			}
+		}
+		userMsg = llm.Message{Role: "user", ContentParts: parts}
+	} else {
+		userMsg = llm.Message{Role: "user", Content: currentMessage}
+	}
+
 	if len(history) == 0 || history[len(history)-1].Role != "user" {
-		msgs = append(msgs, llm.Message{Role: "user", Content: currentMessage})
+		msgs = append(msgs, userMsg)
+	} else {
+		// Current user message is already the last entry in msgs (from DB,
+		// text-only). Replace it with the multimodal version so images are
+		// included without duplicating the text.
+		msgs[len(msgs)-1] = userMsg
 	}
 
 	// Compress the message list to fit within the configured context window,
@@ -1727,9 +1766,10 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 		var cmsgs []compress.Message
 		for i, m := range msgs {
 			cmsgs = append(cmsgs, compress.Message{
-				Role:     m.Role,
-				Content:  m.Content,
-				Prunable: prunableIdx[i],
+				Role:         m.Role,
+				Content:      m.Content,
+				ContentParts: m.ContentParts,
+				Prunable:     prunableIdx[i],
 			})
 		}
 		// Compress
@@ -1742,8 +1782,9 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 		msgs = make([]llm.Message, 0, len(compressed))
 		for _, cm := range compressed {
 			msgs = append(msgs, llm.Message{
-				Role:    cm.Role,
-				Content: cm.Content,
+				Role:         cm.Role,
+				Content:      cm.Content,
+				ContentParts: cm.ContentParts,
 			})
 		}
 	}

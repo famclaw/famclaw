@@ -1321,3 +1321,157 @@ func TestHandleWebFetch_BrowserFallbackGracefulDegrade(t *testing.T) {
 		t.Errorf("expected original thin text returned, got %q", out)
 	}
 }
+
+// TestBuildMessagesMultimodal verifies that when an inbound message carries
+// image attachments, buildMessages builds the user message with multimodal
+// ContentParts (text + image_url data URI) — the exact shape the existing
+// llm.Message.MarshalJSON already serializes (see llm/multimodal_test.go).
+// Uses neutral synthetic content — no real user data.
+func TestBuildMessagesMultimodal(t *testing.T) {
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			SystemPrompt: "", // use default prompt builder
+		},
+		Users: []config.UserConfig{
+			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+	a := &Agent{
+		cfg: cfg,
+		user: &cfg.Users[0],
+		msgContext: gateway.MsgContext{
+			Attachments: []gateway.Attachment{
+				{
+					Type:     "image",
+					Data:     "iVBtb2NrLWJhc2U2NA", // neutral synthetic base64
+					MIMEType: "image/png",
+				},
+			},
+		},
+	}
+	msgs := a.buildMessages(context.Background(), nil, "what is in this picture")
+
+	if len(msgs) < 2 {
+		t.Fatalf("expected system + user messages, got %d", len(msgs))
+	}
+	userMsg := msgs[len(msgs)-1]
+	if userMsg.Role != "user" {
+		t.Fatalf("last message should be user, got %q", userMsg.Role)
+	}
+
+	// ContentParts must be set (not the plain Content string).
+	if len(userMsg.ContentParts) != 2 {
+		t.Fatalf("expected 2 content parts (text + image), got %d: %+v", len(userMsg.ContentParts), userMsg.ContentParts)
+	}
+
+	// First part: text.
+	textPart, ok := userMsg.ContentParts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("part 0 is not a map: %T", userMsg.ContentParts[0])
+	}
+	if textPart["type"] != "text" {
+		t.Errorf("part 0 type = %q, want %q", textPart["type"], "text")
+	}
+	if textPart["text"] != "what is in this picture" {
+		t.Errorf("part 0 text = %q, want %q", textPart["text"], "what is in this picture")
+	}
+
+	// Second part: image_url with data URI.
+	imgPart, ok := userMsg.ContentParts[1].(map[string]any)
+	if !ok {
+		t.Fatalf("part 1 is not a map: %T", userMsg.ContentParts[1])
+	}
+	if imgPart["type"] != "image_url" {
+		t.Errorf("part 1 type = %q, want %q", imgPart["type"], "image_url")
+	}
+	imgURL, ok := imgPart["image_url"].(map[string]any)
+	if !ok {
+		t.Fatalf("image_url is not a map: %T", imgPart["image_url"])
+	}
+	wantURL := "data:image/png;base64,iVBtb2NrLWJhc2U2NA"
+	if imgURL["url"] != wantURL {
+		t.Errorf("image url = %q, want %q", imgURL["url"], wantURL)
+	}
+}
+
+// TestBuildMessagesTextOnlyUnchanged verifies that when no attachments are
+// present, buildMessages produces the same text-only user message as before
+// (Content set, ContentParts nil). This is the no-regression guarantee.
+func TestBuildMessagesTextOnlyUnchanged(t *testing.T) {
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+	a := &Agent{cfg: cfg, user: &cfg.Users[0]} // msgContext has nil Attachments
+	msgs := a.buildMessages(context.Background(), nil, "hello world")
+
+	userMsg := msgs[len(msgs)-1]
+	if userMsg.Role != "user" {
+		t.Fatalf("last message should be user, got %q", userMsg.Role)
+	}
+	if userMsg.Content != "hello world" {
+		t.Errorf("Content = %q, want %q", userMsg.Content, "hello world")
+	}
+	if len(userMsg.ContentParts) != 0 {
+		t.Errorf("text-only message should have 0 content parts, got %d: %+v", len(userMsg.ContentParts), userMsg.ContentParts)
+	}
+}
+
+// TestNewAgentPropagatesMsgContext verifies that NewAgent wires
+// AgentDeps.MsgContext into the agent's msgContext field so that
+// buildMessages (called from Chat) can read attachments. This test
+// FAILS if msgContext is not propagated — the exact gap a reviewer
+// flagged as critical. It closes the loop: router → chatFn →
+// AgentDeps.MsgContext → NewAgent → a.msgContext → buildMessages.
+func TestNewAgentPropagatesMsgContext(t *testing.T) {
+	msgCtx := gateway.MsgContext{
+		Gateway:    "telegram",
+		ExternalID: "parent-123",
+		Attachments: []gateway.Attachment{
+			{
+				Type:     "image",
+				Data:     "iVBtb2NrLWJhc2U2NA", // neutral synthetic base64
+				MIMEType: "image/png",
+			},
+		},
+	}
+	user := &config.UserConfig{
+		Name:     "parent",
+		Role:     "parent",
+		AgeGroup: "",
+	}
+	cfg := &config.Config{
+		Users: []config.UserConfig{*user},
+	}
+
+	// NewAgent with nil db / deps — the only thing we're testing is
+	// msgContext propagation.
+	a, err := NewAgent(user, cfg, nil, nil, nil, nil, AgentDeps{
+		MsgContext: msgCtx,
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	if a.msgContext.Gateway != "telegram" {
+		t.Errorf("msgContext.Gateway = %q, want %q", a.msgContext.Gateway, "telegram")
+	}
+	if a.msgContext.ExternalID != "parent-123" {
+		t.Errorf("msgContext.ExternalID = %q, want %q", a.msgContext.ExternalID, "parent-123")
+	}
+	if len(a.msgContext.Attachments) != 1 {
+		t.Fatalf("expected 1 attachment in msgContext, got %d", len(a.msgContext.Attachments))
+	}
+	if a.msgContext.Attachments[0] != (gateway.Attachment{
+		Type: "image", Data: "iVBtb2NrLWJhc2U2NA", MIMEType: "image/png",
+	}) {
+		t.Errorf("attachment mismatch: got %+v", a.msgContext.Attachments[0])
+	}
+
+	// End-to-end: buildMessages must consume the propagated attachments.
+	msgs := a.buildMessages(context.Background(), nil, "what is this")
+	userMsg := msgs[len(msgs)-1]
+	if len(userMsg.ContentParts) != 2 {
+		t.Fatalf("expected 2 content parts (text+image), got %d", len(userMsg.ContentParts))
+	}
+}

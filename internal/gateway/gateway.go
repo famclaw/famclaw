@@ -42,6 +42,11 @@ type MsgContext struct {
 	ExternalID string // platform-specific user ID
 	GroupID    string // platform-specific group/channel ID (empty for DMs)
 	IsGroup    bool   // true if message is from a group/channel
+	// Attachments carries any media (images) extracted by the gateway
+	// adapter from the inbound platform message. Populated by the
+	// Discord and Telegram adapters and forwarded through the router
+	// into the agent so image content reaches a vision-capable model.
+	Attachments []Attachment
 }
 
 // ChatFunc is the function signature for LLM chat.

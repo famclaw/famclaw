@@ -1483,3 +1483,78 @@ func TestHandleSkillCommandEmptyList(t *testing.T) {
 		t.Errorf("empty list text = %q, want 'No skills installed'", reply.Text)
 	}
 }
+
+// TestRouterImageAttachmentForwarded proves that an image attachment
+// present in the inbound Message reaches the chatFn (and thus the LLM)
+// via MsgContext.Attachments — the single choke point that previously
+// dropped attachments at router.go:232. A text-only message must be
+// unchanged (no attachments, text forwarded verbatim).
+//
+// Uses neutral synthetic content — no real user data.
+func TestRouterImageAttachmentForwarded(t *testing.T) {
+	// A chatFn that captures what the router forwards.
+	type captured struct {
+		text        string
+		attachments []Attachment
+	}
+
+	// Case 1: image attachment present — must arrive at chatFn.
+	var got captured
+	imgChatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
+		got.text = text
+		got.attachments = msgCtx.Attachments
+		return "ok", nil
+	}
+	router, identStore := setupRouter(t, imgChatFn)
+	identStore.LinkAccount("parent", "telegram", "parent-img")
+
+	img := Attachment{
+		Type:     "image",
+		Data:     "iVBtb2NrLWJhc2U2NA", // neutral synthetic base64 (not real image bytes)
+		MIMEType: "image/png",
+	}
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway:     "telegram",
+		ExternalID:  "parent-img",
+		Text:        "what is in this picture",
+		Attachments: []Attachment{img},
+	})
+	if reply.PolicyAction != "allow" {
+		t.Fatalf("parent image message should be allowed, got %q: %s", reply.PolicyAction, reply.Text)
+	}
+	if got.text != "what is in this picture" {
+		t.Errorf("text = %q, want %q", got.text, "what is in this picture")
+	}
+	if len(got.attachments) != 1 {
+		t.Fatalf("expected 1 attachment forwarded, got %d", len(got.attachments))
+	}
+	if got.attachments[0] != img {
+		t.Errorf("attachment mismatch: got %+v, want %+v", got.attachments[0], img)
+	}
+
+	// Case 2: text-only message — no attachments, text unchanged.
+	var got2 captured
+	textChatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
+		got2.text = text
+		got2.attachments = msgCtx.Attachments
+		return "ok", nil
+	}
+	router2, identStore2 := setupRouter(t, textChatFn)
+	identStore2.LinkAccount("emma", "discord", "emma-txt")
+
+	reply2 := router2.Handle(context.Background(), Message{
+		Gateway:    "discord",
+		ExternalID: "emma-txt",
+		Text:       "hello world",
+	})
+	if reply2.PolicyAction != "allow" {
+		t.Fatalf("child safe topic should be allowed, got %q", reply2.PolicyAction)
+	}
+	if got2.text != "hello world" {
+		t.Errorf("text = %q, want %q", got2.text, "hello world")
+	}
+	if len(got2.attachments) != 0 {
+		t.Errorf("text-only message should have 0 attachments, got %d", len(got2.attachments))
+	}
+}

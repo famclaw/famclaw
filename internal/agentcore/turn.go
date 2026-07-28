@@ -36,9 +36,10 @@ type Turn struct {
 
 // Message is a conversation message (mirrors llm.Message to avoid circular import).
 type Message struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role         string     `json:"role"`
+	Content      string     `json:"content"`
+	ContentParts []any      // multimodal content (images) — mirrors llm.Message.ContentParts
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // ToolCall is a tool invocation requested by the LLM.

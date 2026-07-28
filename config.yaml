@@ -31,6 +31,24 @@ llm:
   # api_key: ""  # required for cloud providers, omit for Ollama
   # Prefer: export FAMCLAW_LLM_API_KEY=<key> (env overrides YAML, no plaintext warning)
 
+  # Vision model profile — used when a message carries an image attachment
+  # (a photo sent on Telegram or Discord). Text-only messages always use the
+  # normal per-user model. Set to the name of a profile below, or leave empty
+  # to use the per-user endpoint for both (use when your main model is itself
+  # vision-capable). Images are sent to the configured LLM endpoint, which
+  # may be remote — they stay on-device only when that endpoint is local.
+  # vision_profile: "vision"
+
+  # Named LLM endpoints — override per-user model selection.
+  # profiles:
+  #   vision:
+  #     base_url: "http://192.168.1.10:11434"
+  #     model: "qwen2.5-vl:7b"
+  #   cloud:
+  #     base_url: "https://api.openai.com/v1"
+  #     model: "gpt-4o-mini"
+  #     api_key: "${OPENAI_API_KEY}"
+
   # System prompt injected for all family interactions
   system_prompt: |
     You are FamClaw, a helpful family AI assistant. You are friendly,

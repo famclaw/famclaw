@@ -59,8 +59,9 @@ func turnToLLMMessages(msgs []Message) []llm.Message {
 	result := make([]llm.Message, len(msgs))
 	for i, m := range msgs {
 		result[i] = llm.Message{
-			Role:    m.Role,
-			Content: m.Content,
+			Role:         m.Role,
+			Content:      m.Content,
+			ContentParts: m.ContentParts,
 		}
 		if len(m.ToolCalls) > 0 {
 			result[i].ToolCalls = make([]llm.ToolCall, len(m.ToolCalls))

@@ -13,9 +13,10 @@ func llmToCompress(in []llm.Message, prunableIdx map[int]bool) []compress.Messag
 	out := make([]compress.Message, len(in))
 	for i, msg := range in {
 		out[i] = compress.Message{
-			Role:     msg.Role,
-			Content:  msg.Content,
-			Prunable: prunableIdx[i],
+			Role:         msg.Role,
+			Content:      msg.Content,
+			ContentParts: msg.ContentParts,
+			Prunable:     prunableIdx[i],
 		}
 	}
 	return out
