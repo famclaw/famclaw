@@ -134,7 +134,7 @@ func (s *Store) ListMemories(ctx context.Context, userName, category string) ([]
 }
 
 // SearchMemories returns memories for a user matching a case-insensitive
-// keyword query against label, value, and category, optionally narrowed by
+// substring across label, value, and category, optionally narrowed by
 // category. When query is empty, behaves like ListMemories.
 // Ordered by category, label.
 func (s *Store) SearchMemories(ctx context.Context, userName, category, query string) ([]Memory, error) {

@@ -40,12 +40,12 @@ func RememberDefinition() agentcore.Tool {
 func RecallDefinition() agentcore.Tool {
 	return agentcore.Tool{
 		Name:        toolNameRecall,
-		Description: "Recall memories for the current user. Optionally filter by category, or search by keyword across label, value and category. Returns all memories if both are omitted.",
+		Description: "Recall memories for the current user. Optionally filter by category, or search by substring across label, value and category. Returns all memories if both are omitted.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"category": map[string]any{"type": "string", "description": "Optional category to filter by (e.g. 'preferences')."},
-				"query":    map[string]any{"type": "string", "description": "Optional keyword to search across label, value and category - use when the user asks about a topic rather than a category."},
+				"query":    map[string]any{"type": "string", "description": "Optional substring to search across label, value and category - use when the user asks about a topic rather than a category."},
 			},
 		},
 		Source: "builtin",
