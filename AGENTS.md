@@ -101,7 +101,7 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 - Where is the session authenticated? → `internal/web/middleware/session.go:WithSession` (line 40)
 - Where is the tool cache used? → `internal/agent/agent.go:Chat` (line 289)
 - Where is the tool result audited? → `internal/store/db.go:LogAudit` (line 1071)
-- Where is the parent PIN stored? → `internal/store/db.go` (`vault_secrets` table, line 243) and `cmd/famclaw/main.go`
+- Where is the parent PIN stored? → `internal/credstore/vault.go` (`Vault`, AES-256-GCM); the ciphertext row lives in `vault_secrets` (`internal/store/db.go`, line 243). `cmd/famclaw/main.go` runs the vault-mismatch probe.
 - Where is the LLM client created? → `cmd/famclaw/main.go` (line 442)
 - Where is the gateway account linked? → `internal/gateway/router.go:handleUnknownAccount` (line 373)
 

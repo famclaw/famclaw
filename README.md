@@ -281,7 +281,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 | **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps. Optional headless-browser fallback for JS-heavy sites (`fallback_to_browser`, off by default; requires `tools.browser.enabled`) |
 | **Web search** | `web_search` builtin tool (off by default) — query a SearXNG JSON endpoint; requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate |
 | **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
-| **Skill install** | From parent dashboard Skills tab or CLI; HoneyBadger-scanned at install time |
+| **Skill install** | From parent dashboard Skills tab; HoneyBadger-scanned at install time |
 | **llama.cpp sidecar** | Spawns llama-server, GGUF model catalog, TurboQuant support |
 | **Security scanning** | Honeybadger runtime stage, install-time + stale scan gates |
 | **Web UI** | Chat, parent dashboard, 5-step wizard with AI profiles, PIN-gated skill install/remove |
