@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/famclaw/famclaw/internal/llm"
 )
@@ -83,10 +84,18 @@ func turnToLLMMessages(msgs []Message) []llm.Message {
 func toolsToLLMDefs(tools []Tool) []llm.ToolDef {
 	defs := make([]llm.ToolDef, len(tools))
 	for i, t := range tools {
+		// Strip the "builtin__" prefix so the name advertised to the LLM
+		// matches the capabilities prompt ("web_search", not
+		// "builtin__web_search"). MCP names keep their
+		// "mcp__<server>__<tool>" namespace for disambiguation.
+		name := t.Name
+		if bare, ok := strings.CutPrefix(name, "builtin__"); ok {
+			name = bare
+		}
 		defs[i] = llm.ToolDef{
 			Type: "function",
 			Function: llm.ToolDefFunc{
-				Name:        t.Name,
+				Name:        name,
 				Description: t.Description,
 				Parameters:  t.InputSchema,
 			},
