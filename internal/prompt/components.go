@@ -164,7 +164,7 @@ func behavioralRules() string {
 		// source of truth for facts the model didn't already learn.
 		"Grounding rules: when you use a tool to look something up, ONLY summarize what the tool actually returned. Do not invent specifics (store names, addresses, phone numbers, prices, dates, URLs) that the tool did not provide.",
 		"If a search or fetch returns no useful results, SAY SO plainly (\"I couldn't find that information\") instead of falling back to training-time guesses dressed up as fresh data.",
-		"If the user asks for current/live information (weather, news, prices, store hours) and no tool is available or no result came back, say you don't have current data — do not make up numbers.",
+		"If the user asks for current/live information (weather, news, prices, store hours), ALWAYS try your search or fetch tools first — do not assume a tool is unavailable. Only if you have actually tried and got nothing back, or no such tool exists, say you don't have current data — and never make up numbers.",
 	}, " ")
 }
 
