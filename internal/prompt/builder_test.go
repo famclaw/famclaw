@@ -377,6 +377,19 @@ func TestBehavioralRules_Exported(t *testing.T) {
 			t.Errorf("exported BehavioralRules() missing %q", want)
 		}
 	}
+
+	// Grounding: the deflection fix must instruct the model to ATTEMPT its
+	// search/fetch tools before giving up, and must NOT retain the old
+	// "assume a tool is unavailable" phrasing that let the model skip the
+	// tool call entirely (see fc-deflect-s5 report).
+	for _, want := range []string{"ALWAYS try your search or fetch tools first", "don't have current data"} {
+		if !strings.Contains(rules, want) {
+			t.Errorf("exported BehavioralRules() missing grounding guidance %q", want)
+		}
+	}
+	if strings.Contains(rules, "no tool is available or no result came back") {
+		t.Errorf("exported BehavioralRules() still contains retired deflection phrasing")
+	}
 }
 
 func TestBuild_TokenBudget_WithBuiltinTools(t *testing.T) {
