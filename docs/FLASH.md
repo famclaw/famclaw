@@ -62,14 +62,16 @@ Replace `/dev/sdX` with your SD card device (`lsblk` to find it).
 Once the first boot completes, open on **any device on your home network**:
 
 ```
-http://famclaw.local:8080
+http://<your-pi-ip>:8080
 ```
 
-If `famclaw.local` doesn't work (some Android devices), use the IP address:
+Find the IP address from your router's DHCP leases page, or from the Pi itself:
 ```bash
-# Find the IP from your router, or from the Pi:
 hostname -I
 ```
+
+> mDNS (`famclaw.local`) was removed in v0.5.x because it didn't resolve reliably
+> on Windows or many home routers. Use the device's IP address instead.
 
 ---
 
@@ -95,10 +97,10 @@ That's it. No terminal, no SSH, no config files.
 
 ## Troubleshooting
 
-**Can't reach famclaw.local:**
-- mDNS can take a minute to propagate
-- Try the IP address directly
-- On Windows, install [Bonjour](https://support.apple.com/kb/DL999)
+**Can't reach the device:**
+- Verify the IP address from `hostname -I`
+- Ensure the Pi and your device are on the same network
+- Check that port 8080 isn't blocked by a firewall
 
 **FamClaw not starting:**
 - Check logs: `sudo journalctl -u famclaw -f`

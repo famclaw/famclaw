@@ -77,7 +77,7 @@ Recommendations:
 
 - **First boot:** Downloads Ollama + LLM model (600MB–5GB). Use ethernet.
 - **After setup:** FamClaw's policy engine and web UI work offline. LLM calls require network access to the configured endpoint (local LAN or cloud).
-- **mDNS:** FamClaw advertises as `famclaw.local` on your LAN.
+- **Address:** FamClaw listens on `:8080`. Find the Pi's IP with `hostname -I` and open `http://<ip>:8080` (`famclaw.local` was removed in v0.5.x — it didn't resolve reliably on Windows or many home routers).
 
 ---
 

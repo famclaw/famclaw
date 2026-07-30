@@ -37,7 +37,7 @@ All release artifacts are signed and attested:
 
 ```bash
 # Download checksums and sigstore bundle (replace TAG with the version you downloaded)
-TAG=v0.3.0-beta  # ← change this
+TAG=v0.7.0  # ← change this
 gh release download "$TAG" --pattern 'checksums*' --dir .
 
 # Verify cosign signature (Sigstore keyless)

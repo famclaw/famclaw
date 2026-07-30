@@ -10,7 +10,8 @@ server:
   # Secret key for signing tokens. Auto-generated on first boot if not set.
   # To persist: export FAMCLAW_SECRET=<generated-value>
   secret: "${FAMCLAW_SECRET}"
-  # Local domain for mDNS — access via http://famclaw.local on your network
+  # mDNS was removed in v0.5.x — access via the device IP (e.g. http://192.168.1.10:8080).
+  # The mdns_name field is deprecated and retained for config compatibility only.
   mdns_name: "famclaw"
 
 # ── LLM backend ───────────────────────────────────────────────────────────────
@@ -192,8 +193,12 @@ seccheck:
 #
 # url_allowlist is REQUIRED when enabled — an empty list denies all fetches as
 # an SSRF guard. Listed hostnames match exact + all subdomains automatically
-# (so "wikipedia.org" covers "en.wikipedia.org"). http/https only; private /
-# loopback IPs are blocked at the dialer regardless of allowlist contents.
+# (so "wikipedia.org" covers "en.wikipedia.org"). http/https only.
+#
+# By default FamClaw ALLOWS private-network access (it is a home-LAN product
+# that must reach co-located SearXNG/Playwright/llama-server). To block
+# loopback/RFC1918/ULA at the dialer, set block_private_networks: true.
+# The host allowlist still applies regardless.
 #
 # Below is a curated default list grouped by category. Remove categories you
 # don't want; add your own family-relevant hosts under the local-region
@@ -205,6 +210,7 @@ seccheck:
 #     allowed_roles: [parent]
 #     max_bytes: 262144           # 256KB response cap
 #     timeout_seconds: 15
+#     block_private_networks: false  # opt-in: block loopback/RFC1918/ULA at the dialer
 #     url_allowlist:
 #       # Reference / general knowledge
 #       - wikipedia.org
@@ -258,3 +264,12 @@ seccheck:
 #       # Family-specific
 #       # - <school-portal-host>  # school grades/assignments portal
 #       # - <pediatrician-host>   # doctor's office portal
+#
+#   # Web search (requires web_fetch.enabled=true — reuses its url_allowlist
+#   # as the host gate; the search endpoint host must be allowlisted).
+#   web_search:
+#     enabled: false
+#     allowed_roles: [parent]
+#     endpoint: "http://localhost:8888"  # SearXNG JSON search URL
+#     max_results: 8                     # default 8, hard-capped at 16
+#     timeout_seconds: 10

@@ -82,7 +82,6 @@ PRs go through the merge queue with CI checks (CodeQL, govulncheck, cross-compil
 ## Reference
 
 - [AGENTS.md](./AGENTS.md) — multi-agent build plan and package descriptions
-- [docs/superpowers/](./docs/superpowers/) — design specs for major features
 - [CLAUDE.md](./CLAUDE.md) — full coding rules and project structure
 - [SECURITY.md](./SECURITY.md) — vulnerability reporting and release verification
 

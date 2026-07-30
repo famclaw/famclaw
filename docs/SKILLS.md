@@ -4,7 +4,7 @@ Skills extend FamClaw with new tools and capabilities. They're shared across Fam
 
 ## Installing a skill
 
-> **Note:** The CLI skill management commands are planned. Currently, skills are installed manually by placing the SKILL.md in the skills directory.
+> **Note:** Skills are installed from the parent dashboard (Skills tab) via the `/api/skills/install` and `/api/skills/remove` endpoints, or manually by placing the skill's `SKILL.md` in the skills directory. The `famclaw skill` CLI is not yet implemented.
 
 ### Manual installation
 

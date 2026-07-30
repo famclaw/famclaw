@@ -28,14 +28,14 @@ FamClaw works with any OpenAI-compatible API. No code changes needed — just se
 
 ## Recommended Models
 
-All recommended models are Apache-2.0 and pass real on-device tool-call tests (3/3).
+All recommended models are permissively licensed (Apache-2.0 or Gemma licence) and pass real on-device tool-call tests (3/3).
 Sizes are Q4_K_M. See the README for full benchmark methodology.
 
 | Model | Params | RAM (Q4) | Tool Calling | License | Best for |
 |-------|--------|----------|-------------|---------|----------|
 | **qwen3:1.7b** | 2.0B | ~2 GB | 3/3 real | Apache 2.0 | Pi 5 (8 GB) / ≤8 GB default |
 | **qwen3:4b** | 4.0B | ~3.5 GB | 3/3 real | Apache 2.0 | 16 GB+ machines |
-| **gemma4:31b** | 31B | ~20 GB | 3/3 real | Apache 2.0 | 64 GB Mac / capable box |
+| **gemma4:31b** | 31B | ~20 GB | 3/3 real | Gemma licence | 64 GB Mac / capable box |
 | **deepseek-r1:7b** | 7B | ~5GB | Yes | MIT | Best reasoning |
 | tinyllama | 1.1B | ~600MB | Limited | Apache 2.0 | Last resort |
 

@@ -5,7 +5,7 @@
 **What happened:** The binary exits immediately or the service fails.
 
 **What to check:**
-1. Is the config file found? FamClaw looks in: `./config.yaml` → `~/.famclaw/config.yaml` → `/opt/famclaw/config.yaml`
+1. Is the config file found? FamClaw loads exactly the file given by `--config` (default `config.yaml` in the current directory). The `~/.famclaw/` and `/opt/famclaw/` locations are used by the systemd/launchd service installed via `make install-service`, which passes `--config` pointing there.
 2. Is the server secret set? If empty, FamClaw generates one automatically
 3. Check logs: `journalctl -u famclaw -f` (Linux) or `tail -f ~/logs/famclaw.log` (Mac)
 
@@ -44,6 +44,33 @@
 - If it fails: check the URL and API key
 
 **Time to fix:** About 2 minutes.
+
+---
+
+## Tool calls fail with HTTP 400
+
+**What happened:** The LLM tries to call a tool (`web_search`, `web_fetch`, etc.) but the request is rejected, often with an HTTP 400 error.
+
+**What to check:**
+1. Strict backends (vLLM, OpenAI, Azure) reject tool calls that don't follow the OpenAI spec exactly. FamClaw now serializes tool-call arguments as a JSON-encoded **string** (not a bare object) and sends tool names without the internal `builtin__` prefix, so tool calls work on these backends as of v0.8.0.
+2. If you still see HTTP 400 on tool calls, you are running an older release — update FamClaw.
+
+**Time to fix:** Update FamClaw (`curl -fsSL https://raw.githubusercontent.com/famclaw/famclaw/main/scripts/update.sh | bash`).
+
+---
+
+## Response ends with "no action was completed"
+
+**What happened:** The assistant tried one or more tools, but every tool call failed, so the response ends with:
+
+> (Note: no action was completed - every tool call in this turn failed.)
+
+**What to know:**
+- This note is appended whenever all tool calls in a turn fail and the model claimed it succeeded — it triggers on the tool loop's exit reason, not on any keyword, so it behaves the same in every language.
+- Common causes: a tool blocked by policy, an unavailable endpoint or host, or a tool that returned an error.
+- Check the tool's requirements — for example `web_fetch` needs a non-empty `url_allowlist`, and `web_search` requires `tools.web_fetch.enabled=true`.
+
+**Time to fix:** About 1 minute (fix the tool config or unblock the host).
 
 ---
 

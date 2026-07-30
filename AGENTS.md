@@ -19,19 +19,30 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 | policy | OPA policy evaluation for input, tool calls, and output | `Evaluator`, `Evaluate`, `EvaluateOutput` | - |
 | notify | Multi-channel notification system | `MultiNotifier`, `Notify`, `GenerateToken` | store |
 | identity | User identity and account linking | `Store`, `Resolve`, `LinkAccount` | store |
-| agent | Core AI chat and pipeline execution | `Agent`, `Chat`, `NewAgent` | config, llm, policy, classifier, store, mcp |
+| agent | Core AI chat and pipeline execution | `Agent`, `Chat`, `NewAgent` | agentcore, browser, classifier, compress, config, familystate, gateway, llm, mcp, policy, prompt, reminder, skillbridge, store, subagent, todo, toolcache, usermemory, webfetch, websearch |
+| agentcore | Composable pipeline stages (classify → policy → LLM → tools → output) | `Pipeline`, `Stage`, `Turn` | classifier, compress, config, honeybadger, llm, mcp, policy, skillbridge, store |
 | subagent | Agent dispatch and sub-agent scheduling | `Scheduler`, `Submit`, `NewScheduler` | mcp |
 | toolcache | Tool result spillover cache with TTL and eviction | `Cache`, `New`, `StartSweeper` | store |
+| compress | Context-window compression for chat message lists | `Compress`, `Message`, `Options` | - |
 | browser | Browser navigation and screenshot tools | `Pool`, `NewPool`, `Tools` | - |
-| webfetch | Web fetch tool with URL allowlist and SSRF guards | `Tool`, `Fetch`, `New` | - |
-| websearch | Web search tool with SearXNG integration | `Tool`, `Search`, `New` | - |
+| webfetch | Web fetch tool with URL allowlist and SSRF guards | `Tool`, `Fetch` | - |
+| websearch | Web search tool with SearXNG integration | `Tool`, `Search` | - |
+| filetool | Builtin file read/write/stat/list tools | `FileReadTool`, `FileWriteTool`, `FileStatTool`, `FileListTool` | agentcore |
 | familystate | Shared family memory (allergies, dates, pets) | `Store`, `GetTool`, `ProposeTool` | store |
+| usermemory | Per-user memories with searchable recall (remember/recall/forget) | `Store`, `Snapshot`, `SearchMemories` | agentcore, store |
 | honeybadger | Security scanning and runtime quarantine | `Scanner`, `Quarantine`, `Scan` | - |
+| reminder | Recurring family reminders tied to family-state dates | `ReminderStore`, `Scheduler` | agentcore, config, gateway, store |
 | skillbridge | Skill loading and registration | `Registry`, `List`, `Install` | - |
+| skilladapt | Multi-format skill adapters (SKILL.md / SOUL.md) | `Skill` | - |
+| wasmskill | WASM skill runtime | `Runtime`, `NewRuntime` | - |
+| toolreg | Unified tool registry and token-budget selection | `Tool`, `Registry`, `SelectOptions` | mcp |
 | mcp | Multi-transport tool server pool (stdio/HTTP/SSE) | `Pool`, `NewPool`, `RegisterFromConfig` | - |
 | llm | LLM client abstraction and tool calling | `Client`, `NewClient`, `Ping` | - |
 | classifier | Message classification and topic detection | `Classifier`, `Classify` | - |
+| prompt | System prompt assembly (capabilities, rules, snapshots) | `Build`, `BuildContext` | config, familystate, usermemory |
 | inference | Local LLM inference via llama-server sidecar | `Sidecar`, `NewSidecar`, `Start` | - |
+| hardware | Host capability detection (RAM/CPU) for local-LLM viability | `HardwareInfo` | llm |
+| todo | Todo list tool backed by DB | `Store`, `Tool` | agentcore, store |
 | credstore | Machine-bound credential vault (AES-256-GCM) | `Vault`, `New`, `Decrypt` | - |
 | auth | Session-based authentication and PIN management | `AuthHandler`, `HandleLogin`, `HandleSession` | store, credstore |
 | middleware | HTTP middleware for session validation and auth | `WithSession`, `protect`, `conditionalProtect` | store |
@@ -78,21 +89,21 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 
 ### "Where does X live?" — quick index
 
-- Where is the policy evaluation called? → `internal/gateway/router.go:process` (line 124)
-- Where is the config loaded? → `internal/config/config.go:Load` (line 307)
-- Where does a Telegram message land? → `internal/gateway/telegram/gateway.go` then `internal/gateway/router.go:Handle` (line 82)
-- Where is the web fetch tool registered? → `cmd/famclaw/main.go:262` (line 262)
-- Where is the approval decision notified? → `internal/gateway/router.go:createApproval` (line 189)
+- Where is the policy evaluation called? → `internal/gateway/router.go:process` (line 127)
+- Where is the config loaded? → `internal/config/config.go:Load` (line 345)
+- Where does a Telegram message land? → `internal/gateway/telegram/bot.go` (polling) → `internal/gateway/router.go:Handle` (line 104)
+- Where is the web fetch tool registered? → `cmd/famclaw/main.go` (line 588)
+- Where is the approval decision notified? → `internal/gateway/router.go:createApproval` (line 252)
 - Where is the database migrated? → `internal/store/db.go:migrate` (line 63)
-- Where is the notification sent? → `internal/notify/notifier.go:Notify` (line 58)
-- Where is the agent chat function defined? → `cmd/famclaw/main.go:303` (line 303)
-- Where is the family state stored? → `internal/familystate/store.go` (line 11)
-- Where is the session authenticated? → `internal/web/middleware/session.go` (line 20)
-- Where is the tool cache used? → `internal/agent/agent.go:Chat` (line 45)
-- Where is the tool result audited? → `internal/store/db.go:LogAudit` (line 967)
-- Where is the parent PIN stored? → `internal/store/db.go:Vault` (line 224)
-- Where is the LLM client created? → `cmd/famclaw/main.go:310` (line 310)
-- Where is the gateway account linked? → `internal/gateway/router.go:handleUnknownAccount` (line 287)
+- Where is the notification sent? → `internal/notify/notifier.go:Notify` (line 63)
+- Where is the agent chat function defined? → `cmd/famclaw/main.go` (line 653)
+- Where is the family state stored? → `internal/familystate/store.go:Store` (line 14)
+- Where is the session authenticated? → `internal/web/middleware/session.go:WithSession` (line 40)
+- Where is the tool cache used? → `internal/agent/agent.go:Chat` (line 289)
+- Where is the tool result audited? → `internal/store/db.go:LogAudit` (line 1071)
+- Where is the parent PIN stored? → `internal/credstore/vault.go` (`Vault`, AES-256-GCM); the ciphertext row lives in `vault_secrets` (`internal/store/db.go`, line 243). `cmd/famclaw/main.go` runs the vault-mismatch probe.
+- Where is the LLM client created? → `cmd/famclaw/main.go` (line 442)
+- Where is the gateway account linked? → `internal/gateway/router.go:handleUnknownAccount` (line 373)
 
 ### Notable sharp edges
 
@@ -106,15 +117,15 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 - Logs go to stderr, stdout is reserved for MCP JSON-RPC.
 - One binary — no separate processes except MCP skill servers and the optional llama-server inference sidecar.
 - The `web_fetch` tool requires an `url_allowlist` to be set to prevent SSRF attacks.
-- The `tools.web_fetch.enabled` field is a hard requirement — empty allowlist denies all fetches.
+- The `tools.web_fetch.enabled` flag is optional (default off). When enabled, `url_allowlist` is required — an empty list denies all fetches (SSRF guard).
 - The `tools.browser` tool reuses the `tools.web_fetch.url_allowlist` as its host gate.
-- The `tools.web_search` tool is enabled independently via `cfg.Tools.WebSearch.Enabled` in its own config block.
+- The `tools.web_search` tool has its own `enabled` flag, but it requires `tools.web_fetch.enabled=true` (it reuses web_fetch's `url_allowlist` as its host gate and won't start otherwise).
 - The `approvalID` function uses `sha256` hashing for uniqueness.
 - The `notify.GenerateToken` function creates time-limited HMAC tokens.
 - The `toolcache` cache tool is only attached when it already exists (auto-created when `cfg.Tools.ToolCache.Enabled` or `cfg.Tools.WebFetch.Enabled` is true).
 - The `subagent` scheduler has a concurrency cap of 2.
 - The `inference` sidecar only starts if `cfg.Inference.Backend == "llama-server"`.
-- The `mcp` pool only starts if `cfg.Skills.MCPServers` is not empty.
+- The `mcp` pool is always constructed; server registration (`RegisterFromConfig`) only runs when `cfg.Skills.MCPServers` is non-empty.
 - The `web` server has a `vaultMismatch` flag that triggers the unlock page.
 - The `auth` system uses a `session` cookie for admin access.
 - The `web` server has a `conditionalProtect` function for setup endpoints.
