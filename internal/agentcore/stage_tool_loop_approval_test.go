@@ -17,6 +17,7 @@ type fakeApprovalStore struct {
 	created   []*store.Approval
 	upsertErr error
 	approvals map[string]any
+	readErr   error
 }
 
 func (f *fakeApprovalStore) UpsertApproval(a *store.Approval) (bool, error) {
@@ -35,6 +36,9 @@ func (f *fakeApprovalStore) UpsertApproval(a *store.Approval) (bool, error) {
 }
 
 func (f *fakeApprovalStore) AllApprovalsForOPA() (map[string]any, error) {
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
 	return f.approvals, nil
 }
 
@@ -415,5 +419,39 @@ func TestToolLoop_PendingApprovalDoesNotReCreateApproval(t *testing.T) {
 
 	if len(store.created) != 0 {
 		t.Errorf("pending action should not create a new approval, got %d created", len(store.created))
+	}
+}
+
+func TestToolLoop_ApprovalStoreReadFailureFailsClosed(t *testing.T) {
+	// If AllApprovalsForOPA fails, the policy cannot see a prior denial.
+	// Proceeding would let a denied executable file_write look like a
+	// fresh request — failing open. The tool must be blocked.
+	eval := &approvalToolEval{
+		decisions: map[string]policy.ToolDecision{
+			"file_write": {Allow: false, Action: "request_approval", Reason: "needs approval"},
+		},
+	}
+	store := &fakeApprovalStore{readErr: errors.New("db read failed")}
+	deps, builtinCalled := makeApprovalDeps(t, eval, store)
+	turn := makeApprovalTurn("child", "age_8_12", "file_write")
+
+	if err := NewStageToolLoop(*deps)(context.Background(), turn); err != nil {
+		t.Fatalf("stage error: %v", err)
+	}
+
+	if len(turn.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool result, got %d", len(turn.ToolCalls))
+	}
+	if turn.ToolCalls[0].Error == nil {
+		t.Error("approval store read failure should block the tool")
+	}
+	if !errors.Is(turn.ToolCalls[0].Error, ErrToolBlocked) {
+		t.Errorf("error should be ErrToolBlocked, got: %v", turn.ToolCalls[0].Error)
+	}
+	if *builtinCalled {
+		t.Error("builtin handler should NOT have been called when approval store read fails")
+	}
+	if len(store.created) != 0 {
+		t.Errorf("no approval should be created when store read fails, got %d", len(store.created))
 	}
 }

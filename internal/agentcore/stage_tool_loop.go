@@ -252,7 +252,18 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					input.Args = tc.Function.Arguments
 					input.RequestID = requestID
 					if deps.ApprovalStore != nil {
-						input.Approvals, _ = deps.ApprovalStore.AllApprovalsForOPA()
+						var apErr error
+						input.Approvals, apErr = deps.ApprovalStore.AllApprovalsForOPA()
+						if apErr != nil {
+							// Fail closed: if we cannot read existing approvals,
+							// the policy cannot see a prior denial. Proceeding
+							// would let a denied executable file_write look like
+							// a fresh request — failing open on a child-safety
+							// boundary. Block instead.
+							log.Printf("[stage_tool_loop] approval store read failed for %s: %v (failing closed)", tc.Function.Name, apErr)
+							injectToolError(&llmMsgs, turn, tc, ErrToolBlocked, "approval unavailable", start)
+							continue
+						}
 					}
 
 					decision, perr := deps.PolicyEvaluator.EvaluateToolCall(ctx, input)
@@ -280,7 +291,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							UserDisplay: turn.User.DisplayName,
 							AgeGroup:    turn.User.AgeGroup,
 							Category:    "tool:" + bareToolName(tc.Function.Name),
-							QueryText:   fmt.Sprintf("file_write with executable content to %q", tc.Function.Arguments["path"]),
+							QueryText:   approvalDescription(bareToolName(tc.Function.Name), tc.Function.Arguments),
 						}
 						if _, err := deps.ApprovalStore.UpsertApproval(a); err != nil {
 							log.Printf("[stage_tool_loop] approval creation failed for %s: %v (failing closed)", tc.Function.Name, err)
@@ -554,6 +565,23 @@ func injectToolError(llmMsgs *[]llm.Message, turn *Turn, tc llm.ToolCall, err er
 		Error:    err,
 		Duration: time.Since(start),
 	})
+}
+
+// approvalDescription builds a human-readable summary of the tool call
+// that a parent sees when reviewing a pending approval. It is derived from
+// the actual tool name and arguments - never hardcoded - so the parent
+// knows exactly what they are approving.
+func approvalDescription(toolName string, args map[string]any) string {
+	var b strings.Builder
+	b.WriteString(toolName)
+	b.WriteString(" - ")
+	if path, ok := args["path"].(string); ok && path != "" {
+		b.WriteString("path ")
+		b.WriteString(path)
+	} else {
+		b.WriteString("no path specified")
+	}
+	return b.String()
 }
 
 // summarizeArgs renders tool-call arguments as a single-line JSON string for
