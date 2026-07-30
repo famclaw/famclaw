@@ -121,15 +121,7 @@ func HandleRemember(ctx context.Context, store *Store, userName, category, label
 
 // HandleRecall dispatches the recall_user_memory tool.
 func HandleRecall(ctx context.Context, store *Store, userName, category, query string) (string, error) {
-	var (
-		memories []Memory
-		err      error
-	)
-	if query != "" {
-		memories, err = store.SearchMemories(ctx, userName, category, query)
-	} else {
-		memories, err = store.ListMemories(ctx, userName, category)
-	}
+	memories, err := store.SearchMemories(ctx, userName, category, query)
 	if err != nil {
 		return "", fmt.Errorf("recall memories: %w", err)
 	}
