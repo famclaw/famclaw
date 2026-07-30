@@ -14,8 +14,6 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 )
 
-
-
 // toolPolicyInput shapes a per-call OPA input from the turn user.
 func toolPolicyInput(turn *Turn, toolName string) policy.ToolCallInput {
 	return policy.ToolCallInput{
@@ -423,8 +421,19 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				llmMsgs = append(llmMsgs, *msg)
 			}
 		}
-		// Neutralize false success claims: if no tool succeeded this turn but the output
-		// claims success, append a correction.
+		// modelStopped records why the tool loop exited: true when the
+		// model produced a final answer (its last response had no tool
+		// calls), false when the iteration cap was exhausted while the
+		// model kept requesting tools. After the loop, pendingCalls holds
+		// the tool calls from the most recent LLM response, so an empty
+		// pendingCalls means the model stopped. The false-success
+		// correction note only fires when modelStopped — a cap-exhausted
+		// turn never made a claim, so correcting it is wrong by
+		// construction. The discriminator is structural (not lexical),
+		// making it language-agnostic by design.
+		modelStopped := len(pendingCalls) == 0
+		// Neutralize false success claims: if no tool succeeded this turn
+		// but the output claims success, append a correction.
 		var anySuccess bool
 		for _, tr := range turn.ToolCalls {
 			if tr.Error == nil {
@@ -432,8 +441,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				break
 			}
 		}
-		if len(turn.ToolCalls) > 0 && !anySuccess && outputClaimsSuccess(turn.Output) {
-			turn.Output += "\n\n(Note: no action was actually performed — the tool was not run.)"
+		const toolFailureNote = "(Note: no action was completed - every tool call in this turn failed.)"
+		if len(turn.ToolCalls) > 0 && !anySuccess && modelStopped && !strings.Contains(turn.Output, toolFailureNote) {
+			turn.Output += "\n\n" + toolFailureNote
 		}
 
 		return nil
@@ -529,58 +539,4 @@ func rebuildResultLine(tr ToolResult) string {
 // the line-per-result contract of the rebuilt prompt block.
 func sanitizeHistoryText(s string) string {
 	return strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(s)
-}
-
-func outputClaimsSuccess(output string) bool {
-	// Convert to lowercase for case-insensitive matching
-	outputLower := strings.ToLower(output)
-	// Trim spaces
-	outputLower = strings.TrimSpace(outputLower)
-	// Enhanced success detection - supports more robust indicators
-	// and makes the guard less English-only by including common patterns
-	successPhrases := []string{
-		"done",
-		"success",
-		"completed",
-		"finished",
-		"saved",
-		"all set",
-		"ready",
-		// Remove "ok", "yes", "true" as they can false-positive on normal replies
-		"achieved",
-		"resolved",
-		"solved",
-		"fixed",
-		"complete",
-		"finished",
-		"successful",
-		// Add non-English success words
-		"hecho",      // Spanish
-		"completado", // Spanish
-		"listo",      // Spanish
-		"terminado",  // Spanish
-		"guardado",   // Spanish
-		"éxito",      // Spanish
-		"realizado",  // Spanish
-		"fertig",     // German
-		"erledigt",   // German
-		"abgeschlossen", // German
-		"gespeichert", // German
-		"bereit",     // German
-		"erfolgreich", // German
-		"完了",       // Japanese
-		"成功",       // Japanese
-		"終わりました", // Japanese
-		"保存しました", // Japanese
-		"できました", // Japanese
-		"完成",       // Japanese
-	}
-
-	for _, phrase := range successPhrases {
-		if strings.Contains(outputLower, phrase) {
-			return true
-		}
-	}
-
-	return false
 }

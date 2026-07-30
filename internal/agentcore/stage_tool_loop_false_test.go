@@ -83,7 +83,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Done! I saved the file.",
-			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
 		},
 		{
 			name: "purely conversational turn (no tool attempted)",
@@ -142,7 +142,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Listo, lo he guardado.",
-			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
 		},
 		{
 			name: "German false success",
@@ -175,7 +175,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Fertig, gespeichert.",
-			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
 		},
 		{
 			name: "Japanese false success",
@@ -208,7 +208,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "完了しました。",
-			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
 		},
 		{
 			name: "English success without tool call (should not trigger)",
@@ -313,6 +313,93 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputExact: "確認してみます...", // must be unchanged
+		},
+		{
+			name: "model claims success after failed tools (note appended, language-independent)",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that always fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("builtin failed")
+				}
+				deps.MaxIterations = 2
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__fail"}}
+				turn.Output = "Let me check..."
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__fail", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"},
+				})
+				// First LLM response re-emits a tool call; second response is
+				// the model's final answer claiming success. The note fires
+				// because the model STOPPED (structural signal), not because of
+				// the success phrase — language-agnostic by construction.
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{
+								Content: "Let me check...",
+								ToolCalls: []llm.ToolCall{{
+									ID:       "call2",
+									Function: llm.ToolCallFunction{Name: "builtin__fail", Arguments: map[string]any{}},
+								}},
+							},
+							{Content: "Done — all taken care of!"},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputNotEqual: "Done — all taken care of!",
+			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
+		},
+		{
+			name: "cap exhausted: model never stops, output unchanged (language-independent)",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that always fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("builtin failed")
+				}
+				deps.MaxIterations = 1
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__fail"}}
+				turn.Output = "Let me check..."
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__fail", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"},
+				})
+				// Mock returns the SAME response with tool calls every time
+				// the model is called — it never produces a final answer. With
+				// MaxIterations=1 the loop exits by exhausting the cap
+				// (pendingCalls stays non-empty), so the note must NOT fire.
+				// The turn never made a claim, so output is byte-identical.
+				// This mirrors the TestAgentChatPoolNil scenario at the stage
+				// level and is language-independent by construction.
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{
+								Content: "Let me check...",
+								ToolCalls: []llm.ToolCall{{
+									ID:       "call2",
+									Function: llm.ToolCallFunction{Name: "builtin__fail", Arguments: map[string]any{}},
+								}},
+							},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputExact: "Let me check...", // no note: cap exhausted, model never claimed
 		},
 	}
 
