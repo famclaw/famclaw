@@ -14,8 +14,6 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 )
 
-
-
 // toolPolicyInput shapes a per-call OPA input from the turn user.
 func toolPolicyInput(turn *Turn, toolName string) policy.ToolCallInput {
 	return policy.ToolCallInput{
@@ -423,8 +421,19 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				llmMsgs = append(llmMsgs, *msg)
 			}
 		}
-		// Neutralize false success claims: if no tool succeeded this turn but the output
-		// claims success, append a correction.
+		// modelStopped records why the tool loop exited: true when the
+		// model produced a final answer (its last response had no tool
+		// calls), false when the iteration cap was exhausted while the
+		// model kept requesting tools. After the loop, pendingCalls holds
+		// the tool calls from the most recent LLM response, so an empty
+		// pendingCalls means the model stopped. The false-success
+		// correction note only fires when modelStopped — a cap-exhausted
+		// turn never made a claim, so correcting it is wrong by
+		// construction. The discriminator is structural (not lexical),
+		// making it language-agnostic by design.
+		modelStopped := len(pendingCalls) == 0
+		// Neutralize false success claims: if no tool succeeded this turn
+		// but the output claims success, append a correction.
 		var anySuccess bool
 		for _, tr := range turn.ToolCalls {
 			if tr.Error == nil {
@@ -433,7 +442,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			}
 		}
 		const toolFailureNote = "(Note: no action was completed - every tool call in this turn failed.)"
-		if len(turn.ToolCalls) > 0 && !anySuccess && !strings.Contains(turn.Output, toolFailureNote) {
+		if len(turn.ToolCalls) > 0 && !anySuccess && modelStopped && !strings.Contains(turn.Output, toolFailureNote) {
 			turn.Output += "\n\n" + toolFailureNote
 		}
 
@@ -531,4 +540,3 @@ func rebuildResultLine(tr ToolResult) string {
 func sanitizeHistoryText(s string) string {
 	return strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(s)
 }
-
