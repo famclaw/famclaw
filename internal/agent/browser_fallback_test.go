@@ -44,7 +44,7 @@ func TestFetchWithBrowser_NilPool(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil pool, got nil")
 	}
-	if !strings.Contains(err.Error(), "browser") || !strings.Contains(err.Error(), "not configured") {
+	if !strings.Contains(err.Error(), "browser pool is not configured") {
 		t.Fatalf("error should mention browser pool not configured, got: %v", err)
 	}
 }
