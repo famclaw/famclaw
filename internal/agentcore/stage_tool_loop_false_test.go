@@ -83,7 +83,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Done! I saved the file.",
-			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
 		},
 		{
 			name: "purely conversational turn (no tool attempted)",
@@ -142,7 +142,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Listo, lo he guardado.",
-			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
 		},
 		{
 			name: "German false success",
@@ -175,7 +175,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Fertig, gespeichert.",
-			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
 		},
 		{
 			name: "Japanese false success",
@@ -208,7 +208,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "完了しました。",
-			wantOutputContains: "(Note: no action was actually performed — the tool was not run.)",
+			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
 		},
 		{
 			name: "English success without tool call (should not trigger)",
