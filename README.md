@@ -206,6 +206,8 @@ tools:
       - en.wikipedia.org
     max_bytes: 262144         # 256 KB response cap
     timeout_seconds: 15
+    fallback_to_browser: false  # opt-in: fall back to headless browser for JS-heavy sites; requires tools.browser.enabled
+    fallback_min_text_length: 10 # below this many chars of extracted text, attempt the browser fallback
 ```
 
 Defense in depth:
@@ -218,7 +220,7 @@ Defense in depth:
 
 The fetcher itself is in `internal/webfetch/`; the agent handler lives in `internal/agent/agent.go` (`handleWebFetch`).
 
-For JS-heavy sites where HTML→text extraction yields too little content, `web_fetch` falls back to a headless browser (the built-in `browser` tool), reusing the same host allowlist. If no browser is available, it degrades gracefully and returns whatever HTML→text content it could extract.
+For JS-heavy sites where HTML→text extraction yields too little content, `web_fetch` can fall back to a headless browser (the built-in `browser` tool), reusing the same host allowlist. This fallback is **off by default** (`tools.web_fetch.fallback_to_browser: false`); enable it only alongside `tools.browser.enabled`. When enabled and the plain fetch returns fewer than `fallback_min_text_length` chars, the browser navigates and extracts rendered text. Every failure path returns a distinct, honest error — a nil/unavailable browser pool, a browser fetch failure, or an empty rendered result — so an empty page is never silently returned as a successful fetch. Integration tests for the live browser path live behind the `integration` build tag (`go test -tags integration ./internal/agent/ -run TestFetchWithBrowser_Integration`), skipped cleanly where no Playwright server is available.
 
 ---
 
@@ -248,7 +250,7 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 | **Smart tool selection** | Token-budget-aware filtering, role+skill scoping |
 | **Context compression** | Tiered truncation keeping system prompt + pinned messages |
 | **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
-| **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps |
+| **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps. Optional headless-browser fallback for JS-heavy sites (`fallback_to_browser`, off by default; requires `tools.browser.enabled`) |
 | **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
 | **Skill install** | From parent dashboard Skills tab or CLI; HoneyBadger-scanned at install time |
 | **llama.cpp sidecar** | Spawns llama-server, GGUF model catalog, TurboQuant support |

@@ -567,6 +567,12 @@ func (c *Config) Validate() error {
 	if c.Tools.Browser.SnapshotMaxChars < 0 {
 		return fmt.Errorf("tools.browser.snapshot_max_chars must be >= 0 (got %d)", c.Tools.Browser.SnapshotMaxChars)
 	}
+	// fallback_to_browser is opt-in (defaults off) and requires a browser pool
+	// to render JS-heavy pages. Fail fast at startup rather than silently
+	// degrading every fetch to the thin HTTP text.
+	if c.Tools.WebFetch.FallbackToBrowser && !c.Tools.Browser.Enabled {
+		return fmt.Errorf("tools.web_fetch.fallback_to_browser requires tools.browser.enabled=true (a Playwright browser endpoint is needed to render JS-heavy sites)")
+	}
 	// Validate sandbox root if set.
 	if c.Tools.SandboxRoot != "" {
 		// Make absolute if not already.
