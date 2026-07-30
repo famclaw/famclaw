@@ -68,7 +68,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 
 		for _, u := range updates {
 			offset = u.UpdateID + 1
-			if u.Message == nil || u.Message.Text == "" {
+			if shouldSkipUpdate(u.Message) {
 				continue
 			}
 
@@ -227,6 +227,18 @@ type tgMessage struct {
 	From  tgUser    `json:"from"`
 	Text  string    `json:"text"`
 	Photo []tgPhoto `json:"photo,omitempty"`
+}
+
+// shouldSkipUpdate reports whether a Telegram message should be skipped by
+// the polling loop. Messages with neither text nor a photo carry no content
+// the agent can act on and are skipped. Messages that carry a photo but no
+// caption text are kept so the agent can build multimodal ContentParts from
+// the attachment alone. A nil message is always skipped.
+func shouldSkipUpdate(msg *tgMessage) bool {
+	if msg == nil {
+		return true
+	}
+	return msg.Text == "" && len(msg.Photo) == 0
 }
 
 type tgChat struct {

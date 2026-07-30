@@ -228,3 +228,44 @@ func TestSendMessageNetworkErrorRedaction(t *testing.T) {
 		t.Errorf("expected bot<REDACTED> in send error, got: %s", got)
 	}
 }
+
+// TestShouldSkipUpdate verifies that the polling loop's skip condition
+// correctly distinguishes between messages the agent can act on (text or
+// photo) and empty messages that carry no content.
+func TestShouldSkipUpdate(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  *tgMessage
+		skip bool
+	}{
+		{
+			name: "nil message is skipped",
+			msg:  nil,
+			skip: true,
+		},
+		{
+			name: "text-only message is kept",
+			msg:  &tgMessage{Text: "hello"},
+			skip: false,
+		},
+		{
+			name: "photo with empty text is kept",
+			msg:  &tgMessage{Photo: []tgPhoto{{FileID: "abc"}}},
+			skip: false,
+		},
+		{
+			name: "message with neither text nor photo is skipped",
+			msg:  &tgMessage{},
+			skip: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldSkipUpdate(tt.msg)
+			if got != tt.skip {
+				t.Errorf("shouldSkipUpdate() = %v, want %v", got, tt.skip)
+			}
+		})
+	}
+}
