@@ -534,7 +534,8 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 				return "", fmt.Errorf("user memory not configured")
 			}
 			category, _ := args["category"].(string)
-			return usermemory.HandleRecall(ctx, a.userMemory, a.user.Name, category)
+			query, _ := args["query"].(string)
+			return usermemory.HandleRecall(ctx, a.userMemory, a.user.Name, category, query)
 		case "builtin__forget_user_memory":
 			if a.userMemory == nil {
 				return "", fmt.Errorf("user memory not configured")

@@ -392,3 +392,204 @@ func TestStore_UpsertEnforcesPerUserCap(t *testing.T) {
 		}
 	}
 }
+
+func TestStore_SearchMemories(t *testing.T) {
+	dbPath := "/tmp/usermemory_search_test_" + time.Now().Format("20060102150405") + ".db"
+	defer os.Remove(dbPath)
+
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	s := NewStore(db)
+	ctx := context.Background()
+
+	// Seed memories for two distinct users.
+	aliceMemories := []*Memory{
+		{UserName: "alice", Category: "preferences", Label: "coffee", Value: "black, no sugar"},
+		{UserName: "alice", Category: "preferences", Label: "tea", Value: "green tea"},
+		{UserName: "alice", Category: "projects", Label: "website", Value: "building a personal site"},
+		{UserName: "alice", Category: "math", Label: "discount", Value: "50% off"},
+	}
+	bobMemories := []*Memory{
+		{UserName: "bob", Category: "preferences", Label: "coffee", Value: "with milk"},
+	}
+	for _, m := range append(aliceMemories, bobMemories...) {
+		if err := s.UpsertMemory(ctx, m); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	cases := []struct {
+		name     string
+		userName string
+		category string
+		query    string
+		wantLen  int
+		wantVals []string
+	}{
+		{
+			name:     "match on label",
+			userName: "alice",
+			query:    "coffee",
+			wantLen:  1,
+			wantVals: []string{"coffee"},
+		},
+		{
+			name:     "match on value",
+			userName: "alice",
+			query:    "green",
+			wantLen:  1,
+			wantVals: []string{"tea"},
+		},
+		{
+			name:     "match on category",
+			userName: "alice",
+			query:    "preferences",
+			wantLen:  2,
+			wantVals: []string{"coffee", "tea"},
+		},
+		{
+			name:     "case-insensitive label",
+			userName: "alice",
+			query:    "Coffee",
+			wantLen:  1,
+			wantVals: []string{"coffee"},
+		},
+		{
+			name:     "case-insensitive value",
+			userName: "alice",
+			query:    "GREEN",
+			wantLen:  1,
+			wantVals: []string{"tea"},
+		},
+		{
+			name:     "case-insensitive category",
+			userName: "alice",
+			query:    "PROJECTS",
+			wantLen:  1,
+			wantVals: []string{"website"},
+		},
+		{
+			name:     "combined category and query",
+			userName: "alice",
+			category: "preferences",
+			query:    "coffee",
+			wantLen:  1,
+			wantVals: []string{"coffee"},
+		},
+		{
+			name:     "combined category and query no match",
+			userName: "alice",
+			category: "projects",
+			query:    "coffee",
+			wantLen:  0,
+		},
+		{
+			name:     "empty query behaves like ListMemories",
+			userName: "alice",
+			query:    "",
+			wantLen:  4,
+			wantVals: []string{"coffee", "tea", "website", "discount"},
+		},
+		{
+			name:     "empty query with category",
+			userName: "alice",
+			category: "preferences",
+			query:    "",
+			wantLen:  2,
+			wantVals: []string{"coffee", "tea"},
+		},
+		{
+			name:     "literal percent in query matches",
+			userName: "alice",
+			query:    "50%",
+			wantLen:  1,
+			wantVals: []string{"discount"},
+		},
+		{
+			name:     "percent treated literally not as wildcard",
+			userName: "alice",
+			query:    "%",
+			wantLen:  1,
+			wantVals: []string{"discount"},
+		},
+		{
+			name:     "underscore treated literally",
+			userName: "alice",
+			query:    "web_site",
+			wantLen:  0,
+		},
+		{
+			name:     "backslash treated literally",
+			userName: "alice",
+			query:    "50\\%",
+			wantLen:  0,
+		},
+		{
+			name:     "user isolation alice cannot see bobs milk",
+			userName: "alice",
+			query:    "milk",
+			wantLen:  0,
+		},
+		{
+			name:     "user isolation bob sees his own milk",
+			userName: "bob",
+			query:    "milk",
+			wantLen:  1,
+			wantVals: []string{"coffee"},
+		},
+		{
+			name:     "user isolation bob cannot see alices tea",
+			userName: "bob",
+			query:    "tea",
+			wantLen:  0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.SearchMemories(ctx, tc.userName, tc.category, tc.query)
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+			if len(got) != tc.wantLen {
+				t.Errorf("expected %d results, got %d", tc.wantLen, len(got))
+			}
+			for _, want := range tc.wantVals {
+				found := false
+				for _, m := range got {
+					if m.Label == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected label %q in results, not found", want)
+				}
+			}
+		})
+	}
+
+	// Verify empty query is byte-identical to ListMemories.
+	listGot, err := s.ListMemories(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	searchGot, err := s.SearchMemories(ctx, "alice", "", "")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(listGot) != len(searchGot) {
+		t.Fatalf("ListMemories and SearchMemories(empty query) differ in count: %d vs %d",
+			len(listGot), len(searchGot))
+	}
+	for i := range listGot {
+		if listGot[i] != searchGot[i] {
+			t.Errorf("ListMemories and SearchMemories(empty query) differ at index %d: %+v vs %+v",
+				i, listGot[i], searchGot[i])
+		}
+	}
+}

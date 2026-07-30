@@ -40,11 +40,12 @@ func RememberDefinition() agentcore.Tool {
 func RecallDefinition() agentcore.Tool {
 	return agentcore.Tool{
 		Name:        toolNameRecall,
-		Description: "Recall memories for the current user. Optionally filter by category. Returns all memories if category omitted.",
+		Description: "Recall memories for the current user. Optionally filter by category, or search by substring across label, value and category. Returns all memories if both are omitted.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"category": map[string]any{"type": "string", "description": "Optional category to filter by (e.g. 'preferences')."},
+				"query":    map[string]any{"type": "string", "description": "Optional substring to search across label, value and category - use when the user asks about a topic rather than a category."},
 			},
 		},
 		Source: "builtin",
@@ -119,12 +120,18 @@ func HandleRemember(ctx context.Context, store *Store, userName, category, label
 }
 
 // HandleRecall dispatches the recall_user_memory tool.
-func HandleRecall(ctx context.Context, store *Store, userName, category string) (string, error) {
-	memories, err := store.ListMemories(ctx, userName, category)
+func HandleRecall(ctx context.Context, store *Store, userName, category, query string) (string, error) {
+	memories, err := store.SearchMemories(ctx, userName, category, query)
 	if err != nil {
 		return "", fmt.Errorf("recall memories: %w", err)
 	}
 	if len(memories) == 0 {
+		if query != "" {
+			if category != "" {
+				return fmt.Sprintf("No memories in category %q matching %q.", category, query), nil
+			}
+			return fmt.Sprintf("No memories matching %q.", query), nil
+		}
 		if category != "" {
 			return fmt.Sprintf("No memories in category %q.", category), nil
 		}
