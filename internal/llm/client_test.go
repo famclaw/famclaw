@@ -702,6 +702,131 @@ func TestToolCallArguments_TruncatedReturnsSentinel(t *testing.T) {
 	}
 }
 
+func TestToolCallArguments_MarshalJSON_RoundTrip(t *testing.T) {
+	// This test marshals a ToolCall BY VALUE (not a pointer) to catch
+	// the pointer-receiver trap: encoding/json will not call a
+	// pointer-receiver MarshalJSON on a non-addressable value, so
+	// arguments would silently serialize as a JSON object instead of a
+	// string - exactly the HTTP 400 bug (fc-websearch-400-s7).
+	tests := []struct {
+		name string
+		args ToolCallArguments
+	}{
+		{"populated multiple keys", ToolCallArguments{"query": "weather", "max_results": 8}},
+		{"single key", ToolCallArguments{"location": "Tokyo"}},
+		{"nested value", ToolCallArguments{"filter": map[string]any{"region": "us-east-1"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// ToolCall by VALUE - not &ToolCall{}
+			tc := ToolCall{
+				ID:   "call_1",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "web_search",
+					Arguments: tt.args,
+				},
+			}
+			data, err := json.Marshal(tc)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			// arguments must be a JSON string (quoted), not an object.
+			// The substring proves the value is a string whose content
+			// starts with {.
+			wantArgStr := `"arguments":"{`
+			if !contains(string(data), wantArgStr) {
+				t.Errorf("arguments should be a JSON string, got: %s", data)
+			}
+			// Round-trip: unmarshal back and verify the map is preserved.
+			// Compare via JSON because json.Unmarshal parses numbers as
+			// float64 while the original may use int, so reflect.DeepEqual
+			// would disagree on identical values.
+			var got ToolCall
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			gotMap := map[string]any(got.Function.Arguments)
+			wantMap := map[string]any(tt.args)
+			gotJSON, _ := json.Marshal(gotMap)
+			wantJSON, _ := json.Marshal(wantMap)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("round-trip mismatch: got %s, want %s", gotJSON, wantJSON)
+			}
+		})
+	}
+}
+
+func TestToolCallArguments_MarshalJSON_EmptyAndNil(t *testing.T) {
+	// Both nil and empty maps must emit "{}" (the JSON string form of
+	// an empty object), never null, never "". A model that receives
+	// null arguments can break. Tested as a bare value and as a field
+	// inside a ToolCall (by value) to ensure the value receiver is
+	// invoked in both contexts.
+	const want = `"{}"`
+
+	// Direct marshal of the bare type.
+	t.Run("bare/nil", func(t *testing.T) {
+		data, err := json.Marshal(ToolCallArguments(nil))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if string(data) != want {
+			t.Errorf("got %q, want %q", string(data), want)
+		}
+	})
+	t.Run("bare/empty", func(t *testing.T) {
+		data, err := json.Marshal(ToolCallArguments{})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if string(data) != want {
+			t.Errorf("got %q, want %q", string(data), want)
+		}
+	})
+
+	// Inside a ToolCall struct, by value (not a pointer).
+	tcCases := []struct {
+		name string
+		tc   ToolCall
+	}{
+		{
+			name: "nil arguments in ToolCall",
+			tc: ToolCall{
+				ID:   "call_1",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "web_search",
+					Arguments: ToolCallArguments(nil),
+				},
+			},
+		},
+		{
+			name: "empty arguments in ToolCall",
+			tc: ToolCall{
+				ID:   "call_1",
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      "web_search",
+					Arguments: ToolCallArguments{},
+				},
+			},
+		},
+	}
+	for _, c := range tcCases {
+		t.Run("struct/"+c.name, func(t *testing.T) {
+			data, err := json.Marshal(c.tc)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			wantArg := `"arguments":"{}"`
+			if !strings.Contains(string(data), wantArg) {
+				t.Errorf("expected arguments %q in output; got: %s", wantArg, string(data))
+			}
+		})
+	}
+}
+
 func TestMergeReasoningFields(t *testing.T) {
 	// Several local models (Gemma-4-26b, qwen3.6-27b via LiteLLM/Ollama,
 	// qwen3, nemotron, gpt-oss) ship the final answer in a reasoning field

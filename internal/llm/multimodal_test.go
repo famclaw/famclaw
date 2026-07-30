@@ -170,6 +170,9 @@ func TestMessage_MarshalJSON_WithToolCalls(t *testing.T) {
 	require.Equal(t, "function", firstCall["type"])
 	function := firstCall["function"].(map[string]any)
 	require.Equal(t, "image_description", function["name"])
-	arguments := function["arguments"].(map[string]any)
+	argumentsStr, ok := function["arguments"].(string)
+	require.True(t, ok, "arguments should be a JSON string per OpenAI spec")
+	var arguments map[string]any
+	require.NoError(t, json.Unmarshal([]byte(argumentsStr), &arguments))
 	require.Equal(t, "A cute cat sitting on a windowsill", arguments["description"])
 }
