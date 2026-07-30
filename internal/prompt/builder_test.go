@@ -381,14 +381,32 @@ func TestBehavioralRules_Exported(t *testing.T) {
 	// Grounding: the deflection fix must instruct the model to ATTEMPT its
 	// search/fetch tools before giving up, and must NOT retain the old
 	// "assume a tool is unavailable" phrasing that let the model skip the
-	// tool call entirely (see fc-deflect-s5 report).
-	for _, want := range []string{"ALWAYS try your search or fetch tools first", "don't have current data"} {
+	// tool call entirely (see fc-deflect-s5 report). Use new-text-only markers
+	// so the assertion fails if the fix is ever reverted.
+	for _, want := range []string{"ALWAYS try your search or fetch tools first", "Only if you have actually tried"} {
 		if !strings.Contains(rules, want) {
 			t.Errorf("exported BehavioralRules() missing grounding guidance %q", want)
 		}
 	}
 	if strings.Contains(rules, "no tool is available or no result came back") {
 		t.Errorf("exported BehavioralRules() still contains retired deflection phrasing")
+	}
+
+	// Strongest form: the retired phrasing must be absent from the fully
+	// assembled prompt too. behavioralRules() is only injected when tools
+	// are present (capabilitiesComponent), so build a prompt with a tool.
+	assembled := Build(BuildContext{
+		User:         &config.UserConfig{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+		Gateway:      "telegram",
+		BuiltinTools: []string{"web_fetch"},
+	})
+	if strings.Contains(assembled, "no tool is available or no result came back") {
+		t.Errorf("built prompt still contains retired deflection phrasing")
+	}
+	for _, want := range []string{"ALWAYS try your search or fetch tools first", "Only if you have actually tried"} {
+		if !strings.Contains(assembled, want) {
+			t.Errorf("built prompt missing grounding guidance %q", want)
+		}
 	}
 }
 
