@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/store"
@@ -130,6 +131,60 @@ func (s *Store) ListMemories(ctx context.Context, userName, category string) ([]
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// SearchMemories returns memories for a user matching a case-insensitive
+// keyword query against label, value, and category, optionally narrowed by
+// category. When query is empty, behaves like ListMemories.
+// Ordered by category, label.
+func (s *Store) SearchMemories(ctx context.Context, userName, category, query string) ([]Memory, error) {
+	q := `SELECT id, user_name, category, label, value, created_at, updated_at
+	      FROM user_memories WHERE user_name = ?`
+	var args []any = []any{userName}
+	if category != "" {
+		q += ` AND category = ?`
+		args = append(args, category)
+	}
+	if query != "" {
+		pattern := "%" + escapeLike(query) + "%"
+		q += ` AND (LOWER(label) LIKE LOWER(?) ESCAPE '\'`
+		q += ` OR LOWER(value) LIKE LOWER(?) ESCAPE '\'`
+		q += ` OR LOWER(category) LIKE LOWER(?) ESCAPE '\')`
+		args = append(args, pattern, pattern, pattern)
+	}
+	q += ` ORDER BY category, label`
+
+	rows, err := s.db.SQL().QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search memories: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Memory
+	for rows.Next() {
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan memory: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// escapeLike escapes LIKE wildcard characters in s so the result can be used
+// as a literal substring within a LIKE pattern that uses backslash as the
+// escape character. % and _ are LIKE metacharacters; \ is the escape character.
+func escapeLike(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\\', '%', '_':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // DeleteMemory removes one memory row by id for the given user.
