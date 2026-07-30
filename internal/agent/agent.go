@@ -1617,8 +1617,43 @@ func parseStringList(v any) []string {
 	return out
 }
 
+// buildPromptSnapshots builds the always-inject family-state snapshot and the
+// per-user memory snapshot for the current user. It is the single construction
+// point shared by both prompt paths (operator-override and structured builder)
+// so the two never diverge on which stores are consulted.
+//
+// A nil store yields a nil snapshot — a no-op at render time. Snapshot errors
+// are logged and downgraded to nil so a database hiccup never breaks the turn.
+func (a *Agent) buildPromptSnapshots(ctx context.Context) (*familystate.Snapshot, *usermemory.Snapshot) {
+	var fsSnap *familystate.Snapshot
+	if a.familyState != nil {
+		snap, err := a.familyState.AlwaysInjectedSnapshot(ctx, knownSubjects(a.cfg))
+		if err != nil {
+			log.Printf("[agent][%s] family-state snapshot error (omitting safety block): %v", a.user.Name, err)
+		} else {
+			fsSnap = snap
+		}
+	}
+
+	var umSnap *usermemory.Snapshot
+	if a.userMemory != nil {
+		snap, err := a.userMemory.AlwaysInjectedSnapshot(ctx, a.user.Name)
+		if err != nil {
+			log.Printf("[agent][%s] user-memory snapshot error (omitting memory block): %v", a.user.Name, err)
+		} else {
+			umSnap = snap
+		}
+	}
+
+	return fsSnap, umSnap
+}
+
 func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, currentMessage string) []llm.Message {
 	var msgs []llm.Message
+
+	// Build always-inject family-state and per-user memory snapshots once,
+	// shared by both prompt paths. See buildPromptSnapshots for nil/error handling.
+	fsSnap, umSnap := a.buildPromptSnapshots(ctx)
 
 	var systemPrompt string
 	if a.cfg.LLM.SystemPrompt != "" {
@@ -1662,6 +1697,15 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 					systemPrompt += "\n\n" + sp
 				}
 			}
+		}
+		// Append the always-injected family-state and per-user memory blocks.
+		// Render() returns "" for nil/empty snapshots, so these are no-ops when
+		// there is nothing to inject.
+		if rendered := fsSnap.Render(); rendered != "" {
+			systemPrompt += "\n\n" + rendered
+		}
+		if rendered := umSnap.Render(); rendered != "" {
+			systemPrompt += "\n\n" + rendered
 		}
 	} else {
 		// Default — use the structured PromptBuilder.
@@ -1726,6 +1770,8 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 			User:         a.user,
 			Skills:       skillNames,
 			BuiltinTools: builtinNames,
+			FamilyState:  fsSnap,
+			UserMemory:   umSnap,
 			// Gateway and HardBlocked left empty for now — wired by future PRs
 			// that thread gateway and policy info through Agent.
 		})
