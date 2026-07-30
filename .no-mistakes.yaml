@@ -1,0 +1,16 @@
+# Per-repo no-mistakes overrides.
+#
+# Pin the test and lint steps to deterministic commands. Without these the gate
+# delegates both steps to an agent, which improvises: on run
+# 01KYRFJA0X9GK6FGAXDA2HPM6F the agent-driven test step raised a finding claiming it
+# could not find a function the branch had deliberately deleted, and the ci step spent
+# 14+ minutes chasing a passing test while the real failure was elsewhere.
+#
+# Verified 2026-07-30 from a clean checkout:
+#   go test ./...  -> exit 0, ~30s
+#   go vet ./...   -> exit 0
+# golangci-lint is deliberately NOT used yet: it currently exits 1 with pre-existing
+# errcheck/unused findings, so it would fail every run until those are cleaned up.
+commands:
+  test: 'go test ./...'
+  lint: 'go vet ./...'
