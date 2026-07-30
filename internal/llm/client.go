@@ -166,6 +166,31 @@ func (a *ToolCallArguments) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON serializes arguments as a JSON-encoded string, per the
+// OpenAI tool-calling spec: function.arguments must be a string, not a
+// raw JSON object. Without this, the default map[string]any marshaling
+// produces a bare object, which strict backends (vllm, OpenAI, Azure)
+// reject with HTTP 400. This is the symmetric counterpart to
+// UnmarshalJSON above.
+//
+// The method is declared on a VALUE receiver (not *ToolCallArguments)
+// because the Arguments field is held by value in ToolCallFunction.
+// encoding/json will not invoke a pointer-receiver MarshalJSON on a
+// non-addressable value, which would silently emit a JSON object in
+// production. A nil or empty map emits "{}" (the JSON string form of
+// an empty object), never null or "", so a downstream model never
+// receives null arguments.
+func (a ToolCallArguments) MarshalJSON() ([]byte, error) {
+	if len(a) == 0 {
+		return []byte(`"{}"`), nil
+	}
+	inner, err := json.Marshal(map[string]any(a))
+	if err != nil {
+		return nil, fmt.Errorf("marshaling tool call arguments: %w", err)
+	}
+	return json.Marshal(string(inner))
+}
+
 // ToolDef describes a tool for the LLM to call (OpenAI function calling format).
 type ToolDef struct {
 	Type     string      `json:"type"` // "function"
