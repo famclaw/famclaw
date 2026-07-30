@@ -665,6 +665,9 @@ func main() {
 			// Text-only messages always use the normal per-user endpoint.
 			if len(msgCtx.Attachments) > 0 {
 				ep := cfg.VisionEndpointFor(user)
+				if textEP := cfg.LLMEndpointFor(user); ep.Model == textEP.Model {
+					log.Printf("[chatFn] WARNING: image attachment routed to model %q which may be text-only; set llm.vision_profile to a vision-capable model for image support", ep.Model)
+				}
 				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
 			} else {
 				ep := cfg.LLMEndpointFor(user)
