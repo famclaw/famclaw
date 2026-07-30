@@ -1272,7 +1272,7 @@ func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawUR
 	return &webfetch.Result{
 		URL:         rawURL,
 		StatusCode:  200,
-		ContentType: "text/html",
+		ContentType: "text/plain",
 		Bytes:       int64(len(text)),
 		Truncated:   false,
 		Text:        text,
