@@ -3,275 +3,67 @@
 All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## v0.8.0 — 2026-07-30
 
 ### Added
-- **Phase 3.3 family state.** Shared per-family memory (allergies, dietary
-  restrictions, important dates, pets, plus parent-extensible custom
-  categories). Safety-critical entries auto-injected into every system
-  prompt via a `<family_safety>` block; rest read on-demand by the model.
-  - New `internal/familystate/` package: store, snapshot, JSON proposal
-    envelope, sentinel errors. Built-in categories are immutable: the
-    `always_inject` flag on `allergies` / `dietary_restrictions` cannot
-    be flipped off via upsert.
-  - 6 new builtin tools: `get_family_state` (all roles), `set_family_fact`,
-    `delete_family_fact`, `add_family_category`, `delete_family_category`
-    (parent-only), `propose_family_fact` (all roles — parents auto-apply
-    via the synthetic `family_fact_proposal_auto_apply` OPA rule; kids
-    queue an approval row).
-  - OPA gates: 4 admin mutations + 1 synthetic auto-apply name in
-    `tool_policy.rego`; 14 new tests, 90/90 OPA total.
-  - Web dashboard: `/api/family-state/{facts,categories}` JSON API and
-    `family-state.html` static page (vanilla JS, no framework).
-  - Snapshot read failure renders an `UnavailableSnapshot()` notice so the
-    model knows it's operating without safety context (R3 council
-    locked-fail-stance).
-  - Subagents excluded from every family-state mutation: read tools
-    (`get_family_state`, `web_fetch`) still available; mutations and
-    `propose_family_fact` filtered out of subagent BuiltinDefs.
-  - `internal/store/db.go` migration adds `family_fact_categories` +
-    `family_facts` with an idempotent seed of the 4 built-ins.
-- Cookie-based web sessions (HttpOnly, SameSite=Strict, Secure-when-TLS, 7-day TTL)
-- `internal/credstore` package — AES-256-GCM credential vault keyed to machine ID via HKDF-SHA256
-- `POST /login`, `POST /logout`, `GET /session` auth endpoints
-- Login rate limiting: 5 attempts / 15 min / IP, then 1-min lockout
-- Machine-mismatch unlock page at `/unlock` with rate-limited PIN re-bind (`POST /api/setup/unlock`)
-- First-boot PIN endpoint `POST /api/setup/pin`
-- Hourly expired-session cleanup goroutine in `cmd/famclaw/main.go`
-- `internal/web/static/login.html` — minimal PIN login page
-- `internal/web/static/unlock.html` — machine-fingerprint-change unlock page
-- `docs/SECURITY.md` — auth + vault model, recovery guide, threat model
-- `internal/web/middleware` package — session cookie middleware
-- 7 built-in parent-only admin tools (`list_pending_approvals`, `approve_request`,
-  `deny_request`, `list_users`, `set_user_role`, `list_unknown_accounts`,
-  `link_account`) with OPA deny rules and `audit_log`/`user_role_overrides` DB tables
-- Optional Claude CLI backend (provider: claude_cli) for users running famclaw alongside Claude Code.
-  Now uses `--input-format stream-json` (full conversation history as NDJSON on stdin),
-  `--output-format stream-json` (streaming output), and `--system-prompt` for the
-  system message. Responses stream back in real time via `onToken` callbacks.
-- OPA output policy (`output_policy.rego`): LLM draft responses are now evaluated by OPA
-  before reaching the user. Hard-blocked categories (sexual_content, self_harm, hate_speech,
-  illegal_activity) are blocked for all users including parents. Soft-blocked content for
-  children is redacted inline via a `[redacted]` substitution rather than discarding the
-  entire response.
-- OPA skill-prompt policy (`skill_prompt_policy.rego`): skill bodies are checked for prompt
-  injection patterns (`ignore previous instructions`, `system:`, `you are now`, `[SYSTEM]`)
-  and length limits (> 2048 characters) before injection into the system prompt.
-- `policy.EvaluateOutput` and `policy.EvaluateSkillPrompt` methods on the Evaluator.
-- `skillbridge.LoadForPromptChecked`: policy-gated version of `LoadForPrompt`; blocked skills
-  are silently skipped and logged to stderr.
-- `agent.EvaluateAndApply` in `internal/agent/output_gate.go`: post-pipeline output gate.
-- **Unknown-account linking UI** on the parent dashboard. Shows strangers
-  who messaged the bot (recorded by PR #113) in a table and lets the parent
-  pick an existing user and link the gateway account in one click. Subscribes
-  to a new `unknown_account_added` SSE event so the table refreshes the
-  moment a new stranger appears. Closes journal finding #10.
-- **Schema golden file** at `internal/store/testdata/schema.sql` and a drift
-  test that fails any PR which accidentally changes the SQLite schema.
-  Regenerate via `UPDATE_SCHEMA_GOLDEN=1 go test ./internal/store/`.
-- **Seed fixture** at `internal/store/testdata/seed_basic.sql` — minimal fake
-  data (placeholder names, fake tokens, fake external IDs) for integration
-  tests. No real PII.
-- **Telegram integration tests** behind `//go:build integration`: send-chunking
-  through a mock API and unknown-account auto-link end-to-end. Adds an
-  endpoint-injection seam (`telegram.NewWithEndpoint`) plus a `SendChunked`
-  test helper.
-- **Discord integration test** behind `//go:build integration`: send-chunking
-  via REST stub (overrides `discordgo.EndpointChannelMessages` to httptest).
-  Adds a `discord.SendChunked` test helper.
-- **PromptBuilder snapshot tests** locking down all four persona outputs.
-  Regenerate via `UPDATE_PROMPT_SNAPSHOTS=1 go test ./internal/prompt/`.
-- **Race-detector CI job** running `go test -race` on the gateway router and
-  agent packages, wired into the `CI Pass` required gate. CGO_ENABLED=1 is
-  scoped to this job only — production binaries remain CGO-free.
-- **Ollama behavioral tier** behind `//go:build ollama_behavioral`. Probes
-  the assembled system prompt against the local Qwen3-14B for capability
-  declarations, blocked-topic refusal, family-context awareness, and basic
-  arithmetic correctness. 13 probe×persona pairs total. Run via
-  `make behavioral`.
-- **Sandbox / process confinement**: Landlock+seccomp sandbox launcher for stdio MCP servers and path-confinement of built-in file_* tools to `tools.sandbox.root`. Fail-closed on missing kernel support.
-- **Built-in `web_fetch` tool.** When `tools.web_fetch.enabled: true` in
-  config, the LLM gets a `web_fetch` tool that retrieves a URL and
-  returns extracted text (HTML→text via `golang.org/x/net/html`, plain
-  text and JSON passed through). Defaults: 256 KB cap, 15 s timeout, no
-  JS rendering, per-host allowlist with subdomain matching
-  (`url_allowlist` is required when enabled — empty list denies all
-  fetches as an SSRF guard). Two independent gates:
-  - **Registration** is controlled by `tools.web_fetch.allowed_roles`
-    (default `[parent]`). Children's agents do not even see the tool.
-  - **Per-user usage** of an already-registered tool is then evaluated
-    by OPA `tool_policy` rules. The shipped policy denies `web_fetch`
-    for `under_8` and `age_8_12`; `age_13_17` and `parent` are allowed
-    by the policy *if* the role gate registered the tool for them.
-  Closes journal critical finding #2 (partial — web search follows in a
-  separate PR).
-- **OPA tool-policy enforcement at the tool loop.** New
-  `Evaluator.EvaluateToolCall` queries `data.family.tool_policy.allow`
-  and the in-pipeline tool loop now gates every dispatch through it.
-  Fails closed on evaluator errors. Tool names are stripped of their
-  `builtin__` / `mcp__<server>__` prefix before evaluation so Rego rules
-  match on the bare name.
-- **PromptBuilder describes builtin tools.** When `web_fetch` or
-  `spawn_agent` is registered for a user, the system prompt's
-  capabilities section names them with concrete usage hints — fixes the
-  "I can't fetch URLs" failure mode for tool-equipped agents.
-- **Install and remove skills from the web dashboard.** Two new PIN-gated
-  endpoints: `POST /api/skills/install` (body `{"name_or_path": "..."}`)
-  wraps the existing `skillbridge.Registry.Install`, and
-  `POST /api/skills/remove` (body `{"name": "..."}`) mirrors it. The
-  dashboard's Skills card gets a one-line install form and a 🗑️ button
-  per installed skill. `/api/skills` now reads from the on-disk registry
-  (the previous DB-backed list was always empty because nothing wrote to
-  it). Closes journal critical finding #6.
-- **Unknown-accounts backend (issue #111).** New `unknown_accounts` table
-  records every unlinked Discord/Telegram account that messages FamClaw,
-  with attempts counter and last-seen timestamp. Three new PIN-gated JSON
-  endpoints expose it: `GET /api/unknown-accounts`,
-  `POST /api/unknown-accounts/link`, `POST /api/unknown-accounts/dismiss`.
-  The router auto-clears rows on every link path (display-name auto-link,
-  numbered-list reply, web link). Dashboard UI lands in a follow-up PR.
-- **Gateway self-registration.** New users messaging FamClaw on Telegram or
-  Discord are auto-linked when their platform display name matches an
-  unlinked FamClaw user. When multiple unlinked users exist and no name
-  match, a numbered list lets the user pick. Unknown accounts with no
-  unlinked users are rejected — account creation is parents-only.
-- **Bot setup wizard with token testing.** Step-by-step instructions for
-  creating Telegram and Discord bots. Tokens verified against the platform
-  API before saving. Discord OAuth2 invite URL auto-generated with the
-  minimum required permissions (Send Messages + View Channel + Read
-  Message History = 68608).
-- `DisplayName` field on `gateway.Message`, populated from Telegram
-  `FirstName`/`LastName` and Discord `GlobalName`/`Username`.
-- `internal/gateway/chunk.go` — `ChunkMessage(text, maxLen)` utility for
-  platform character limits, with table-driven tests.
-- `UnlinkedUsers` method on identity store, `HasGatewayAccount` helper on
-  the db store.
-- API endpoints `/api/setup/test-telegram` and `/api/setup/test-discord`.
-- `internal/web/settings_test.go` covering the four PIN scenarios that
-  #109 broke (true first boot, re-run with correct PIN, wrong PIN, no PIN).
-- **Role / age override from `user_role_overrides` table in gateway and web chat.**
-  When a user has a role override row, the gateway router (`internal/gateway/router.go`)
-  and web chat handler (`internal/web/server.go`) resolve the override before
-  policy evaluation or OPA input checks. The override supersedes the user's
-  age group for policy decisions while the stored age group is unchanged.
-- **`AllApprovalsForOPA` on the DB store** returns every approval (pending
-  and decided) as JSONL so OPA policy evaluation has the full approval
-  history available as input context.
-- **Webhook token redaction in notification error logs.** When a notification
-  send fails, `internal/notify/redact.go` scrubs Slack, Discord, and Telegram
-  bot tokens from error messages before logging, preventing credential
-  leakage in log files.
+- **Image attachments forwarded to the model.** Photos sent on Telegram and
+  Discord are now passed through to the LLM as `image_url` content parts
+  (multimodal), instead of being dropped with an "I don't see any image
+  attached" reply. Messages carrying attachments route to a configurable
+  `llm.vision_profile` LLM endpoint; text-only messages stay on the normal
+  per-user endpoint. The Claude CLI backend is vision-capable by default.
+- **`/api/health` reports boot-skipped MCP servers.** The health endpoint now
+  includes an `mcp_skipped` array listing MCP servers that failed to start at
+  boot, so operators can see which servers are unavailable without inspecting
+  logs.
+- **Searchable user memories.** Recall from the `remember` tool can now be
+  filtered by keyword: case-insensitive substring matching across the memory's
+  label, value, and category, scoped per-user. Special LIKE characters
+  (`%`, `_`, `\`) are matched literally.
+- **web_fetch browser fallback for JS-heavy pages.** When HTML-to-text
+  extraction yields too little content, `web_fetch` can fall back to a
+  Playwright browser render of the page. Opt-in via
+  `tools.web_fetch.fallback_to_browser` (off by default); requires
+  `tools.browser.enabled`. Each failure mode — pool unavailable, browser
+  error, empty render — returns a distinct error rather than a silent empty
+  result.
 
 ### Changed
-- Parent PIN moved from plaintext `config.yaml` to encrypted `vault_secrets` SQLite row
-  (SHA-256 of PIN, AES-256-GCM-encrypted with machine-bound HKDF key)
-- Frontend admin requests now use session cookie; `X-Parent-PIN` header removed
-- `/api/users` endpoint is now session-authenticated (was previously public)
-- `tool_policy.rego` migrated from default-ALLOW to default-DENY. All tools require an
-  explicit allow rule; parents are allowed all tools; children are allowed all tools not on
-  the block list (file_*, spawn_agent, web_search/web_fetch for younger age groups).
-- `EvaluateToolCall` Go-level fallback changed from `allow=true` to `allow=false` (fail-closed).
-- `NewStagePolicyOutput` now calls OPA (`EvaluateOutput`) instead of a hardcoded keyword grep.
-- **System prompt rebuilt as a 12-component PromptBuilder** (`internal/prompt`).
-  The default system prompt was a single sentence (`"You are FamClaw, a
-  helpful, friendly, and safe family AI assistant."`), which caused real
-  failures in the field — the deployed model told a parent *"I can't
-  execute code"* despite having tools. The new builder assembles identity,
-  user, family, age, capabilities, skills, policy, approvals, gateway,
-  output, memory (placeholder), and OAuth-prefix components. Each is
-  individually conditional. Token budget regression tests guard the size
-  (parent ≤ 900 tokens, child ≤ 650). Operator-supplied
-  `cfg.llm.system_prompt` keeps legacy behavior verbatim — no breaking
-  change for customized deployments.
-- **PromptBuilder policy component** now explicitly forbids "dangerous",
-  "illegal", "safety", and "law" framings on hard-blocked topics and
-  mandates family-voice phrasing — surfaced by the Ollama behavioral
-  tier where the small model defaulted to legal/safety voice for
-  age_13_17 users.
-- `prompt.BuildContext` gains a `BuiltinTools []string` field; `Agent`
-  threads the bare names of builtins it has registered for the current
-  user (filtered by role) into `prompt.Build`.
-- The agent's builtin-handler dispatch is no longer gated on the
-  presence of the subagent scheduler — it now activates whenever any
-  builtin tool is registered. `handleSpawnAgent` returns a clear error
-  if invoked without a scheduler.
-- **Agent constructor takes `AgentDeps` struct** instead of 7 individual
-  setter methods. Forgotten dependencies now surface at compile time
-  instead of as a runtime nil-pointer dereference.
-- `MaxToolCallIterations` constant moved to the top of `internal/mcp/pool.go`
-  with a godoc comment.
-- `integration_test.go` moved from the repo root into `e2e/` as
-  `package e2e` (kept `//go:build integration` tag — CI command unchanged).
-- Onboarding flow auto-matches platform profiles or shows a numbered list.
-  Strangers no longer auto-create users.
+- **Family facts and per-user memories are now injected into the system
+  prompt.** The `prompt.BuildContext` `FamilyState` and `UserMemory` fields
+  existed but were never populated, so safety-critical family facts (allergies,
+  dietary restrictions) were not auto-injected via the `<family_safety>` block.
+  Both are now built every turn and passed into both the default and the
+  operator-override (`cfg.LLM.SystemPrompt`) prompt paths. A snapshot read
+  failure is logged and downgraded to an empty injection so a database hiccup
+  never breaks the turn.
+- **Tool definitions use bare names.** Tool definitions sent to the LLM now use
+  the bare name (`web_search`) advertised in the capabilities prompt, instead
+  of the namespaced `builtin__` form that strict backends (e.g. vLLM)
+  rejected. MCP tool names (`mcp__<server>__<tool>`) are unchanged.
+- **"No action was completed" note is language-agnostic.** The note appended
+  when every tool call in a turn failed now fires on the tool loop's exit
+  reason — the model produced a final answer with no further tool calls — rather
+  than a curated list of success phrases, so it works in any language and does
+  not misfire when the iteration cap is exhausted mid-tool-calls.
+- **Grounding rule directs the model to try tools first.** The "current/live
+  information" behavioral rule was reworded so the model always attempts its
+  search/fetch tools before reporting it lacks current data, reserving that
+  fallback for genuinely toolless cases.
 
 ### Fixed
-- **Skill install rejects unsafe names (path traversal).** `skillbridge.Registry.Install`
-  now validates `skill.Name` against a strict allowlist (`^[a-zA-Z0-9_-]{1,64}$`)
-  via `ValidateName` before using it as a path component, rejecting path
-  separators, `..`, and control characters in `SKILL.md` frontmatter. A
-  defense-in-depth `ValidateInstalledDir` check confirms the resolved
-  destination stays inside the skills root.
-- **Parent-triggered approvals no longer send a notification.** When a
-  parent's own message resolves to `request_approval`, `createApproval`
-  now skips the notify (kid-only policy) and logs the skip instead of
-  pinging the parent about their own request. Child-triggered approvals
-  still notify as before.
-- **"Sign in as parent" link exposed on the landing page.** The SPA's
-  "Who's asking?" user-selection screen previously dead-ended for
-  unauthenticated parents whose avatar was not visible — there was no
-  affordance to reach `/login`. Adds a subtle link beneath the user
-  grid so parents can authenticate and reach the admin dashboard where
-  the gateway account-linking UI lives. Fixes #111.
-- **Wizard "Finish setup" no longer fails with 403 on re-run.** Wizard now
-  sends the parent PIN from the family-member step. PIN-mismatch shows a
-  clear error ("Incorrect parent PIN. If re-running setup, use the PIN
-  from your first setup.") rather than the generic failure toast. Fixes #109.
-- **Discord messages over 2000 chars no longer silently dropped** — split
-  into multiple messages at newline boundaries.
-- **Telegram messages over 4096 bytes no longer silently dropped.** Telegram
-  `sendMessage` now uses a JSON POST body instead of URL query parameters
-  (the old form hit URL length limits well before the 4096-byte cap).
-- Telegram `tgUser` parser now captures `FirstName`/`LastName`/`Username`
-  (previously only `ID` was decoded).
-- Empty / whitespace-only LLM replies are no longer sent to platforms
-  (both rejected them with 4xx, leaving the user with silent failure).
-- Database write errors (`SaveMessage`) are now logged instead of silently
-  swallowed. Disk-full and schema corruption surface in the logs instead
-  of being lost.
-- **Silent notification void warned at startup.** When
-  `seccheck.notify_on_quarantine=true` but no channel under
-  `notifications:` is enabled, startup now logs a `[notify] WARNING` that
-  parental approvals would fire into the void, instead of misleadingly
-  logging `Notifications: configured`. The startup line now reports the
-  enabled channel count (`Notifications: configured (N channel(s))`).
-  Closes #167.
-- **Model-response tag sanitizer**: Stripped leaked `<thinking>`, `*`
+- **Tool-call arguments serialized as a JSON string.** Tool-call arguments are
+  now marshaled as a JSON string (per the OpenAI spec) instead of a JSON
+  object. The previous object encoding was rejected with HTTP 400 by strict
+  backends such as vLLM, which broke tool use entirely.
+- **Telegram captionless photos no longer dropped.** The polling loop
+  previously skipped any message with an empty `Text` field, dropping photos
+  sent without a caption. Photo-only messages are now forwarded to the agent
+  as image attachments.
 
-### Removed
-- `verifyParentPIN` and `verifyParentPINConstantTime` functions
-- JS `state.parentPIN` and PIN modal in the dashboard SPA
-- `X-Parent-PIN` header from all frontend requests
-- Hardcoded keyword slices `criticalPatterns`, `under8Patterns`, `age8to12Patterns` from
-  `internal/agentcore/stage_policy_output.go` — replaced by OPA output policy.
-- Dormant `internal/agentcore/stage_output_filter.go` — replaced by OPA-backed pipeline stage.
-- **Hardcoded keyword block** of `web_search` / `mcp__search__web` in
-  `internal/agentcore/stage_policy_tool.go` — superseded by the OPA
-  tool-policy decision wired into the tool loop.
-- **mDNS removed entirely.** `famclaw.local` didn't resolve reliably on
-  Windows or many home routers — use the device's IP address. Closes #110.
-  The `grandcat/zeroconf` dependency, `internal/mdns` package,
-  `scripts/install-termux.sh`, and the Android binary in GoReleaser have
-  all been dropped.
-- `Server.MDNSName` config field is retained for compat but marked
-  deprecated. Notification approval URLs still consume it — set it to your
-  device's IP or DNS hostname so the URLs work for recipients off the LAN.
-- `min(a, b int)` shim — Go 1.21+ provides a builtin `min`.
-- `outputBlockedPatterns` and `filterOutput` dead code in `internal/agent`
-  (production filtering lives in `internal/agentcore/stage_output_filter.go`,
-  covered by `TestStageOutputFilterChild`).
-- `Config.LLMClientFor` — duplicate of `LLMEndpointFor` with no callers.
-- `SecCheckConfig.{Sandbox, Timeout, OSVAPI}` legacy fields — never read.
+### Dependencies
+- Bumped `github.com/mark3labs/mcp-go` from 0.56.0 to 0.57.0.
+- Bumped `actions/checkout` from v7.0.0 to v7.0.1 (CI).
 
 ## v0.7.0 — 2026-07-23
 
