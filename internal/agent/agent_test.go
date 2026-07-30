@@ -23,6 +23,7 @@ import (
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
+	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
@@ -1337,7 +1338,7 @@ func TestBuildMessagesMultimodal(t *testing.T) {
 		},
 	}
 	a := &Agent{
-		cfg: cfg,
+		cfg:  cfg,
 		user: &cfg.Users[0],
 		msgContext: gateway.MsgContext{
 			Attachments: []gateway.Attachment{
@@ -1473,5 +1474,203 @@ func TestNewAgentPropagatesMsgContext(t *testing.T) {
 	userMsg := msgs[len(msgs)-1]
 	if len(userMsg.ContentParts) != 2 {
 		t.Fatalf("expected 2 content parts (text+image), got %d", len(userMsg.ContentParts))
+	}
+}
+
+// seedStores opens an in-memory DB with familystate and usermemory stores
+// ready for seeding. The migration auto-seeds 'allergies' and
+// 'dietary_restrictions' as always_inject=1. The caller owns db.Close().
+func seedStores(t *testing.T) (*store.DB, *familystate.Store, *usermemory.Store) {
+	t.Helper()
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	return db, familystate.NewStore(db), usermemory.NewStore(db)
+}
+
+func TestBuildMessages_InjectsFamilyStateAndUserMemory(t *testing.T) {
+	// Both stores populated with always_inject facts → injected into the
+	// system prompt. Verified on BOTH prompt paths (default builder + operator
+	// override), since the captain's deployment sets a custom system_prompt.
+	db, fs, um := seedStores(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	// 'allergies' is always_inject=1 from the migration seed.
+	for _, f := range []familystate.Fact{
+		{Category: "allergies", Subject: "dep", Label: "peanuts", Value: "severe", CreatedBy: "dep"},
+		{Category: "allergies", Subject: "family", Label: "shellfish", Value: "avoid", CreatedBy: "dep"},
+	} {
+		if err := fs.UpsertFact(ctx, &f); err != nil {
+			t.Fatalf("seed fact: %v", err)
+		}
+	}
+	if err := um.UpsertMemory(ctx, &usermemory.Memory{
+		UserName: "dep", Category: "preferences", Label: "color", Value: "blue",
+	}); err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "dep", DisplayName: "Dep", Role: "parent"},
+			{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "age_13_17"},
+		},
+	}
+	a := &Agent{cfg: cfg, familyState: fs, userMemory: um, user: &cfg.Users[0]}
+
+	wantContains := []string{
+		"<family_safety>", "Allergies:", "peanuts", "severe", "shellfish", "avoid",
+		"<user_memory>", "Preferences:", "blue",
+	}
+
+	// Default path (SystemPrompt empty → prompt.Build).
+	t.Run("default_path", func(t *testing.T) {
+		msgs := a.buildMessages(ctx, nil, "hi")
+		sys := msgs[0].Content
+		for _, want := range wantContains {
+			if !strings.Contains(sys, want) {
+				t.Errorf("default-path system prompt missing %q:\n%s", want, sys)
+			}
+		}
+	})
+
+	// Override path (custom system_prompt — the captain's deployment).
+	t.Run("override_path", func(t *testing.T) {
+		overrideCfg := &config.Config{
+			LLM: config.LLMConfig{SystemPrompt: "custom override"},
+			Users: []config.UserConfig{
+				{Name: "dep", DisplayName: "Dep", Role: "parent"},
+				{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "age_13_17"},
+			},
+		}
+		a2 := &Agent{cfg: overrideCfg, familyState: fs, userMemory: um, user: &overrideCfg.Users[0]}
+		msgs := a2.buildMessages(ctx, nil, "hi")
+		sys := msgs[0].Content
+		if !strings.HasPrefix(sys, "custom override") {
+			t.Errorf("override path should start with custom prompt, got: %q", sys)
+		}
+		for _, want := range wantContains {
+			if !strings.Contains(sys, want) {
+				t.Errorf("override-path system prompt missing %q:\n%s", want, sys)
+			}
+		}
+	})
+}
+
+func TestBuildMessages_NilStoresOmitsInjection(t *testing.T) {
+	// No familyState/userMemory → prompt is byte-identical to before the
+	// injection feature (Render() returns "" for nil snapshots).
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "dep", DisplayName: "Dep", Role: "parent"},
+		},
+	}
+	a := &Agent{cfg: cfg, user: &cfg.Users[0]}
+	msgs := a.buildMessages(context.Background(), nil, "hi")
+	sys := msgs[0].Content
+	for _, tag := range []string{"<family_safety>", "<user_memory>", "Allergies:", "Preferences:"} {
+		if strings.Contains(sys, tag) {
+			t.Errorf("nil stores: system prompt should not contain %q:\n%s", tag, sys)
+		}
+	}
+}
+
+func TestBuildMessages_EmptySnapshotsOmitted(t *testing.T) {
+	// Stores present but no always_inject facts or memories → nothing
+	// rendered, no stray headings.
+	db, fs, um := seedStores(t)
+	defer db.Close()
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "dep", DisplayName: "Dep", Role: "parent"},
+		},
+	}
+	a := &Agent{cfg: cfg, familyState: fs, userMemory: um, user: &cfg.Users[0]}
+	msgs := a.buildMessages(context.Background(), nil, "hi")
+	sys := msgs[0].Content
+	for _, tag := range []string{"<family_safety>", "<user_memory>", "Allergies:", "Preferences:"} {
+		if strings.Contains(sys, tag) {
+			t.Errorf("empty snapshots: system prompt should not contain %q:\n%s", tag, sys)
+		}
+	}
+}
+
+func TestBuildMessages_StoreErrorOmitsSection(t *testing.T) {
+	// A closed DB makes snapshot queries error. The turn must still succeed
+	// and the prompt must simply omit the sections.
+	db, fs, um := seedStores(t)
+
+	ctx := context.Background()
+	if err := fs.UpsertFact(ctx, &familystate.Fact{
+		Category: "allergies", Subject: "dep", Label: "peanuts", Value: "severe", CreatedBy: "dep",
+	}); err != nil {
+		t.Fatalf("seed fact: %v", err)
+	}
+	if err := um.UpsertMemory(ctx, &usermemory.Memory{
+		UserName: "dep", Category: "preferences", Label: "color", Value: "blue",
+	}); err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+	db.Close()
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "dep", DisplayName: "Dep", Role: "parent"},
+		},
+	}
+	a := &Agent{cfg: cfg, familyState: fs, userMemory: um, user: &cfg.Users[0]}
+	msgs := a.buildMessages(context.Background(), nil, "hi")
+	sys := msgs[0].Content
+	for _, tag := range []string{"<family_safety>", "<user_memory>", "peanuts", "blue"} {
+		if strings.Contains(sys, tag) {
+			t.Errorf("store error: system prompt should not contain %q:\n%s", tag, sys)
+		}
+	}
+}
+
+func TestBuildMessages_UserMemoryScoped(t *testing.T) {
+	// One user's memories never appear in another user's prompt. This is
+	// the hard correctness rule of the feature.
+	db, _, um := seedStores(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	for _, m := range []usermemory.Memory{
+		{UserName: "dep", Category: "preferences", Label: "color", Value: "blue"},
+		{UserName: "teo", Category: "preferences", Label: "color", Value: "green"},
+	} {
+		if err := um.UpsertMemory(ctx, &m); err != nil {
+			t.Fatalf("seed memory: %v", err)
+		}
+	}
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "dep", DisplayName: "Dep", Role: "parent"},
+			{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "age_13_17"},
+		},
+	}
+
+	// dep's prompt must contain dep's memory (blue) and NOT teo's (green).
+	aDep := &Agent{cfg: cfg, userMemory: um, user: &cfg.Users[0]}
+	sysDep := aDep.buildMessages(ctx, nil, "hi")[0].Content
+	if !strings.Contains(sysDep, "blue") {
+		t.Errorf("dep's prompt should contain dep's memory (blue):\n%s", sysDep)
+	}
+	if strings.Contains(sysDep, "green") {
+		t.Errorf("dep's prompt must NOT contain teo's memory (green):\n%s", sysDep)
+	}
+
+	// teo's prompt must contain teo's memory (green) and NOT dep's (blue).
+	aTeo := &Agent{cfg: cfg, userMemory: um, user: &cfg.Users[1]}
+	sysTeo := aTeo.buildMessages(ctx, nil, "hi")[0].Content
+	if !strings.Contains(sysTeo, "green") {
+		t.Errorf("teo's prompt should contain teo's memory (green):\n%s", sysTeo)
+	}
+	if strings.Contains(sysTeo, "blue") {
+		t.Errorf("teo's prompt must NOT contain dep's memory (blue):\n%s", sysTeo)
 	}
 }
