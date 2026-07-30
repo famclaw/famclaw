@@ -51,6 +51,7 @@ server:
 llm:
   base_url: "http://localhost:11434"  # Ollama on local machine
   model: "llama3.2:3b"
+  # vision_profile: "vision"  # vision-capable model for image messages (see ADVANCED_LLM)
 
 storage:
   db_path: "./data/famclaw.db"
@@ -74,6 +75,8 @@ gateways:
 ```bash
 ./bin/famclaw --config config.local.yaml
 ```
+
+The `--config` flag is the only lookup (default `config.yaml` in the current directory). `make install-service` runs with `--config` pointing at `/opt/famclaw/config.yaml`.
 
 ### Verify Setup
 1. FamClaw should bind to `:8080` and return HTTP 307 redirects to `/setup` before initial configuration is complete
@@ -107,9 +110,12 @@ The following make targets are available:
 Essential configuration keys to set:
 - `llm.base_url` - LLM endpoint URL (e.g., `http://localhost:11434`)
 - `llm.model` - LLM model name (e.g., `llama3.2:3b`)
+- `llm.vision_profile` - vision-capable model profile used for image messages (leave empty if your main model is vision-capable; see ADVANCED_LLM)
 - `storage.db_path` - Database file path
 - `gateways.telegram.token` - Telegram bot token (from @BotFather)
 - `gateways.discord.token` - Discord bot token (from Discord Developer Portal)
+- `tools.web_search.enabled` - enable web search (requires `tools.web_fetch.enabled=true`)
+- `tools.web_fetch.block_private_networks` - opt-in: block loopback/RFC1918/ULA at the dialer (default false)
 
 ## HoneyBadger Security Scanning (Optional but Recommended)
 
@@ -139,7 +145,8 @@ This feature is **optional but recommended** for a family assistant to help ensu
 - **Policy/OPA rules:** Enable custom policies by setting `policies.dir` and `policies.data_dir` in `config.yaml` to point to directories containing `.rego` and JSON data files.
 - **Parent notifications:** Configure alert channels under `notifications:` in `config.yaml` (email, Slack, Discord, SMS, ntfy) to receive alerts about quarantined tools, approval requests, etc.
 - **MCP servers:** Enable multi-tool servers by configuring `skills.mcp_servers` in `config.yaml` (see the example in the default config).
-- **Web tools:** The built-in web tools (`web_fetch`, `web_search`, `browser`) can be enabled under `tools:` in `config.yaml`. Note: `web_fetch` requires a non-empty `url_allowlist` to prevent SSRF attacks; an empty list denies all fetches.
+- **Web tools:** The built-in web tools (`web_fetch`, `web_search`, `browser`) can be enabled under `tools:` in `config.yaml`. Note: `web_fetch` requires a non-empty `url_allowlist` to prevent SSRF attacks; an empty list denies all fetches. `web_search` requires `tools.web_fetch.enabled=true`.
+- **MCP runtime management:** List, add, and remove MCP servers at runtime via the `.mcp list/add/remove` chat commands or the `/api/mcp` endpoints (session-authenticated, parent role) — no config edit or restart required. See [SKILLS.md](./SKILLS.md).
 - **Config hot-reload:** FamClaw watches `config.yaml` and reloads non-destructive changes in place — including MCP server add/remove, gateway toggles, and tool config — without a restart. The file watcher stops cleanly on shutdown.
 ## Next Steps
 

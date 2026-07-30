@@ -32,6 +32,12 @@ sudo journalctl -u famclaw | grep "unknown account"
 
 ---
 
+### Photos and image attachments
+
+Photos sent on Telegram are forwarded to the AI as image attachments, even when the photo has no caption. To have the AI see and describe the image, set `llm.vision_profile` to a vision-capable model (see [ADVANCED_LLM.md](./ADVANCED_LLM.md)).
+
+---
+
 ## Discord
 
 ### 1. Create a bot
@@ -63,7 +69,7 @@ gateways:
 
 Same as Telegram — each family member sends a message in the Discord server. The bot logs unknown accounts. Link them in the web dashboard.
 
-**File attachments.** Discord message attachments are persisted to the agent sandbox (path-traversal-safe, extension/MIME-consistent, size-capped) so the agent can inspect images and files you upload. See `docs/SECURITY.md` for sandbox confinement details.
+**File attachments.** Discord message attachments are persisted to the agent sandbox (path-traversal-safe, extension/MIME-consistent, size-capped) so the agent can inspect images and files you upload. See `docs/SECURITY_MODEL.md` for sandbox confinement details.
 
 ---
 

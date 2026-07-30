@@ -32,16 +32,18 @@ the chat completion request. Supported models include:
 - Llava series or other vision-capable open models
 - Any OpenAI-compatible API endpoint serving a vision-capable model
 
-To use multimodal capabilities, ensure your configured LLM model supports image input.
-The image understanding feature works with any vision-capable model, making it flexible
-for different configurations.
+To use multimodal capabilities, set `llm.vision_profile` to a vision-capable model
+profile in `config.yaml` (see README). FamClaw routes any message carrying an image
+attachment to that profile instead of the per-user endpoint — text-only messages always
+use the per-user endpoint. If `vision_profile` is empty, images are sent to the per-user
+model; a text-only model cannot see them, so image support silently does nothing.
 
 ### Image Understanding Feature
 
-FamClaw's image understanding feature extends support for image attachments in Telegram,
-with plans to expand to other gateways. When a user sends an image through a supported
-gateway, FamClaw processes the image and includes it as part of the message sent to the
-configured LLM model. The feature requires a vision-capable LLM model to function.
+FamClaw's image understanding feature supports image attachments from Telegram and Discord.
+When a user sends an image through a supported gateway, FamClaw encodes it and includes it
+as part of the message sent to the LLM. The feature requires a vision-capable LLM model
+to function.
 
 ## Recommended path for most users
 

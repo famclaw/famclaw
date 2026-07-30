@@ -71,10 +71,14 @@ llm:
   # or Discord), FamClaw routes it to this LLM profile instead of the
   # normal per-user model — text-only messages always use the normal
   # endpoint. Set this to a vision-capable model (e.g. qwen2.5-vl,
-  # llama3.2-vision, gemma3). When empty, the per-user endpoint is used
-  # for both image and text (handy if your main model is itself vision-
-  # capable). Images are sent to the configured LLM endpoint, which may be
-  # remote — they stay on-device only when that endpoint is local.
+  # llama3.2-vision, gemma3).
+  #
+  # When EMPTY, the per-user endpoint is used for images too. If that
+  # model is text-only, the image is still sent to it but CANNOT be seen
+  # — it is silently ignored (the assistant only receives the empty text),
+  # which is why real deployments set vision_profile. Images are sent to
+  # the configured LLM endpoint, which may be remote — they stay on-device
+  # only when that endpoint is local.
   vision_profile: ""
 ```
 
@@ -144,9 +148,7 @@ Default age groups: `under_8`, `age_8_12`, `age_13_17`, `parent`.
 
 FamClaw uses the [AgentSkills](https://docs.openclaw.ai/tools/skills) spec — the same `SKILL.md` format used by OpenClaw, PicoClaw, and NanoBot. Skills from [famclaw/skills](https://github.com/famclaw/skills) work in all four runtimes. [HoneyBadger](https://github.com/famclaw/honeybadger) scans every skill before installation.
 
-```bash
-famclaw skill install seccheck
-```
+Skills are installed from the parent dashboard (Skills tab) via `/api/skills/install`, or manually by placing the `SKILL.md` in the skills directory. The `famclaw skill` CLI is not yet implemented.
 
 ### First-party Skills
 
@@ -206,6 +208,7 @@ tools:
       - en.wikipedia.org
     max_bytes: 262144         # 256 KB response cap
     timeout_seconds: 15
+    block_private_networks: false  # opt-in: block loopback/RFC1918/ULA at the dialer
     fallback_to_browser: false  # opt-in: fall back to headless browser for JS-heavy sites; requires tools.browser.enabled
     fallback_min_text_length: 10 # below this many chars of extracted text, attempt the browser fallback
 ```
@@ -222,13 +225,38 @@ The fetcher itself is in `internal/webfetch/`; the agent handler lives in `inter
 
 For JS-heavy sites where HTML→text extraction yields too little content, `web_fetch` can fall back to a headless browser (the built-in `browser` tool), reusing the same host allowlist. This fallback is **off by default** (`tools.web_fetch.fallback_to_browser: false`); enable it only alongside `tools.browser.enabled`. When enabled and the plain fetch returns fewer than `fallback_min_text_length` chars, the browser navigates and extracts rendered text. Every failure path returns a distinct, honest error — a nil/unavailable browser pool, a browser fetch failure, or an empty rendered result — so an empty page is never silently returned as a successful fetch. Integration tests for the live browser path live behind the `integration` build tag (`go test -tags integration ./internal/agent/ -run TestFetchWithBrowser_Integration`), skipped cleanly where no Playwright server is available.
 
+## Web search (`web_search`)
+
+Off by default. When enabled, the LLM gets a `web_search` tool that queries a SearXNG (or compatible) JSON endpoint and returns structured title/url/snippet results. Use it before `web_fetch` when you don't already know an exact URL — results carry concrete URLs and snippets you can answer from directly.
+
+Enable in `config.yaml`:
+
+```yaml
+tools:
+  web_fetch:
+    enabled: true              # required — web_search reuses web_fetch's host allowlist
+    url_allowlist:
+      - localhost              # your SearXNG host
+      - wikipedia.org
+  web_search:
+    enabled: true
+    allowed_roles: [parent]    # role gate — checked when registering the tool
+    endpoint: "http://localhost:8888"   # SearXNG JSON search URL
+    max_results: 8             # default 8, hard-capped at 16
+    timeout_seconds: 10
+```
+
+**Host gate:** `web_search` is not independent — it requires `tools.web_fetch.enabled=true` and reuses the `tools.web_fetch.url_allowlist` as its host gate. The search endpoint host (e.g. `localhost`) must be allowlisted; an empty allowlist denies all searches.
+
+**Dependency:** a running SearXNG instance (or any OpenSearch-compatible JSON search endpoint). Install SearXNG via Docker or run it locally; point `endpoint` at its `search` JSON URL.
+
 ---
 
 ## Security scanning
 
 FamClaw uses [HoneyBadger](https://github.com/famclaw/honeybadger) to scan skills at two points:
 
-**Install time.** `famclaw skill install <path>` scans with HoneyBadger before writing anything to disk. FAIL verdicts block the install by default.
+**Install time.** Installing a skill from the dashboard (`/api/skills/install`) scans it with HoneyBadger before writing anything to disk. FAIL verdicts block the install by default.
 
 **Runtime, asynchronously.** Tools used during a conversation are scanned in the background after the turn completes. If a scan fails, the tool is quarantined and filtered out of the next turn. This never adds latency — scanning runs in parallel with or after the response.
 
@@ -238,25 +266,26 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 
 ## Status
 
-**v0.5.0 — first deployed family release.** v0.5.1 in flight (closes the bugs surfaced by the first real-world install). Phase 3.3 family state shipped (PR #149).
+**v0.7.0** — current release. Phase 3.3 family state (foundational PR #149; prompt auto-injection completed in #296) — ships in the upcoming release.
 
 ### What works
 
 | Feature | Status |
 |---------|--------|
-| **Policy gate** | OPA rules for input, tool calls, and output (33 Rego tests) |
+| **Policy gate** | OPA rules for input, tool calls, and output (90 Rego tests) |
 | **Pipeline engine** | Composable stages: classify → policy → LLM → tools → output filter |
 | **Multi-backend LLM** | OpenAI-compatible: Ollama, llama.cpp, Groq, OpenAI, OpenRouter |
 | **Smart tool selection** | Token-budget-aware filtering, role+skill scoping |
 | **Context compression** | Tiered truncation keeping system prompt + pinned messages |
 | **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
 | **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps. Optional headless-browser fallback for JS-heavy sites (`fallback_to_browser`, off by default; requires `tools.browser.enabled`) |
+| **Web search** | `web_search` builtin tool (off by default) — query a SearXNG JSON endpoint; requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate |
 | **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
 | **Skill install** | From parent dashboard Skills tab or CLI; HoneyBadger-scanned at install time |
 | **llama.cpp sidecar** | Spawns llama-server, GGUF model catalog, TurboQuant support |
 | **Security scanning** | Honeybadger runtime stage, install-time + stale scan gates |
 | **Web UI** | Chat, parent dashboard, 5-step wizard with AI profiles, PIN-gated skill install/remove |
-| **Web auth** | Cookie-based web sessions + machine-bound credential vault (`internal/credstore`, `internal/web/middleware`); see [docs/SECURITY.md](docs/SECURITY.md) |
+| **Web auth** | Cookie-based web sessions + machine-bound credential vault (`internal/credstore`, `internal/web/middleware`); see [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) |
 | **Family state** | Shared per-family memory (`internal/familystate`): allergies, dietary restrictions, important dates, pets + custom parent-managed categories. Safety-critical entries auto-injected into every system prompt via `<family_safety>` block; rest read on-demand via `get_family_state` tool. Kid proposals queue parent approval; parents auto-apply (OPA-gated). Web dashboard at `/family-state.html` + JSON API at `/api/family-state/*`. |
 | **Telegram + Discord** | Fully wired gateway bots, message chunking past per-platform limits (4096/2000 chars) |
 | **Unknown-account backend** | Strangers messaging the bot are recorded against a parent-controlled queue, never auto-promoted to a user (issue #111 backend) |
@@ -275,7 +304,7 @@ through tools. Every recommended model passes the tool-call test (3/3 real calls
 |----------|------------|------|-----|
 | Raspberry Pi 5 / ≤8 GB RAM | `qwen3:1.7b` | 1.3 GB | Fits a Pi 5 *and* makes real tool calls (3/3), with good writing + warmth |
 | 16 GB machines | `qwen3:4b` | 2.3 GB | Richer prose, still 3/3 tool calls, comfortable on 16 GB |
-| Capable box / 64 GB Mac | `gemma4:31b` | ~20 GB | Apache-2.0, 3/3 tool calls, best age-appropriate creative writing |
+| Capable box / 64 GB Mac | `gemma4:31b` | ~20 GB | Gemma licence, 3/3 tool calls, best age-appropriate creative writing |
 | Pi 3 / ≤2 GB | (remote) | — | Gateway only — no recommended model fits this RAM |
 
 > **Avoid:** `phi4-mini` fakes tool calls (0/3 in testing) and `gemma4:e4b`/`gemma4:e2b`

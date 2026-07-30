@@ -45,6 +45,16 @@ If your family uses Telegram or Discord, FamClaw can chat there too.
 3. Each family member messages the bot once
 4. You link their account to their FamClaw profile
 
+## What FamClaw remembers about your family
+
+FamClaw keeps two kinds of information so it can help without you repeating things every time.
+
+**Family facts** are shared household details — allergies, dietary restrictions, important dates, pets, and any custom categories you add. FamClaw automatically shares safety-critical facts with the AI on every message — by default, this includes **allergies** and **dietary restrictions** — so the assistant always knows, for example, that someone is allergic to nuts before it suggests a recipe. You manage these in the dashboard under Family State. Other facts, like birthdays and pets, stay in FamClaw but are only looked up when a conversation actually needs them.
+
+**User memories** are personal notes your family members ask FamClaw to remember — a nickname, a fear of dogs, a friend's birthday. Each family member's memories are shared with the AI in their own conversations, so FamClaw always remembers what you've told it. You can also ask FamClaw to find a specific memory by keyword — it searches across the label, value, and category of every memory to find what's relevant.
+
+Kids proposing a new family fact go through the usual approval flow; parents can add, update, or delete directly in the dashboard.
+
 ## Topics that are always blocked
 
 Some topics are never allowed, even with your approval:
