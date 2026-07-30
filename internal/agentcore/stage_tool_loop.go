@@ -2,6 +2,8 @@ package agentcore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,7 +14,15 @@ import (
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/store"
 )
+
+// ApprovalStore provides approval persistence for the tool-call approval
+// flow. *store.DB satisfies this interface.
+type ApprovalStore interface {
+	UpsertApproval(a *store.Approval) (bool, error)
+	AllApprovalsForOPA() (map[string]any, error)
+}
 
 // toolPolicyInput shapes a per-call OPA input from the turn user.
 func toolPolicyInput(turn *Turn, toolName string) policy.ToolCallInput {
@@ -24,6 +34,17 @@ func toolPolicyInput(turn *Turn, toolName string) policy.ToolCallInput {
 		},
 		ToolName: bareToolName(toolName),
 	}
+}
+
+// toolApprovalID computes a deterministic, day-scoped request ID for a
+// child's tool call. Two calls with the same user, tool, and args on the
+// same UTC day produce the same ID, so a re-issued call finds the existing
+// pending approval instead of creating a duplicate.
+func toolApprovalID(userName, toolName string, args map[string]any) string {
+	day := time.Now().UTC().Format("2006-01-02")
+	argJSON, _ := json.Marshal(args)
+	h := sha256.Sum256([]byte(userName + ":" + toolName + ":" + string(argJSON) + ":" + day))
+	return hex.EncodeToString(h[:8])
 }
 
 // ToolLoopDeps holds dependencies for the tool loop stage.
@@ -44,6 +65,10 @@ type ToolLoopDeps struct {
 	// PolicyEvaluator gates each tool call through the OPA tool_policy rules.
 	// When nil, no per-call policy enforcement is applied (useful for tests).
 	PolicyEvaluator ToolPolicyEvaluator
+	// ApprovalStore provides approval persistence for the tool-call
+	// approval flow. When nil, request_approval decisions fail closed
+	// (the tool does not execute).
+	ApprovalStore ApprovalStore
 	// RebuildHistory toggles the model-authored history rebuild path.
 	// When true, each LLM call inside the tool loop is sent
 	// [system, rebuilt_user_message] where rebuilt_user_message is
@@ -214,26 +239,90 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				// block. On evaluator error, fail closed and log the cause
 				// internally; never leak raw evaluator error text to the LLM
 				// transcript (could expose internal paths / module names).
+				//
+				// Action semantics (matching decision.rego):
+				//   "allow"              → proceed to execution
+				//   "request_approval"   → create pending approval, tell the
+				//                          model the parent is being asked
+				//   "pending"            → parent already notified, wait
+				//   "block"              → refuse with a reason
 				if deps.PolicyEvaluator != nil {
-					decision, perr := deps.PolicyEvaluator.EvaluateToolCall(ctx, toolPolicyInput(turn, tc.Function.Name))
-					if perr != nil || !decision.Allow {
-						reason := "blocked by policy"
-						if perr != nil {
-							log.Printf("[stage_tool_loop] policy evaluator error for %s: %v (failing closed)", tc.Function.Name, perr)
-						} else if decision.Reason != "" {
-							reason = decision.Reason
+					requestID := toolApprovalID(turn.User.Name, bareToolName(tc.Function.Name), tc.Function.Arguments)
+					input := toolPolicyInput(turn, tc.Function.Name)
+					input.Args = tc.Function.Arguments
+					input.RequestID = requestID
+					if deps.ApprovalStore != nil {
+						input.Approvals, _ = deps.ApprovalStore.AllApprovalsForOPA()
+					}
+
+					decision, perr := deps.PolicyEvaluator.EvaluateToolCall(ctx, input)
+					if perr != nil {
+						log.Printf("[stage_tool_loop] policy evaluator error for %s: %v (failing closed)", tc.Function.Name, perr)
+						injectToolError(&llmMsgs, turn, tc, ErrToolBlocked, "blocked by policy", start)
+						continue
+					}
+
+					switch decision.Action {
+					case "allow":
+						// proceed to execution below
+					case "request_approval":
+						// Create a pending approval scoped to this child +
+						// tool call. If the store is unavailable or the
+						// insert fails, fail CLOSED — the tool must not run.
+						if deps.ApprovalStore == nil {
+							log.Printf("[stage_tool_loop] approval store nil for %s (failing closed)", tc.Function.Name)
+							injectToolError(&llmMsgs, turn, tc, ErrToolBlocked, "approval unavailable", start)
+							continue
 						}
+						a := &store.Approval{
+							ID:          requestID,
+							UserName:    turn.User.Name,
+							UserDisplay: turn.User.DisplayName,
+							AgeGroup:    turn.User.AgeGroup,
+							Category:    "tool:" + bareToolName(tc.Function.Name),
+							QueryText:   fmt.Sprintf("file_write with executable content to %q", tc.Function.Arguments["path"]),
+						}
+						if _, err := deps.ApprovalStore.UpsertApproval(a); err != nil {
+							log.Printf("[stage_tool_loop] approval creation failed for %s: %v (failing closed)", tc.Function.Name, err)
+							injectToolError(&llmMsgs, turn, tc, ErrToolBlocked, "approval unavailable", start)
+							continue
+						}
+						// Tell the LLM the parent is being asked. The tool
+						// did NOT execute.
 						llmMsgs = append(llmMsgs, llm.Message{
 							Role:       "tool",
-							Content:    fmt.Sprintf("Error: %s", reason),
+							Content:    "I'm asking a parent for permission to do this. They'll decide soon.",
 							ToolCallID: tc.ID,
 						})
 						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 							ToolName: tc.Function.Name,
 							Args:     tc.Function.Arguments,
-							Error:    ErrToolBlocked,
+							Error:    ErrApprovalRequested,
 							Duration: time.Since(start),
 						})
+						continue
+					case "pending":
+						// A parent was already notified in a prior turn; the
+						// approval is still waiting. Don't re-request.
+						llmMsgs = append(llmMsgs, llm.Message{
+							Role:       "tool",
+							Content:    "A parent has been notified about this request. I'll try again once they decide.",
+							ToolCallID: tc.ID,
+						})
+						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
+							ToolName: tc.Function.Name,
+							Args:     tc.Function.Arguments,
+							Error:    ErrApprovalPending,
+							Duration: time.Since(start),
+						})
+						continue
+					default:
+						// "block" or anything unrecognized — fail closed.
+						reason := decision.Reason
+						if reason == "" {
+							reason = "blocked by policy"
+						}
+						injectToolError(&llmMsgs, turn, tc, ErrToolBlocked, reason, start)
 						continue
 					}
 				}
@@ -448,6 +537,23 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 		return nil
 	}
+}
+
+// injectToolError appends a tool-error message to llmMsgs and records a
+// failed ToolResult on the turn. Extracts the repeated error-injection
+// pattern used across the policy gate and tool-dispatch paths.
+func injectToolError(llmMsgs *[]llm.Message, turn *Turn, tc llm.ToolCall, err error, reason string, start time.Time) {
+	*llmMsgs = append(*llmMsgs, llm.Message{
+		Role:       "tool",
+		Content:    fmt.Sprintf("Error: %s", reason),
+		ToolCallID: tc.ID,
+	})
+	turn.ToolCalls = append(turn.ToolCalls, ToolResult{
+		ToolName: tc.Function.Name,
+		Args:     tc.Function.Arguments,
+		Error:    err,
+		Duration: time.Since(start),
+	})
 }
 
 // summarizeArgs renders tool-call arguments as a single-line JSON string for

@@ -291,9 +291,9 @@ func TestEvaluateToolCall(t *testing.T) {
 		{"age_8_12 web_search allowed", "child", "age_8_12", "web_search", true},
 		{"parent web_search allowed", "parent", "", "web_search", true},
 
-		// file_* prefix — blocked for all children, allowed for parents
-		{"child file_read blocked", "child", "age_13_17", "file_read", false},
-		{"child file_write blocked", "child", "age_8_12", "file_write", false},
+		// file_* — allowed for children (non-executable content), allowed for parents
+		{"child file_read allowed", "child", "age_13_17", "file_read", true},
+		{"child file_write allowed (non-executable)", "child", "age_8_12", "file_write", true},
 		{"parent file_read allowed", "parent", "", "file_read", true},
 
 		// spawn_agent — blocked for children
@@ -332,6 +332,149 @@ func TestEvaluateToolCall(t *testing.T) {
 			}
 			if d.Allow != tt.wantAllow {
 				t.Errorf("Allow = %v, want %v (reason: %q)", d.Allow, tt.wantAllow, d.Reason)
+			}
+			if !d.Allow && d.Reason == "" {
+				t.Errorf("blocked decision should carry a reason, got empty")
+			}
+		})
+	}
+}
+
+func TestEvaluateToolCall_ExecutableFileWrite(t *testing.T) {
+	ev := setupEvaluator(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name       string
+		user       UserInput
+		toolName   string
+		args       map[string]any
+		reqID      string
+		approvals  map[string]any
+		wantAllow  bool
+		wantAction string
+	}{
+		{
+			name:       "child executable shebang → request_approval",
+			user:       UserInput{Role: "child", AgeGroup: "age_8_12", Name: "kid"},
+			toolName:   "file_write",
+			args:       map[string]any{"path": "run.txt", "content": "#!/bin/bash\necho hi"},
+			reqID:      "req-exec-1",
+			wantAllow:  false,
+			wantAction: "request_approval",
+		},
+		{
+			name:       "child executable .sh extension → request_approval",
+			user:       UserInput{Role: "child", AgeGroup: "age_8_12", Name: "kid"},
+			toolName:   "file_write",
+			args:       map[string]any{"path": "run.sh", "content": "echo hi"},
+			reqID:      "req-exec-2",
+			wantAllow:  false,
+			wantAction: "request_approval",
+		},
+		{
+			name:       "child executable ELF magic → request_approval",
+			user:       UserInput{Role: "child", AgeGroup: "age_13_17", Name: "kid"},
+			toolName:   "file_write",
+			args:       map[string]any{"path": "binary", "content": "\x7fELF\x02\x01\x01\x00"},
+			reqID:      "req-exec-3",
+			wantAllow:  false,
+			wantAction: "request_approval",
+		},
+		{
+			name:       "child non-executable file_write → allow",
+			user:       UserInput{Role: "child", AgeGroup: "age_8_12", Name: "kid"},
+			toolName:   "file_write",
+			args:       map[string]any{"path": "notes.txt", "content": "hello world"},
+			reqID:      "req-safe-1",
+			wantAllow:  true,
+			wantAction: "allow",
+		},
+		{
+			name:       "child executable already approved → allow",
+			user:       UserInput{Role: "child", AgeGroup: "age_8_12", Name: "kid"},
+			toolName:   "file_write",
+			args:       map[string]any{"path": "run.sh", "content": "echo hi"},
+			reqID:      "req-approved",
+			approvals:  map[string]any{"req-approved": map[string]any{"status": "approved", "decided_by": "mom"}},
+			wantAllow:  true,
+			wantAction: "allow",
+		},
+		{
+			name:       "child executable pending → block (not request_approval again)",
+			user:       UserInput{Role: "child", AgeGroup: "age_8_12", Name: "kid"},
+			toolName:   "file_write",
+			args:       map[string]any{"path": "run.sh", "content": "echo hi"},
+			reqID:      "req-pending",
+			approvals:  map[string]any{"req-pending": map[string]any{"status": "pending"}},
+			wantAllow:  false,
+			wantAction: "block",
+		},
+		{
+			name:       "child executable denied → block",
+			user:       UserInput{Role: "child", AgeGroup: "age_8_12", Name: "kid"},
+			toolName:   "file_write",
+			args:       map[string]any{"path": "run.sh", "content": "echo hi"},
+			reqID:      "req-denied",
+			approvals:  map[string]any{"req-denied": map[string]any{"status": "denied", "decided_by": "mom"}},
+			wantAllow:  false,
+			wantAction: "block",
+		},
+		{
+			name:       "parent executable file_write → allow (no approval needed)",
+			user:       UserInput{Role: "parent", AgeGroup: ""},
+			toolName:   "file_write",
+			args:       map[string]any{"path": "run.sh", "content": "#!/bin/bash\necho hi"},
+			reqID:      "req-parent",
+			wantAllow:  true,
+			wantAction: "allow",
+		},
+		{
+			name:       "child file_write with .bash extension → request_approval",
+			user:       UserInput{Role: "child", AgeGroup: "age_8_12", Name: "kid"},
+			toolName:   "file_write",
+			args:       map[string]any{"path": "script.bash", "content": "echo hi"},
+			reqID:      "req-bash",
+			wantAllow:  false,
+			wantAction: "request_approval",
+		},
+		{
+			name:       "child file_write with .so extension → request_approval",
+			user:       UserInput{Role: "child", AgeGroup: "age_13_17", Name: "kid"},
+			toolName:   "file_write",
+			args:       map[string]any{"path": "lib.so", "content": "echo hi"},
+			reqID:      "req-so",
+			wantAllow:  false,
+			wantAction: "request_approval",
+		},
+		{
+			name:       "child file_read allowed (not caught by executable detection)",
+			user:       UserInput{Role: "child", AgeGroup: "age_13_17", Name: "kid"},
+			toolName:   "file_read",
+			args:       map[string]any{"path": "run.sh"},
+			reqID:      "req-read",
+			wantAllow:  true,
+			wantAction: "allow",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := ev.EvaluateToolCall(ctx, ToolCallInput{
+				User:      tt.user,
+				ToolName:  tt.toolName,
+				Args:      tt.args,
+				RequestID: tt.reqID,
+				Approvals: tt.approvals,
+			})
+			if err != nil {
+				t.Fatalf("EvaluateToolCall error: %v", err)
+			}
+			if d.Allow != tt.wantAllow {
+				t.Errorf("Allow = %v, want %v (action: %q, reason: %q)", d.Allow, tt.wantAllow, d.Action, d.Reason)
+			}
+			if d.Action != tt.wantAction {
+				t.Errorf("Action = %q, want %q (reason: %q)", d.Action, tt.wantAction, d.Reason)
 			}
 			if !d.Allow && d.Reason == "" {
 				t.Errorf("blocked decision should carry a reason, got empty")

@@ -71,6 +71,10 @@ func FamilyPipeline(deps FamilyPipelineDeps) Pipeline {
 
 	// Tool loop
 	if deps.Pool != nil || deps.BuiltinHandler != nil {
+		var approvalStore ApprovalStore
+		if deps.DB != nil {
+			approvalStore = deps.DB
+		}
 		stages = stages.Append(NewStageToolLoop(ToolLoopDeps{
 			Pool:            deps.Pool,
 			ClientFactory:   deps.ClientFactory,
@@ -79,6 +83,7 @@ func FamilyPipeline(deps FamilyPipelineDeps) Pipeline {
 			ContextWindow:   deps.ContextWindow,
 			BuiltinHandler:  deps.BuiltinHandler,
 			PolicyEvaluator: deps.Evaluator,
+			ApprovalStore:   approvalStore,
 		}))
 	}
 
