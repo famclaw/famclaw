@@ -71,6 +71,7 @@ type Server struct {
 	auth          *AuthHandler
 	vaultMismatch bool // protected by vaultMu — true once a probe finds the on-disk vault was sealed by a different machine
 	vaultMu       sync.RWMutex
+	mcpSkipped    []string // MCP servers skipped at boot, surfaced by /api/health
 }
 
 // wsClient is a connected web chat client. Its writeMu serializes all writes
@@ -299,6 +300,13 @@ func (s *Server) SetVaultMismatch(v bool) {
 	s.vaultMu.Lock()
 	s.vaultMismatch = v
 	s.vaultMu.Unlock()
+}
+
+// SetMCPSkipped records the MCP servers that were skipped at boot so /api/health
+// can surface them. Operators otherwise have no way to see a misconfigured server:
+// the skip is only written to the log at startup and then lost.
+func (s *Server) SetMCPSkipped(skipped []string) {
+	s.mcpSkipped = skipped
 }
 
 // ── WebSocket chat ─────────────────────────────────────────────────────────────
@@ -714,11 +722,16 @@ func (s *Server) handleMCPRemove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	skipped := s.mcpSkipped
+	if skipped == nil {
+		skipped = []string{}
+	}
 	jsonOK(w, map[string]any{
 		"status":      "ok",
 		"version":     "1.0.0",
 		"time":        time.Now().UTC(),
 		"needs_setup": s.NeedsSetup(),
+		"mcp_skipped": skipped,
 	})
 }
 

@@ -500,7 +500,7 @@ func main() {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
 	var mcpPool *mcp.Pool
-	mcpPool, _, _ = initMCPPool(context.Background(), cfg, sandboxRoot)
+	mcpPool, skippedMCPs, _ := initMCPPool(context.Background(), cfg, sandboxRoot)
 	defer mcpPool.StopAll()
 
 	// HoneyBadger client + quarantine for runtime scanning
@@ -779,6 +779,7 @@ func main() {
 	// Web server
 	srv := web.NewServer(cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
 	srv.SetVaultMismatch(vaultMismatch)
+	srv.SetMCPSkipped(skippedMCPs)
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),
