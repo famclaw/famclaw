@@ -1146,12 +1146,14 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 			minLength = 10
 		}
 		if len(text) < minLength && a.browserPool != nil && a.cfg.Tools.WebFetch.FallbackToBrowser {
-			// Attempt browser fallback for JS-heavy sites.
-			browserResult, err := a.fetchWithBrowser(ctx, rawURL, hostAllowed)
+			// Attempt browser fallback for JS-heavy sites. fetchWithBrowser
+			// guarantees a non-empty result on success — every failure mode
+			// (pool unavailable, browser error, empty render) returns a
+			// distinct error rather than an empty success, so there is no
+			// separate empty-render check for the fallback here.
+			browserResult, err := a.fetchWithBrowser(ctx, a.browserPool, rawURL, hostAllowed)
 			if err != nil {
 				log.Printf("[agent][%s] web_fetch browser fallback failed for %s, using original result: %v", a.user.Name, rawURL, err)
-			} else if strings.TrimSpace(browserResult.Text) == "" {
-				log.Printf("[agent][%s] web_fetch browser fallback returned empty for %s, using original result", a.user.Name, rawURL)
 			} else {
 				result = &webfetch.Result{
 					URL:         browserResult.URL,
@@ -1211,36 +1213,61 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		result.URL, result.StatusCode, result.ContentType, result.Truncated, result.Text), nil
 }
 
-// fetchWithBrowser uses the browser pool to navigate to a URL and extract text,
-// for JS-heavy sites where the plain HTTP fetch returns too little text. The same
-// host-allowlist check is applied to navigation and extraction.
-func (a *Agent) fetchWithBrowser(ctx context.Context, rawURL string, hostAllowed func(string) bool) (*webfetch.Result, error) {
+// BrowserFetcher is the subset of *browser.Pool that the web_fetch browser
+// fallback needs. *browser.Pool satisfies it; tests substitute a fake to
+// exercise failure paths without a live Playwright server.
+type BrowserFetcher interface {
+	Exec(ctx context.Context, in browser.ExecInput) (string, error)
+}
+
+// fetchWithBrowser runs the browser fallback for JS-heavy sites: it navigates
+// the browser pool to rawURL and extracts rendered text. The same host
+// allowlist is applied to navigation (builtin__browser_navigate re-checks the
+// final URL after redirects).
+//
+// Lifecycle is acquire-use-release through the pool: navigate acquires/reuses
+// a per-user page, extract reads it, and the pool's idle-sweeper releases the
+// session when idle — no new browser is spawned per fetch.
+//
+// Every failure path returns a distinct, honest error — the caller never
+// receives an empty "success":
+//   - nil/unavailable pool: "browser fetch: browser pool is not configured"
+//   - browser fetch failure: "browser fetch: <stage> <url>: <err>"
+//   - empty rendered result: "browser fetch: rendered content empty for <url>"
+func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawURL string, hostAllowed func(string) bool) (*webfetch.Result, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("browser fetch: browser pool is not configured (set tools.browser.endpoint; fallback_to_browser requires a browser pool)")
+	}
 	hostCheck := func(host string) error {
 		if !hostAllowed(host) {
 			return fmt.Errorf("host %q not in url_allowlist", host)
 		}
 		return nil
 	}
-	if _, err := a.browserPool.Exec(ctx, browser.ExecInput{
+	if _, err := pool.Exec(ctx, browser.ExecInput{
 		User:      a.user.Name,
 		ToolName:  "builtin__browser_navigate",
 		Args:      map[string]any{"url": rawURL},
 		HostCheck: hostCheck,
 	}); err != nil {
-		return nil, fmt.Errorf("browser navigate: %w", err)
+		return nil, fmt.Errorf("browser fetch: navigate %s: %w", rawURL, err)
 	}
-	out, err := a.browserPool.Exec(ctx, browser.ExecInput{
+	out, err := pool.Exec(ctx, browser.ExecInput{
 		User:      a.user.Name,
 		ToolName:  "builtin__browser_extract",
 		Args:      map[string]any{"mode": "text"},
 		HostCheck: hostCheck,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("browser extract: %w", err)
+		return nil, fmt.Errorf("browser fetch: extract %s: %w", rawURL, err)
 	}
 	// The browser extract tool returns plain text; status/content-type are not
-	// available from the browser path, so use sensible defaults.
-	text := string(out)
+	// available from the browser path, so use sensible defaults. An empty render
+	// is an honest failure — never a silent empty success.
+	text := strings.TrimSpace(out)
+	if text == "" {
+		return nil, fmt.Errorf("browser fetch: rendered content empty for %s", rawURL)
+	}
 	return &webfetch.Result{
 		URL:         rawURL,
 		StatusCode:  200,
