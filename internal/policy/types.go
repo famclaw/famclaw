@@ -30,14 +30,27 @@ type Decision struct {
 // ToolCallInput is the payload sent to data.family.tool_policy when
 // evaluating a tool call. The shape matches the existing tool_policy.rego
 // rules, which read input.user.{role,age_group} and input.tool_name.
+//
+// Args carries the tool-call arguments so the policy can inspect content
+// (e.g. detecting executable file_write payloads). RequestID and Approvals
+// drive the per-call approval flow: the evaluator checks whether an approval
+// already exists for this child+tool+args combination and what status it has.
 type ToolCallInput struct {
-	User     UserInput `json:"user"`
-	ToolName string    `json:"tool_name"`
+	User      UserInput      `json:"user"`
+	ToolName  string         `json:"tool_name"`
+	Args      map[string]any `json:"args,omitempty"`
+	RequestID string         `json:"request_id,omitempty"`
+	Approvals map[string]any `json:"approvals,omitempty"`
 }
 
 // ToolDecision is the result of a tool-call policy check.
+// Action is the primary verdict: "allow" | "block" | "request_approval".
+// Allow is derived from Action for backward compatibility with callers that
+// only check the boolean (false for both block and request_approval).
+// Reason is a human-readable explanation for blocked / approval-needed calls.
 type ToolDecision struct {
 	Allow  bool   `json:"allow"`
+	Action string `json:"action"` // allow | block | request_approval
 	Reason string `json:"reason"`
 }
 

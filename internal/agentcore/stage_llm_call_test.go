@@ -10,11 +10,11 @@ import (
 // by stripping the builtin__ prefix while keeping mcp__ names namespaced
 func TestToolsToLLMDefs_MatchesCapabilitiesPrompt(t *testing.T) {
 	tests := []struct {
-		name           string
-		toolName       string
-		expectedName   string
-		description    string
-		inputSchema    map[string]any
+		name         string
+		toolName     string
+		expectedName string
+		description  string
+		inputSchema  map[string]any
 	}{
 		{
 			name:         "builtin prefix stripped for LLM-facing names",
@@ -60,25 +60,25 @@ func TestToolsToLLMDefs_MatchesCapabilitiesPrompt(t *testing.T) {
 				Description: tt.description,
 				InputSchema: tt.inputSchema,
 			}
-			
+
 			defs := toolsToLLMDefs([]Tool{tool})
 			if len(defs) != 1 {
 				t.Fatalf("got %d defs, want 1", len(defs))
 			}
-			
+
 			got := defs[0]
 			if got.Type != "function" {
 				t.Errorf("Type = %q, want %q", got.Type, "function")
 			}
-			
+
 			if got.Function.Name != tt.expectedName {
 				t.Errorf("Name = %q, want %q", got.Function.Name, tt.expectedName)
 			}
-			
+
 			if got.Function.Description != tt.description {
 				t.Errorf("Description = %q, want %q", got.Function.Description, tt.description)
 			}
-			
+
 			if !reflect.DeepEqual(got.Function.Parameters, tt.inputSchema) {
 				t.Errorf("Parameters = %v, want %v", got.Function.Parameters, tt.inputSchema)
 			}
@@ -89,18 +89,18 @@ func TestToolsToLLMDefs_MatchesCapabilitiesPrompt(t *testing.T) {
 // TestToolsToLLMDefs_ExactRequirements tests the exact requirements from user intent
 func TestToolsToLLMDefs_ExactRequirements(t *testing.T) {
 	// This test verifies the exact behavior described in the user intent:
-	// "Make the LLM-facing tool names in toolsToLLMDefs match the capabilities prompt 
-	// by stripping the builtin__ prefix while keeping mcp__ names namespaced, 
+	// "Make the LLM-facing tool names in toolsToLLMDefs match the capabilities prompt
+	// by stripping the builtin__ prefix while keeping mcp__ names namespaced,
 	// with a table-driven test."
-	
+
 	// The function should strip builtin__ prefix for LLM-facing names
 	// but keep mcp__ namespaced names intact
-	
+
 	tests := []struct {
-		name          string
-		toolName      string
-		shouldStrip   bool
-		expectedName  string
+		name         string
+		toolName     string
+		shouldStrip  bool
+		expectedName string
 	}{
 		{
 			name:         "builtin__ prefix stripped for LLM names",

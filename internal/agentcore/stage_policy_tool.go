@@ -12,6 +12,14 @@ import (
 // ErrToolBlocked is returned when a tool call is blocked by policy.
 var ErrToolBlocked = fmt.Errorf("tool call blocked by policy")
 
+// ErrApprovalRequested is returned when a tool call requires parent approval
+// and a pending approval has been created for it. The tool was NOT executed.
+var ErrApprovalRequested = fmt.Errorf("tool call pending parent approval")
+
+// ErrApprovalPending is returned when a tool call's approval is still
+// pending (already created in a prior turn). The tool was NOT executed.
+var ErrApprovalPending = fmt.Errorf("tool call approval still pending")
+
 // ToolPolicyEvaluator checks whether a tool call is allowed for the current
 // user. The OPA implementation lives in internal/policy; tests can supply
 // a fake.
@@ -22,6 +30,8 @@ type ToolPolicyEvaluator interface {
 // NewStagePolicyToolCall returns a stage that checks each tool call on the
 // turn against the OPA tool_policy rules. Blocked calls have ToolResult.Error
 // set to ErrToolBlocked so the tool loop reports the failure to the LLM.
+// Calls requiring approval have ToolResult.Error set to ErrApprovalRequested
+// (this stage cannot create approvals — that happens in the tool loop).
 //
 // The bare tool name (with the "builtin__" / "mcp__server__" prefix stripped)
 // is passed to OPA so the same Rego rule applies whether the tool is a
@@ -51,7 +61,11 @@ func NewStagePolicyToolCall(eval ToolPolicyEvaluator) Stage {
 				continue
 			}
 			if !decision.Allow {
-				tc.Error = ErrToolBlocked
+				if decision.Action == "request_approval" {
+					tc.Error = ErrApprovalRequested
+				} else {
+					tc.Error = ErrToolBlocked
+				}
 			}
 		}
 		return nil

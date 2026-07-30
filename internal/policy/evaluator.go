@@ -25,6 +25,7 @@ type Evaluator struct {
 	actionQuery       rego.PreparedEvalQuery
 	reasonQuery       rego.PreparedEvalQuery
 	toolAllowQuery    rego.PreparedEvalQuery
+	toolActionQuery   rego.PreparedEvalQuery
 	toolReasonQuery   rego.PreparedEvalQuery
 	outputAllowQuery  rego.PreparedEvalQuery
 	outputReasonQuery rego.PreparedEvalQuery
@@ -123,6 +124,15 @@ func NewEvaluator(policyDir, dataDir, expectedHash string) (*Evaluator, error) {
 		return nil, fmt.Errorf("preparing tool_policy allow query: %w", err)
 	}
 
+	toolActionQ, err := rego.New(
+		rego.Query("data.family.tool_policy.action"),
+		rego.Compiler(compiler),
+		rego.Store(store),
+	).PrepareForEval(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("preparing tool_policy action query: %w", err)
+	}
+
 	toolReasonQ, err := rego.New(
 		rego.Query("data.family.tool_policy.reason"),
 		rego.Compiler(compiler),
@@ -181,6 +191,7 @@ func NewEvaluator(policyDir, dataDir, expectedHash string) (*Evaluator, error) {
 		actionQuery:       actionQ,
 		reasonQuery:       reasonQ,
 		toolAllowQuery:    toolAllowQ,
+		toolActionQuery:   toolActionQ,
 		toolReasonQuery:   toolReasonQ,
 		outputAllowQuery:  outputAllowQ,
 		outputReasonQuery: outputReasonQ,
@@ -325,26 +336,50 @@ func (e *Evaluator) Evaluate(ctx context.Context, input Input) (Decision, error)
 }
 
 // EvaluateToolCall returns the tool-call policy decision for the given user
-// and tool name. Fail-closed: returns ToolDecision{Allow: false} when OPA
-// returns no result — matches the `default allow := false` rule in
-// tool_policy.rego after the default-DENY migration. Evaluation errors are
-// propagated and treated as deny by callers.
+// and tool name. Fail-closed: returns ToolDecision{Allow: false, Action:
+// "block"} when OPA returns no result — matches the `default allow := false`
+// and `default action := "block"` rules in tool_policy.rego. Evaluation
+// errors are propagated and treated as deny by callers.
 func (e *Evaluator) EvaluateToolCall(ctx context.Context, input ToolCallInput) (ToolDecision, error) {
 	inputMap, err := toMap(input)
 	if err != nil {
 		return ToolDecision{}, fmt.Errorf("marshaling tool input: %w", err)
 	}
 
+	allow := false    // fail-closed: if OPA returns no result, deny
+	action := "block" // fail-closed: if OPA returns no result, block
+
 	allowResults, err := e.toolAllowQuery.Eval(ctx, rego.EvalInput(inputMap))
 	if err != nil {
 		return ToolDecision{}, fmt.Errorf("evaluating tool_policy allow: %w", err)
 	}
-
-	allow := false // fail-closed: if OPA returns no result, deny
 	if len(allowResults) > 0 && len(allowResults[0].Expressions) > 0 {
 		if v, ok := allowResults[0].Expressions[0].Value.(bool); ok {
 			allow = v
 		}
+	}
+
+	actionResults, err := e.toolActionQuery.Eval(ctx, rego.EvalInput(inputMap))
+	if err != nil {
+		return ToolDecision{}, fmt.Errorf("evaluating tool_policy action: %w", err)
+	}
+	if len(actionResults) > 0 && len(actionResults[0].Expressions) > 0 {
+		if v, ok := actionResults[0].Expressions[0].Value.(string); ok {
+			action = v
+		}
+	}
+	// Consistency guard: if action is "allow" but allow is false, the
+	// allow query may have failed or returned a stale result — trust the
+	// action query (which is authoritative) and set allow to true.
+	// This never fails open: action=="allow" only occurs when the Rego
+	// policy explicitly matched an allow rule.
+	if action == "allow" && !allow {
+		allow = true
+	}
+	// Conversely, if allow is false but action claims "allow", that is
+	// a Rego conflict — fall closed (do not execute).
+	if action != "allow" && allow {
+		allow = false
 	}
 
 	reason := ""
@@ -355,7 +390,7 @@ func (e *Evaluator) EvaluateToolCall(ctx context.Context, input ToolCallInput) (
 		}
 	}
 
-	return ToolDecision{Allow: allow, Reason: reason}, nil
+	return ToolDecision{Allow: allow, Action: action, Reason: reason}, nil
 }
 
 // EvaluateOutput checks the LLM draft response against the output policy.

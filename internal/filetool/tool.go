@@ -6,12 +6,15 @@ import (
 )
 
 // FileReadTool returns the tool definition for builtin__file_read.
+// Available to parent and child roles. The policy engine (tool_policy.rego)
+// permits child access; only file_write with executable content is gated
+// through the approval flow.
 func FileReadTool() agentcore.Tool {
 	return agentcore.Tool{
 		Name:        "builtin__file_read",
 		Source:      "builtin",
 		Description: "Read the contents of a file. The file must be within the configured sandbox root.",
-		Roles:       []string{"parent", "child"}, // Policy will restrict children
+		Roles:       []string{"parent", "child"},
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -26,12 +29,16 @@ func FileReadTool() agentcore.Tool {
 }
 
 // FileWriteTool returns the tool definition for builtin__file_write.
+// Available to parent and child roles. The policy engine (tool_policy.rego)
+// permits child writes of non-executable content; file_write whose content or
+// target looks executable (shebang, .sh/.bash extension, ELF/Mach-O magic)
+// triggers the parent-approval flow.
 func FileWriteTool() agentcore.Tool {
 	return agentcore.Tool{
 		Name:        "builtin__file_write",
 		Source:      "builtin",
 		Description: "Write content to a file. The file must be within the configured sandbox root. Creates the file if it does not exist, overwrites if it does.",
-		Roles:       []string{"parent", "child"}, // Policy will restrict children
+		Roles:       []string{"parent", "child"},
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -50,12 +57,13 @@ func FileWriteTool() agentcore.Tool {
 }
 
 // FileStatTool returns the tool definition for builtin__file_stat.
+// Available to parent and child roles; policy permits child access.
 func FileStatTool() agentcore.Tool {
 	return agentcore.Tool{
 		Name:        "builtin__file_stat",
 		Source:      "builtin",
 		Description: "Retrieve file information (size, mode, modification time) for a file within the sandbox root.",
-		Roles:       []string{"parent", "child"}, // Policy will restrict children
+		Roles:       []string{"parent", "child"},
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -70,12 +78,13 @@ func FileStatTool() agentcore.Tool {
 }
 
 // FileListTool returns the tool definition for builtin__file_list.
+// Available to parent and child roles; policy permits child access.
 func FileListTool() agentcore.Tool {
 	return agentcore.Tool{
 		Name:        "builtin__file_list",
 		Source:      "builtin",
 		Description: "List files and directories in a given path within the sandbox root.",
-		Roles:       []string{"parent", "child"}, // Policy will restrict children
+		Roles:       []string{"parent", "child"},
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
