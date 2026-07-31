@@ -43,7 +43,7 @@ func migrateSandboxIfNecessary(base string) error {
 	baseClean := filepath.Clean(base)
 	marker := filepath.Join(baseClean, ".sandbox_migrated")
 	if _, err := os.Stat(marker); err == nil {
-		return nil // already migrated
+		return nil // already migrated (marker written only on successful completion)
 	}
 	legacyRoot := filepath.Join(baseClean, "conversations", "_legacy")
 	// Migrate users/ and groups/ from the old per-user/per-group layout.
@@ -94,7 +94,7 @@ func moveSandboxSubdir(base, name, dst string) error {
 		// both copies on a partial failure is the safe choice — it never
 		// looks like success.
 		if err := os.RemoveAll(oldPath); err != nil {
-			return fmt.Errorf("removing original after merge for %s: %w", name, err)
+			return fmt.Errorf("copy succeeded, but removing original after merge for %s failed: both source and destination hold files; migration will retry on next startup: %w", name, err)
 		}
 		return nil
 	}
@@ -135,9 +135,10 @@ func moveLooseSandboxFiles(base, legacyRoot string, readDir func(string) ([]os.D
 	// the shared sandbox root where every conversation could still read it.
 	const maxDrainPasses = 100
 	createdLegacy := false
+	totalMoved := 0
 	for pass := 0; ; pass++ {
 		if pass >= maxDrainPasses {
-			return fmt.Errorf("sandbox root %s still had loose files after %d passes", base, maxDrainPasses)
+			return fmt.Errorf("sandbox root %s still had loose files after %d passes (%d files moved total): new files may be continuously appearing", base, maxDrainPasses, totalMoved)
 		}
 		entries, err := readDir(base)
 		if err != nil {
