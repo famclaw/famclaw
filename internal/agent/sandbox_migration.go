@@ -133,8 +133,12 @@ func moveLooseSandboxFiles(base, legacyRoot string, readDir func(string) ([]os.D
 	// miss a file created between that snapshot and the move; re-scanning
 	// until a full pass moves nothing guarantees no loose file is left in
 	// the shared sandbox root where every conversation could still read it.
+	const maxDrainPasses = 100
 	createdLegacy := false
-	for {
+	for pass := 0; ; pass++ {
+		if pass >= maxDrainPasses {
+			return fmt.Errorf("sandbox root %s still had loose files after %d passes", base, maxDrainPasses)
+		}
 		entries, err := readDir(base)
 		if err != nil {
 			return fmt.Errorf("reading sandbox root: %w", err)

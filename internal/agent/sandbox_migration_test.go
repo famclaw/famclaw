@@ -6,6 +6,7 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,37 @@ func TestMigrateSandbox_LooseFilesDrainRace(t *testing.T) {
 			continue
 		}
 		t.Errorf("loose file %s left in shared sandbox root", e.Name())
+	}
+}
+
+// TestMoveLooseSandboxFiles_MaxDrainPasses verifies that the drain loop
+// terminates after maxDrainPasses iterations to prevent hanging on infinite
+// file creation loops.
+func TestMoveLooseSandboxFiles_MaxDrainPasses(t *testing.T) {
+	base := t.TempDir()
+	legacyRoot := filepath.Join(base, "conversations", "_legacy")
+
+	// Create a fake readDir that always returns a new file on each call
+	// to simulate continuous file creation (this would cause an infinite loop
+	// without the pass limit).
+	passCount := 0
+	fakeReadDir := func(dir string) ([]os.DirEntry, error) {
+		passCount++
+		// Create a new file on each pass to simulate the problem
+		if passCount <= 101 { // Allow up to 101 passes to trigger the error
+			fileName := fmt.Sprintf("pass_%d.txt", passCount)
+			mustWrite(t, filepath.Join(base, fileName), "test content")
+		}
+		// Return all files in the directory
+		return os.ReadDir(dir)
+	}
+
+	err := moveLooseSandboxFiles(base, legacyRoot, fakeReadDir)
+	if err == nil {
+		t.Fatal("expected error due to max drain passes exceeded")
+	}
+	if !strings.Contains(err.Error(), "still had loose files after 100 passes") {
+		t.Fatalf("expected max passes error, got: %v", err)
 	}
 }
 
