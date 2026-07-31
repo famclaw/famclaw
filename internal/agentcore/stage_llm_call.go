@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/famclaw/famclaw/internal/llm"
@@ -36,7 +37,12 @@ func NewStageLLMCall(deps LLMCallDeps) Stage {
 			// without tools, then feed the description back as text into the
 			// tool-enabled call. See data/fc-vision-plus-tools/report.md.
 			if desc, err := describeImageIfPresent(ctx, client, llmMsgs, deps.Temperature, deps.MaxTokens); err != nil {
-				return fmt.Errorf("LLM error: %w", err)
+				// A transient vision hiccup must not deny the user a reply.
+				// Log the error, drop the image, and continue as a text-only
+				// turn — the fallback note tells the model the image was
+				// unreadable so it can ask the user to describe it.
+				log.Printf("[agentcore][stage_llm_call] vision describe failed: %v - dropping image, continuing as text-only", err)
+				llmMsgs = withImageDescription(llmMsgs, visionDescribeFallback)
 			} else if desc != "" {
 				llmMsgs = withImageDescription(llmMsgs, desc)
 			}
@@ -130,6 +136,12 @@ const visionDescMaxTokens = 1000
 // the response focused and factual.
 const visionDescInstruction = "Describe the image above factually and concisely: the objects, their colors, any text, and their spatial arrangement. Do not act, do not call tools, do not speculate."
 
+// visionDescribeFallback is the text substituted for the image when the
+// describe step fails. Dropping the image content parts without a note
+// would let the model answer as if no picture were attached; the note
+// ensures the user knows the image was ignored and can describe it.
+const visionDescribeFallback = "Note: I could not read the image you attached. Please describe what you'd like me to do with it."
+
 // hasImageParts reports whether any message carries an image_url content
 // part.
 func hasImageParts(msgs []llm.Message) bool {
@@ -147,9 +159,8 @@ func hasImageParts(msgs []llm.Message) bool {
 // list contains images. It sends the image with NO tools (gemma-4-26b
 // silently fails image+tools) and returns the model's description.
 // When the message list has no images, it returns "" and makes no LLM
-// call. The maxTokens argument is the caller's configured response budget;
-// the description step uses at least visionDescMaxTokens so the reasoning
-// budget can never starve the content field.
+// call. The description step always uses a fixed budget of
+// visionDescMaxTokens, independent of the caller's MaxTokens.
 func describeImageIfPresent(ctx context.Context, client llm.Chatter, msgs []llm.Message, temp float64, maxTokens int) (string, error) {
 	if !hasImageParts(msgs) {
 		return "", nil
@@ -180,10 +191,13 @@ func describeImageIfPresent(ctx context.Context, client llm.Chatter, msgs []llm.
 			),
 		}
 	}
+	// Fixed budget, independent of the caller's MaxTokens: not a floor
+	// (which would balloon spend to 4096 on a high-token caller) and not
+	// a min() (which would starve below the ~900 the thinking model needs
+	// to emit content). 1000 is the firstmate-measured safe floor per
+	// data/fc-vision-plus-tools/report.md.
+	_ = maxTokens // reserved for future caller-aware tuning; do not min() here
 	descMaxTokens := visionDescMaxTokens
-	if maxTokens > descMaxTokens {
-		descMaxTokens = maxTokens
-	}
 	msg, err := client.ChatWithTools(ctx, descMsgs, temp, descMaxTokens, nil)
 	if err != nil {
 		return "", fmt.Errorf("vision describe step: %w", err)

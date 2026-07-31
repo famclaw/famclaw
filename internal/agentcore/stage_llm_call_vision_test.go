@@ -28,6 +28,7 @@ type mockStageChatter struct {
 	withToolsCalls []mockStageCall
 	chatCalled     bool
 	describeResp   string
+	describeErr    error
 	toolResp       *llm.Message
 	chatResp       string
 }
@@ -52,6 +53,9 @@ func (m *mockStageChatter) ChatWithTools(_ context.Context, msgs []llm.Message, 
 	defer m.mu.Unlock()
 	m.withToolsCalls = append(m.withToolsCalls, mockStageCall{maxTokens: maxTokens, tools: tools, msgs: msgs})
 	if len(tools) == 0 {
+		if m.describeErr != nil {
+			return nil, m.describeErr
+		}
 		return &llm.Message{Role: "assistant", Content: m.describeResp}, nil
 	}
 	return m.toolResp, nil
@@ -156,7 +160,8 @@ func TestStageLLMCall_VisionTwoStep(t *testing.T) {
 				t.Errorf("Chat called = %v, want %v", mock.chatCalled, tt.wantChatCalled)
 			}
 
-			// The describe step must be sent without tools.
+			// The describe step must be sent without tools and with a
+			// fixed budget of visionDescMaxTokens regardless of caller.
 			if tt.wantDescribeNoTools {
 				if len(mock.withToolsCalls) < 1 {
 					t.Fatal("expected at least 1 ChatWithTools call")
@@ -165,8 +170,8 @@ func TestStageLLMCall_VisionTwoStep(t *testing.T) {
 				if len(first.tools) != 0 {
 					t.Errorf("describe step had %d tools, want 0 (must be sent without tools)", len(first.tools))
 				}
-				if first.maxTokens < visionDescMaxTokens {
-					t.Errorf("describe step maxTokens = %d, want >= %d", first.maxTokens, visionDescMaxTokens)
+				if first.maxTokens != visionDescMaxTokens {
+					t.Errorf("describe step maxTokens = %d, want %d (fixed budget, independent of caller)", first.maxTokens, visionDescMaxTokens)
 				}
 				if !hasImageParts(first.msgs) {
 					t.Error("describe step messages must contain the image")
@@ -238,44 +243,107 @@ func TestStageLLMCall_VisionTwoStep(t *testing.T) {
 	}
 }
 
-// TestStageLLMCall_VisionDescribeTokenBudget verifies that the describe
-// step always gets at least visionDescMaxTokens (>=900) even when the
-// configured MaxTokens is smaller. This guards against the gemma-4-26b
-// trap where a small token budget causes reasoning to consume the entire
-// window and content comes back empty.
-func TestStageLLMCall_VisionDescribeTokenBudget(t *testing.T) {
+// TestStageLLMCall_VisionDescribeFixedBudget verifies that the describe
+// step always uses visionDescMaxTokens (1000), regardless of the caller's
+// MaxTokens. A large caller budget (4096) must be capped — never balloon
+// spend. This guards the captain's limited-VRAM concern.
+func TestStageLLMCall_VisionDescribeFixedBudget(t *testing.T) {
+	tests := []struct {
+		name      string
+		callerMax int
+	}{
+		{"caller asks 4096 → capped at 1000", 4096},
+		{"caller asks 100 → still 1000 (not floored, not min)", 100},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockStageChatter{
+				describeResp: "A red ball",
+				toolResp: &llm.Message{
+					Role: "assistant",
+					ToolCalls: []llm.ToolCall{{
+						ID:       "call_1",
+						Function: llm.ToolCallFunction{Name: "echo", Arguments: map[string]any{"text": "red ball"}},
+					}},
+				},
+			}
+			turn := &Turn{
+				User:     &config.UserConfig{Name: "parent", Role: "parent"},
+				Tools:    []Tool{{Name: "builtin__echo", Description: "echo", InputSchema: map[string]any{"type": "object"}}},
+				Messages: []Message{{Role: "system", Content: "sys"}, imageMsg("hi")},
+			}
+			stage := NewStageLLMCall(LLMCallDeps{
+				ClientFactory: func(*Turn) llm.Chatter { return mock },
+				Temperature:   0.7,
+				MaxTokens:     tt.callerMax,
+			})
+			if err := stage(context.Background(), turn); err != nil {
+				t.Fatalf("stage: %v", err)
+			}
+			if len(mock.withToolsCalls) != 2 {
+				t.Fatalf("expected 2 ChatWithTools calls, got %d", len(mock.withToolsCalls))
+			}
+			describeCall := mock.withToolsCalls[0]
+			if describeCall.maxTokens != visionDescMaxTokens {
+				t.Errorf("describe step maxTokens = %d, want %d (fixed budget regardless of caller MaxTokens=%d)", describeCall.maxTokens, visionDescMaxTokens, tt.callerMax)
+			}
+			if len(describeCall.tools) != 0 {
+				t.Errorf("describe step should have 0 tools, got %d", len(describeCall.tools))
+			}
+		})
+	}
+}
+
+// TestStageLLMCall_VisionDescribeErrorFallback verifies that when the
+// describe step fails (e.g. transient vision hiccup), the stage does
+// NOT fail the whole turn. Instead it logs the error, drops the image,
+// and continues as a text-only turn so the user still gets a reply —
+// with a note that the image could not be read.
+func TestStageLLMCall_VisionDescribeErrorFallback(t *testing.T) {
+	describeErr := errors.New("vision model timeout")
 	mock := &mockStageChatter{
-		describeResp: "A red ball",
+		describeErr: describeErr,
 		toolResp: &llm.Message{
-			Role: "assistant",
-			ToolCalls: []llm.ToolCall{{
-				ID:       "call_1",
-				Function: llm.ToolCallFunction{Name: "echo", Arguments: map[string]any{"text": "red ball"}},
-			}},
+			Role:    "assistant",
+			Content: "I'll need you to describe the image then.",
 		},
 	}
 	turn := &Turn{
 		User:     &config.UserConfig{Name: "parent", Role: "parent"},
 		Tools:    []Tool{{Name: "builtin__echo", Description: "echo", InputSchema: map[string]any{"type": "object"}}},
-		Messages: []Message{{Role: "system", Content: "sys"}, imageMsg("hi")},
+		Messages: []Message{{Role: "system", Content: "sys"}, imageMsg("add this to my inventory")},
 	}
 	stage := NewStageLLMCall(LLMCallDeps{
 		ClientFactory: func(*Turn) llm.Chatter { return mock },
 		Temperature:   0.7,
-		MaxTokens:     100, // deliberately small — describe step must still get >=900
+		MaxTokens:     512,
 	})
-	if err := stage(context.Background(), turn); err != nil {
-		t.Fatalf("stage: %v", err)
+	err := stage(context.Background(), turn)
+	if err != nil {
+		t.Fatalf("stage should not fail when describe step errors: %v", err)
 	}
 	if len(mock.withToolsCalls) != 2 {
-		t.Fatalf("expected 2 ChatWithTools calls, got %d", len(mock.withToolsCalls))
+		t.Fatalf("expected 2 ChatWithTools calls (describe + tool), got %d", len(mock.withToolsCalls))
 	}
-	describeCall := mock.withToolsCalls[0]
-	if describeCall.maxTokens < visionDescMaxTokens {
-		t.Errorf("describe step maxTokens = %d, want >= %d", describeCall.maxTokens, visionDescMaxTokens)
+	// The tool-step messages must have no image.
+	second := mock.withToolsCalls[1]
+	if hasImageParts(second.msgs) {
+		t.Error("tool-step messages must NOT contain the image after describe failure")
 	}
-	if len(describeCall.tools) != 0 {
-		t.Errorf("describe step should have 0 tools, got %d", len(describeCall.tools))
+	// The tool-step messages must contain the fallback note.
+	found := false
+	for _, m := range second.msgs {
+		if strings.Contains(m.Content, "could not read the image") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("tool-step messages must contain the fallback note about unreadable image")
+	}
+	// The stage must not have returned an error.
+	if turn.Output == "" {
+		t.Error("turn.Output should not be empty (model should still respond)")
 	}
 }
 
