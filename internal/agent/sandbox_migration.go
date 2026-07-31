@@ -46,7 +46,7 @@ func migrateSandboxIfNecessary(base string) error {
 		return nil // already migrated (marker written only on successful completion)
 	}
 	legacyRoot := filepath.Join(baseClean, "conversations", "_legacy")
-
+	
 	// Freeze the source by staging it first
 	staging := baseClean + ".migrating"
 	if _, err := os.Stat(staging); os.IsNotExist(err) {
@@ -58,6 +58,16 @@ func migrateSandboxIfNecessary(base string) error {
 	}
 	if err := os.MkdirAll(baseClean, 0o700); err != nil {
 		return fmt.Errorf("recreating sandbox root: %w", err)
+	}
+
+	// Preserve existing conversations/ tree in staging to avoid data loss
+	// This ensures live conversation data isn't lost during migration
+	stagingConversations := filepath.Join(staging, "conversations")
+	baseConversations := filepath.Join(baseClean, "conversations")
+	if _, err := os.Stat(stagingConversations); err == nil {
+		if err := os.Rename(stagingConversations, baseConversations); err != nil {
+			return fmt.Errorf("preserving conversations tree: %w", err)
+		}
 	}
 
 	// Migrate users/ and groups/ from the old per-user/per-group layout.

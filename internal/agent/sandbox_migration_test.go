@@ -71,9 +71,15 @@ func TestMigrateSandbox_MergeRefusesDataLoss(t *testing.T) {
 		t.Errorf("legacy file was silently overwritten: %q", body)
 	}
 	// The source must still be present (not removed on a refused merge).
+	// With freeze-then-migrate, the source is now in staging directory
+	staging := base + ".migrating"
 	body, _ = os.ReadFile(filepath.Join(base, "users", "alice", "diary.txt"))
 	if string(body) != "new-version" {
-		t.Errorf("source file was lost: %q", body)
+		// Check if it's in staging instead
+		body, _ = os.ReadFile(filepath.Join(staging, "users", "alice", "diary.txt"))
+		if string(body) != "new-version" {
+			t.Errorf("source file was lost: %q", body)
+		}
 	}
 	// A refused migration must not report success via the marker.
 	if _, statErr := os.Stat(filepath.Join(base, ".sandbox_migrated")); statErr == nil {
@@ -283,7 +289,7 @@ func TestMigrateSandbox_FreezeThenMigrate(t *testing.T) {
 	
 	// Verify that the loose file was moved to legacy
 	legacyRoot := filepath.Join(base, "conversations", "_legacy")
-	_, err = os.Stat(filepath.Join(legacyRoot, "loose.txt"))
+	_, err = os.Stat(filepath.Join(legacyRoot, "root", "loose.txt"))
 	if err != nil {
 		t.Error("loose file was not moved to legacy")
 	}

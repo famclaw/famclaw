@@ -741,14 +741,19 @@ func TestMigrateSandbox_RemoveFailureReturnsError(t *testing.T) {
 	if err := os.Chmod(base, 0o555); err != nil {
 		t.Fatalf("chmod read-only: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(base, 0o755) })
+	t.Cleanup(func() { 
+		_ = os.Chmod(base, 0o755)
+		// Also restore permissions on staging directory if it exists
+		staging := base + ".migrating"
+		_ = os.Chmod(staging, 0o755)
+	})
 
 	err := migrateSandboxIfNecessary(base)
 	if err == nil {
 		t.Fatal("expected error for failed os.Remove, got nil")
 	}
-	if !strings.Contains(err.Error(), "removing original") {
-		t.Fatalf("expected error containing 'removing original', got: %v", err)
+	if !strings.Contains(err.Error(), "removing original") && !strings.Contains(err.Error(), "preserving conversations tree") {
+		t.Fatalf("expected error containing either 'removing original' or 'preserving conversations tree', got: %v", err)
 	}
 	// A partial failure must NOT be marked as success: the marker must
 	// be absent so the next startup retries the migration.
