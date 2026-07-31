@@ -49,9 +49,12 @@ type Message struct {
 }
 
 // MarshalJSON implements custom JSON marshaling for Message.
-// If ContentParts is set (non-nil and non-empty), it is used for the "content" field.
-// Otherwise, the Content string field is used. This maintains backward compatibility
-// for text-only messages while enabling multimodal content.
+// If ContentParts is set (non-nil and non-empty), it is used for the "content"
+// field as an array (multimodal). Otherwise, the Content string field is used.
+//
+// Non-assistant roles (system, user, tool) always emit a "content" key, even
+// when empty — llama-server rejects messages that omit it, while assistant
+// messages may legitimately omit content when they carry only tool_calls.
 func (m Message) MarshalJSON() ([]byte, error) {
 	// If ContentParts is set and non-empty, use it
 	if m.ContentParts != nil && len(m.ContentParts) > 0 {
@@ -70,16 +73,28 @@ func (m Message) MarshalJSON() ([]byte, error) {
 		})
 	}
 
-	// Otherwise, fall back to the original behavior using Content string
+	// Non-assistant roles (system, user, tool) must always emit a "content"
+	// key, even when empty. llama-server (and llama.cpp) reject requests whose
+	// non-assistant messages omit content ("All non-assistant messages must
+	// contain 'content'"), whereas vLLM tolerates the omission — which is why
+	// this only surfaced when switching to a llama.cpp-backed model. Assistant
+	// messages legitimately omit content when they carry only tool_calls, so
+	// for them we keep the historical omitempty behavior. A *string lets us
+	// distinguish "explicitly empty" (emit "") from "omit" (nil).
+	contentPtr := &m.Content
+	if m.Role == "assistant" && m.Content == "" {
+		contentPtr = nil
+	}
+
 	return json.Marshal(struct {
 		Role             string     `json:"role"`
-		Content          string     `json:"content,omitempty"`
+		Content          *string    `json:"content,omitempty"`
 		ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 		ToolCallID       string     `json:"tool_call_id,omitempty"`
 		ReasoningContent string     `json:"reasoning_content,omitempty"`
 	}{
 		Role:             m.Role,
-		Content:          m.Content,
+		Content:          contentPtr,
 		ToolCalls:        m.ToolCalls,
 		ToolCallID:       m.ToolCallID,
 		ReasoningContent: m.ReasoningContent,
