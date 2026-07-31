@@ -266,3 +266,115 @@ func TestCopyFile_RoundTrip(t *testing.T) {
 		t.Errorf("mode mismatch: got %#o want 0640", m)
 	}
 }
+
+func TestMigrateSandbox_FreezeThenMigrate(t *testing.T) {
+	base := t.TempDir()
+	// Create a file in the sandbox root that would be affected by the drain loop.
+	mustWrite(t, filepath.Join(base, "loose.txt"), "content")
+	// Create a user directory that would be migrated.
+	mustMkdir(t, filepath.Join(base, "users", "alice"))
+	mustWrite(t, filepath.Join(base, "users", "alice", "diary.txt"), "alice's diary")
+	
+	// Run migration - should succeed and move files to legacy
+	err := migrateSandboxIfNecessary(base)
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	
+	// Verify that the loose file was moved to legacy
+	legacyRoot := filepath.Join(base, "conversations", "_legacy")
+	_, err = os.Stat(filepath.Join(legacyRoot, "loose.txt"))
+	if err != nil {
+		t.Error("loose file was not moved to legacy")
+	}
+	
+	// Verify that user files were moved to legacy
+	_, err = os.Stat(filepath.Join(legacyRoot, "users", "alice", "diary.txt"))
+	if err != nil {
+		t.Error("user file was not moved to legacy")
+	}
+	
+	// Verify that the sandbox root is empty after migration
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatalf("failed to read sandbox root: %v", err)
+	}
+	if len(entries) != 2 { // conversations and .sandbox_migrated
+		t.Errorf("expected sandbox root to be empty after migration, got %d entries", len(entries))
+	}
+}
+
+func TestMigrateSandbox_FreezesSource(t *testing.T) {
+	base := t.TempDir()
+	
+	// Create a file that would cause a race condition if not frozen
+	mustWrite(t, filepath.Join(base, "loose.txt"), "content")
+	mustMkdir(t, filepath.Join(base, "users", "alice"))
+	mustWrite(t, filepath.Join(base, "users", "alice", "diary.txt"), "alice's diary")
+	
+	// Run migration - should succeed
+	err := migrateSandboxIfNecessary(base)
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	
+	// Check that migration marker exists
+	_, err = os.Stat(filepath.Join(base, ".sandbox_migrated"))
+	if err != nil {
+		t.Error("migration marker was not created")
+	}
+}
+
+func TestMigrateSandbox_IdempotentAfterFreeze(t *testing.T) {
+	base := t.TempDir()
+	
+	// Create initial files
+	mustWrite(t, filepath.Join(base, "loose.txt"), "content")
+	mustMkdir(t, filepath.Join(base, "users", "alice"))
+	mustWrite(t, filepath.Join(base, "users", "alice", "diary.txt"), "alice's diary")
+	
+	// Run migration first time
+	err := migrateSandboxIfNecessary(base)
+	if err != nil {
+		t.Fatalf("first migration failed: %v", err)
+	}
+	
+	// Run migration second time - should be idempotent
+	err = migrateSandboxIfNecessary(base)
+	if err != nil {
+		t.Fatalf("second migration failed: %v", err)
+	}
+	
+	// Should still have the marker
+	_, err = os.Stat(filepath.Join(base, ".sandbox_migrated"))
+	if err != nil {
+		t.Error("migration marker was lost after second run")
+	}
+}
+
+func TestMigrateSandbox_StagingDirectoryRemoved(t *testing.T) {
+	base := t.TempDir()
+	
+	// Create some files to migrate
+	mustWrite(t, filepath.Join(base, "loose.txt"), "content")
+	mustMkdir(t, filepath.Join(base, "users", "alice"))
+	
+	// Run migration
+	err := migrateSandboxIfNecessary(base)
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	
+	// Check that staging directory was removed
+	staging := base + ".migrating"
+	_, err = os.Stat(staging)
+	if err == nil {
+		t.Error("staging directory was not removed after migration")
+	}
+	
+	// Check that migration marker exists
+	_, err = os.Stat(filepath.Join(base, ".sandbox_migrated"))
+	if err != nil {
+		t.Error("migration marker was not created")
+	}
+}

@@ -46,15 +46,34 @@ func migrateSandboxIfNecessary(base string) error {
 		return nil // already migrated (marker written only on successful completion)
 	}
 	legacyRoot := filepath.Join(baseClean, "conversations", "_legacy")
+
+	// Freeze the source by staging it first
+	staging := baseClean + ".migrating"
+	if _, err := os.Stat(staging); os.IsNotExist(err) {
+		if err := os.Rename(baseClean, staging); err != nil {
+			return fmt.Errorf("staging sandbox root: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("checking staging dir: %w", err)
+	}
+	if err := os.MkdirAll(baseClean, 0o700); err != nil {
+		return fmt.Errorf("recreating sandbox root: %w", err)
+	}
+
 	// Migrate users/ and groups/ from the old per-user/per-group layout.
 	for _, sub := range []string{"users", "groups"} {
-		if err := moveSandboxSubdir(baseClean, sub, filepath.Join(legacyRoot, sub)); err != nil {
+		if err := moveSandboxSubdir(staging, sub, filepath.Join(legacyRoot, sub)); err != nil {
 			return fmt.Errorf("migrating %s sandbox: %w", sub, err)
 		}
 	}
 	// Migrate loose files in the flat root (regular files only).
-	if err := moveLooseSandboxFiles(baseClean, legacyRoot, os.ReadDir); err != nil {
+	if err := moveLooseSandboxFiles(staging, legacyRoot, os.ReadDir); err != nil {
 		return fmt.Errorf("migrating loose sandbox files: %w", err)
+	}
+
+	// Remove the staging directory after successful migration
+	if err := os.RemoveAll(staging); err != nil {
+		return fmt.Errorf("cleaning up staging dir: %w", err)
 	}
 	if err := os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)), 0o600); err != nil {
 		return fmt.Errorf("writing migration marker: %w", err)
