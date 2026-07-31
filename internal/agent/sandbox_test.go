@@ -750,4 +750,9 @@ func TestMigrateSandbox_RemoveFailureReturnsError(t *testing.T) {
 	if !strings.Contains(err.Error(), "removing original") {
 		t.Fatalf("expected error containing 'removing original', got: %v", err)
 	}
+	// A partial failure must NOT be marked as success: the marker must
+	// be absent so the next startup retries the migration.
+	if _, statErr := os.Stat(filepath.Join(base, ".sandbox_migrated")); statErr == nil {
+		t.Error("migration marker must not be written on partial failure")
+	}
 }
