@@ -43,10 +43,20 @@ func migrateSandboxIfNecessary(base string) error {
 	baseClean := filepath.Clean(base)
 	marker := filepath.Join(baseClean, ".sandbox_migrated")
 	if _, err := os.Stat(marker); err == nil {
+		// Already migrated - but check if we have an orphaned staging directory
+		// that needs cleanup to prevent data loss in edge cases
+		staging := baseClean + ".migrating"
+		if _, err := os.Stat(staging); err == nil {
+			// Staging directory exists but marker already exists - clean it up
+			// to prevent orphaned staging dirs that could cause confusion or data loss
+			if err := os.RemoveAll(staging); err != nil {
+				return fmt.Errorf("cleaning up orphaned staging dir: %w", err)
+			}
+		}
 		return nil // already migrated (marker written only on successful completion)
 	}
 	legacyRoot := filepath.Join(baseClean, "conversations", "_legacy")
-	
+
 	// Freeze the source by staging it first
 	staging := baseClean + ".migrating"
 	if _, err := os.Stat(staging); os.IsNotExist(err) {

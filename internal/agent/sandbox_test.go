@@ -741,7 +741,7 @@ func TestMigrateSandbox_RemoveFailureReturnsError(t *testing.T) {
 	if err := os.Chmod(base, 0o555); err != nil {
 		t.Fatalf("chmod read-only: %v", err)
 	}
-	t.Cleanup(func() { 
+	t.Cleanup(func() {
 		_ = os.Chmod(base, 0o755)
 		// Also restore permissions on staging directory if it exists
 		staging := base + ".migrating"
