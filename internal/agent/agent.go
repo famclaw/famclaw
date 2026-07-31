@@ -174,11 +174,6 @@ func computeEffectiveSandboxRoot(cfg *config.Config, msgCtx gateway.MsgContext) 
 	case "global":
 		return base, nil
 	case "conversation":
-		// If no gateway is provided, return the base without error
-		// to avoid breaking deployments where Gateway is not populated
-		if msgCtx.Gateway == "" {
-			return base, nil
-		}
 		return conversationSandboxRoot(base, msgCtx)
 	default:
 		return "", fmt.Errorf("invalid sandbox scope %q", scope)
