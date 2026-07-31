@@ -43,11 +43,11 @@ func setupResearchAgent(t *testing.T, sender gateway.Sender) *Agent {
 
 func TestBuildResearchDeliverable(t *testing.T) {
 	tests := []struct {
-		name        string
-		state       store.ResearchStatusState
-		resultText  string
-		timeoutSec  int
-		wantSubstr  string
+		name       string
+		state      store.ResearchStatusState
+		resultText string
+		timeoutSec int
+		wantSubstr string
 	}{
 		{name: "completed", state: store.ResearchStatusCompleted, resultText: "odyssey not playing", timeoutSec: 300, wantSubstr: "🔬 Research task agent-1 completed:\nodyssey not playing"},
 		{name: "failed", state: store.ResearchStatusFailed, resultText: "HTTP 404", timeoutSec: 300, wantSubstr: "❌ Research task agent-1 failed: HTTP 404"},
@@ -71,9 +71,9 @@ func TestClassifySubagentResult(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 
 	tests := []struct {
-		name     string
-		result   subagent.Result
-		ctx      context.Context
+		name      string
+		result    subagent.Result
+		ctx       context.Context
 		wantState store.ResearchStatusState
 	}{
 		{name: "success", result: subagent.Result{Output: "ok"}, ctx: context.Background(), wantState: store.ResearchStatusCompleted},

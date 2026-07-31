@@ -144,6 +144,7 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 - The `web` server has a `handleHealth` function for health checks.
 - The `web` server has a `handleRoot` function for root redirection.
 - The `web` server has a `handleSetupDetect`, `handleSetupPIN`, and `handleSetupUnlock` functions for setup.
+- `file_*` tools are confined per-conversation (`conversations/<gateway>/<identity>`), not per-user. The `conversationSandboxRoot` function in `internal/agent/agent.go` sanitizes gateway/external-ID/group-ID with a strict `[A-Za-z0-9._-]` allowlist and asserts containment. Family facts and user memories are global — partitioning only affects `file_*` tools. Legacy per-user/per-group directories are migrated to `conversations/_legacy/` by `MigrateSandbox` at startup (`cmd/famclaw/main.go`).
 
 ---
 

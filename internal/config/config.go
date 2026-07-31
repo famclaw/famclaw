@@ -607,13 +607,13 @@ func (c *Config) Validate() error {
 	}
 	// Validate sandbox scope if set.
 	if c.Tools.SandboxScope == "" {
-		c.Tools.SandboxScope = "user" // default to user
+		c.Tools.SandboxScope = "conversation" // default to per-conversation isolation
 	}
 	switch c.Tools.SandboxScope {
-	case "user", "group", "global":
+	case "global", "conversation":
 		// valid
 	default:
-		return fmt.Errorf("tools.sandbox_scope must be one of \"user\", \"group\", or \"global\" (got %q)", c.Tools.SandboxScope)
+		return fmt.Errorf("tools.sandbox_scope must be one of \"global\" or \"conversation\" (got %q)", c.Tools.SandboxScope)
 	}
 	return nil
 }

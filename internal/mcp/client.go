@@ -39,10 +39,10 @@ type Client struct {
 	// OS sandboxing when kernel support is missing. This is an explicit opt-in
 	// for platforms like macOS that lack landlock/seccomp, with a loud warning.
 	AllowUnconfined bool
-	env     map[string]string // per-skill credential env vars
-	inner   client.MCPClient
-	tools   []mcp.Tool
-	closed  bool
+	env             map[string]string // per-skill credential env vars
+	inner           client.MCPClient
+	tools           []mcp.Tool
+	closed          bool
 }
 
 // checkLandlockSupport returns true if Landlock is supported on the current system

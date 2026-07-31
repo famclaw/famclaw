@@ -187,11 +187,14 @@ If the host kernel lacks landlock or seccomp support, FamClaw refuses to start r
 
 The built-in file tools (`file_read`, `file_write`, `file_stat`, `file_list`) are confined to the sandbox root via path resolution in the agent layer. Any attempt to access a path outside the sandbox root results in an error.
 
-**Per-user / per-group isolation.** Each user (and group, where applicable) is confined to its own subdirectory under the sandbox root, so one family member's file tools cannot read another's files. The sandbox identity is allowlisted and containment is asserted before any file operation.
+**Per-conversation isolation.** Each DM and each channel/group is confined to its own subdirectory under the sandbox root (`conversations/<gateway>/<identity>`), so one conversation cannot read another conversation's files. The conversation identity (gateway, external ID, group ID) is allowlisted via a strict `[A-Za-z0-9._-]` character set and containment is asserted before any file operation. Family facts and user memories remain global — partitioning only affects the `file_*` tools.
+
+> **Containment is Go-level only.** Landlock applies solely to MCP stdio-server subprocesses launched through the `-sandbox-launcher`; the `file_*` handlers run in the main process and are guarded only by `confinePath` path validation. A crafted gateway ID or group ID cannot traverse out of its subtree because the identity is sanitized before any path is constructed.
 
 ### Configuration
 
-- `tools.sandbox.root`: Absolute path to the sandbox directory. Defaults to `<database_directory>/skill_sandbox`.
+- `tools.sandbox.root`: Absolute path to the sandbox directory. Defaults to `./data/sandbox`.
+- `tools.sandbox_scope`: How file-tool access is partitioned. `conversation` (default) gives each DM and each channel/group its own subdirectory (`conversations/<gateway>/<identity>`); `global` uses a single shared directory. Legacy per-user/per-group subdirectories are migrated to `conversations/_legacy/` on first boot.
 - `tools.sandbox.enabled`: Boolean flag to enable/disable the sandbox launcher for stdio MCP servers. Defaults to `true` (secure-by-default).
 - `tools.sandbox.allow_unconfined`: If set to `true`, the sandbox launcher will skip applying restrictions when kernel support is missing (not recommended). Defaults to `false`.
 

@@ -462,18 +462,18 @@ func (d *DB) DeleteQuarantine(scanTarget string) error {
 // ── Approvals ─────────────────────────────────────────────────────────────────
 
 type Approval struct {
-	ID           string `json:"id"`
-	UserName     string `json:"user_name"`
-	UserDisplay  string `json:"user_display"`
-	AgeGroup     string `json:"age_group"`
-	Category     string `json:"category"`
-	QueryText    string `json:"query_text"`
-	Status       string `json:"status"`
+	ID           string    `json:"id"`
+	UserName     string    `json:"user_name"`
+	UserDisplay  string    `json:"user_display"`
+	AgeGroup     string    `json:"age_group"`
+	Category     string    `json:"category"`
+	QueryText    string    `json:"query_text"`
+	Status       string    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	ExpiresAt    time.Time `json:"expires_at"`
-	DecidedBy    string `json:"decided_by"`
-	DecisionNote string `json:"decision_note"`
+	DecidedBy    string    `json:"decided_by"`
+	DecisionNote string    `json:"decision_note"`
 }
 
 // UpsertApproval inserts a new approval request or returns the existing one.
@@ -1284,17 +1284,17 @@ func scanTodo(rows *sql.Rows) (*Todo, error) {
 
 // Reminder represents a pending or dispatched reminder.
 type Reminder struct {
-	ID            int64
-	UserName      string
-	Gateway       string
-	ExternalID    string
-	GroupID       string
-	IsGroup       bool
-	Message       string
-	DueAt         time.Time
-	Dispatched    bool
-	DispatchedAt  *time.Time
-	CreatedAt     time.Time
+	ID           int64
+	UserName     string
+	Gateway      string
+	ExternalID   string
+	GroupID      string
+	IsGroup      bool
+	Message      string
+	DueAt        time.Time
+	Dispatched   bool
+	DispatchedAt *time.Time
+	CreatedAt    time.Time
 }
 
 // CreateReminder inserts a new reminder.
@@ -1419,10 +1419,10 @@ func (d *DB) DeleteReminder(ctx context.Context, id int64) error {
 type ResearchStatusState string
 
 const (
-	ResearchStatusRunning  ResearchStatusState = "running"
+	ResearchStatusRunning   ResearchStatusState = "running"
 	ResearchStatusCompleted ResearchStatusState = "completed"
-	ResearchStatusFailed   ResearchStatusState = "failed"
-	ResearchStatusTimedOut ResearchStatusState = "timed_out"
+	ResearchStatusFailed    ResearchStatusState = "failed"
+	ResearchStatusTimedOut  ResearchStatusState = "timed_out"
 )
 
 // ResearchStatus is a persistent record of a spawned research task.

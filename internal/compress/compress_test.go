@@ -285,8 +285,8 @@ func TestCompressKeepsImageMessageWithinBudget(t *testing.T) {
 	msgs = append(msgs, imgMsg)
 
 	compressed := Compress(msgs, Options{
-		ContextWindow:  200,
-		Estimator:      est,
+		ContextWindow:   200,
+		Estimator:       est,
 		EstimatorMargin: 0,
 	})
 

@@ -217,7 +217,7 @@ func sandboxDecision(allowUnconfined, landlockOK, seccompOK bool) (proceed bool,
 	if landlockOK && seccompOK {
 		return true, false, nil
 	}
-	
+
 	// Support missing AND allowUnconfined=false -> (false,false,<fail-closed error>)
 	if !allowUnconfined {
 		if !landlockOK {
@@ -227,7 +227,7 @@ func sandboxDecision(allowUnconfined, landlockOK, seccompOK bool) (proceed bool,
 			return false, false, fmt.Errorf("sandbox: kernel lacks seccomp support, refusing to start MCP servers with sandbox enabled (set tools.sandbox.allow_unconfined=true to allow unconfined execution as explicit opt-in)")
 		}
 	}
-	
+
 	// Support missing AND allowUnconfined=true -> (true,true,nil)
 	return true, true, nil
 }
