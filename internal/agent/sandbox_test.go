@@ -716,3 +716,38 @@ func TestMigrateSandbox_NoopOnEmpty(t *testing.T) {
 		t.Errorf("legacy dir should not exist on empty: %v", err)
 	}
 }
+
+// TestMigrateSandbox_RemoveFailureReturnsError verifies that when os.Remove
+// fails on a loose file (e.g. the parent directory is read-only), the
+// migration returns an error rather than silently swallowing it. A swallowed
+// error would leave the file in the old shared root where every conversation
+// can still read it, silently defeating the per-conversation isolation.
+//
+// This cannot be portably simulated on root (which bypasses directory
+// permissions), so the test skips in that case.
+func TestMigrateSandbox_RemoveFailureReturnsError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("cannot simulate remove failure as root — root bypasses directory permissions")
+	}
+	base := t.TempDir()
+	// Pre-create the legacy destination so moveLooseSandboxFiles does not
+	// need to mkdir (which would also fail on a read-only base).
+	legacyPath := filepath.Join(base, "conversations", "_legacy", "root")
+	mustMkdir(t, legacyPath)
+	// Place a loose file in the flat root.
+	mustWrite(t, filepath.Join(base, "loose.txt"), "data")
+	// Make the base directory read-only so os.Remove fails. Restore for
+	// cleanup so t.TempDir can remove the tree.
+	if err := os.Chmod(base, 0o555); err != nil {
+		t.Fatalf("chmod read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(base, 0o755) })
+
+	err := migrateSandboxIfNecessary(base)
+	if err == nil {
+		t.Fatal("expected error for failed os.Remove, got nil")
+	}
+	if !strings.Contains(err.Error(), "removing original") {
+		t.Fatalf("expected error containing 'removing original', got: %v", err)
+	}
+}

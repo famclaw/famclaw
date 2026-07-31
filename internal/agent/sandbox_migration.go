@@ -78,7 +78,13 @@ func moveSandboxSubdir(base, name, dst string) error {
 	// to be safe (e.g. re-run after a partial migration).
 	dstInfo, dstErr := os.Stat(dst)
 	if dstErr == nil && dstInfo.IsDir() && !isEmptyDir(dst) {
-		return copyDir(oldPath, dst)
+		if err := copyDir(oldPath, dst); err != nil {
+			return fmt.Errorf("merging %s: %w", name, err)
+		}
+		if err := os.RemoveAll(oldPath); err != nil {
+			return fmt.Errorf("removing original after merge for %s: %w", name, err)
+		}
+		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return fmt.Errorf("mkdir parent %s: %w", filepath.Dir(dst), err)
@@ -86,11 +92,15 @@ func moveSandboxSubdir(base, name, dst string) error {
 	if err := os.Rename(oldPath, dst); err == nil {
 		return nil
 	}
-	// Cross-device — fall back to recursive copy then delete.
+	// Cross-device — fall back to recursive copy then delete. If the
+	// RemoveAll fails, stale data could remain in the old location.
 	if err := copyDir(oldPath, dst); err != nil {
 		return fmt.Errorf("copying %s: %w", name, err)
 	}
-	return os.RemoveAll(oldPath)
+	if err := os.RemoveAll(oldPath); err != nil {
+		return fmt.Errorf("removing original after copy for %s: %w", name, err)
+	}
+	return nil
 }
 
 // moveLooseSandboxFiles relocates regular files sitting directly in the
@@ -133,12 +143,15 @@ func moveLooseSandboxFiles(base, legacyRoot string) error {
 		oldPath := filepath.Join(base, e.Name())
 		dstPath := filepath.Join(legacyPath, e.Name())
 		if err := os.Rename(oldPath, dstPath); err != nil {
-			// Cross-device or collision — copy then delete.
+			// Cross-device or collision — copy then delete. The remove MUST
+			// succeed: if it fails the stale copy remains in the old shared
+			// root where every conversation can still read it, silently
+			// defeating the per-conversation isolation this code provides.
 			if err := copyFile(oldPath, dstPath); err != nil {
 				return fmt.Errorf("migrating loose file %s: %w", e.Name(), err)
 			}
 			if err := os.Remove(oldPath); err != nil {
-				_ = err // best-effort cleanup
+				return fmt.Errorf("removing original after copy for %s: %w", e.Name(), err)
 			}
 		}
 	}
