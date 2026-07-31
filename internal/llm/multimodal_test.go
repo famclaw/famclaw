@@ -88,8 +88,8 @@ func TestMessage_MarshalJSON_BackwardCompatibility(t *testing.T) {
 func TestMessage_MarshalJSON_EmptyContentParts_FallsBackToString(t *testing.T) {
 	// Test with nil ContentParts
 	msg := Message{
-		Role:    "user",
-		Content: "Hello, how are you?",
+		Role:         "user",
+		Content:      "Hello, how are you?",
 		ContentParts: nil,
 	}
 
@@ -121,7 +121,7 @@ func TestMessage_MarshalJSON_EmptyContentParts_FallsBackToString(t *testing.T) {
 func TestMessage_MarshalJSON_WithToolCalls(t *testing.T) {
 	// Create a message with multimodal content and tool calls
 	msg := Message{
-		Role:    "assistant",
+		Role: "assistant",
 		ContentParts: []any{
 			map[string]any{
 				"type": "text",
@@ -130,8 +130,8 @@ func TestMessage_MarshalJSON_WithToolCalls(t *testing.T) {
 		},
 		ToolCalls: []ToolCall{
 			{
-				ID:      "call_123",
-				Type:    "function",
+				ID:   "call_123",
+				Type: "function",
 				Function: ToolCallFunction{
 					Name: "image_description",
 					Arguments: map[string]any{
