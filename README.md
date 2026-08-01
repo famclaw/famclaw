@@ -264,6 +264,42 @@ All behavior is configurable in `config.yaml` under the `seccheck:` section.
 
 ---
 
+## Behavior changes in v0.9.0
+
+### Photo → Action (#305) — the headline feature
+FamClaw can now ACT on an image, not just describe it: a photo of an item can drive "add to inventory", a photo of an event can drive a calendar entry.
+
+This feature works by splitting the request into two steps due to a limitation in some models:
+- When a message contains both an image attachment and tool calls, certain models (like gemma-4-26b) silently fail to emit tool calls. 
+- Instead of one combined image+tools request, FamClaw now runs a two-step process:
+  1. First, send the image with NO tools and a factual-description prompt to get a description (with a fixed token budget of 1000 tokens to ensure the reasoning model has room to generate content)
+  2. Then, feed that description back as text into the tool-enabled call, stripping the image so the model can act on what it saw.
+
+This makes photo-to-action work on the captain's own hardware without any model or deployment changes.
+
+### famclaw now works with llama.cpp-backed local models (#304)
+Previously, FamClaw omitted the `content` key on empty non-assistant messages. While vLLM tolerated this, **llama.cpp rejects it with a 400**, making FamClaw unusable with any llama.cpp-served model and silently failing every single message. 
+
+This change makes it possible for a family assistant to run on local hardware rather than a vLLM box. The fix ensures that non-assistant roles (system, user, tool) always emit a "content" key, even when empty, which llama.cpp requires.
+
+### Children can use file tools, with approval on executables (#301)
+Children can now use `file_read`, `file_stat`, `file_list`, and non-executable `file_write` directly. However, a write whose CONTENT or TARGET looks executable (shebang, .sh/.bash extension, ELF/Mach-O magic bytes) routes to parental approval instead of being refused outright.
+
+The child sees the file tools available in their tool list, but when they try to write an executable file, they'll get a notification to their parent for approval. `confinePath` - Go-level path validation - is the containment mechanism; it does NOT rely on kernel sandboxing (Landlock only wraps MCP subprocesses).
+
+### Enabling image support — a deployment step people will miss
+Serving a multimodal model is not enough. Two things are required and both were missed on the captain's own Mac:
+1. The model server must be started with its vision projector (for llama.cpp: `--mmproj <projector.gguf>`), or images fail with "image input is not supported ... you may need to provide the mmproj";
+2. FamClaw's config needs a `vision_profile` pointing at a profile that reaches that model, or images are never routed to it.
+
+### Known gap — voice is not supported
+`gateway.Attachment` handles only `"image"`. A voice message is **silently dropped** before it reaches the assistant: no reply, no error. This is a limitation in the current implementation and not a bug.
+
+### Additional notes
+`tools.web_fetch.url_allowlist` matches on a dot boundary, so an entry like `gov` permits `clinicaltrials.gov` and `pubmed.ncbi.nlm.nih.gov` but NOT `evilgov.com`. This is genuinely useful and non-obvious.
+
+---
+
 ## Status
 
 **v0.7.0** — current release. Phase 3.3 family state (foundational PR #149; prompt auto-injection completed in #296) — ships in the upcoming release.
