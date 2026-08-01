@@ -392,6 +392,40 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
         </div>
       </div>
       <div class="d-section">
+        <div class="d-title">🧩 MCP Servers</div>
+        <div class="d-card" id="mcp-list">
+          <div class="empty-state">Loading…</div>
+        </div>
+        <div id="mcp-form-rows" style="margin-top:8px">
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <input id="mcp-name-input" type="text" placeholder="Name" style="flex:1">
+          </div>
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <select id="mcp-transport-select" style="flex:1" onchange="toggleMcpTransport()">
+              <option value="stdio">stdio</option>
+              <option value="http">http</option>
+              <option value="sse">sse</option>
+            </select>
+          </div>
+          <div id="mcp-stdio-rows">
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <input id="mcp-command-input" type="text" placeholder="Command" style="flex:1">
+            </div>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <input id="mcp-args-input" type="text" placeholder="Args (space-separated)" style="flex:1">
+            </div>
+          </div>
+          <div id="mcp-url-row" style="display:none">
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <input id="mcp-url-input" type="text" placeholder="URL" style="flex:1">
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <button onclick="addMcpServer()">Add</button>
+        </div>
+      </div>
+      <div class="d-section">
         <button class="s-save" style="background:var(--c-muted)" onclick="openSettings(false)">⚙️ Settings</button>
       </div>
     </div>
@@ -873,15 +907,17 @@ function finalizeStream(payload) {
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 async function loadDashboard() {
-  const [pending, all, skills] = await Promise.all([
+  const [pending, all, skills, mcp] = await Promise.all([
     apiFetch('/api/approvals?scope=pending'),
     apiFetch('/api/approvals?scope=all'),
     apiFetch('/api/skills'),
+    apiFetch('/api/mcp'),
   ]);
 
   renderApprovals(pending || []);
   renderActivity(all || []);
   renderSkills(skills || []);
+  renderMcpServers((mcp && mcp.servers) || []);
   renderConversationButtons();
   loadUnknownAccounts();
 }
@@ -1131,6 +1167,90 @@ async function removeSkill(name) {
   if (!confirm('Remove skill ' + name + '?')) return;
   try {
     const r = await fetch('/api/skills/remove', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    if (!r.ok) { showToast('Remove failed: ' + (await r.text())); return; }
+    await loadDashboard();
+    showToast('Removed.');
+  } catch (e) { showToast('Remove failed: ' + e.message); }
+}
+
+function toggleMcpTransport() {
+  const transport = document.getElementById('mcp-transport-select').value;
+  const stdioRows = document.getElementById('mcp-stdio-rows');
+  const urlRow = document.getElementById('mcp-url-row');
+  stdioRows.style.display = transport === 'stdio' ? 'block' : 'none';
+  urlRow.style.display = (transport === 'http' || transport === 'sse') ? 'block' : 'none';
+}
+
+function renderMcpServers(servers) {
+  const list = document.getElementById('mcp-list');
+  list.textContent = '';
+  if (!servers || !servers.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No MCP servers configured.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const name of servers) {
+    const row = document.createElement('div');
+    row.className = 'skill-item';
+    const body = document.createElement('div');
+    body.className = 'skill-body';
+    const nameEl = document.createElement('strong');
+    nameEl.className = 'skill-name';
+    nameEl.textContent = name;
+    body.appendChild(nameEl);
+    const btn = document.createElement('button');
+    btn.textContent = '🗑️';
+    btn.addEventListener('click', () => removeMcpServer(name));
+    row.appendChild(body);
+    row.appendChild(btn);
+    list.appendChild(row);
+  }
+}
+
+async function addMcpServer() {
+  const name = document.getElementById('mcp-name-input').value.trim();
+  if (!name) { showToast('Enter a name'); return; }
+  const transport = document.getElementById('mcp-transport-select').value;
+  const config = { transport };
+  if (transport === 'stdio') {
+    config.command = document.getElementById('mcp-command-input').value.trim();
+    const argsStr = document.getElementById('mcp-args-input').value.trim();
+    config.args = argsStr ? argsStr.split(/\s+/) : [];
+  } else {
+    config.url = document.getElementById('mcp-url-input').value.trim();
+  }
+  if (transport === 'stdio' && !config.command) { showToast('Command is required for stdio transport'); return; }
+  if ((transport === 'http' || transport === 'sse') && !config.url) { showToast('URL is required for ' + transport + ' transport'); return; }
+  try {
+    const r = await fetch('/api/mcp/add', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, config }),
+    });
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    if (!r.ok) { showToast('Add failed: ' + (await r.text())); return; }
+    document.getElementById('mcp-name-input').value = '';
+    document.getElementById('mcp-command-input').value = '';
+    document.getElementById('mcp-args-input').value = '';
+    document.getElementById('mcp-url-input').value = '';
+    await loadDashboard();
+    showToast('Added.');
+  } catch (e) { showToast('Add failed: ' + e.message); }
+}
+
+async function removeMcpServer(name) {
+  if (!confirm('Remove MCP server ' + name + '?')) return;
+  try {
+    const r = await fetch('/api/mcp/remove', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
