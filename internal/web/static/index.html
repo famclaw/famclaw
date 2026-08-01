@@ -1227,6 +1227,8 @@ async function addMcpServer() {
   } else {
     config.url = document.getElementById('mcp-url-input').value.trim();
   }
+  if (transport === 'stdio' && !config.command) { showToast('Command is required for stdio transport'); return; }
+  if ((transport === 'http' || transport === 'sse') && !config.url) { showToast('URL is required for ' + transport + ' transport'); return; }
   try {
     const r = await fetch('/api/mcp/add', {
       method: 'POST',
