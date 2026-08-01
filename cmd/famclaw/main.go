@@ -750,7 +750,7 @@ func main() {
 	}
 	vault, err := credstore.New(machineID)
 	if err != nil {
-		log.Fatalf("FATAL [vault]: %v", err)
+		log.Fatalf("FATAL [secrets]: could not resolve one or more secret references; see the [vault] log lines above for which")
 	}
 
 	// Vault-mismatch probe. If a parent_pin row exists but cannot be decrypted
@@ -826,7 +826,7 @@ func main() {
 							}
 							// Validate the new config
 							if err := newCfg.Validate(); err != nil {
-								log.Printf("Invalid config change (keeping current config): %v", err)
+								log.Printf("Invalid config change (could not resolve secret references, keeping current config); see the [vault] log lines above for which")
 								continue
 							}
 							if err := newCfg.LLM.ValidateProvider(); err != nil {
