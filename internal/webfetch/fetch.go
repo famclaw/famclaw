@@ -15,6 +15,20 @@ const defaultMaxBytes = 256 * 1024
 const defaultTimeout = 15 * time.Second
 const defaultUserAgent = "famclaw-webfetch/1 (+https://github.com/famclaw/famclaw)"
 
+// HostNotAllowedError returns an error that makes it unmistakable that a host
+// was rejected by the URL allowlist — a configuration decision, not a
+// transient network failure. The message is written so the LLM (and thus the
+// user) can tell it apart from a real connectivity error and report it as a
+// gap the parent can fix by editing tools.web_fetch.url_allowlist.
+//
+// Distinguishing markers vs. a network error:
+//   - names the host explicitly
+//   - identifies the rejection as a configuration choice
+//   - mentions "not by a network failure"
+func HostNotAllowedError(host string) error {
+	return fmt.Errorf(`host %q is not on the URL allowlist (tools.web_fetch.url_allowlist): access was blocked by configuration, not by a network failure. A parent can add this host to tools.web_fetch.url_allowlist to permit it`, host)
+}
+
 // defaultAllowedTypes returns a fresh slice each call so callers cannot
 // mutate a shared package-level default. Project policy: no global state.
 func defaultAllowedTypes() []string {

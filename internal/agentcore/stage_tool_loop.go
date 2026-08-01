@@ -533,7 +533,10 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		// making it language-agnostic by design.
 		modelStopped := len(pendingCalls) == 0
 		// Neutralize false success claims: if no tool succeeded this turn
-		// but the output claims success, append a correction.
+		// but the output claims success, prepend a prominent correction.
+		// The failure is led with, not buried — for a parent researching a
+		// child's condition, a trailing parenthetical masquerading as
+		// verified research is the worst possible failure mode.
 		var anySuccess bool
 		for _, tr := range turn.ToolCalls {
 			if tr.Error == nil {
@@ -541,9 +544,23 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				break
 			}
 		}
-		const toolFailureNote = "(Note: no action was completed - every tool call in this turn failed.)"
-		if len(turn.ToolCalls) > 0 && !anySuccess && modelStopped && !strings.Contains(turn.Output, toolFailureNote) {
-			turn.Output += "\n\n" + toolFailureNote
+		// toolFailureNote is prepended (not appended) so the user sees the
+		// failure up front. Deliberate bias: ALWAYS warn when every tool
+		// call in the turn failed and the model produced a final answer.
+		// We accept occasional duplication (e.g. the model itself mentions
+		// failure) over the risk of silence — the captain's original bug
+		// was a confident list of research centres with the failure buried
+		// in a trailing parenthetical while researching his son's terminal
+		// illness. A duplicated warning is mildly redundant; a missing one
+		// is the exact failure mode we must never repeat.
+		const toolFailureNote = "No action was completed — every tool call failed. " +
+			"Nothing below was looked up; it comes from training data, not live results."
+		if len(turn.ToolCalls) > 0 && !anySuccess && modelStopped {
+			if turn.Output == "" {
+				turn.Output = toolFailureNote
+			} else {
+				turn.Output = toolFailureNote + "\n\n" + turn.Output
+			}
 		}
 
 		return nil

@@ -1116,7 +1116,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		return false
 	}
 	if !hostAllowed(u.Hostname()) {
-		return "", fmt.Errorf("host %q not in url_allowlist", u.Hostname())
+		return "", webfetch.HostNotAllowedError(u.Hostname())
 	}
 
 	opts := webfetch.Options{
@@ -1124,7 +1124,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		Timeout:  time.Duration(cfg.TimeoutSec) * time.Second,
 		HostValidator: func(host string) error {
 			if !hostAllowed(host) {
-				return fmt.Errorf("host %q not in url_allowlist", host)
+				return webfetch.HostNotAllowedError(host)
 			}
 			return nil
 		},
@@ -1256,7 +1256,7 @@ func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawUR
 	}
 	hostCheck := func(host string) error {
 		if !hostAllowed(host) {
-			return fmt.Errorf("host %q not in url_allowlist", host)
+			return webfetch.HostNotAllowedError(host)
 		}
 		return nil
 	}
@@ -1335,7 +1335,7 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 		Timeout:    time.Duration(cfg.TimeoutSec) * time.Second,
 		HostValidator: func(host string) error {
 			if !hostAllowed(host) {
-				return fmt.Errorf("host %q not in url_allowlist", host)
+				return webfetch.HostNotAllowedError(host)
 			}
 			return nil
 		},
@@ -1379,7 +1379,7 @@ func (a *Agent) handleBrowser(ctx context.Context, toolName string, args map[str
 		Args:     args,
 		HostCheck: func(host string) error {
 			if !hostAllowed(host) {
-				return fmt.Errorf("host %q not in url_allowlist", host)
+				return webfetch.HostNotAllowedError(host)
 			}
 			return nil
 		},

@@ -243,7 +243,7 @@ tools:
     allowed_roles: [parent]    # role gate — checked when registering the tool
     endpoint: "http://localhost:8888"   # SearXNG JSON search URL
     max_results: 8             # default 8, hard-capped at 16
-    timeout_seconds: 10
+    timeout_seconds: 30        # default 30 — raises the old 10s default for self-hosted SearXNG fanning out to multiple upstreams
 ```
 
 **Host gate:** `web_search` is not independent — it requires `tools.web_fetch.enabled=true` and reuses the `tools.web_fetch.url_allowlist` as its host gate. The search endpoint host (e.g. `localhost`) must be allowlisted; an empty allowlist denies all searches.

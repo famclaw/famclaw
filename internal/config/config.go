@@ -72,8 +72,14 @@ type WebSearchConfig struct {
 	Endpoint     string   `yaml:"endpoint,omitempty"`        // e.g. "http://localhost:8888"; required when Enabled
 	AllowedRoles []string `yaml:"allowed_roles,omitempty"`   // default ["parent"]
 	MaxResults   int      `yaml:"max_results,omitempty"`     // default 8, hard-capped at 16
-	TimeoutSec   int      `yaml:"timeout_seconds,omitempty"` // default 10
+	TimeoutSec   int      `yaml:"timeout_seconds,omitempty"` // default 30
 }
+
+// WebSearchTimeoutDefault is the default web_search timeout in seconds.
+// Raised from 10s to 30s because a self-hosted SearXNG fanning out to
+// multiple upstreams routinely exceeds 10s, whereas 10s is tuned for a
+// commercial search API.
+const WebSearchTimeoutDefault = 30
 
 // ToolCacheConfig controls the Phase 2 tool-result spillover cache. When
 // disabled, the agent falls back to inline-everything (legacy v0.5.x
@@ -449,7 +455,7 @@ func applyDefaults(c *Config) {
 		c.Tools.WebSearch.MaxResults = 8
 	}
 	if c.Tools.WebSearch.TimeoutSec == 0 {
-		c.Tools.WebSearch.TimeoutSec = 10
+		c.Tools.WebSearch.TimeoutSec = WebSearchTimeoutDefault
 	}
 	if len(c.Tools.WebSearch.AllowedRoles) == 0 {
 		c.Tools.WebSearch.AllowedRoles = []string{"parent"}
