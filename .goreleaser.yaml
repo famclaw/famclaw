@@ -12,6 +12,16 @@ builds:
       - -trimpath
     ldflags:
       - -s -w -X main.Version={{.Version}}
+    hooks:
+      post:
+        # Ad-hoc codesign every darwin binary in place, before archiving, so the
+        # published release runs on Apple Silicon + Intel Macs out of the box.
+        # Apple Silicon refuses to exec improperly-signed arm64 Mach-O binaries
+        # (instant SIGKILL). Ad-hoc signing (`codesign -s -`) is a no-op for the
+        # Gatekeeper "identified developer" check but satisfies the kernel's
+        # signature requirement. Requires the macos-latest runner (codesign is
+        # macOS-only); linux targets are skipped via the OS guard below.
+        - cmd: sh -c 'if [ "{{.Os}}" = "darwin" ]; then codesign -s - --force "{{.Path}}"; fi'
     mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
