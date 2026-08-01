@@ -545,12 +545,17 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			}
 		}
 		// toolFailureNote is prepended (not appended) so the user sees the
-		// failure up front. The note is explicit that nothing was actually
-		// looked up and that the following text comes from training data.
-		const toolFailureNote = "No action was completed: every tool call in this turn failed. " +
-			"The response below comes from my training data and was NOT verified by any tool call — nothing was actually looked up."
-		const failureGuard = "every tool call in this turn failed"
-		if len(turn.ToolCalls) > 0 && !anySuccess && modelStopped && !strings.Contains(turn.Output, failureGuard) {
+		// failure up front. Deliberate bias: ALWAYS warn when every tool
+		// call in the turn failed and the model produced a final answer.
+		// We accept occasional duplication (e.g. the model itself mentions
+		// failure) over the risk of silence — the captain's original bug
+		// was a confident list of research centres with the failure buried
+		// in a trailing parenthetical while researching his son's terminal
+		// illness. A duplicated warning is mildly redundant; a missing one
+		// is the exact failure mode we must never repeat.
+		const toolFailureNote = "No action was completed — every tool call failed. " +
+			"Nothing below was looked up; it comes from training data, not live results."
+		if len(turn.ToolCalls) > 0 && !anySuccess && modelStopped {
 			if turn.Output == "" {
 				turn.Output = toolFailureNote
 			} else {
