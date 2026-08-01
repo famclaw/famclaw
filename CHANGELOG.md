@@ -3,6 +3,21 @@
 All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.10.0 — 2026-08-01
+
+### Added
+- **MCP Servers dashboard panel.** MCP tool servers (stdio, HTTP, or SSE) can now be added and removed from the parent dashboard instead of hand-editing `config.yaml` and restarting. The new "MCP Servers" panel lists each configured server with a Remove button and includes an add form for a name, transport, and transport-specific fields (command + args for stdio, URL for http/sse), with client-side validation before the server is saved.
+- **File tools are now sandboxed per conversation.** `file_read`, `file_write`, `file_stat`, and `file_list` are now scoped to each conversation — a DM on Telegram, a channel or group on Discord — so a file saved in one conversation cannot be read by another. Each conversation gets its own file root (`conversations/<gateway>/<id>`), and the gateway name and identity are sanitized so a crafted value cannot escape the sandbox tree. Family facts and user memories remain shared across all conversations. Existing per-user/per-group files are migrated to `conversations/_legacy/` automatically on first startup.
+
+### Changed
+- **Web search timeout raised to 30s.** The default timeout for `web_search` was raised from 10s to 30s because a self-hosted SearXNG instance fanning out to multiple upstreams routinely exceeds 10s (a value tuned for a commercial search API). Override with `tools.web_search.timeout_seconds` in `config.yaml`.
+- **Allowlist rejections are not network errors.** When a URL host is blocked by `tools.web_fetch.url_allowlist`, the error now names the host explicitly and makes it clear this is a configuration choice — not a transient network failure — and that a parent can add the host to `url_allowlist` to permit it. The same clear message is used across `web_fetch`, `web_search`, and the browser tool.
+- **Tool-failure warning is now prepended.** When every tool call in a turn fails and the model produces a final answer, the warning is now placed at the top of the response (not buried in a trailing note) so you are never misled into thinking something was actually looked up. The model's answer is preserved — it just no longer masquerades as verified research.
+- **Secret-resolution diagnostics no longer echo error detail.** Diagnostic log lines about failed secret resolution no longer include the raw error text — they point to the `[vault]` log lines above for specifics, keeping sensitive context out of the summary line.
+
+### Fixed
+- **macOS binaries now run on Apple Silicon.** The released `famclaw-darwin-*` binaries were killed instantly on launch (exit code 137, no output) on Apple Silicon because the cross-compiled binary carried no valid signature and the kernel refused to exec improperly-signed arm64 Mach-O images. Release builds now ad-hoc codesign darwin binaries on a macOS runner so they run out of the box on both Intel and Apple Silicon Macs. Linux binaries are unaffected.
+
 ## v0.9.0 — 2026-08-01
 
 ### Added

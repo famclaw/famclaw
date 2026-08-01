@@ -150,6 +150,8 @@ FamClaw uses the [AgentSkills](https://docs.openclaw.ai/tools/skills) spec — t
 
 Skills are installed from the parent dashboard (Skills tab) via `/api/skills/install`, or manually by placing the `SKILL.md` in the skills directory. The `famclaw skill` CLI is not yet implemented.
 
+MCP tool servers (stdio, HTTP, or SSE) can be added and removed from the parent dashboard (MCP Servers panel) via `/api/mcp/add` and `/api/mcp/remove`, or manually in `config.yaml` under `skills.mcp_servers`. The panel lets you specify a name, transport, and transport-specific fields (command and args for stdio, URL for HTTP/SSE), with client-side validation before the server is saved. Configured servers are registered with the MCP tool pool on the next startup.
+
 ### First-party Skills
 
 #### `family-knowledge` — family memory and facts
