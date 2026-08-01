@@ -499,6 +499,12 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
+	// Migrate legacy sandbox files (per-user/per-group layout from issue
+	// #221, or the flat shared root) into conversations/_legacy/ so they
+	// remain readable but don't collide with per-conversation subdirectories.
+	if err := agent.MigrateSandbox(cfg.Tools.SandboxRoot); err != nil {
+		log.Fatalf("Sandbox migration failed: %v", err)
+	}
 	var mcpPool *mcp.Pool
 	mcpPool, skippedMCPs, _ := initMCPPool(context.Background(), cfg, sandboxRoot)
 	defer mcpPool.StopAll()

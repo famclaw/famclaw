@@ -564,17 +564,17 @@ func TestClient_Start_FailClosedWhenSandboxRequired(t *testing.T) {
 // TestPool_StartAll_AllowUnconfined tests the new AllowUnconfined functionality
 func TestPool_StartAll_AllowUnconfined(t *testing.T) {
 	// Test that the new parameter is accepted and handled
-	_ = NewPool(t.TempDir(), true, true)  // Should compile and work
+	_ = NewPool(t.TempDir(), true, true)   // Should compile and work
 	_ = NewPool(t.TempDir(), false, true)  // Should compile and work
 	_ = NewPool(t.TempDir(), true, false)  // Should compile and work
 	_ = NewPool(t.TempDir(), false, false) // Should compile and work
-	
+
 	// Test that AllowUnconfined field is properly set
 	pool := NewPool(t.TempDir(), true, true)
 	if !pool.AllowUnconfined {
 		t.Error("AllowUnconfined should be true when passed as true")
 	}
-	
+
 	pool = NewPool(t.TempDir(), true, false)
 	if pool.AllowUnconfined {
 		t.Error("AllowUnconfined should be false when passed as false")
@@ -584,13 +584,13 @@ func TestPool_StartAll_AllowUnconfined(t *testing.T) {
 // TestSandboxDecision tests the sandboxDecision function with various combinations
 func TestSandboxDecision(t *testing.T) {
 	tests := []struct {
-		name             string
-		landlockOK       bool
-		seccompOK        bool
-		allowUnconfined  bool
-		wantProceed      bool
-		wantWarn         bool
-		wantErrNil       bool
+		name            string
+		landlockOK      bool
+		seccompOK       bool
+		allowUnconfined bool
+		wantProceed     bool
+		wantWarn        bool
+		wantErrNil      bool
 	}{
 		{"both support, no unconfined", true, true, false, true, false, true},
 		{"both support, allow unconfined", true, true, true, true, false, true},
@@ -603,7 +603,7 @@ func TestSandboxDecision(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			proceed, warn, err := sandboxDecision(tt.allowUnconfined, tt.landlockOK, tt.seccompOK)
-			
+
 			if proceed != tt.wantProceed {
 				t.Errorf("sandboxDecision() proceed = %v, want %v", proceed, tt.wantProceed)
 			}
@@ -622,7 +622,7 @@ func TestPool_UpdateFromConfig(t *testing.T) {
 	// Create a pool with sandbox root in a temp dir
 	sandboxRoot := t.TempDir()
 	pool := NewPool(sandboxRoot, false, false) // No sandbox for simplicity in test
-	
+
 	// Initial server configuration
 	initialServers := map[string]config.MCPServerConfig{
 		"server1": {Transport: "stdio", Command: "echo", Args: []string{"hello"}},
@@ -632,10 +632,10 @@ func TestPool_UpdateFromConfig(t *testing.T) {
 		"server1": {"KEY1": "VALUE1"},
 		"server2": {"KEY2": "VALUE2"},
 	}
-	
+
 	// Register initial configuration
 	pool.UpdateFromConfig(initialServers, initialCredentials)
-	
+
 	// Verify initial servers are present (check by server name matching)
 	if _, exists := pool.clients["server1"]; !exists {
 		t.Error("server1 not found in pool clients")
@@ -647,7 +647,7 @@ func TestPool_UpdateFromConfig(t *testing.T) {
 	} else if mc := pool.clients["server2"]; mc.name != "server2" {
 		t.Error("server2 entry is not a server entry (tool alias?)")
 	}
-	
+
 	// New server configuration - add server3, change server2, remove server1
 	newServers := map[string]config.MCPServerConfig{
 		"server2": {Transport: "stdio", Command: "echo", Args: []string{"world"}}, // Changed
@@ -657,16 +657,16 @@ func TestPool_UpdateFromConfig(t *testing.T) {
 		"server2": {"KEY2": "NEW_VALUE2"}, // Changed
 		"server3": {"KEY3": "VALUE3"},     // Added
 	}
-	
+
 	// Update with new configuration
 	pool.UpdateFromConfig(newServers, newCredentials)
-	
+
 	// Verify updated state
 	// server1 should be removed
 	if _, exists := pool.clients["server1"]; exists {
 		t.Error("server1 should have been removed but still exists")
 	}
-	
+
 	// server2 should be present and updated
 	if mc, exists := pool.clients["server2"]; !exists || mc.name != "server2" {
 		t.Error("server2 not found or not a server entry after update")
@@ -681,7 +681,7 @@ func TestPool_UpdateFromConfig(t *testing.T) {
 			t.Errorf("server2 credential not updated: got %q, want NEW_VALUE2", mc.env["KEY2"])
 		}
 	}
-	
+
 	// server3 should be present and added
 	if mc, exists := pool.clients["server3"]; !exists || mc.name != "server3" {
 		t.Error("server3 not found or not a server entry after update")
@@ -693,7 +693,7 @@ func TestPool_UpdateFromConfig(t *testing.T) {
 			t.Errorf("server3 credential not correct: got %q, want VALUE3", mc.env["KEY3"])
 		}
 	}
-	
+
 	// Test edge case: empty configuration
 	pool.UpdateFromConfig(map[string]config.MCPServerConfig{}, map[string]map[string]string{})
 	// After empty config, there should be no server entries
@@ -708,7 +708,7 @@ func TestPool_UpdateFromConfig(t *testing.T) {
 	if foundServer {
 		t.Error("expected no server entries after empty config")
 	}
-	
+
 	// Test edge case: nil credentials
 	serversWithNilCred := map[string]config.MCPServerConfig{
 		"server4": {Transport: "stdio", Command: "test"},

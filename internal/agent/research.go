@@ -151,18 +151,18 @@ func (a *Agent) finalizeResearch(ctx context.Context, agentID string, state stor
 
 	now := a.now()
 	status := store.ResearchStatus{
-		AgentID:    agentID,
-		UserName:   a.user.Name,
-		Prompt:     prompt,
-		Status:     state,
-		Result:     resultText,
+		AgentID:     agentID,
+		UserName:    a.user.Name,
+		Prompt:      prompt,
+		Status:      state,
+		Result:      resultText,
 		Deliverable: deliverable,
-		Delivered:  delivered,
+		Delivered:   delivered,
 		DeliveryErr: errString(sendErr),
-		Gateway:    msgCtx.Gateway,
-		ChatID:     chatIDOf(msgCtx),
-		StartedAt:  now, // created_at/started_at are preserved from the running insert on conflict
-		EndedAt:    &now,
+		Gateway:     msgCtx.Gateway,
+		ChatID:      chatIDOf(msgCtx),
+		StartedAt:   now, // created_at/started_at are preserved from the running insert on conflict
+		EndedAt:     &now,
 	}
 	if a.db != nil {
 		if err := a.db.UpsertResearchStatus(&status); err != nil {
@@ -189,14 +189,14 @@ func (a *Agent) persistResearchStart(agentID, prompt string, timeoutSec int, msg
 	}
 	now := a.now()
 	status := store.ResearchStatus{
-		AgentID:    agentID,
-		UserName:   a.user.Name,
-		Prompt:     prompt,
-		Status:     store.ResearchStatusRunning,
-		StartedAt:  now,
-		CreatedAt:  now,
-		Gateway:    msgCtx.Gateway,
-		ChatID:     chatIDOf(msgCtx),
+		AgentID:   agentID,
+		UserName:  a.user.Name,
+		Prompt:    prompt,
+		Status:    store.ResearchStatusRunning,
+		StartedAt: now,
+		CreatedAt: now,
+		Gateway:   msgCtx.Gateway,
+		ChatID:    chatIDOf(msgCtx),
 	}
 	if err := a.db.UpsertResearchStatus(&status); err != nil {
 		log.Printf("[agent][%s] save research running %s: %v", a.user.Name, agentID, err)

@@ -168,54 +168,69 @@ func computeEffectiveSandboxRoot(cfg *config.Config, msgCtx gateway.MsgContext) 
 	}
 	scope := cfg.Tools.SandboxScope
 	if scope == "" {
-		scope = "user" // default to user
+		scope = "conversation" // default to per-conversation isolation
 	}
 	switch scope {
 	case "global":
 		return base, nil
-	case "group":
-		if msgCtx.GroupID == "" {
-			return "", fmt.Errorf("group ID is empty for group scope")
-		}
-		groupID, err := sanitizeDirName(msgCtx.GroupID)
-		if err != nil {
-			return "", fmt.Errorf("sanitizing group ID: %w", err)
-		}
-		root := filepath.Join(base, "groups", groupID)
-		// Defense-in-depth: ensure computed root is still within base
-		cleaned := filepath.Clean(root)
-		if cleaned == base {
-			// This shouldn't happen, but let's be defensive
-			return "", fmt.Errorf("computed sandbox root escaped base: %q", root)
-		}
-		// Verify the cleaned path is still within base
-		if !strings.HasPrefix(cleaned, filepath.Clean(base)+string(os.PathSeparator)) {
-			return "", fmt.Errorf("computed sandbox root escaped base: %q", root)
-		}
-		return root, nil
-	case "user":
-		if msgCtx.ExternalID == "" {
-			return "", fmt.Errorf("external ID is empty for user scope")
-		}
-		externalID, err := sanitizeDirName(msgCtx.ExternalID)
-		if err != nil {
-			return "", fmt.Errorf("sanitizing external ID: %w", err)
-		}
-		root := filepath.Join(base, "users", externalID)
-		// Defense-in-depth: ensure computed root is still within base
-		cleaned := filepath.Clean(root)
-		if cleaned == base {
-			// This shouldn't happen, but let's be defensive
-			return "", fmt.Errorf("computed sandbox root escaped base: %q", root)
-		}
-		// Verify the cleaned path is still within base
-		if !strings.HasPrefix(cleaned, filepath.Clean(base)+string(os.PathSeparator)) {
-			return "", fmt.Errorf("computed sandbox root escaped base: %q", root)
-		}
-		return root, nil
+	case "conversation":
+		return conversationSandboxRoot(base, msgCtx)
 	default:
 		return "", fmt.Errorf("invalid sandbox scope %q", scope)
 	}
+}
+
+// conversationSandboxRoot computes the per-conversation sandbox root from the
+// message context. Each DM maps to conversations/<gateway>/<externalID> and
+// each group/channel maps to conversations/<gateway>/<groupID>. The gateway
+// name, external ID, and group ID are all passed through sanitizeDirName
+// (strict [A-Za-z0-9._-] allowlist) so a crafted identity cannot traverse
+// out of the sandbox tree. This is the per-conversation partitioning that
+// replaces the shelved per-user scope from issue #221: keying includes the
+// gateway so the same user on different platforms (e.g. Alice on Telegram
+// vs. Alice on Discord) gets separate subtrees, and groups are keyed by
+// their group ID rather than by individual members.
+func conversationSandboxRoot(base string, msgCtx gateway.MsgContext) (string, error) {
+	if msgCtx.Gateway == "" {
+		return "", fmt.Errorf("gateway is empty for conversation scope")
+	}
+	gw, err := sanitizeDirName(msgCtx.Gateway)
+	if err != nil {
+		return "", fmt.Errorf("sanitizing gateway name: %w", err)
+	}
+	var id string
+	if msgCtx.IsGroup {
+		if msgCtx.GroupID == "" {
+			return "", fmt.Errorf("group ID is empty for group conversation scope")
+		}
+		id, err = sanitizeDirName(msgCtx.GroupID)
+		if err != nil {
+			return "", fmt.Errorf("sanitizing group ID: %w", err)
+		}
+	} else {
+		if msgCtx.ExternalID == "" {
+			return "", fmt.Errorf("external ID is empty for DM conversation scope")
+		}
+		id, err = sanitizeDirName(msgCtx.ExternalID)
+		if err != nil {
+			return "", fmt.Errorf("sanitizing external ID: %w", err)
+		}
+	}
+	root := filepath.Join(base, "conversations", gw, id)
+	// Defense-in-depth: ensure the computed root stays within base even
+	// though sanitizeDirName already rejects separators. This is the
+	// Go-level containment assertion — no kernel sandbox backs this up
+	// (Landlock only covers MCP subprocesses, not the file_* handlers in
+	// the main process).
+	cleaned := filepath.Clean(root)
+	baseClean := filepath.Clean(base)
+	if cleaned == baseClean {
+		return "", fmt.Errorf("computed sandbox root escaped base: %q", root)
+	}
+	if !strings.HasPrefix(cleaned, baseClean+string(os.PathSeparator)) {
+		return "", fmt.Errorf("computed sandbox root escaped base: %q", root)
+	}
+	return root, nil
 }
 func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter,
 	evaluator *policy.Evaluator, clf *classifier.Classifier, db *store.DB,
@@ -705,10 +720,10 @@ func (a *Agent) handleFileWrite(ctx context.Context, args map[string]any) (strin
 	// defeat a symlink INSIDE the sandbox that points outside — the string
 	// prefix check below is not enough on its own; we re-resolve via
 	// EvalSymlinks when possible and reconfirm containment.
-	if a.cfg.Tools.SandboxRoot == "" {
+	if a.effectiveSandboxRoot == "" {
 		return "", fmt.Errorf("file_write: sandbox root not configured")
 	}
-	sandboxRoot, err := filepath.EvalSymlinks(filepath.Clean(a.cfg.Tools.SandboxRoot))
+	sandboxRoot, err := filepath.EvalSymlinks(filepath.Clean(a.effectiveSandboxRoot))
 	if err != nil {
 		return "", fmt.Errorf("file_write: invalid sandbox root: %w", err)
 	}
