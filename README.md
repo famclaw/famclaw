@@ -327,7 +327,7 @@ Serving a multimodal model is not enough. Two things are required and both were 
 | **Unknown-account backend** | Strangers messaging the bot are recorded against a parent-controlled queue, never auto-promoted to a user (issue #111 backend) |
 | **MCP tools** | Multi-transport (stdio/HTTP/SSE), unified tool registry |
 | **LLM profiles** | Multiple named endpoints, per-user assignment via wizard |
-| **CI/CD** | CodeQL, govulncheck, SBOM, cosign signing, TruffleHog, race detector on gateway+agent, schema-drift gate, Telegram/Discord integration tests |
+| **CI/CD** | CodeQL, govulncheck, SBOM, cosign signature bundles, macOS ad-hoc codesign of darwin binaries (runs on macos-latest), TruffleHog, race detector on gateway+agent, schema-drift gate, Telegram/Discord integration tests |
 
 ### Recommended models
 

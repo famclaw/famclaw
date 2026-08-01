@@ -8,9 +8,15 @@ on:
 # No workflow-level permissions — each job declares its own (least privilege)
 
 jobs:
+  # Runs on macos-latest (NOT ubuntu) so the goreleaser post-build hook can
+  # ad-hoc codesign darwin binaries. Apple Silicon refuses to execute
+  # improperly-signed arm64 Mach-O binaries (silent SIGKILL), so a released
+  # famclaw-darwin-* binary built on Linux would be killed on launch.
+  # `codesign` is macOS-only, hence the macOS runner. linux binaries are
+  # cross-compiled here (CGO_ENABLED=0) exactly as before.
   goreleaser:
     name: Build & Publish
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     permissions:
       contents: write
       id-token: write
