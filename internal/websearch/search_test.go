@@ -121,6 +121,12 @@ func TestSearch_MaxResultsDefaultsAndCaps(t *testing.T) {
 	}
 }
 
+func TestSearch_DefaultTimeoutIs30s(t *testing.T) {
+	if defaultTimeout != 30*time.Second {
+		t.Errorf("defaultTimeout = %v, want 30s", defaultTimeout)
+	}
+}
+
 func TestSearch_DecodesGarbageError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

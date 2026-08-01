@@ -533,7 +533,10 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		// making it language-agnostic by design.
 		modelStopped := len(pendingCalls) == 0
 		// Neutralize false success claims: if no tool succeeded this turn
-		// but the output claims success, append a correction.
+		// but the output claims success, prepend a prominent correction.
+		// The failure is led with, not buried — for a parent researching a
+		// child's condition, a trailing parenthetical masquerading as
+		// verified research is the worst possible failure mode.
 		var anySuccess bool
 		for _, tr := range turn.ToolCalls {
 			if tr.Error == nil {
@@ -541,9 +544,18 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				break
 			}
 		}
-		const toolFailureNote = "(Note: no action was completed - every tool call in this turn failed.)"
-		if len(turn.ToolCalls) > 0 && !anySuccess && modelStopped && !strings.Contains(turn.Output, toolFailureNote) {
-			turn.Output += "\n\n" + toolFailureNote
+		// toolFailureNote is prepended (not appended) so the user sees the
+		// failure up front. The note is explicit that nothing was actually
+		// looked up and that the following text comes from training data.
+		const toolFailureNote = "No action was completed: every tool call in this turn failed. " +
+			"The response below comes from my training data and was NOT verified by any tool call — nothing was actually looked up."
+		const failureGuard = "every tool call in this turn failed"
+		if len(turn.ToolCalls) > 0 && !anySuccess && modelStopped && !strings.Contains(turn.Output, failureGuard) {
+			if turn.Output == "" {
+				turn.Output = toolFailureNote
+			} else {
+				turn.Output = toolFailureNote + "\n\n" + turn.Output
+			}
 		}
 
 		return nil

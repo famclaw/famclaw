@@ -505,6 +505,12 @@ func TestHandleWebFetch(t *testing.T) {
 			wantErrSub: "url_allowlist",
 		},
 		{
+			name:       "blocked host error names host and identifies allowlist rejection",
+			allowlist:  []string{"never.example.com"},
+			args:       map[string]any{"url": "https://www.clinicaltrials.gov/study/NCT0000"},
+			wantErrSub: "url_allowlist",
+		},
+		{
 			name:       "subdomain of allowlisted host accepted",
 			allowlist:  []string{"example.com"},
 			args:       map[string]any{"url": "https://api.example.com/x"},
@@ -644,6 +650,87 @@ func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
 	}
 	if err := capturedValidator("evil.example"); err == nil {
 		t.Errorf("evil.example should be rejected by validator")
+	}
+}
+
+// TestHandleWebFetch_BlockedHostMessageIsClear verifies that when a host is
+// blocked by the URL allowlist, the error returned to the LLM is
+// unmistakably a configuration rejection — naming the host, identifying it
+// as an allowlist decision, and explicitly stating it is NOT a network error.
+// This lets the model tell the user "clinicaltrials.gov isn't on my allowed
+// list, ask a parent to add it" instead of inventing a vague network excuse.
+func TestHandleWebFetch_BlockedHostMessageIsClear(t *testing.T) {
+	newAgent := func(allowlist []string, fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
+		return &Agent{
+			user: &config.UserConfig{Name: "testuser", Role: "parent"},
+			cfg: &config.Config{
+				Tools: config.ToolsConfig{
+					WebFetch: config.WebFetchConfig{
+						Enabled:      true,
+						URLAllowlist: allowlist,
+						MaxBytes:     256 * 1024,
+						TimeoutSec:   5,
+					},
+				},
+			},
+			webFetcher: fetcher,
+		}
+	}
+	tests := []struct {
+		name string
+		args map[string]any
+	}{
+		{
+			name: "blocked host on pre-check path",
+			args: map[string]any{"url": "https://www.clinicaltrials.gov/study/NCT00000000"},
+		},
+		{
+			name: "blocked host on fetcher path",
+			args: map[string]any{"url": "https://blocked.example.com/page"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fetcher := func(_ context.Context, _ string, opts webfetch.Options) (*webfetch.Result, error) {
+				// Simulate the host validator rejecting the host
+				if opts.HostValidator != nil {
+					if err := opts.HostValidator("www.clinicaltrials.gov"); err != nil {
+						return nil, err
+					}
+					if err := opts.HostValidator("blocked.example.com"); err != nil {
+						return nil, err
+					}
+				}
+				return &webfetch.Result{StatusCode: 200, ContentType: "text/plain", Text: "ok"}, nil
+			}
+			a := newAgent([]string{"example.com"}, fetcher)
+
+			_, err := a.handleWebFetch(context.Background(), tt.args)
+			if err == nil {
+				t.Fatal("expected an error for blocked host, got nil")
+			}
+			msg := err.Error()
+
+			// Must name the host
+			if !strings.Contains(msg, "www.clinicaltrials.gov") && !strings.Contains(msg, "blocked.example.com") {
+				t.Errorf("error should name the blocked host, got: %q", msg)
+			}
+			// Must identify as an allowlist rejection
+			if !strings.Contains(msg, "url_allowlist") {
+				t.Errorf("error should mention url_allowlist, got: %q", msg)
+			}
+			// Must state it is a configuration choice, not a network error
+			if !strings.Contains(msg, "configuration") {
+				t.Errorf("error should mention configuration, got: %q", msg)
+			}
+			if !strings.Contains(msg, "not by a network failure") {
+				t.Errorf("error should mention it is not a network failure, got: %q", msg)
+			}
+			// Must mention a parent can fix it
+			if !strings.Contains(msg, "parent") {
+				t.Errorf("error should mention parent can fix it, got: %q", msg)
+			}
+		})
 	}
 }
 

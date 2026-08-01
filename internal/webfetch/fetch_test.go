@@ -282,3 +282,45 @@ func TestFetch_HostValidatorBlocksInitialURL(t *testing.T) {
 		t.Errorf("expected url_allowlist error, got: %v", err)
 	}
 }
+
+func TestHostNotAllowedError_NamesHostAndIsConfigNotNetwork(t *testing.T) {
+	host := "www.clinicaltrials.gov"
+	err := HostNotAllowedError(host)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	msg := err.Error()
+	// Must name the host explicitly
+	if !strings.Contains(msg, host) {
+		t.Errorf("error should name the host %q, got: %q", host, msg)
+	}
+	// Must identify as an allowlist rejection (contains "url_allowlist")
+	if !strings.Contains(msg, "url_allowlist") {
+		t.Errorf("error should mention url_allowlist, got: %q", msg)
+	}
+	// Must state it is a configuration choice, not a transient network error
+	if !strings.Contains(msg, "configuration") {
+		t.Errorf("error should mention configuration, got: %q", msg)
+	}
+	if !strings.Contains(msg, "not by a network failure") {
+		t.Errorf("error should mention it is not a network failure, got: %q", msg)
+	}
+	// Must mention the parent can fix it
+	if !strings.Contains(msg, "parent") {
+		t.Errorf("error should mention parent can fix it, got: %q", msg)
+	}
+}
+
+func TestHostNotAllowedError_DistinctFromNetworkError(t *testing.T) {
+	// An allowlist rejection must be distinguishable from a network error
+	// by containing "configuration" and "not by a network failure".
+	allowlistErr := HostNotAllowedError("example.com")
+	networkErr := fmt.Errorf("web fetch: do: dial tcp: connection refused")
+
+	if !strings.Contains(allowlistErr.Error(), "configuration") {
+		t.Errorf("allowlist error should mention configuration: %q", allowlistErr.Error())
+	}
+	if strings.Contains(networkErr.Error(), "configuration") {
+		t.Errorf("network error should not mention configuration: %q", networkErr.Error())
+	}
+}

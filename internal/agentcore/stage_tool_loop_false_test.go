@@ -83,7 +83,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Done! I saved the file.",
-			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
+			wantOutputContains: "No action was completed: every tool call in this turn failed.",
 		},
 		{
 			name: "purely conversational turn (no tool attempted)",
@@ -142,7 +142,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Listo, lo he guardado.",
-			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
+			wantOutputContains: "No action was completed: every tool call in this turn failed.",
 		},
 		{
 			name: "German false success",
@@ -175,7 +175,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Fertig, gespeichert.",
-			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
+			wantOutputContains: "No action was completed: every tool call in this turn failed.",
 		},
 		{
 			name: "Japanese false success",
@@ -208,7 +208,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "完了しました。",
-			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
+			wantOutputContains: "No action was completed: every tool call in this turn failed.",
 		},
 		{
 			name: "English success without tool call (should not trigger)",
@@ -355,7 +355,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Done — all taken care of!",
-			wantOutputContains: "(Note: no action was completed - every tool call in this turn failed.)",
+			wantOutputContains: "No action was completed: every tool call in this turn failed.",
 		},
 		{
 			name: "cap exhausted: model never stops, output unchanged (language-independent)",
@@ -425,6 +425,10 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				if tc.wantOutputContains != "" {
 					if !strings.Contains(turn.Output, tc.wantOutputContains) {
 						t.Errorf("output does not contain %q: %q", tc.wantOutputContains, turn.Output)
+					}
+					// The failure note must lead the response, not trail it.
+					if !strings.HasPrefix(turn.Output, tc.wantOutputContains) {
+						t.Errorf("output should start with failure note %q, got %q", tc.wantOutputContains, turn.Output)
 					}
 				}
 				if tc.wantOutputNotEqual != "" {

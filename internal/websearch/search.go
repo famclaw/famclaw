@@ -14,7 +14,7 @@ import (
 const (
 	defaultMaxResults = 8
 	hardMaxResults    = 16
-	defaultTimeout    = 10 * time.Second
+	defaultTimeout    = 30 * time.Second
 )
 
 // Options configures a Search call.

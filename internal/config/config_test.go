@@ -579,3 +579,54 @@ func TestVisionEndpointFor(t *testing.T) {
 		})
 	}
 }
+
+func TestWebSearchTimeoutDefault(t *testing.T) {
+	tests := []struct {
+		name           string
+		timeoutSeconds int
+		wantTimeout    int
+	}{
+		{
+			name:           "zero defaults to 30s",
+			timeoutSeconds: 0,
+			wantTimeout:    WebSearchTimeoutDefault,
+		},
+		{
+			name:           "explicit 15s preserved",
+			timeoutSeconds: 15,
+			wantTimeout:    15,
+		},
+		{
+			name:           "explicit 60s preserved",
+			timeoutSeconds: 60,
+			wantTimeout:    60,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Config{
+				Tools: ToolsConfig{
+					WebSearch: WebSearchConfig{
+						Enabled:    true,
+						Endpoint:   "http://localhost:8888",
+						TimeoutSec: tt.timeoutSeconds,
+					},
+					WebFetch: WebFetchConfig{
+						Enabled:      true,
+						URLAllowlist: []string{"localhost"},
+					},
+				},
+			}
+			applyDefaults(c)
+			if c.Tools.WebSearch.TimeoutSec != tt.wantTimeout {
+				t.Errorf("WebSearch.TimeoutSec = %d, want %d", c.Tools.WebSearch.TimeoutSec, tt.wantTimeout)
+			}
+		})
+	}
+}
+
+func TestWebSearchTimeoutConstantIs30(t *testing.T) {
+	if WebSearchTimeoutDefault != 30 {
+		t.Errorf("WebSearchTimeoutDefault = %d, want 30", WebSearchTimeoutDefault)
+	}
+}
