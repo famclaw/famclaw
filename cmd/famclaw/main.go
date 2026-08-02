@@ -49,6 +49,7 @@ import (
 	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/todo"
 	"github.com/famclaw/famclaw/internal/toolcache"
+	"github.com/famclaw/famclaw/internal/transcribe"
 	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/web"
 	"github.com/famclaw/famclaw/internal/webfetch"
@@ -655,6 +656,22 @@ func main() {
 	// results can be delivered back to the originating conversation.
 	senderRegistry := make(map[string]gateway.Sender)
 
+	// Voice transcription: when enabled, inbound audio attachments (Telegram
+	// voice notes, Discord audio clips) are transcribed into text at the top
+	// of Agent.Chat() — before SaveMessage and before the policy gates read
+	// Turn.Input — so a spoken request gets exactly the same age/approval
+	// gating as a typed one. When disabled (nil), audio attachments produce
+	// a visible "voice isn't available" reply rather than a silent drop.
+	var voiceTranscriber transcribe.Transcriber
+	if cfg.Tools.Transcription.Enabled {
+		voiceTranscriber = transcribe.New(
+			cfg.Tools.Transcription.Endpoint,
+			cfg.Tools.Transcription.Model,
+			cfg.Tools.Transcription.MaxBytes,
+			time.Duration(cfg.Tools.Transcription.TimeoutSec)*time.Second,
+		)
+	}
+
 	// Chat function for gateway router - combining incoming changes with our multimodal support
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		var llmClient llm.Chatter
@@ -691,6 +708,7 @@ func main() {
 			BrowserPool:    browserPool,
 			MsgContext:     msgCtx,
 			SenderRegistry: senderRegistry,
+			Transcriber:    voiceTranscriber,
 		})
 		if err != nil {
 			return "", err

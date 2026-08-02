@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -100,6 +101,12 @@ type Agent struct {
 	// (gateway, external_id, group_id, is_group). Used by outbound tools
 	// like reminders to know where to send the notification.
 	msgContext           gateway.MsgContext
+	// transcriber converts audio attachments into text at the top of Chat
+	// so the transcript enters the policy pipeline as Turn.Input (before
+	// SaveMessage and before any gate reads the input). nil disables voice
+	// transcription — audio attachments then produce a visible "voice
+	// isn't available" reply rather than a silent drop.
+	transcriber          Transcriber
 	effectiveSandboxRoot string
 
 	// senderRegistry maps gateway names to their respective sender implementations.
@@ -110,6 +117,17 @@ type Agent struct {
 	// to make research-status timestamps (incl. timeout recording) deterministic.
 	nowFn func() time.Time
 }
+
+// Transcriber converts audio attachments into text. The concrete
+// implementation lives in the internal/transcribe package; the agent
+// depends only on this interface for testability.
+type Transcriber interface {
+	TranscribeAudio(ctx context.Context, audioData []byte, mimeType string) (string, error)
+}
+
+// voiceUnavailableMsg is returned to the user when an audio attachment
+// cannot be transcribed (unconfigured or failed). Never a silent drop.
+const voiceUnavailableMsg = "voice isn't available. Please ask a grown-up to configure voice transcription, or try again later."
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
 // safe to leave nil — the Agent degrades gracefully (no MCP tools,
@@ -126,6 +144,7 @@ type AgentDeps struct {
 	BrowserPool    *browser.Pool             // backs builtin__browser_*; nil disables browser tools
 	MsgContext     gateway.MsgContext        // gateway-specific context for outbound tools (reminders, etc.)
 	SenderRegistry map[string]gateway.Sender // map of gateway name (e.g., "telegram", "discord") to Sender implementation
+	Transcriber    Transcriber               // transcribes audio attachments into text; nil disables voice transcription
 
 	// NowFn, when non-nil, is used to timestamp research status records.
 	// Optional — defaults to time.Now.
@@ -284,6 +303,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		cache:                deps.Cache,
 		browserPool:          deps.BrowserPool,
 		msgContext:           deps.MsgContext,
+		transcriber:          deps.Transcriber,
 		effectiveSandboxRoot: effectiveSandboxRoot,
 		senderRegistry:       deps.SenderRegistry,
 		nowFn:                deps.NowFn,
@@ -299,9 +319,67 @@ func (a *Agent) now() time.Time {
 	return time.Now()
 }
 
+// transcribeAttachments transcribes every audio attachment in the
+// message context into text. The transcript is combined with any
+// existing userMessage (e.g. a caption). Non-audio attachments
+// (images) are ignored — they follow the multimodal path. Returns
+// ("", nil) when there are no audio attachments, so text-only messages
+// are unaffected.
+//
+// Security: this runs before SaveMessage and before the pipeline gates
+// read Turn.Input. A spoken request therefore gets exactly the same
+// age/approval gating as a typed one.
+func (a *Agent) transcribeAttachments(ctx context.Context, attachments []gateway.Attachment, userMessage string) (string, error) {
+	var audioAtts []gateway.Attachment
+	for _, att := range attachments {
+		if att.Type == "audio" {
+			audioAtts = append(audioAtts, att)
+		}
+	}
+	if len(audioAtts) == 0 {
+		return "", nil
+	}
+	if a.transcriber == nil {
+		return "", fmt.Errorf("voice transcription is not configured")
+	}
+
+	parts := make([]string, 0, len(audioAtts)+1)
+	if userMessage != "" {
+		parts = append(parts, userMessage)
+	}
+	for _, att := range audioAtts {
+		raw, err := base64.StdEncoding.DecodeString(att.Data)
+		if err != nil {
+			return "", fmt.Errorf("decoding audio attachment: %w", err)
+		}
+		transcript, err := a.transcriber.TranscribeAudio(ctx, raw, att.MIMEType)
+		if err != nil {
+			return "", fmt.Errorf("transcribing voice: %w", err)
+		}
+		transcript = strings.TrimSpace(transcript)
+		if transcript == "" {
+			return "", fmt.Errorf("transcription returned empty text")
+		}
+		parts = append(parts, transcript)
+	}
+	return strings.Join(parts, "\n"), nil
+}
+
 // Chat processes a single user message and returns a Response.
 // Delegates to agentcore.FamilyPipeline for the processing stages.
 func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(string)) (*Response, error) {
+	// Transcribe inbound audio attachments so the transcript becomes
+	// userMessage BEFORE SaveMessage and before the pipeline gates
+	// (StageClassify → StagePolicyInput) read Turn.Input. Images are
+	// intentionally NOT transcribed — they follow the multimodal path in
+	// buildMessages, below the gates.
+	if transcript, err := a.transcribeAttachments(ctx, a.msgContext.Attachments, userMessage); err != nil {
+		log.Printf("[agent][%s] voice transcription failed: %v", a.user.Name, err)
+		return &Response{Content: voiceUnavailableMsg}, nil
+	} else if transcript != "" {
+		userMessage = transcript
+	}
+
 	// Save user message before processing
 	if err := a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, "", ""); err != nil {
 		log.Printf("[agent][%s] save user message: %v", a.user.Name, err)
