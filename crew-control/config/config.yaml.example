@@ -1,0 +1,41 @@
+# Example famclaw config.yaml additions for the crew-control skill.
+#
+# crew-control is an OUT-OF-REPO addon: a read-only HTTP MCP server that
+# wraps firstmate's fleet scripts. It is NOT compiled into the famclaw
+# binary. famclaw loads it at runtime:
+#   1. SKILL.md  -> <skills.dir>/crew-control/SKILL.md  (prompt injection)
+#   2. cmd/crew-control-mcp -> registered as an MCP server under
+#      skills.mcp_servers (transport: http)
+#
+# The server runs on the LINUX box where fleet state lives, reached by
+# famclaw over HTTP. Use HTTP, not stdio: famclaw's landlock+seccomp sandbox
+# wrapping applies only to stdio servers, and on macOS (where the captain
+# runs famclaw) that sandbox cannot be satisfied — famclaw refuses to
+# launch a stdio server unless tools.sandbox.allow_unconfined=true.
+
+skills:
+  # External (out-of-repo) skills directory.
+  dir: ~/.famclaw/skills
+
+  # Security scan on install (optional).
+  auto_seccheck: true
+  block_on_fail: true
+
+  # Register the crew-control MCP server over HTTP.
+  # The server runs on the Linux box and is reached over the LAN.
+  #
+  # IMPORTANT: bind the server to the Linux box's LAN IP, NOT 0.0.0.0.
+  # See the --bind flag in cmd/crew-control-mcp/main.go.
+  mcp_servers:
+    crew-control:
+      transport: http
+      url: "http://192.168.1.10:3001/mcp"
+
+  # Role enablement — ONLY the parent gets the crew-control skill.
+  # Children are intentionally NOT listed: when a child asks about fleet
+  # state, the model gives a normal "that's not something I can help with"
+  # reply — it does not confirm or deny what exists.
+  role_enablement:
+    parent:
+      - crew-control
+    # child: not present — children never see fleet state
