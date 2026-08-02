@@ -12,7 +12,6 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -163,11 +162,3 @@ func isSafeExt(ext string) bool {
 	}
 	return true
 }
-
-// resolveFilename is a helper for tests — returns a safe filename for the
-// given MIME type.
-func resolveFilename(mimeType string) string {
-	return "voice." + extFromMIME(mimeType)
-}
-
-var _ = filepath.Base // keep import if extFromMIME changes
