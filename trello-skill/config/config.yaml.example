@@ -1,0 +1,63 @@
+# Example famclaw config.yaml additions for the Trello skill.
+#
+# The trello-skill is an OUT-OF-REPO addon: it is NOT compiled into the
+# famclaw binary. famclaw loads it at runtime from:
+#   1. SKILL.md  -> <skills.dir>/trello/SKILL.md  (prompt injection)
+#   2. cmd/trello-mcp -> launched as an MCP server (stdio)
+#
+# All secrets live in skills.credentials — NEVER in the SKILL.md or this
+# repo. Get a Trello API key+token from https://trello.com/app-key.
+
+skills:
+  # External (out-of-repo) skills directory. The deployed Mac config does not
+  # set this by default; point it here so famclaw loads trello/SKILL.md at
+  # runtime without rebuilding the binary.
+  dir: ~/.famclaw/skills
+
+  # Security scan on install (optional).
+  auto_seccheck: true
+  block_on_fail: true
+
+  # Register the trello MCP server. famclaw's MCP pool launches the binary
+  # below over stdio (Content-Length framed). The captain must build and
+  # place the binary first:
+  #   cd trello-skill && CGO_ENABLED=0 go build -o ~/.famclaw/bin/trello-mcp ./cmd/trello-mcp
+  mcp_servers:
+    trello:
+      transport: stdio
+      # IMPORTANT: famclaw launches MCP servers via fork/exec, which does NOT
+      # expand "~". A relative or "~"-prefixed command fails with
+      # "no such file or directory". Use an ABSOLUTE path here; replace
+      # "/Users/family" with your actual home directory.
+      command: /Users/family/.famclaw/bin/trello-mcp
+      # stdio servers run under famclaw's landlock+seccomp sandbox by default.
+      # The trello-mcp binary only needs network + env, which the sandbox
+      # permits; no extra sandbox config is required.
+
+  # Per-skill credentials. famclaw injects these as ENV VARS into the trello
+  # MCP subprocess (the credential map bypasses famclaw's env blocklist, so
+  # *_TOKEN names are allowed here). The server reads them from its own
+  # process environment.
+  credentials:
+    trello:
+      TRELLO_API_KEY: "YOUR-TRELLO-API-KEY"
+      TRELLO_TOKEN: "YOUR-TRELLO-OAUTH-TOKEN"
+      TRELLO_BOARD_ID: "YOUR-BOARD-ID"
+      # Default list for new cards when no person/target is given.
+      TRELLO_LIST_ID: "YOUR-BACKLOG-LIST-ID"
+      # List completed cards are moved to.
+      TRELLO_DONE_LIST_ID: "YOUR-DONE-LIST-ID"
+      # Name -> list-id map for name resolution and per-person routing.
+      # Required for per-person routing (e.g. person="Julia"). The model
+      # passes list/person NAMES here and the skill resolves them to ids.
+      # Use double quotes inside the JSON (it is a single YAML string).
+      # Backlog and Done are shared lists; Julia/Ilya/Teo are per-person lists.
+      TRELLO_LISTS: '{"Backlog":"68e15d40a06fb18420cb0dea","Julia":"68e15d40a06fb18420cb0deb","Ilya":"68e15d40a06fb18420cb0dec","Teo":"68e15d40a06fb18420cb0ded","Done":"68e15d40a06fb18420cb0dee"}'
+
+  # Role enablement — who gets the trello skill injected into their prompt.
+  # Children get the skill (can add/list/complete); parents get it too.
+  role_enablement:
+    parent:
+      - trello
+    child:
+      - trello
