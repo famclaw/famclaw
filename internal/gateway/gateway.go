@@ -22,12 +22,14 @@ type Message struct {
 
 // Attachment represents an attached file or media.
 type Attachment struct {
-	// Type of attachment (e.g., "image")
+	// Type of attachment: "image" or "audio". Images follow the
+	// multimodal path (spliced into ContentParts below the policy gates);
+	// audio is transcribed into text by the agent before the gates run.
 	Type string
 	// For images: base64-encoded data or URL
 	// We'll use Data for base64-encoded content
 	Data string
-	// MIME type (e.g., "image/jpeg", "image/png")
+	// MIME type (e.g., "image/jpeg", "image/png", "audio/ogg")
 	MIMEType string
 }
 type Reply struct {
@@ -42,10 +44,11 @@ type MsgContext struct {
 	ExternalID string // platform-specific user ID
 	GroupID    string // platform-specific group/channel ID (empty for DMs)
 	IsGroup    bool   // true if message is from a group/channel
-	// Attachments carries any media (images) extracted by the gateway
-	// adapter from the inbound platform message. Populated by the
-	// Discord and Telegram adapters and forwarded through the router
-	// into the agent so image content reaches a vision-capable model.
+	// Attachments carries any media (images, audio) extracted by the
+	// gateway adapter from the inbound platform message. Image
+	// attachments are forwarded to the agent for the multimodal path;
+	// audio attachments are transcribed into text before the policy
+	// gates run.
 	Attachments []Attachment
 }
 

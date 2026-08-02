@@ -463,6 +463,14 @@ func applyDefaults(c *Config) {
 	if c.Tools.WebFetch.MaxBytes == 0 {
 		c.Tools.WebFetch.MaxBytes = 256 * 1024
 	}
+	// Transcription defaults — applied unconditionally so a runtime toggle
+	// can flip Enabled without a restart; the endpoint/model are required when on.
+	if c.Tools.Transcription.MaxBytes == 0 {
+		c.Tools.Transcription.MaxBytes = 25 * 1024 * 1024
+	}
+	if c.Tools.Transcription.TimeoutSec == 0 {
+		c.Tools.Transcription.TimeoutSec = TranscriptionTimeoutDefault
+	}
 	if c.Tools.WebFetch.FallbackMinTextLength == 0 {
 		c.Tools.WebFetch.FallbackMinTextLength = 10
 	}
