@@ -26,11 +26,22 @@ var mimeToExtensions = map[string][]string{
 	"image/png":       {`.png`},
 	"image/gif":       {`.gif`},
 	"image/webp":      {`.webp`},
+	"audio/ogg":       {`.ogg`},
+	"audio/mpeg":      {`.mp3`, `.mpga`},
+	"audio/mp3":       {`.mp3`},
+	"audio/wav":       {`.wav`, `.wave`},
+	"audio/webm":      {`.webm`},
+	"audio/opus":      {`.opus`},
+	"audio/mp4":       {`.m4a`, `.mp4`},
 	"text/plain":      {`.txt`},
 	"application/pdf": {`.pdf`},
 	"application/zip": {`.zip`},
 	// Add more as needed
 }
+
+// maxAudioBytes is the maximum size in bytes for an audio attachment
+// (25MB — matches the transcription max_bytes default).
+const maxAudioBytes = 25 * 1024 * 1024
 
 // validateMIMEExtension checks that the file extension matches the MIME type.
 func validateMIMEExtension(mimeType string, fileName string) error {
@@ -96,69 +107,7 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 		}
 
 		// Process attachments
-		var attachments []gateway.Attachment
-		var fileAttachmentNotes []string
-		if len(m.Message.Attachments) > 0 {
-			attachments = make([]gateway.Attachment, 0)
-			for _, attachment := range m.Message.Attachments {
-				// Check if it's an image attachment
-				if strings.HasPrefix(attachment.ContentType, "image/") {
-					// Validate size (5MB limit)
-					if attachment.Size > imageutil.MaxImageBytes {
-						log.Printf("[discord] image %d bytes exceeds %d cap, skipping", attachment.Size, imageutil.MaxImageBytes)
-						continue
-					}
-
-					// Download image data
-					imageData, err := downloadImage(ctx, attachment.URL)
-					if err != nil {
-						log.Printf("[discord] failed to download image: %v", err)
-						continue
-					}
-
-					// Base64 encode and add to attachments
-					attachments = append(attachments, gateway.Attachment{
-						Type:     "image",
-						Data:     base64.StdEncoding.EncodeToString(imageData),
-						MIMEType: attachment.ContentType,
-					})
-				} else {
-					// Handle non-image attachments (files)
-					// Only process files under 100MB (reasonable limit)
-					const maxFileSize = 25 * 1024 * 1024 // 25MB
-					if attachment.Size > maxFileSize {
-						log.Printf("[discord] file %d bytes exceeds %d cap, skipping", attachment.Size, maxFileSize)
-						continue
-					}
-
-					// Download file data
-					fileData, err := downloadFile(ctx, attachment.URL, maxFileSize)
-					if err != nil {
-						log.Printf("[discord] failed to download file: %v", err)
-						continue
-					}
-
-					// Validate MIME type and extension consistency
-					if err := validateMIMEExtension(attachment.ContentType, attachment.Filename); err != nil {
-						log.Printf("[discord] attachment MIME-extension mismatch: %v", err)
-						continue
-					}
-
-					// Write file to sandbox if sandbox is configured
-					if b.sandboxRoot != "" {
-						// Write to sandbox
-						relPath, err := writeAttachmentToFile(ctx, b.sandboxRoot, attachment.Filename, fileData)
-						if err != nil {
-							log.Printf("[discord] failed to write file to sandbox: %v", err)
-							continue
-						}
-
-						// Add note about saved file
-						fileAttachmentNotes = append(fileAttachmentNotes, fmt.Sprintf("Saved attachment: %s", relPath))
-					}
-				}
-			}
-		}
+		attachments, fileAttachmentNotes := b.processAttachments(ctx, m.Message.Attachments)
 
 		// Construct the message text with file attachment notes
 		var parts []string
@@ -240,6 +189,96 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// processAttachments extracts gateway attachments and file notes from Discord
+// message attachments. Images become image attachments, audio becomes audio
+// attachments (transcribed by the agent), and other files are written to the
+// sandbox if configured.
+func (b *Bot) processAttachments(ctx context.Context, discordAttachments []*discordgo.MessageAttachment) ([]gateway.Attachment, []string) {
+	var attachments []gateway.Attachment
+	var fileAttachmentNotes []string
+	if len(discordAttachments) > 0 {
+		attachments = make([]gateway.Attachment, 0, len(discordAttachments))
+		for _, attachment := range discordAttachments {
+			// Check if it's an image attachment
+			if strings.HasPrefix(attachment.ContentType, "image/") {
+				// Validate size (5MB limit)
+				if attachment.Size > imageutil.MaxImageBytes {
+					log.Printf("[discord] image %d bytes exceeds %d cap, skipping", attachment.Size, imageutil.MaxImageBytes)
+					continue
+				}
+
+				// Download image data
+				imageData, err := downloadImage(ctx, attachment.URL)
+				if err != nil {
+					log.Printf("[discord] failed to download image: %v", err)
+					continue
+				}
+
+				// Base64 encode and add to attachments
+				attachments = append(attachments, gateway.Attachment{
+					Type:     "image",
+					Data:     base64.StdEncoding.EncodeToString(imageData),
+					MIMEType: attachment.ContentType,
+				})
+				continue
+			}
+
+			// Check if it's an audio attachment (voice message or audio file)
+			if strings.HasPrefix(attachment.ContentType, "audio/") {
+				if attachment.Size > maxAudioBytes {
+					log.Printf("[discord] audio %d bytes exceeds %d cap, skipping", attachment.Size, maxAudioBytes)
+					continue
+				}
+
+				audioData, err := downloadFile(ctx, attachment.URL, maxAudioBytes)
+				if err != nil {
+					log.Printf("[discord] failed to download audio: %v", err)
+					continue
+				}
+
+				attachments = append(attachments, gateway.Attachment{
+					Type:     "audio",
+					Data:     base64.StdEncoding.EncodeToString(audioData),
+					MIMEType: attachment.ContentType,
+				})
+				continue
+			}
+
+			// Handle non-image, non-audio attachments (files)
+			if attachment.Size > maxAudioBytes {
+				log.Printf("[discord] file %d bytes exceeds %d cap, skipping", attachment.Size, maxAudioBytes)
+				continue
+			}
+
+			// Download file data
+			fileData, err := downloadFile(ctx, attachment.URL, maxAudioBytes)
+			if err != nil {
+				log.Printf("[discord] failed to download file: %v", err)
+				continue
+			}
+
+			// Validate MIME type and extension consistency
+			if err := validateMIMEExtension(attachment.ContentType, attachment.Filename); err != nil {
+				log.Printf("[discord] attachment MIME-extension mismatch: %v", err)
+				continue
+			}
+
+			// Write file to sandbox if sandbox is configured
+			if b.sandboxRoot != "" {
+				relPath, err := writeAttachmentToFile(ctx, b.sandboxRoot, attachment.Filename, fileData)
+				if err != nil {
+					log.Printf("[discord] failed to write file to sandbox: %v", err)
+					continue
+				}
+
+				// Add note about saved file
+				fileAttachmentNotes = append(fileAttachmentNotes, fmt.Sprintf("Saved attachment: %s", relPath))
+			}
+		}
+	}
+	return attachments, fileAttachmentNotes
 }
 
 // Send implements gateway.Sender for outbound messages (e.g., reminders).

@@ -26,6 +26,7 @@ import (
 const maxImageBytes = 5 * 1024 * 1024 // 5MB cap (RPi-friendly)
 const maxImageWidth = 1280            // Maximum width in pixels (preserve aspect ratio)
 const maxImageHeight = 720            // Maximum height in pixels (preserve aspect ratio)
+const maxAudioBytes = 25 * 1024 * 1024 // 25MB cap (matches transcription max_bytes default)
 // Bot is a Telegram gateway using the Bot API with long-polling.
 type Bot struct {
 	token    string
@@ -121,7 +122,47 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 					}
 				}
 			}
-			// Prepare attachments if we have photo data
+			// Check for voice notes / audio files
+			var audioData []byte
+			var audioMimeType string
+			if u.Message.Voice != nil {
+				fileInfo, err := b.getFile(ctx, u.Message.Voice.FileID)
+				if err != nil {
+					log.Printf("[telegram] failed to get voice file info: %v", err)
+				} else if fileInfo != nil {
+					voiceData, err := b.downloadFile(ctx, fileInfo.FilePath)
+					if err != nil {
+						log.Printf("[telegram] failed to download voice: %v", err)
+					} else {
+						audioData = voiceData
+						audioMimeType = "audio/ogg"
+						if u.Message.Voice.MimeType != "" {
+							audioMimeType = u.Message.Voice.MimeType
+						}
+					}
+				}
+			}
+			if audioData == nil && u.Message.Audio != nil {
+				fileInfo, err := b.getFile(ctx, u.Message.Audio.FileID)
+				if err != nil {
+					log.Printf("[telegram] failed to get audio file info: %v", err)
+				} else if fileInfo != nil {
+					audioData, err = b.downloadFile(ctx, fileInfo.FilePath)
+					if err != nil {
+						log.Printf("[telegram] failed to download audio: %v", err)
+					} else {
+						audioMimeType = "audio/mpeg"
+						if u.Message.Audio.MimeType != "" {
+							audioMimeType = u.Message.Audio.MimeType
+						}
+					}
+				}
+			}
+			if len(audioData) > maxAudioBytes {
+				log.Printf("[telegram] audio %d bytes exceeds %d cap, skipping", len(audioData), maxAudioBytes)
+				audioData = nil
+			}
+			// Prepare attachments if we have photo or audio data
 			var attachments []gateway.Attachment
 			if len(photoData) > 0 {
 				attachments = []gateway.Attachment{{
@@ -129,6 +170,13 @@ func (b *Bot) Start(ctx context.Context, handleMsg func(ctx context.Context, msg
 					Data:     base64.StdEncoding.EncodeToString(photoData),
 					MIMEType: mimeType,
 				}}
+			}
+			if len(audioData) > 0 {
+				attachments = append(attachments, gateway.Attachment{
+					Type:     "audio",
+					Data:     base64.StdEncoding.EncodeToString(audioData),
+					MIMEType: audioMimeType,
+				})
 			}
 
 			// Group info (moved after photo processing to maintain variable scope)
@@ -227,18 +275,38 @@ type tgMessage struct {
 	From  tgUser    `json:"from"`
 	Text  string    `json:"text"`
 	Photo []tgPhoto `json:"photo,omitempty"`
+	Voice *tgVoice  `json:"voice,omitempty"`
+	Audio *tgAudio  `json:"audio,omitempty"`
+}
+
+// tgVoice represents a Telegram voice note (OGG/Opus). Voice notes are
+// short audio recordings that arrive as a single file_id the bot must
+// download via getFile.
+type tgVoice struct {
+	FileID   string `json:"file_id"`
+	FileSize int    `json:"file_size,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+}
+
+// tgAudio represents a Telegram general audio file attached to a message.
+type tgAudio struct {
+	FileID   string `json:"file_id"`
+	FileSize int    `json:"file_size,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
 }
 
 // shouldSkipUpdate reports whether a Telegram message should be skipped by
 // the polling loop. Messages with neither text nor a photo carry no content
 // the agent can act on and are skipped. Messages that carry a photo but no
 // caption text are kept so the agent can build multimodal ContentParts from
-// the attachment alone. A nil message is always skipped.
+// the attachment alone. Voice notes and audio files are likewise kept so they
+// can be transcribed into text before the policy gates. A nil message is
+// always skipped.
 func shouldSkipUpdate(msg *tgMessage) bool {
 	if msg == nil {
 		return true
 	}
-	return msg.Text == "" && len(msg.Photo) == 0
+	return msg.Text == "" && len(msg.Photo) == 0 && msg.Voice == nil && msg.Audio == nil
 }
 
 type tgChat struct {

@@ -30,16 +30,38 @@ type Config struct {
 
 // ToolsConfig groups configuration for built-in tools registered with the LLM.
 type ToolsConfig struct {
-	WebFetch     WebFetchConfig  `yaml:"web_fetch,omitempty"`
-	WebSearch    WebSearchConfig `yaml:"web_search,omitempty"`
-	Browser      BrowserConfig   `yaml:"browser,omitempty"`
-	ToolCache    ToolCacheConfig `yaml:"tool_cache,omitempty"`
-	FileRead     FileReadConfig  `yaml:"file_read,omitempty"`
-	FileList     FileListConfig  `yaml:"file_list,omitempty"`
-	SandboxRoot  string          `yaml:"sandbox_root,omitempty"`
-	SandboxScope string          `yaml:"sandbox_scope,omitempty"`
-	Sandbox      SandboxConfig   `yaml:"sandbox,omitempty"`
+	WebFetch      WebFetchConfig      `yaml:"web_fetch,omitempty"`
+	WebSearch     WebSearchConfig     `yaml:"web_search,omitempty"`
+	Browser       BrowserConfig       `yaml:"browser,omitempty"`
+	ToolCache     ToolCacheConfig     `yaml:"tool_cache,omitempty"`
+	FileRead      FileReadConfig      `yaml:"file_read,omitempty"`
+	FileList      FileListConfig      `yaml:"file_list,omitempty"`
+	Transcription TranscriptionConfig `yaml:"transcription,omitempty"`
+	SandboxRoot   string              `yaml:"sandbox_root,omitempty"`
+	SandboxScope  string              `yaml:"sandbox_scope,omitempty"`
+	Sandbox       SandboxConfig       `yaml:"sandbox,omitempty"`
 }
+
+// TranscriptionConfig controls inbound voice-message transcription. When
+// enabled, audio attachments (Telegram voice notes, Discord audio clips) are
+// sent to an OpenAI-compatible /v1/audio/transcriptions endpoint and the
+// resulting transcript is fed into the agent as the user message - before the
+// policy gates run, so a spoken request gets exactly the same age/approval
+// gating as a typed one.
+//
+// The endpoint is typically a whisper.cpp server (started with --convert) or
+// a LiteLLM gateway that fronts one. Operators point endpoint at their local
+// service - it is never hardcoded.
+type TranscriptionConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	Endpoint   string `yaml:"endpoint,omitempty"`     // e.g. "http://192.168.1.243:8092"; required when Enabled
+	Model      string `yaml:"model,omitempty"`        // e.g. "whisper-1"; required when Enabled
+	MaxBytes   int64  `yaml:"max_bytes,omitempty"`    // cap on downloaded audio file size; default 25 MB
+	TimeoutSec int    `yaml:"timeout_seconds,omitempty"` // per-request timeout; default 30
+}
+
+// TranscriptionTimeoutDefault is the default transcription request timeout.
+const TranscriptionTimeoutDefault = 30
 
 // SandboxConfig controls the sandboxing of MCP servers.
 type SandboxConfig struct {
@@ -441,6 +463,14 @@ func applyDefaults(c *Config) {
 	if c.Tools.WebFetch.MaxBytes == 0 {
 		c.Tools.WebFetch.MaxBytes = 256 * 1024
 	}
+	// Transcription defaults — applied unconditionally so a runtime toggle
+	// can flip Enabled without a restart; the endpoint/model are required when on.
+	if c.Tools.Transcription.MaxBytes == 0 {
+		c.Tools.Transcription.MaxBytes = 25 * 1024 * 1024
+	}
+	if c.Tools.Transcription.TimeoutSec == 0 {
+		c.Tools.Transcription.TimeoutSec = TranscriptionTimeoutDefault
+	}
 	if c.Tools.WebFetch.FallbackMinTextLength == 0 {
 		c.Tools.WebFetch.FallbackMinTextLength = 10
 	}
@@ -578,6 +608,20 @@ func (c *Config) Validate() error {
 	// degrading every fetch to the thin HTTP text.
 	if c.Tools.WebFetch.FallbackToBrowser && !c.Tools.Browser.Enabled {
 		return fmt.Errorf("tools.web_fetch.fallback_to_browser requires tools.browser.enabled=true (a Playwright browser endpoint is needed to render JS-heavy sites)")
+	}
+	if c.Tools.Transcription.Enabled {
+		if strings.TrimSpace(c.Tools.Transcription.Endpoint) == "" {
+			return fmt.Errorf("tools.transcription.endpoint must be set when enabled (e.g. http://localhost:8092)")
+		}
+		if strings.TrimSpace(c.Tools.Transcription.Model) == "" {
+			return fmt.Errorf("tools.transcription.model must be set when enabled (e.g. whisper-1)")
+		}
+		if c.Tools.Transcription.MaxBytes <= 0 {
+			return fmt.Errorf("tools.transcription.max_bytes must be > 0 (got %d)", c.Tools.Transcription.MaxBytes)
+		}
+		if c.Tools.Transcription.TimeoutSec <= 0 {
+			return fmt.Errorf("tools.transcription.timeout_seconds must be > 0 (got %d)", c.Tools.Transcription.TimeoutSec)
+		}
 	}
 	// Validate sandbox root if set.
 	if c.Tools.SandboxRoot != "" {

@@ -258,6 +258,21 @@ func TestShouldSkipUpdate(t *testing.T) {
 			msg:  &tgMessage{},
 			skip: true,
 		},
+		{
+			name: "voice note is kept",
+			msg:  &tgMessage{Voice: &tgVoice{FileID: "v1"}},
+			skip: false,
+		},
+		{
+			name: "audio file is kept",
+			msg:  &tgMessage{Audio: &tgAudio{FileID: "a1"}},
+			skip: false,
+		},
+		{
+			name: "voice note with empty text is kept",
+			msg:  &tgMessage{Voice: &tgVoice{FileID: "v1"}, Text: ""},
+			skip: false,
+		},
 	}
 
 	for _, tt := range tests {
