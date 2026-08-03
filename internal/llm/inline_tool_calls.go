@@ -11,7 +11,13 @@ import (
 // Nemotron-3-Nano (and other models trained on the same chat template)
 // is instructed to emit tool calls in this XML-style form:
 //
-//	�...content...�
+//	<tool_call>
+//	<function=NAME>
+//	<parameter=KEY>
+//	VALUE
+//	</parameter>
+//	</function>
+//	</tool_call>
 //
 // llama-server's tool-call parser only promotes this block to the
 // structured tool_calls[] response field when the block appears at the
@@ -23,37 +29,28 @@ import (
 //
 // salvageInlineToolCalls runs as a post-decode rescue: when an assistant
 // response has empty tool_calls[] AND its content contains a recognisable
-// � block, parse the block, promote it to a ToolCall, and strip
+// <tool_call> block, parse the block, promote it to a ToolCall, and strip
 // it from content. Malformed blocks are stripped silently rather than
 // left in user-visible text — the tool loop will just see no tool calls
 // and the model gets a chance to retry on the next turn.
 
 var (
-	reToolCall  = regexp.MustCompile(`(?s)�(.*?)�`)
+	reToolCall  = regexp.MustCompile(`(?s)<tool_call>(.*?)</tool_call>`)
 	reFunction  = regexp.MustCompile(`(?s)<function=([^>\s]+)>(.*?)</function>`)
 	reParameter = regexp.MustCompile(`(?s)<parameter=([^>\s]+)>(.*?)</parameter>`)
 )
 
-// salvageInlineToolCalls inspects msg.Content for tool-call blocks
+// salvageInlineToolCalls inspects msg.Content for <tool_call> XML blocks
 // that should have been lifted into msg.ToolCalls by upstream parsing.
-// It recognises two inline formats:
-//
-//   - llama-server XML:  �...content...�
-//     (handled by parseInlineToolCallBody / stripToolCallBlocks)
-//   - Gemma native:     <|tool_call_begin|>call:NAME{args}<|tool_call_end|>
-//     (handled by salvageGemmaToolCalls / stripGemmaToolCallBlocks)
-//
-// When blocks are found and parseable, the calls are appended to
-// msg.ToolCalls and stripped from msg.Content. Malformed blocks are
-// stripped silently rather than left in user-visible text — the tool
-// loop will just see no tool calls and the model gets a chance to
-// retry on the next turn.
+// When found and parseable, the calls are appended to msg.ToolCalls and
+// stripped from msg.Content. No-op when msg already has tool_calls or
+// when content has no recognisable block.
 func salvageInlineToolCalls(msg *Message) {
 	if msg == nil || msg.Content == "" {
 		return
 	}
 
-	hasLlamaBlock := strings.Contains(msg.Content, "�")
+	hasLlamaBlock := strings.Contains(msg.Content, "<tool_call>")
 	hasGemmaBlock := reGemmaToolCall.FindString(msg.Content) != ""
 	if !hasLlamaBlock && !hasGemmaBlock {
 		return
@@ -85,7 +82,7 @@ func salvageInlineToolCalls(msg *Message) {
 	}
 }
 
-// stripToolCallBlocks removes �...� blocks and the
+// stripToolCallBlocks removes <tool_call>...</tool_call> blocks and the
 // whitespace around them so the remaining content reads cleanly.
 func stripToolCallBlocks(content string) string {
 	stripped := reToolCall.ReplaceAllString(content, "")
@@ -95,7 +92,7 @@ func stripToolCallBlocks(content string) string {
 }
 
 // parseInlineToolCallBody extracts a single <function=NAME>...</function>
-// from the body of a � block and turns its <parameter=K>V</parameter>
+// from the body of a <tool_call> block and turns its <parameter=K>V</parameter>
 // children into a ToolCall with JSON-encoded arguments. Returns ok=false
 // when the body is missing the function tag or the function name is empty.
 func parseInlineToolCallBody(body string) (ToolCall, bool) {
@@ -172,9 +169,9 @@ func newInlineToolCallID() string {
 // --- Gemma native format ( <|tool_call_begin|>...<|tool_call_end|> ) ---
 //
 // LiteLLM (and some Ollama/LiteLLM gateway configs) fail to promote
-// Gemma's native <|tool_call_begin|> call:NAME {args} <|tool_call_end|> blocks
+// Gemma native tool_call_begin> call:NAME {args} <|tool_call_end|> blocks
 // into the structured tool_calls[] array. When that happens the raw
-// tokens leak into the assistant's visible content. These functions
+// tokens leak into the assistant visible content. These functions
 // rescue the real tool calls and strip the tokens.
 //
 // Observed closing-tag variants in the wild (from the fc-convo-audit-scout
@@ -183,21 +180,14 @@ func newInlineToolCallID() string {
 
 // reGemmaToolCall matches a single Gemma tool-call block.
 // Groups:
-//  1 = function name
-//  2 = raw argument body (inside { ... })
-var reGemmaToolCall = regexp.MustCompile(
-	`(?s)` +
-		`<\|tool_call_begin\|>|<\|tool_call>` +
-		`call:(\w+)` +
-		`\s*\{` +
-		`([^}]*)` +
-		`\}` +
-		`<\|tool_call_end\|>|</\|tool_call\|>|<\|tool_call\|>|<tool_call\|>`,
-)
+//
+//	1 = function name
+//	2 = raw argument body (inside { ... })
+var reGemmaToolCall = regexp.MustCompile(`(?s)(?:<\|tool_call_begin\|>|<\|tool_call>)call:(\w+)\s*\{([^}]*)\}\s*(?:<\|tool_call_end\|>|</\|tool_call\|>|<\|tool_call\|>|<tool_call\|>)`)
 
 // reGemmaArg extracts a single key:<|"|>value<|"|> pair from the
-// argument body. The <|"|> token is Gemma's native string delimiter.
-var reGemmaArg = regexp.MustCompile(`(\w+):<\|"\|>(\s*?)<\|"\|>`)
+// argument body. The <|"|> token is Gemma native string delimiter.
+var reGemmaArg = regexp.MustCompile(`(\w+):<\|"\|>(.*?)<\|"\|>`)
 
 // salvageGemmaToolCalls parses Gemma <|tool_call_begin|> blocks in
 // msg.Content, promotes them to ToolCall entries, and strips the raw
@@ -291,7 +281,7 @@ func parseGemmaArgs(argBody string) map[string]any {
 // blocks and collapses surrounding whitespace.
 func stripGemmaToolCallBlocks(content string) string {
 	stripped := reGemmaToolCall.ReplaceAllString(content, "")
-	stripped = stripControlTokens(stripped)
+	stripped = reControlToken.ReplaceAllString(stripped, "")
 	stripped = regexp.MustCompile(`\n{3,}`).ReplaceAllString(stripped, "\n\n")
 	return strings.TrimSpace(stripped)
 }
@@ -303,8 +293,13 @@ func stripGemmaToolCallBlocks(content string) string {
 // new, unanticipated token format appears. It runs AFTER format-specific
 // parsing (salvageInlineToolCalls, salvageGemmaToolCalls) so that
 // already-extracted tool calls are never affected.
+//
+// NOTE: this function does NOT TrimSpace. Callers that need trimming
+// (mergeReasoning, chatFull) call strings.TrimSpace themselves. The
+// streaming path uses this function on individual tokens where
+// trimming would incorrectly drop space tokens.
 var reControlToken = regexp.MustCompile(`<[^>]*\|[^>]*>`)
 
 func stripControlTokens(content string) string {
-	return strings.TrimSpace(reControlToken.ReplaceAllString(content, ""))
+	return reControlToken.ReplaceAllString(content, "")
 }

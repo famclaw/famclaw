@@ -110,9 +110,9 @@ func (m Message) MarshalJSON() ([]byte, error) {
 func (m *Message) mergeReasoning() {
 	if strings.TrimSpace(m.Content) == "" {
 		if m.ReasoningContent != "" {
-			m.Content = stripControlTokens(m.ReasoningContent)
+			m.Content = strings.TrimSpace(stripControlTokens(m.ReasoningContent))
 		} else if m.Reasoning != "" {
-			m.Content = stripControlTokens(m.Reasoning)
+			m.Content = strings.TrimSpace(stripControlTokens(m.Reasoning))
 		}
 	}
 	m.ReasoningContent = ""
@@ -508,7 +508,7 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 	// Belt-and-braces: strip any remaining Gemma control tokens
 	// so that no model-internal token format can ever reach the user,
 	// even if a new unrecognised variant appears.
-	msg.Content = stripControlTokens(msg.Content)
+	msg.Content = strings.TrimSpace(stripControlTokens(msg.Content))
 	// An empty reply is never acceptable — the family must never see
 	// a blank message. If the model produced no content AND no tool
 	// calls, return an honest error instead of a silent void.

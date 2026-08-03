@@ -316,14 +316,15 @@ func TestChatEmptyChoices(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, "test", "")
-	msg, err := client.ChatMessage(context.Background(), []Message{
+	_, err := client.ChatMessage(context.Background(), []Message{
 		{Role: "user", Content: "hi"},
 	}, 0.7, 100)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// An empty response with no choices must never be sent silently.
+	if err == nil {
+		t.Fatal("expected error for empty choices, got nil")
 	}
-	if msg.Content != "" {
-		t.Errorf("expected empty content, got %q", msg.Content)
+	if !strings.Contains(err.Error(), "no choices") {
+		t.Errorf("error should mention 'no choices': %v", err)
 	}
 }
 
@@ -837,6 +838,7 @@ func TestMergeReasoningFields(t *testing.T) {
 		name    string
 		rawResp string
 		want    string
+		wantErr bool
 	}{
 		{
 			name:    "empty content + plain reasoning field",
@@ -859,9 +861,10 @@ func TestMergeReasoningFields(t *testing.T) {
 			want:    "The answer is 42",
 		},
 		{
-			name:    "empty content no reasoning stays empty",
+			name:    "empty content no reasoning returns error",
 			rawResp: `{"choices":[{"message":{"role":"assistant","content":""}}]}`,
 			want:    "",
+			wantErr: true,
 		},
 	}
 
@@ -878,7 +881,10 @@ func TestMergeReasoningFields(t *testing.T) {
 				{Role: "user", Content: "hi"},
 			}, 0.7, 100)
 			if err != nil {
-				t.Fatalf("ChatMessage: %v", err)
+				if !tt.wantErr {
+					t.Fatalf("ChatMessage: %v", err)
+				}
+				return
 			}
 			if msg.Content != tt.want {
 				t.Errorf("content = %q, want %q", msg.Content, tt.want)
