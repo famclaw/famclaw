@@ -197,3 +197,120 @@ func TestApprovalJSONSerialization(t *testing.T) {
 		t.Run(tc.name, tc.fn)
 	}
 }
+
+func TestConversationID(t *testing.T) {
+	// Fixed timestamps for deterministic, table-driven tests.
+	// Day boundary: Jan 15 23:58 → Jan 16 00:02 (2 minutes apart, straddle midnight).
+	preMidnight := time.Date(2024, 1, 15, 23, 58, 0, 0, time.UTC)
+	postMidnight := time.Date(2024, 1, 16, 0, 2, 0, 0, time.UTC)
+	sevenHoursLater := postMidnight.Add(7 * time.Hour)
+	fiveMinLater := postMidnight.Add(5 * time.Minute)
+
+	userA := "emma"
+	userB := "lucas"
+
+	tests := []struct {
+		name     string
+		id1      string
+		id2      string
+		wantSame bool
+	}{
+		{
+			name:     "midnight gap under 6h continues conversation",
+			id1:      ConversationID(userA, time.Time{}, false, preMidnight),
+			id2:      ConversationID(userA, preMidnight, true, postMidnight),
+			wantSame: true,
+		},
+		{
+			name:     "7h gap starts new conversation",
+			id1:      ConversationID(userA, postMidnight, true, postMidnight),
+			id2:      ConversationID(userA, postMidnight, true, sevenHoursLater),
+			wantSame: false,
+		},
+		{
+			name:     "5min gap continues conversation",
+			id1:      ConversationID(userA, preMidnight, true, postMidnight),
+			id2:      ConversationID(userA, postMidnight, true, fiveMinLater),
+			wantSame: true,
+		},
+		{
+			name:     "different users never share id",
+			id1:      ConversationID(userA, preMidnight, true, postMidnight),
+			id2:      ConversationID(userB, preMidnight, true, postMidnight),
+			wantSame: false,
+		},
+		{
+			name:     "cold start produces fresh id",
+			id1:      ConversationID(userA, time.Time{}, false, preMidnight),
+			id2:      ConversationID(userA, time.Time{}, false, postMidnight),
+			wantSame: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.wantSame {
+				if tc.id1 != tc.id2 {
+					t.Errorf("expected same conversation id, got %q and %q", tc.id1, tc.id2)
+				}
+			} else {
+				if tc.id1 == tc.id2 {
+					t.Errorf("expected different conversation ids, both %q", tc.id1)
+				}
+			}
+		})
+	}
+}
+
+func TestLastMessageTime(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(*DB) error
+		userName string
+		wantOk   bool
+	}{
+		{
+			name:     "cold start no messages",
+			setup:    func(db *DB) error { return nil },
+			userName: "emma",
+			wantOk:   false,
+		},
+		{
+			name: "has prior message",
+			setup: func(db *DB) error {
+				return db.SaveMessage("conv-abc", "emma", "user", "hello", "safe", "allow")
+			},
+			userName: "emma",
+			wantOk:   true,
+		},
+		{
+			name: "different user no messages",
+			setup: func(db *DB) error {
+				return db.SaveMessage("conv-abc", "emma", "user", "hello", "safe", "allow")
+			},
+			userName: "lucas",
+			wantOk:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db, cleanup := newTestDB(t)
+			defer cleanup()
+			ctx := context.Background()
+			if err := tc.setup(db); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			got, ok, err := db.LastMessageTime(ctx, tc.userName)
+			if err != nil {
+				t.Fatalf("LastMessageTime: %v", err)
+			}
+			if ok != tc.wantOk {
+				t.Errorf("ok = %v, want %v", ok, tc.wantOk)
+			}
+			if tc.wantOk && got.IsZero() {
+				t.Errorf("expected non-zero timestamp, got zero")
+			}
+		})
+	}
+}

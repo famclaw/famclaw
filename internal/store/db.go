@@ -4,7 +4,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -689,6 +691,54 @@ func (d *DB) RecentMessagesByUser(userName string, limit int) ([]*Message, error
 		msgs = append(msgs, m)
 	}
 	return msgs, rows.Err()
+}
+
+// ConversationIdleTimeout is the maximum gap between a user's last message
+// and their current message that still counts as the same conversation.
+// If the gap exceeds this threshold, a fresh conversation ID is generated.
+// This replaces the old day-bucket approach that silently reset every
+// conversation at midnight.
+const ConversationIdleTimeout = 6 * time.Hour
+
+// ConversationID computes a stable, deterministic conversation ID for a user.
+//
+// If the user has a previous message (hasLast is true) and the gap between
+// now and that message is under ConversationIdleTimeout, the ID is derived
+// from the last message's timestamp — keeping the conversation stable across
+// day boundaries and brief idle periods. Otherwise (cold start or idle gap
+// exceeded) a fresh ID is derived from the current time.
+//
+// Callers should compute the ID once per message and reuse it for all
+// SaveMessage calls within that processing turn.
+func ConversationID(userName string, lastMsg time.Time, hasLast bool, now time.Time) string {
+	var seed time.Time
+	if hasLast && now.Sub(lastMsg) < ConversationIdleTimeout {
+		seed = lastMsg
+	} else {
+		seed = now
+	}
+	h := sha256.Sum256([]byte(userName + ":" + seed.UTC().Format(time.RFC3339)))
+	return hex.EncodeToString(h[:8])
+}
+
+// LastMessageTime returns the timestamp of the most recent message from a user
+// across all conversations. Returns ok=false when the user has no prior
+// messages (cold start). Uses the existing messages/conversations tables —
+// no new table required.
+func (d *DB) LastMessageTime(ctx context.Context, userName string) (time.Time, bool, error) {
+	var ts time.Time
+	err := d.sql.QueryRowContext(ctx, `
+		SELECT m.created_at FROM messages m
+		JOIN conversations c ON m.conversation_id = c.id
+		WHERE c.user_name = ?
+		ORDER BY m.created_at DESC LIMIT 1`, userName).Scan(&ts)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("querying last message time for user %q: %w", userName, err)
+	}
+	return ts, true, nil
 }
 
 // ── Skills ────────────────────────────────────────────────────────────────────
