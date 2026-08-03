@@ -483,3 +483,39 @@ func TestStripGemmaToolCallBlocks_StripsMalformedBlock(t *testing.T) {
 		t.Errorf("control token leaked into output: %q", got)
 	}
 }
+
+// TestStripGemmaToolCallBlocks_StripsMalformedBlockNestedArgs verifies
+// that reGemmaLeftover's brace-aware capture strips the entire call
+// body — including a nested JSON object argument — from a malformed
+// block (missing closing tag), so nothing leaks to the family.
+//
+// The pattern [^{}]*(?:\{[^{}]*\}[^{}]*])* handles one level of
+// nesting: query:{"filter":1} has the inner {"filter":1} fully
+// captured and stripped, unlike the old [^}]* which stopped at the
+// first } and left {"filter":1} visible.
+func TestStripGemmaToolCallBlocks_StripsMalformedBlockNestedArgs(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOutput)
+
+	// Malformed block: opening token present but no closing tag.
+	// Args contain a nested JSON object ({"filter":1}) inside the
+	// argument body.
+	content := `<|tool_call_begin|>call:web_search{query:{"filter":1}} some prose`
+
+	got := stripGemmaToolCallBlocks(content)
+
+	if strings.Contains(got, "call:web_search") {
+		t.Errorf("malformed call body leaked into output: %q", got)
+	}
+	if strings.Contains(got, "filter") {
+		t.Errorf("nested object arg leaked into output: %q", got)
+	}
+	if !strings.Contains(got, "some prose") {
+		t.Errorf("expected prose to remain in output, got: %q", got)
+	}
+	if strings.Contains(got, "<|") {
+		t.Errorf("control token leaked into output: %q", got)
+	}
+}

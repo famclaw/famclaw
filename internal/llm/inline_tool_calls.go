@@ -251,9 +251,13 @@ func parseGemmaArgs(argBody string) map[string]any {
 
 	// Try JSON first — handles the standard Gemma format where
 	// arguments are a JSON object between <|tool_split|> and <|tool_call_end|>.
-	var jsonArgs map[string]any
-	if err := json.Unmarshal([]byte(argBody), &jsonArgs); err == nil {
-		return jsonArgs
+	// Validate before unmarshalling so partial/malformed JSON falls through
+	// to the native parser rather than being silently accepted.
+	if json.Valid([]byte(argBody)) {
+		var jsonArgs map[string]any
+		if err := json.Unmarshal([]byte(argBody), &jsonArgs); err == nil {
+			return jsonArgs
+		}
 	}
 
 	// Native <|"|> delimited key:value pairs.
@@ -324,7 +328,17 @@ var reControlToken = regexp.MustCompile(`<[/?]?\|[^>]*\|?>`)
 // <|tool_call_end|> tag). reGemmaToolCall did not match the full block,
 // so this picks up the call:NAME{args} body so it does not leak as
 // visible text after the opening control token is stripped.
-var reGemmaLeftover = regexp.MustCompile(`call:\w+\s*\{[^}]*\}`)
+// reGemmaLeftover matches a stray call:NAME{...} fragment that remains
+// when a Gemma tool-call block is malformed (e.g. missing the closing
+// <|tool_call_end|> tag). reGemmaToolCall did not match the full block,
+// so this picks up the call:NAME{args} body so it does not leak as
+// visible text after the opening control token is stripped.
+//
+// The argument body uses a brace-aware capture [^{}]*(?:\{[^{}]*\}[^{}]*])*
+// (matching up to one level of nesting) so that nested JSON objects
+// like {filter:{a:1}} are fully captured and stripped, not
+// truncated at the first closing brace.
+var reGemmaLeftover = regexp.MustCompile(`call:\w+\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}`)
 
 func stripControlTokens(content string) string {
 	return reControlToken.ReplaceAllString(content, "")
