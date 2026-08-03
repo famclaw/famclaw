@@ -3,6 +3,7 @@ package prompt
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/famclaw/famclaw/internal/config"
 )
@@ -430,4 +431,50 @@ func TestBuild_TokenBudget_WithBuiltinTools(t *testing.T) {
 		t.Fatalf("parent prompt with builtin tools over budget: %d tokens (limit 900)\n---\n%s", tokens, out)
 	}
 	t.Logf("parent prompt with builtin tools: %d tokens, %d chars", tokens, len(out))
+}
+
+// TestDateComponent verifies the date component renders the expected
+// weekday/month/day/year and timezone when a fixed clock is injected.
+func TestDateComponent(t *testing.T) {
+	fixed := time.Date(2026, time.August, 3, 15, 42, 0, 0, time.UTC)
+	text, ok := dateComponent(BuildContext{Now: func() time.Time { return fixed }})
+	if !ok || text == "" {
+		t.Fatalf("expected included, got ok=%v text=%q", ok, text)
+	}
+	for _, want := range []string{"Current date and timezone", "Monday, August 3, 2026", "UTC"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected %q in %q", want, text)
+		}
+	}
+}
+
+// TestDateComponent_FallbackToTimeNow checks the production path: with no
+// clock injected, the component uses time.Now() and still emits a
+// well-formed date in the expected format (no hallucinated value).
+func TestDateComponent_FallbackToTimeNow(t *testing.T) {
+	text, ok := dateComponent(BuildContext{})
+	if !ok || text == "" {
+		t.Fatalf("expected included, got ok=%v text=%q", ok, text)
+	}
+	today := time.Now().Format("Monday, January 2, 2006")
+	if !strings.Contains(text, today) {
+		t.Errorf("expected today's date %q in %q", today, text)
+	}
+}
+
+// TestBuild_IncludesCurrentDate asserts the assembled system prompt contains
+// the current date in the expected format so the model never has to invent one.
+func TestBuild_IncludesCurrentDate(t *testing.T) {
+	fixed := time.Date(2026, time.August, 3, 15, 42, 0, 0, time.UTC)
+	ctx := BuildContext{
+		Now:     func() time.Time { return fixed },
+		User:    &config.UserConfig{Name: "julia", DisplayName: "Julia", Role: "child", AgeGroup: "age_8_12"},
+		Gateway: "telegram",
+	}
+	out := Build(ctx)
+	for _, want := range []string{"Current date and timezone", "Monday, August 3, 2026", "UTC"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("built prompt missing %q:\n%s", want, out)
+		}
+	}
 }

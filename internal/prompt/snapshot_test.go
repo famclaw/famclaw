@@ -3,6 +3,7 @@ package prompt
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
@@ -23,6 +24,8 @@ func TestBuild_Snapshots(t *testing.T) {
 
 	sam := &config.UserConfig{Name: "sam", DisplayName: "Sam", Role: "child", AgeGroup: "age_13_17"}
 
+	fixedDate := time.Date(2026, time.August, 3, 15, 0, 0, 0, time.UTC)
+	fixedClock := func() time.Time { return fixedDate }
 	safetySnap := &familystate.Snapshot{
 		InjectedByCategory: map[string][]familystate.Fact{
 			"allergies": {
@@ -40,12 +43,12 @@ func TestBuild_Snapshots(t *testing.T) {
 		file string
 		ctx  BuildContext
 	}{
-		{"parent", "testdata/parent.snap", BuildContext{Cfg: cfg, User: parent, Gateway: "telegram", Skills: []string{"seccheck"}, HardBlocked: []string{"weapons", "self_harm"}}},
-		{"under_8", "testdata/under_8.snap", BuildContext{Cfg: cfg, User: teo, Gateway: "telegram", HardBlocked: []string{"weapons", "self_harm"}}},
-		{"age_8_12", "testdata/age_8_12.snap", BuildContext{Cfg: cfg, User: julia, Gateway: "telegram", HardBlocked: []string{"weapons"}}},
-		{"age_13_17", "testdata/age_13_17.snap", BuildContext{Cfg: cfg, User: sam, Gateway: "web"}},
-		{"age_13_17_with_safety", "testdata/age_13_17_with_safety.snap", BuildContext{Cfg: cfg, User: sam, Gateway: "discord", FamilyState: safetySnap}},
-		{"under_8_with_dietary", "testdata/under_8_with_dietary.snap", BuildContext{Cfg: cfg, User: teo, Gateway: "telegram", HardBlocked: []string{"weapons", "self_harm"}, FamilyState: safetySnap}},
+		{"parent", "testdata/parent.snap", BuildContext{Cfg: cfg, User: parent, Gateway: "telegram", Skills: []string{"seccheck"}, HardBlocked: []string{"weapons", "self_harm"}, Now: fixedClock}},
+		{"under_8", "testdata/under_8.snap", BuildContext{Cfg: cfg, User: teo, Gateway: "telegram", HardBlocked: []string{"weapons", "self_harm"}, Now: fixedClock}},
+		{"age_8_12", "testdata/age_8_12.snap", BuildContext{Cfg: cfg, User: julia, Gateway: "telegram", HardBlocked: []string{"weapons"}, Now: fixedClock}},
+		{"age_13_17", "testdata/age_13_17.snap", BuildContext{Cfg: cfg, User: sam, Gateway: "web", Now: fixedClock}},
+		{"age_13_17_with_safety", "testdata/age_13_17_with_safety.snap", BuildContext{Cfg: cfg, User: sam, Gateway: "discord", FamilyState: safetySnap, Now: fixedClock}},
+		{"under_8_with_dietary", "testdata/under_8_with_dietary.snap", BuildContext{Cfg: cfg, User: teo, Gateway: "telegram", HardBlocked: []string{"weapons", "self_harm"}, FamilyState: safetySnap, Now: fixedClock}},
 	}
 
 	for _, tc := range cases {
