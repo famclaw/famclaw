@@ -1877,28 +1877,33 @@ func TestBuildMessages_UserMemoryScoped(t *testing.T) {
 }
 
 // TestWebSearchError verifies that when the backend is unreachable, the
-// error is translated into an honest, human-readable message containing
-// "I could not search right now" — NOT an empty result set that invites
-// hallucination.
+// error is translated into an honest, human-readable message returned as
+// the RESULT STRING with a nil error — NOT as a tool error that the LLM
+// might ignore. This is critical: the tool loop wraps non-nil errors as
+// "Error: <msg>", which the LLM can treat as a system failure and
+// hallucinate around. A result string with nil error is treated as a
+// normal tool output.
 func TestWebSearchError(t *testing.T) {
-	t.Run("unavailable error becomes honest message", func(t *testing.T) {
+	t.Run("unavailable error becomes honest result string", func(t *testing.T) {
 		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
-		err := webSearchError(wrapped, "http://localhost:8888")
-		if err == nil {
-			t.Fatal("expected error, got nil")
+		msg, err := webSearchError(wrapped, "http://localhost:8888")
+		if err != nil {
+			t.Fatalf("expected nil error for ErrUnavailable, got %v", err)
 		}
-		msg := err.Error()
 		if !strings.Contains(msg, "I could not search right now") {
-			t.Errorf("error should tell the user search is unavailable, got: %q", msg)
+			t.Errorf("result should tell the user search is unavailable, got: %q", msg)
 		}
 		if !strings.Contains(msg, "localhost:8888") {
-			t.Errorf("error should name the endpoint, got: %q", msg)
+			t.Errorf("result should name the endpoint, got: %q", msg)
 		}
 	})
 
 	t.Run("host-not-allowed error passes through", func(t *testing.T) {
 		hostErr := webfetch.NewHostNotAllowedError("evil.com")
-		err := webSearchError(hostErr, "http://localhost:8888")
+		msg, err := webSearchError(hostErr, "http://localhost:8888")
+		if msg != "" {
+			t.Errorf("expected empty string for non-unavailable error, got %q", msg)
+		}
 		if err != hostErr {
 			t.Errorf("host-not-allowed error should pass through unchanged, got %v", err)
 		}
@@ -1906,7 +1911,10 @@ func TestWebSearchError(t *testing.T) {
 
 	t.Run("ordinary error passes through", func(t *testing.T) {
 		ordinary := errors.New("some other error")
-		err := webSearchError(ordinary, "http://localhost:8888")
+		msg, err := webSearchError(ordinary, "http://localhost:8888")
+		if msg != "" {
+			t.Errorf("expected empty string for non-unavailable error, got %q", msg)
+		}
 		if err != ordinary {
 			t.Errorf("ordinary error should pass through unchanged, got %v", err)
 		}

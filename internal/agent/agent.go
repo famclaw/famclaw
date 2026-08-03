@@ -1451,25 +1451,25 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 		AllowPrivateNetworks: !fcfg.BlockPrivateNetworks,
 	})
 	if err != nil {
-		return "", webSearchError(err, cfg.Endpoint)
+		return webSearchError(err, cfg.Endpoint)
 	}
 	log.Printf("[agent][%s] web_search query=%q hits=%d", a.user.Name, query, len(hits))
 	return websearch.FormatHits(hits), nil
 }
 
-// webSearchError translates a web_search error into a human-readable message
-// the model can relay honestly. When the backend is unreachable (ErrUnavailable)
-// the LLM must tell the user "I could not search right now" rather than
-// inventing results. Host-not-allowed errors are configuration gaps the parent
-// can fix, so they are passed through verbatim.
-func webSearchError(err error, endpoint string) error {
+// webSearchError translates a web_search error into a (result, error) pair
+// that the agent's tool loop can feed to the LLM. When the backend is
+// unreachable (ErrUnavailable) it returns the honest message as the RESULT
+// STRING with a nil error — this is critical because the tool loop formats
+// non-nil errors as "Error: <msg>", which the LLM may treat as a system
+// failure and ignore in favour of hallucination. A result string with nil
+// error is treated as a normal tool output, so the LLM relays it honestly.
+// Host-not-allowed and other genuine errors pass through as ("", err).
+func webSearchError(err error, endpoint string) (string, error) {
 	if errors.Is(err, websearch.ErrUnavailable) {
-		// Surface a clear, honest message that the model can relay directly.
-		// The LLM receives this as the tool result text (not an error) so it
-		// is far less likely to be ignored in favour of hallucination.
-		return fmt.Errorf("I could not search right now — the search backend at %s is unreachable (connection refused, timeout, or not running). I'll answer from what I know rather than making up search results. A parent can check that the SearXNG service at %s is running.", endpoint, endpoint)
+		return fmt.Sprintf("I could not search right now — the search backend at %s is unreachable (connection refused, timeout, or not running). I'll answer from what I know rather than making up search results. A parent can check that the SearXNG service at %s is running.", endpoint, endpoint), nil
 	}
-	return err
+	return "", err
 }
 
 // handleBrowser dispatches all builtin__browser_* tools. Auth boundary:

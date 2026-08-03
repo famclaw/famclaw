@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -257,3 +259,36 @@ func TestPrepareSandboxRoot(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// TestCheckSearchEndpointReachable_EndpointWithPath verifies that the
+// startup probe correctly joins a sub-path endpoint with /search, producing
+// /searx/search (not /searx/search/search) so the reachability check does
+// not always warn due to a double-path.
+func TestCheckSearchEndpointReachable_EndpointWithPath(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	// Endpoint with a sub-path — the probe should hit /searx/search.
+	endpoint := server.URL + "/searx"
+	err := checkSearchEndpointReachable(endpoint)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedPath != "/searx/search" {
+		t.Errorf("probe path = %q, want /searx/search (double-path would warn)", capturedPath)
+	}
+}
+
+// TestCheckSearchEndpointReachable_Unreachable verifies that a connection
+// refused produces an error (not nil), so the startup WARNING fires.
+func TestCheckSearchEndpointReachable_Unreachable(t *testing.T) {
+	err := checkSearchEndpointReachable("http://127.0.0.1:1")
+	if err == nil {
+		t.Fatal("expected error for unreachable endpoint, got nil")
+	}
+}

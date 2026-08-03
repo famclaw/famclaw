@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1065,7 +1067,20 @@ func checkSearchEndpointReachable(endpoint string) error {
 	if endpoint == "" {
 		return fmt.Errorf("endpoint not configured")
 	}
-	probeURL := strings.TrimRight(endpoint, "/") + "/search?q=__famclaw_startup_probe__&format=json"
+	// Parse the endpoint and join the path with /search using path.Join so
+	// that an endpoint with an existing path (e.g. http://host/searx) yields
+	// /searx/search, not /searx/search/search. path.Join also cleans double
+	// slashes and trailing slashes.
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("parse search endpoint: %w", err)
+	}
+	parsed.Path = path.Join(parsed.Path, "search")
+	if !strings.HasPrefix(parsed.Path, "/") {
+		parsed.Path = "/" + parsed.Path
+	}
+	parsed.RawQuery = "q=__famclaw_startup_probe__&format=json"
+	probeURL := parsed.String()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)

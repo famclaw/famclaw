@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -74,7 +75,23 @@ func Search(ctx context.Context, query string, opts Options) ([]Hit, error) {
 		timeout = defaultTimeout
 	}
 
-	u := strings.TrimRight(opts.Endpoint, "/") + "/search?q=" + url.QueryEscape(query) + "&format=json"
+	// Build the search URL by parsing the endpoint and joining the path
+	// with /search via path.Join. This avoids double-search when the
+	// endpoint already includes a path (e.g. http://host/searx →
+	// /searx/search, not /searx/search/search).
+	endpointParsed, perr := url.Parse(opts.Endpoint)
+	if perr != nil {
+		return nil, fmt.Errorf("web_search: parse endpoint: %w", perr)
+	}
+	endpointParsed.Path = path.Join(endpointParsed.Path, "search")
+	if !strings.HasPrefix(endpointParsed.Path, "/") {
+		endpointParsed.Path = "/" + endpointParsed.Path
+	}
+	q := endpointParsed.Query()
+	q.Set("q", query)
+	q.Set("format", "json")
+	endpointParsed.RawQuery = q.Encode()
+	u := endpointParsed.String()
 
 	// Pre-check the endpoint host with the HostValidator so we can
 	// distinguish "host not allowed" (a configuration error the parent
@@ -82,11 +99,7 @@ func Search(ctx context.Context, query string, opts Options) ([]Hit, error) {
 	// failure the model must report honestly). webfetch.Fetch re-runs the
 	// same validator on redirect targets.
 	if opts.HostValidator != nil {
-		endpointURL, perr := url.Parse(u)
-		if perr != nil {
-			return nil, fmt.Errorf("web_search: parse endpoint: %w", perr)
-		}
-		if err := opts.HostValidator(endpointURL.Hostname()); err != nil {
+		if err := opts.HostValidator(endpointParsed.Hostname()); err != nil {
 			return nil, err
 		}
 	}

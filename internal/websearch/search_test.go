@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
 func TestSearch_EmptyQueryRejected(t *testing.T) {
@@ -217,6 +219,74 @@ func TestSearch_ZeroResultsReturnsEmptySlice(t *testing.T) {
 	}
 	if len(hits) != 0 {
 		t.Errorf("expected 0 hits, got %d", len(hits))
+	}
+}
+
+// TestSearch_RedirectToDisallowedHost verifies that a redirect to a host
+// not on the URL allowlist is classified as a HostNotAllowedError (a
+// configuration gap), NOT as ErrUnavailable. This confirms that the
+// errors.As check in Search correctly traverses the error chain from
+// webfetch.Fetch through the CheckRedirect wrapper.
+func TestSearch_RedirectToDisallowedHost(t *testing.T) {
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Redirect to a host that is NOT in the allowlist.
+		http.Redirect(w, r, "http://evil.example.com/search?q=test", http.StatusFound)
+	}))
+	defer redirectServer.Close()
+
+	_, err := Search(context.Background(), "x", Options{
+		Endpoint:             redirectServer.URL,
+		Timeout:              5 * time.Second,
+		AllowPrivateNetworks: true,
+		HostValidator: func(host string) error {
+			if host == "evil.example.com" {
+				return webfetch.NewHostNotAllowedError(host)
+			}
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for redirect to disallowed host, got nil")
+	}
+	// The redirect-bounce host error must NOT be misclassified as
+	// ErrUnavailable — it is a configuration error, not a backend outage.
+	if errors.Is(err, ErrUnavailable) {
+		t.Errorf("redirect to disallowed host should NOT be ErrUnavailable, got: %v", err)
+	}
+	// And it should be a HostNotAllowedError, confirming errors.As
+	// traversed the CheckRedirect → url.Error → Fetch wrapping chain.
+	var hostErr *webfetch.HostNotAllowedError
+	if !errors.As(err, &hostErr) {
+		t.Errorf("expected HostNotAllowedError for redirect to disallowed host, got: %v", err)
+	}
+}
+
+// TestSearch_EndpointWithPath verifies that an endpoint containing a
+// sub-path (e.g. http://host/searx) produces a probe/search URL of
+// /searx/search, not /searx/search/search. This prevents the startup
+// reachability check from always warning due to a double-path.
+func TestSearch_EndpointWithPath(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	// Construct an endpoint with a sub-path.
+	endpoint := server.URL + "/searx"
+	_, err := Search(context.Background(), "x", Options{
+		Endpoint:             endpoint,
+		Timeout:              5 * time.Second,
+		AllowPrivateNetworks: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantPath := "/searx/search"
+	if capturedPath != wantPath {
+		t.Errorf("path = %q, want %q (endpoint with sub-path should join, not double)", capturedPath, wantPath)
 	}
 }
 
