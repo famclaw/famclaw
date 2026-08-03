@@ -170,10 +170,12 @@ func (a *Agent) finalizeResearch(ctx context.Context, agentID string, state stor
 		}
 	}
 
-	// Surface the outcome into the conversation history. This guarantees the
-	// user stops seeing "still working" even when channel delivery fails: the
-	// result/failure lands in their conversation record and is reloaded on the
-	// next message. Safe no-op when there is no DB or conversation id.
+	// Surface the outcome into the conversation history. We deliberately use
+	// msgCtx.Gateway — the gateway the request ARRIVED on — not a.gateway
+	// (the agent construction-time value). Per-message gateway recording must
+	// capture the actual originating platform: a research task spawned from a
+	// Discord message must be attributed to Discord even if the agent was
+	// constructed with a different default gateway.
 	if a.db != nil && a.convID != "" {
 		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", deliverable, "", "", msgCtx.Gateway); err != nil {
 			log.Printf("[agent][%s] save research result to conversation %s: %v", a.user.Name, a.convID, err)

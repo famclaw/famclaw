@@ -229,6 +229,51 @@ func TestResearchStatus_RunningThenTerminal(t *testing.T) {
 	}
 }
 
+// TestFinalizeResearch_UsesMsgCtxGateway verifies that the research result
+// saved to the conversation history carries msgCtx.Gateway (the gateway the
+// request actually arrived on), NOT a.gateway (the agent construction-time
+// value). This is the core guarantee of per-message gateway recording: a
+// research task spawned from a Discord message must be attributed to Discord
+// even if the agent was constructed with a different default gateway.
+func TestFinalizeResearch_UsesMsgCtxGateway(t *testing.T) {
+	sink := &mockSender{calls: make(chan *senderCall, 1)}
+	a := setupResearchAgent(t, sink)
+	// Agent constructed with telegram as its default gateway, but the
+	// research request actually arrives on Discord.
+	a.gateway = "telegram"
+	a.senderRegistry["discord"] = sink
+
+	discordCtx := gateway.MsgContext{
+		Gateway:    "discord",
+		ExternalID: "discord-chat-1",
+	}
+	a.finalizeResearch(context.Background(), "agent-1", store.ResearchStatusCompleted, "the answer", 300, "research", discordCtx)
+
+	// The message saved to the conversation history must carry the
+	// msgCtx gateway (discord), not the agent's construction-time gateway
+	// (telegram).
+	hist, err := a.db.GetConversationHistory(a.convID, 20)
+	if err != nil {
+		t.Fatalf("GetConversationHistory: %v", err)
+	}
+	if len(hist) != 1 {
+		t.Fatalf("expected 1 conversation message, got %d", len(hist))
+	}
+	if hist[0].Gateway != "discord" {
+		t.Errorf("saved message gateway = %q, want %q (msgCtx gateway, not agent gateway %q)",
+			hist[0].Gateway, "discord", a.gateway)
+	}
+
+	// The research status record must also capture the msgCtx gateway.
+	s, err := a.db.GetResearchStatus(context.Background(), a.user.Name, "agent-1")
+	if err != nil || s == nil {
+		t.Fatalf("expected a status record, err=%v s=%v", err, s)
+	}
+	if s.Gateway != "discord" {
+		t.Errorf("research status gateway = %q, want %q", s.Gateway, "discord")
+	}
+}
+
 // TestPersistResearchStart_Running verifies the initial running record.
 func TestPersistResearchStart_Running(t *testing.T) {
 	a := setupResearchAgent(t, &errSender{err: fmt.Errorf("nope")})
