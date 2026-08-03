@@ -51,6 +51,37 @@ func TestSearch_EndpointWithoutHostRejected(t *testing.T) {
 	}
 }
 
+// TestSanitizeEndpoint ensures credentials in the endpoint URL are redacted
+// before the endpoint is written to logs, preventing password leakage
+// through log collection.
+func TestSanitizeEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		want     string
+	}{
+		{name: "no credentials", endpoint: "http://localhost:8888", want: "http://localhost:8888"},
+		{name: "with path", endpoint: "http://localhost:8888/searx", want: "http://localhost:8888/searx"},
+		{name: "user and pass", endpoint: "http://user:pass@searx.example.com:8888/search", want: "http://searx.example.com:8888/search"},
+		{name: "user only", endpoint: "http://user@searx.example.com:8888", want: "http://searx.example.com:8888"},
+		{name: "unparseable", endpoint: "://not-a-url", want: "[unparseable endpoint]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeEndpoint(tc.endpoint)
+			if tc.name == "user and pass" {
+				// Strongest assertion: the password must not appear anywhere.
+				if strings.Contains(got, "pass") {
+					t.Errorf("sanitized endpoint must not contain the password: %q", got)
+				}
+			}
+			if got != tc.want {
+				t.Errorf("SanitizeEndpoint(%q) = %q, want %q", tc.endpoint, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSearch_HappyPath(t *testing.T) {
 	const expectedQuery = "search term"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

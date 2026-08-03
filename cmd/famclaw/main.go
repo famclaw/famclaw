@@ -626,9 +626,9 @@ func main() {
 		// best-effort warning — a unreachable endpoint does NOT prevent
 		// startup (the tool will fail honestly at call time via ErrUnavailable).
 		if wsErr := checkSearchEndpointReachable(cfg.Tools.WebSearch.Endpoint); wsErr != nil {
-			log.Printf("WARNING: web_search endpoint %q is unreachable at startup: %v — web_search will return honest failures until it comes back", cfg.Tools.WebSearch.Endpoint, wsErr)
+			log.Printf("WARNING: web_search endpoint %s is unreachable at startup: %v — web_search will return honest failures until it comes back", websearch.SanitizeEndpoint(cfg.Tools.WebSearch.Endpoint), wsErr)
 		} else {
-			log.Printf("web_search: endpoint %q reachable at startup", cfg.Tools.WebSearch.Endpoint)
+			log.Printf("web_search: endpoint %s reachable at startup", websearch.SanitizeEndpoint(cfg.Tools.WebSearch.Endpoint))
 		}
 	}
 	// File tools are always available; access is restricted by OPA policy.
@@ -1076,7 +1076,7 @@ func checkSearchEndpointReachable(endpoint string) error {
 		return fmt.Errorf("parse search endpoint: %w", err)
 	}
 	if parsed.Host == "" {
-		return fmt.Errorf("search endpoint %q must include a host", endpoint)
+		return fmt.Errorf("search endpoint must include a host (configured as %s)", websearch.SanitizeEndpoint(endpoint))
 	}
 	parsed.Path = path.Join(parsed.Path, "search")
 	if !strings.HasPrefix(parsed.Path, "/") {

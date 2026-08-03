@@ -1470,7 +1470,7 @@ func webSearchError(err error, endpoint string) (string, error) {
 		// Log the full endpoint server-side for debugging, but do NOT
 		// echo it to the family chat — it may contain internal hostnames,
 		// credentials, or network topology that should not reach the user.
-		log.Printf("[agent] web_search backend unreachable at %s", endpoint)
+		log.Printf("[agent] web_search backend unreachable at %s", websearch.SanitizeEndpoint(endpoint))
 		return "I could not search right now — the search backend is unreachable (connection refused, timeout, or not running). I'll answer from what I know rather than making up search results. A parent can check that the SearXNG service is running.", nil
 	}
 	return "", err

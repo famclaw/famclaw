@@ -26,6 +26,20 @@ const (
 // response, which is a successful search that simply found nothing.
 var ErrUnavailable = errors.New("web_search: search backend unavailable")
 
+// SanitizeEndpoint parses rawEndpoint and returns a string with any
+// embedded userinfo (username/password) stripped, so it is safe to log.
+// A URL like http://user:pass@host:8888/search becomes
+// http://host:8888/search. If the URL cannot be parsed, a placeholder
+// is returned (never the raw input, which may contain credentials).
+func SanitizeEndpoint(rawEndpoint string) string {
+	u, err := url.Parse(rawEndpoint)
+	if err != nil {
+		return "[unparseable endpoint]"
+	}
+	u.User = nil
+	return u.String()
+}
+
 // Options configures a Search call.
 type Options struct {
 	Endpoint             string
