@@ -110,9 +110,9 @@ func (m Message) MarshalJSON() ([]byte, error) {
 func (m *Message) mergeReasoning() {
 	if strings.TrimSpace(m.Content) == "" {
 		if m.ReasoningContent != "" {
-			m.Content = m.ReasoningContent
+			m.Content = stripControlTokens(m.ReasoningContent)
 		} else if m.Reasoning != "" {
-			m.Content = m.Reasoning
+			m.Content = stripControlTokens(m.Reasoning)
 		}
 	}
 	m.ReasoningContent = ""
@@ -410,9 +410,17 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, e
 				}
 			}
 			if token != "" {
-				full.WriteString(token)
-				if onToken != nil {
-					onToken(token)
+				// Strip any Gemma control tokens from the token
+				// before passing it to the caller. In the streaming
+				// path we cannot parse tool calls, but we can
+				// guarantee that no model-internal token reaches
+				// the user's screen.
+				cleaned := stripControlTokens(token)
+				if cleaned != "" {
+					full.WriteString(cleaned)
+					if onToken != nil {
+						onToken(cleaned)
+					}
 				}
 			}
 		}
@@ -483,7 +491,7 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 	}
 
 	if len(result.Choices) == 0 {
-		return &Message{Role: "assistant"}, nil
+		return nil, fmt.Errorf("LLM returned no choices")
 	}
 
 	msg := &result.Choices[0].Message
@@ -497,6 +505,16 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 	// after" instruction. Without this, the raw XML leaks to the user as
 	// visible text and the bot looks broken.
 	salvageInlineToolCalls(msg)
+	// Belt-and-braces: strip any remaining Gemma control tokens
+	// so that no model-internal token format can ever reach the user,
+	// even if a new unrecognised variant appears.
+	msg.Content = stripControlTokens(msg.Content)
+	// An empty reply is never acceptable — the family must never see
+	// a blank message. If the model produced no content AND no tool
+	// calls, return an honest error instead of a silent void.
+	if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
+		return nil, fmt.Errorf("LLM produced an empty response with no tool calls")
+	}
 	return msg, nil
 }
 
