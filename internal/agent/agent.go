@@ -145,6 +145,7 @@ type AgentDeps struct {
 	MsgContext     gateway.MsgContext        // gateway-specific context for outbound tools (reminders, etc.)
 	SenderRegistry map[string]gateway.Sender // map of gateway name (e.g., "telegram", "discord") to Sender implementation
 	Transcriber    Transcriber               // transcribes audio attachments into text; nil disables voice transcription
+	Ctx            context.Context           // request context for DB queries in NewAgent; nil falls back to Background
 
 	// NowFn, when non-nil, is used to timestamp research status records.
 	// Optional — defaults to time.Now.
@@ -262,7 +263,11 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	if deps.MsgContext.ConvID != "" {
 		convID = deps.MsgContext.ConvID
 	} else if db != nil {
-		lastMsg, hasLast, err := db.LastMessageTime(context.Background(), user.Name)
+		ctx := deps.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		lastMsg, hasLast, err := db.LastMessageTime(ctx, user.Name)
 		if err != nil {
 			log.Printf("[agent] %s: LastMessageTime error: %v — treating as cold start", user.Name, err)
 		}

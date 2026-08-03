@@ -270,6 +270,7 @@ func TestLastMessageTime(t *testing.T) {
 		setup    func(*DB) error
 		userName string
 		wantOk   bool
+		wantTime time.Time // only checked when wantOk is true
 	}{
 		{
 			name:     "cold start no messages",
@@ -293,6 +294,30 @@ func TestLastMessageTime(t *testing.T) {
 			userName: "lucas",
 			wantOk:   false,
 		},
+		{
+			// Pins the cross-conversation semantics: LastMessageTime
+			// returns the most recent message across ALL of the user's
+			// conversations, not just one. This is intentional — see the
+			// doc comment on LastMessageTime.
+			name: "returns most recent across all conversations",
+			setup: func(db *DB) error {
+				sql := db.SQL()
+				if _, err := sql.Exec(`INSERT INTO conversations (id, user_name) VALUES ('conv-a', 'emma')`); err != nil {
+					return err
+				}
+				if _, err := sql.Exec(`INSERT INTO messages (conversation_id, role, content, category, policy_action, created_at) VALUES ('conv-a', 'user', 'msg A', 'safe', 'allow', '2024-01-15 10:00:00')`); err != nil {
+					return err
+				}
+				if _, err := sql.Exec(`INSERT INTO conversations (id, user_name) VALUES ('conv-b', 'emma')`); err != nil {
+					return err
+				}
+				_, err := sql.Exec(`INSERT INTO messages (conversation_id, role, content, category, policy_action, created_at) VALUES ('conv-b', 'user', 'msg B', 'safe', 'allow', '2024-01-15 11:00:00')`)
+				return err
+			},
+			userName: "emma",
+			wantOk:   true,
+			wantTime: time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC),
+		},
 	}
 
 	for _, tc := range tests {
@@ -312,6 +337,9 @@ func TestLastMessageTime(t *testing.T) {
 			}
 			if tc.wantOk && got.IsZero() {
 				t.Errorf("expected non-zero timestamp, got zero")
+			}
+			if tc.wantOk && !tc.wantTime.IsZero() && !got.Equal(tc.wantTime) {
+				t.Errorf("timestamp = %v, want %v", got, tc.wantTime)
 			}
 		})
 	}

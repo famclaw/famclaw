@@ -722,9 +722,18 @@ func ConversationID(userName string, lastMsg time.Time, hasLast bool, now time.T
 }
 
 // LastMessageTime returns the timestamp of the most recent message from a user
-// across all conversations. Returns ok=false when the user has no prior
-// messages (cold start). Uses the existing messages/conversations tables —
-// no new table required.
+// across ALL of that user's conversations (not scoped to a single conversation
+// ID). Returns ok=false when the user has no prior messages (cold start).
+//
+// This intentionally looks across all conversations because the idle-gap rule
+// treats the user's most recent activity as the conversation boundary: when a
+// new message arrives, the conversation continues if the gap since the user's
+// last message (in any conversation) is under ConversationIdleTimeout. Since a
+// user can only have one active conversation at a time (the previous one ended
+// only after a 6h+ idle gap that started a new one), the most recent message
+// is always in the active conversation. Scoping to a specific conversation
+// would be impossible here because the conversation ID is what we're trying
+// to determine.
 func (d *DB) LastMessageTime(ctx context.Context, userName string) (time.Time, bool, error) {
 	var ts time.Time
 	err := d.sql.QueryRowContext(ctx, `
