@@ -197,3 +197,171 @@ func TestApprovalJSONSerialization(t *testing.T) {
 		t.Run(tc.name, tc.fn)
 	}
 }
+
+func TestConversationID(t *testing.T) {
+	// Fixed timestamps for deterministic, table-driven tests.
+	// Day boundary: Jan 15 23:58 → Jan 16 00:02 (2 minutes apart, straddle midnight).
+	preMidnight := time.Date(2024, 1, 15, 23, 58, 0, 0, time.UTC)
+	postMidnight := time.Date(2024, 1, 16, 0, 2, 0, 0, time.UTC)
+	sevenHoursLater := postMidnight.Add(7 * time.Hour)
+	// Same-day 5-minute gap for a clean 'continue' test (not straddling midnight).
+	tenAM := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+	fiveMinLaterSameDay := tenAM.Add(5 * time.Minute)
+
+	userA := "emma"
+	userB := "lucas"
+
+	tests := []struct {
+		name     string
+		id1      string
+		id2      string
+		wantSame bool
+	}{
+		{
+			name:     "midnight gap under 6h continues conversation",
+			id1:      ConversationID(userA, time.Time{}, false, preMidnight),
+			id2:      ConversationID(userA, preMidnight, true, postMidnight),
+			wantSame: true,
+		},
+		{
+			name:     "7h gap starts new conversation",
+			id1:      ConversationID(userA, postMidnight, true, postMidnight),
+			id2:      ConversationID(userA, postMidnight, true, sevenHoursLater),
+			wantSame: false,
+		},
+		{
+			name:     "5min gap continues conversation",
+			id1:      ConversationID(userA, time.Time{}, false, tenAM),
+			id2:      ConversationID(userA, tenAM, true, fiveMinLaterSameDay),
+			wantSame: true,
+		},
+		{
+			name:     "different users never share id",
+			id1:      ConversationID(userA, preMidnight, true, postMidnight),
+			id2:      ConversationID(userB, preMidnight, true, postMidnight),
+			wantSame: false,
+		},
+		{
+			name:     "cold start produces fresh id",
+			id1:      ConversationID(userA, time.Time{}, false, preMidnight),
+			id2:      ConversationID(userA, time.Time{}, false, postMidnight),
+			wantSame: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.wantSame {
+				if tc.id1 != tc.id2 {
+					t.Errorf("expected same conversation id, got %q and %q", tc.id1, tc.id2)
+				}
+			} else {
+				if tc.id1 == tc.id2 {
+					t.Errorf("expected different conversation ids, both %q", tc.id1)
+				}
+			}
+		})
+	}
+}
+
+func TestLastMessageTime(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(*DB) error
+		userName string
+		wantOk   bool
+		wantTime time.Time // only checked when wantOk is true
+	}{
+		{
+			name:     "cold start no messages",
+			setup:    func(db *DB) error { return nil },
+			userName: "emma",
+			wantOk:   false,
+		},
+		{
+			name: "has prior message",
+			setup: func(db *DB) error {
+				return db.SaveMessage("conv-abc", "emma", "user", "hello", "safe", "allow")
+			},
+			userName: "emma",
+			wantOk:   true,
+		},
+		{
+			name: "different user no messages",
+			setup: func(db *DB) error {
+				return db.SaveMessage("conv-abc", "emma", "user", "hello", "safe", "allow")
+			},
+			userName: "lucas",
+			wantOk:   false,
+		},
+		{
+			// Pins the cross-conversation semantics: LastMessageTime
+			// returns the most recent message across ALL of the user's
+			// conversations, not just one. This is intentional — see the
+			// doc comment on LastMessageTime.
+			name: "returns most recent across all conversations",
+			setup: func(db *DB) error {
+				sql := db.SQL()
+				if _, err := sql.Exec(`INSERT INTO conversations (id, user_name) VALUES ('conv-a', 'emma')`); err != nil {
+					return err
+				}
+				if _, err := sql.Exec(`INSERT INTO messages (conversation_id, role, content, category, policy_action, created_at) VALUES ('conv-a', 'user', 'msg A', 'safe', 'allow', '2024-01-15 10:00:00')`); err != nil {
+					return err
+				}
+				if _, err := sql.Exec(`INSERT INTO conversations (id, user_name) VALUES ('conv-b', 'emma')`); err != nil {
+					return err
+				}
+				_, err := sql.Exec(`INSERT INTO messages (conversation_id, role, content, category, policy_action, created_at) VALUES ('conv-b', 'user', 'msg B', 'safe', 'allow', '2024-01-15 11:00:00')`)
+				return err
+			},
+			userName: "emma",
+			wantOk:   true,
+			wantTime: time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC),
+		},
+		{
+			// Pins the role='user' filter: only user-initiated
+			// messages are conversation boundaries. An assistant
+			// reply at 11:00 must NOT reset the idle timer over a
+			// user message at 10:00.
+			name: "ignores assistant messages",
+			setup: func(db *DB) error {
+				sql := db.SQL()
+				if _, err := sql.Exec(`INSERT INTO conversations (id, user_name) VALUES ('conv-x', 'emma')`); err != nil {
+					return err
+				}
+				if _, err := sql.Exec(`INSERT INTO messages (conversation_id, role, content, category, policy_action, created_at) VALUES ('conv-x', 'user', 'user msg', 'safe', 'allow', '2024-01-15 10:00:00')`); err != nil {
+					return err
+				}
+				_, err := sql.Exec(`INSERT INTO messages (conversation_id, role, content, category, policy_action, created_at) VALUES ('conv-x', 'assistant', 'bot reply', 'safe', 'allow', '2024-01-15 11:00:00')`)
+				return err
+			},
+			userName: "emma",
+			wantOk:   true,
+			wantTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db, cleanup := newTestDB(t)
+			defer cleanup()
+			ctx := context.Background()
+			if err := tc.setup(db); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			got, ok, err := db.LastMessageTime(ctx, tc.userName)
+			if err != nil {
+				t.Fatalf("LastMessageTime: %v", err)
+			}
+			if ok != tc.wantOk {
+				t.Errorf("ok = %v, want %v", ok, tc.wantOk)
+			}
+			if tc.wantOk && got.IsZero() {
+				t.Errorf("expected non-zero timestamp, got zero")
+			}
+			if tc.wantOk && !tc.wantTime.IsZero() && !got.Equal(tc.wantTime) {
+				t.Errorf("timestamp = %v, want %v", got, tc.wantTime)
+			}
+		})
+	}
+}
