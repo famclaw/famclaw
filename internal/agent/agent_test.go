@@ -129,6 +129,51 @@ func TestAgentChatNoToolCalls(t *testing.T) {
 	}
 }
 
+// TestAgentChatRecordsMsgContextGatewayNotAgentGateway verifies that
+// SaveMessage in Chat uses a.msgContext.Gateway (the gateway the message
+// actually arrived on) rather than a.gateway (the agent construction-time
+// value). An agent constructed with gateway "telegram" handling a message
+// whose msgCtx.Gateway is "discord" must save "discord".
+func TestAgentChatRecordsMsgContextGatewayNotAgentGateway(t *testing.T) {
+	server := mockLLMServer(t, []llm.Message{
+		{Role: "assistant", Content: "Hello!"},
+	})
+	defer server.Close()
+
+	agent := setupAgent(t, server.URL)
+	// Agent constructed with telegram as its default gateway, but the
+	// message actually arrives on Discord.
+	agent.gateway = "telegram"
+	agent.msgContext = gateway.MsgContext{
+		Gateway:    "discord",
+		ExternalID: "discord-chat-1",
+	}
+
+	resp, err := agent.Chat(context.Background(), "hi", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.PolicyAction != "allow" {
+		t.Fatalf("expected allow, got %q", resp.PolicyAction)
+	}
+
+	// Saved messages must carry the msgCtx gateway (discord), not the
+	// agent's construction-time gateway (telegram).
+	msgs, err := agent.db.GetConversationHistory(agent.convID, 20)
+	if err != nil {
+		t.Fatalf("GetConversationHistory: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatalf("expected saved messages, got 0")
+	}
+	for _, m := range msgs {
+		if m.Gateway != "discord" {
+			t.Errorf("saved message gateway = %q, want %q (msgCtx gateway, not agent gateway %q)",
+				m.Gateway, "discord", agent.gateway)
+		}
+	}
+}
+
 func TestAgentChatPoolNil(t *testing.T) {
 	// Even with tool_calls in response, if pool is nil, they're ignored
 	server := mockLLMServer(t, []llm.Message{

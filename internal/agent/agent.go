@@ -392,7 +392,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	}
 
 	// Save user message before processing
-	if err := a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, "", "", a.gateway); err != nil {
+	if err := a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, "", "", a.msgContext.Gateway); err != nil {
 		log.Printf("[agent][%s] save user message: %v", a.user.Name, err)
 	}
 
@@ -508,7 +508,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// Handle policy blocks (not a real error — just a non-allow decision)
 	if errors.Is(err, agentcore.ErrPolicyBlock) {
 		log.Printf("[agent][%s] cat=%s action=%s", a.user.Name, turn.Category, turn.Policy.Action)
-		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), turn.Policy.Action, a.gateway); err != nil {
+		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), turn.Policy.Action, a.msgContext.Gateway); err != nil {
 			log.Printf("[agent][%s] save policy-blocked response: %v", a.user.Name, err)
 		}
 		return &Response{
@@ -533,7 +533,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 				log.Printf("[agent][%s] output gate error (treating as block): %v", a.user.Name, gateErr)
 			}
 			blocked := "I'm unable to send this response right now."
-			if dbErr := a.db.SaveMessage(a.convID, a.user.Name, "assistant", blocked, string(turn.Category), "block", a.gateway); dbErr != nil {
+			if dbErr := a.db.SaveMessage(a.convID, a.user.Name, "assistant", blocked, string(turn.Category), "block", a.msgContext.Gateway); dbErr != nil {
 				log.Printf("[agent][%s] save output-gated response: %v", a.user.Name, dbErr)
 			}
 			return &Response{
@@ -582,7 +582,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	log.Printf("[agent][%s] cat=%s action=allow", a.user.Name, turn.Category)
 
 	// Save assistant response
-	if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), "allow", a.gateway); err != nil {
+	if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), "allow", a.msgContext.Gateway); err != nil {
 		log.Printf("[agent][%s] save assistant response: %v", a.user.Name, err)
 	}
 
