@@ -287,6 +287,11 @@ func parseGemmaArgs(argBody string) map[string]any {
 // blocks and collapses surrounding whitespace.
 func stripGemmaToolCallBlocks(content string) string {
 	stripped := reGemmaToolCall.ReplaceAllString(content, "")
+	// Strip leftover call:NAME{...} fragments from malformed blocks
+	// (missing closing tag). reGemmaToolCall did not match them, but
+	// reControlToken below would remove only the opening token and leave
+	// the call body visible.
+	stripped = reGemmaLeftover.ReplaceAllString(stripped, "")
 	// After removing recognized tool-call blocks, any remaining <|...|>
 	// token is an unrecognized control token. Log it at warn level so a
 	// new Gemma format is diagnosable instead of silently deleted — the
@@ -301,10 +306,10 @@ func stripGemmaToolCallBlocks(content string) string {
 }
 
 // stripControlTokens is the belt-and-braces final pass: it removes
-// every Gemma control token — <|...|>, <|/|...|>, and bare <token|>
-// variants — from a string. This guarantees that no model-internal
-// control token can ever leak into user-visible content, even if a
-// new, unanticipated token format appears. It runs AFTER format-specific
+// every Gemma control token from a string. The regex is anchored on
+// the <| (or </|) prefix that all known Gemma control tokens share,
+// so legitimate user content like <a|b> or markdown table cells with
+// pipes in angle brackets is preserved. It runs AFTER format-specific
 // parsing (salvageInlineToolCalls, salvageGemmaToolCalls) so that
 // already-extracted tool calls are never affected.
 //
@@ -312,7 +317,14 @@ func stripGemmaToolCallBlocks(content string) string {
 // (mergeReasoning, chatFull) call strings.TrimSpace themselves. The
 // streaming path uses this function on individual tokens where
 // trimming would incorrectly drop space tokens.
-var reControlToken = regexp.MustCompile(`<[^>]*\|[^>]*>`)
+var reControlToken = regexp.MustCompile(`<[/?]?\|[^>]*\|?>`)
+
+// reGemmaLeftover matches a stray call:NAME{...} fragment that remains
+// when a Gemma tool-call block is malformed (e.g. missing the closing
+// <|tool_call_end|> tag). reGemmaToolCall did not match the full block,
+// so this picks up the call:NAME{args} body so it does not leak as
+// visible text after the opening control token is stripped.
+var reGemmaLeftover = regexp.MustCompile(`call:\w+\s*\{[^}]*\}`)
 
 func stripControlTokens(content string) string {
 	return reControlToken.ReplaceAllString(content, "")

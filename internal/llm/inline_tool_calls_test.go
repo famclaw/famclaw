@@ -288,6 +288,11 @@ func TestStripControlTokens(t *testing.T) {
 			input: "<b>Hello</b> world",
 			want:  "<b>Hello</b> world",
 		},
+		{
+			name:  "html-tag-with-pipe-preserved",
+			input: "<a|b> link text </a>",
+			want:  "<a|b> link text </a>",
+		},
 	}
 
 	for _, tc := range tests {
@@ -448,5 +453,33 @@ func TestStripGemmaToolCallBlocks_NoLogWhenAllRecognized(t *testing.T) {
 	logOutput := buf.String()
 	if strings.Contains(logOutput, "unrecognized control token") {
 		t.Errorf("should not log unrecognized token warning when all tokens are recognized, got: %q", logOutput)
+	}
+}
+
+// TestStripGemmaToolCallBlocks_StripsMalformedBlock verifies that a
+// malformed Gemma block (missing closing tag) does not leak the
+// call:NAME{...} body as visible text after the opening control token
+// is stripped.
+func TestStripGemmaToolCallBlocks_StripsMalformedBlock(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOutput)
+
+	// Malformed block: opening token present but no closing tag.
+	// reGemmaToolCall does not match; reControlToken strips the
+	// opening token; reGemmaLeftover must also strip the call body.
+	content := `<|tool_call_begin|>call:web_search{query:test} some prose`
+
+	got := stripGemmaToolCallBlocks(content)
+
+	if strings.Contains(got, "call:web_search") {
+		t.Errorf("malformed call body leaked into output: %q", got)
+	}
+	if !strings.Contains(got, "some prose") {
+		t.Errorf("expected prose to remain in output, got: %q", got)
+	}
+	if strings.Contains(got, "<|") {
+		t.Errorf("control token leaked into output: %q", got)
 	}
 }
