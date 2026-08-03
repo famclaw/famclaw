@@ -734,12 +734,16 @@ func ConversationID(userName string, lastMsg time.Time, hasLast bool, now time.T
 // is always in the active conversation. Scoping to a specific conversation
 // would be impossible here because the conversation ID is what we're trying
 // to determine.
+//
+// Only user-initiated messages (role='user') are considered — assistant
+// responses must not reset the idle timer, otherwise the gap would be
+// measured from the bot's last reply rather than the user's last input.
 func (d *DB) LastMessageTime(ctx context.Context, userName string) (time.Time, bool, error) {
 	var ts time.Time
 	err := d.sql.QueryRowContext(ctx, `
 		SELECT m.created_at FROM messages m
 		JOIN conversations c ON m.conversation_id = c.id
-		WHERE c.user_name = ?
+		WHERE c.user_name = ? AND m.role = 'user'
 		ORDER BY m.created_at DESC LIMIT 1`, userName).Scan(&ts)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

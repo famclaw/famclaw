@@ -709,7 +709,6 @@ func main() {
 			MsgContext:     msgCtx,
 			SenderRegistry: senderRegistry,
 			Transcriber:    voiceTranscriber,
-			Ctx:            ctx,
 		})
 		if err != nil {
 			return "", err

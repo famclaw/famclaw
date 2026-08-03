@@ -318,6 +318,27 @@ func TestLastMessageTime(t *testing.T) {
 			wantOk:   true,
 			wantTime: time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC),
 		},
+		{
+			// Pins the role='user' filter: only user-initiated
+			// messages are conversation boundaries. An assistant
+			// reply at 11:00 must NOT reset the idle timer over a
+			// user message at 10:00.
+			name: "ignores assistant messages",
+			setup: func(db *DB) error {
+				sql := db.SQL()
+				if _, err := sql.Exec(`INSERT INTO conversations (id, user_name) VALUES ('conv-x', 'emma')`); err != nil {
+					return err
+				}
+				if _, err := sql.Exec(`INSERT INTO messages (conversation_id, role, content, category, policy_action, created_at) VALUES ('conv-x', 'user', 'user msg', 'safe', 'allow', '2024-01-15 10:00:00')`); err != nil {
+					return err
+				}
+				_, err := sql.Exec(`INSERT INTO messages (conversation_id, role, content, category, policy_action, created_at) VALUES ('conv-x', 'assistant', 'bot reply', 'safe', 'allow', '2024-01-15 11:00:00')`)
+				return err
+			},
+			userName: "emma",
+			wantOk:   true,
+			wantTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		},
 	}
 
 	for _, tc := range tests {
