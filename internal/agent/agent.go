@@ -267,7 +267,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	if deps.MsgContext.ConvID != "" {
 		convID = deps.MsgContext.ConvID
 	} else {
-		convID = store.ConversationID(user.Name, time.Time{}, false, time.Now())
+		convID = store.ConversationID(user.Name, time.Time{}, false, time.Now().UTC())
 	}
 
 	// Append admin tools for parent users so they are always available
