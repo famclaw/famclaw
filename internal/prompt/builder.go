@@ -6,6 +6,7 @@ package prompt
 
 import (
 	"strings"
+	"time"
 
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
@@ -23,6 +24,7 @@ type BuildContext struct {
 	BuiltinTools []string              // builtin tool bare names (e.g. "spawn_agent", "web_fetch")
 	FamilyState  *familystate.Snapshot // Phase 3.3 — may be nil (legacy callers) or UnavailableSnapshot
 	UserMemory   *usermemory.Snapshot  // Phase 4 — per-user memory; may be nil
+	Now          func() time.Time      // optional clock for the date component; nil falls back to time.Now()
 }
 
 // component returns (text, included). Empty text or included=false → skipped.
@@ -37,6 +39,7 @@ func Build(ctx BuildContext) string {
 		userComponent,
 		familyComponent,
 		ageComponent,
+		dateComponent,
 		capabilitiesComponent,
 		skillsComponent,
 		policyComponent,

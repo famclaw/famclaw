@@ -3,6 +3,7 @@ package prompt
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // userComponent describes who the user is.
@@ -237,4 +238,18 @@ func userMemoryComponent(c BuildContext) (string, bool) {
 		return "", false
 	}
 	return c.UserMemory.Render(), true
+}
+
+// dateComponent injects the host's current date and timezone into the
+// system prompt so the model never has to hallucinate one. Uses the
+// injectable clock in BuildContext.Now when set (tests); falls back to
+// time.Now() in production.
+func dateComponent(c BuildContext) (string, bool) {
+	now := time.Now()
+	if c.Now != nil {
+		now = c.Now()
+	}
+	dateStr := now.Format("Monday, January 2, 2006")
+	timezoneStr := now.Location().String()
+	return fmt.Sprintf("Current date and timezone: %s, %s", dateStr, timezoneStr), true
 }
