@@ -78,6 +78,7 @@ func (d *DB) migrate() error {
 		content         TEXT NOT NULL,
 		category        TEXT,
 		policy_action   TEXT,           -- allow | block | request_approval | pending
+		gateway         TEXT NOT NULL DEFAULT 'unknown',  -- telegram | discord | whatsapp | web
 		created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -400,6 +401,16 @@ func (d *DB) migrate() error {
 		}
 	}
 
+	// Guard for existing deployments that predate the gateway column on
+	// messages. SQLite does not support ADD COLUMN IF NOT EXISTS, so we
+	// attempt the ALTER TABLE and ignore the error when the column already
+	// exists. Existing rows backfill to 'unknown' via the column default.
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN gateway TEXT NOT NULL DEFAULT 'unknown'`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add messages gateway: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -627,23 +638,24 @@ type Message struct {
 	Content        string
 	Category       string
 	PolicyAction   string
+	Gateway        string
 	CreatedAt      time.Time
 }
 
-func (d *DB) SaveMessage(convID, userName, role, content, category, policyAction string) error {
+func (d *DB) SaveMessage(convID, userName, role, content, category, policyAction, gateway string) error {
 	// Ensure conversation exists
 	d.sql.Exec(`INSERT OR IGNORE INTO conversations (id, user_name) VALUES (?, ?)`, convID, userName) //nolint:errcheck
 
 	_, err := d.sql.Exec(`
-		INSERT INTO messages (conversation_id, role, content, category, policy_action)
-		VALUES (?, ?, ?, ?, ?)`,
-		convID, role, content, category, policyAction)
+		INSERT INTO messages (conversation_id, role, content, category, policy_action, gateway)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		convID, role, content, category, policyAction, gateway)
 	return err
 }
 
 func (d *DB) GetConversationHistory(convID string, limit int) ([]*Message, error) {
 	rows, err := d.sql.Query(`
-		SELECT id, conversation_id, role, content, COALESCE(category,''), COALESCE(policy_action,''), created_at
+		SELECT id, conversation_id, role, content, gateway, COALESCE(category,''), COALESCE(policy_action,''), created_at
 		FROM messages WHERE conversation_id=?
 		ORDER BY created_at DESC LIMIT ?`, convID, limit)
 	if err != nil {
@@ -655,7 +667,7 @@ func (d *DB) GetConversationHistory(convID string, limit int) ([]*Message, error
 	for rows.Next() {
 		m := &Message{}
 		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content,
-			&m.Category, &m.PolicyAction, &m.CreatedAt); err != nil {
+			&m.Gateway, &m.Category, &m.PolicyAction, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, m)
@@ -670,7 +682,7 @@ func (d *DB) GetConversationHistory(convID string, limit int) ([]*Message, error
 // RecentMessagesByUser returns the most recent messages for a specific user across all conversations.
 func (d *DB) RecentMessagesByUser(userName string, limit int) ([]*Message, error) {
 	rows, err := d.sql.Query(`
-		SELECT m.id, m.conversation_id, m.role, m.content,
+		SELECT m.id, m.conversation_id, m.role, m.content, m.gateway,
 		       COALESCE(m.category,''), COALESCE(m.policy_action,''), m.created_at
 		FROM messages m
 		JOIN conversations c ON c.id = m.conversation_id
@@ -685,7 +697,7 @@ func (d *DB) RecentMessagesByUser(userName string, limit int) ([]*Message, error
 	for rows.Next() {
 		m := &Message{}
 		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content,
-			&m.Category, &m.PolicyAction, &m.CreatedAt); err != nil {
+			&m.Gateway, &m.Category, &m.PolicyAction, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, m)
@@ -752,6 +764,25 @@ func (d *DB) LastMessageTime(ctx context.Context, userName string) (time.Time, b
 		return time.Time{}, false, fmt.Errorf("querying last message time for user %q: %w", userName, err)
 	}
 	return ts, true, nil
+// MostRecentGatewayForUser returns the gateway name of the most recent message
+// for the given user across all of their conversations, or an empty string when
+// the user has no messages. Used to route replies back to the right platform.
+func (d *DB) MostRecentGatewayForUser(userName string) (string, error) {
+	var gateway sql.NullString
+	err := d.sql.QueryRow(`
+		SELECT m.gateway
+		FROM messages m
+		JOIN conversations c ON c.id = m.conversation_id
+		WHERE c.user_name = ?
+		ORDER BY m.created_at DESC
+		LIMIT 1`, userName).Scan(&gateway)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("query most recent gateway for %q: %w", userName, err)
+	}
+	return gateway.String, nil
 }
 
 // ── Skills ────────────────────────────────────────────────────────────────────

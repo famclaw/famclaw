@@ -175,7 +175,7 @@ func (a *Agent) finalizeResearch(ctx context.Context, agentID string, state stor
 	// result/failure lands in their conversation record and is reloaded on the
 	// next message. Safe no-op when there is no DB or conversation id.
 	if a.db != nil && a.convID != "" {
-		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", deliverable, "", ""); err != nil {
+		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", deliverable, "", "", msgCtx.Gateway); err != nil {
 			log.Printf("[agent][%s] save research result to conversation %s: %v", a.user.Name, a.convID, err)
 		}
 	}
