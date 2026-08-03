@@ -159,7 +159,7 @@ func (a *Agent) finalizeResearch(ctx context.Context, agentID string, state stor
 		Deliverable: deliverable,
 		Delivered:   delivered,
 		DeliveryErr: errString(sendErr),
-		Gateway:     msgCtx.Gateway,
+		Gateway:     gatewayOrUnknown(msgCtx.Gateway),
 		ChatID:      chatIDOf(msgCtx),
 		StartedAt:   now, // created_at/started_at are preserved from the running insert on conflict
 		EndedAt:     &now,
@@ -177,7 +177,7 @@ func (a *Agent) finalizeResearch(ctx context.Context, agentID string, state stor
 	// Discord message must be attributed to Discord even if the agent was
 	// constructed with a different default gateway.
 	if a.db != nil && a.convID != "" {
-		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", deliverable, "", "", msgCtx.Gateway); err != nil {
+		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", deliverable, "", "", gatewayOrUnknown(msgCtx.Gateway)); err != nil {
 			log.Printf("[agent][%s] save research result to conversation %s: %v", a.user.Name, a.convID, err)
 		}
 	}
@@ -197,7 +197,7 @@ func (a *Agent) persistResearchStart(agentID, prompt string, timeoutSec int, msg
 		Status:    store.ResearchStatusRunning,
 		StartedAt: now,
 		CreatedAt: now,
-		Gateway:   msgCtx.Gateway,
+		Gateway:   gatewayOrUnknown(msgCtx.Gateway),
 		ChatID:    chatIDOf(msgCtx),
 	}
 	if err := a.db.UpsertResearchStatus(&status); err != nil {

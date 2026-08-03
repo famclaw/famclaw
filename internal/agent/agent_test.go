@@ -174,6 +174,42 @@ func TestAgentChatRecordsMsgContextGatewayNotAgentGateway(t *testing.T) {
 	}
 }
 
+// TestAgentChatZeroValueMsgContextSavesUnknown verifies that when the agent
+// is constructed without a message context (zero-valued MsgContext), the
+// gateway saved is "unknown" — never an empty string. This is the safety
+// net that prevents MostRecentGatewayForUser from returning "", which would
+// cause cross-chat delivery to misroute or drop the reply.
+func TestAgentChatZeroValueMsgContextSavesUnknown(t *testing.T) {
+	server := mockLLMServer(t, []llm.Message{
+		{Role: "assistant", Content: "Hello!"},
+	})
+	defer server.Close()
+
+	agent := setupAgent(t, server.URL)
+	// setupAgent uses AgentDeps{} so a.msgContext is zero-valued (Gateway="").
+
+	resp, err := agent.Chat(context.Background(), "hi", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.PolicyAction != "allow" {
+		t.Fatalf("expected allow, got %q", resp.PolicyAction)
+	}
+
+	msgs, err := agent.db.GetConversationHistory(agent.convID, 20)
+	if err != nil {
+		t.Fatalf("GetConversationHistory: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatalf("expected saved messages, got 0")
+	}
+	for _, m := range msgs {
+		if m.Gateway != "unknown" {
+			t.Errorf("zero-value msgContext gateway = %q, want %q", m.Gateway, "unknown")
+		}
+	}
+}
+
 func TestAgentChatPoolNil(t *testing.T) {
 	// Even with tool_calls in response, if pool is nil, they're ignored
 	server := mockLLMServer(t, []llm.Message{

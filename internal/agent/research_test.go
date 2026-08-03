@@ -274,6 +274,38 @@ func TestFinalizeResearch_UsesMsgCtxGateway(t *testing.T) {
 	}
 }
 
+// TestFinalizeResearch_ZeroValueMsgContextSavesUnknown verifies that when
+// finalizeResearch is called with a zero-valued MsgContext, the saved
+// gateway is "unknown" — never an empty string. This prevents
+// MostRecentGatewayForUser from returning "", which would cause
+// cross-chat delivery to misroute.
+func TestFinalizeResearch_ZeroValueMsgContextSavesUnknown(t *testing.T) {
+	sink := &mockSender{calls: make(chan *senderCall, 1)}
+	a := setupResearchAgent(t, sink)
+
+	zeroCtx := gateway.MsgContext{}
+	a.finalizeResearch(context.Background(), "agent-1", store.ResearchStatusCompleted, "the answer", 300, "research", zeroCtx)
+
+	hist, err := a.db.GetConversationHistory(a.convID, 20)
+	if err != nil {
+		t.Fatalf("GetConversationHistory: %v", err)
+	}
+	if len(hist) != 1 {
+		t.Fatalf("expected 1 conversation message, got %d", len(hist))
+	}
+	if hist[0].Gateway != "unknown" {
+		t.Errorf("zero-value msgCtx gateway = %q, want %q", hist[0].Gateway, "unknown")
+	}
+
+	s, err := a.db.GetResearchStatus(context.Background(), a.user.Name, "agent-1")
+	if err != nil || s == nil {
+		t.Fatalf("expected a status record, err=%v s=%v", err, s)
+	}
+	if s.Gateway != "unknown" {
+		t.Errorf("research status gateway = %q, want %q", s.Gateway, "unknown")
+	}
+}
+
 // TestPersistResearchStart_Running verifies the initial running record.
 func TestPersistResearchStart_Running(t *testing.T) {
 	a := setupResearchAgent(t, &errSender{err: fmt.Errorf("nope")})
