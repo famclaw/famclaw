@@ -1893,8 +1893,25 @@ func TestWebSearchError(t *testing.T) {
 		if !strings.Contains(msg, "I could not search right now") {
 			t.Errorf("result should tell the user search is unavailable, got: %q", msg)
 		}
-		if !strings.Contains(msg, "localhost:8888") {
-			t.Errorf("result should name the endpoint, got: %q", msg)
+	})
+
+	t.Run("unavailable error does not leak endpoint", func(t *testing.T) {
+		// The endpoint may contain internal hostnames, credentials, or
+		// network topology — it must NEVER appear in the user-facing
+		// message the model speaks to the family.
+		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
+		msg, err := webSearchError(wrapped, "http://internal.corp:8888/searx")
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+		if strings.Contains(msg, "internal.corp") {
+			t.Errorf("user-facing message must not contain the raw endpoint: %q", msg)
+		}
+		if strings.Contains(msg, "8888") {
+			t.Errorf("user-facing message must not contain the raw endpoint port: %q", msg)
+		}
+		if !strings.Contains(msg, "I could not search right now") {
+			t.Errorf("message should be honest about search being unavailable: %q", msg)
 		}
 	})
 

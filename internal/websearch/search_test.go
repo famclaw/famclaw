@@ -35,6 +35,22 @@ func TestSearch_EmptyEndpointRejected(t *testing.T) {
 	}
 }
 
+// TestSearch_EndpointWithoutHostRejected verifies that an endpoint that
+// parses but has no host (e.g. a bare path) is rejected with a clear
+// configuration error, not silently turned into a relative request path.
+func TestSearch_EndpointWithoutHostRejected(t *testing.T) {
+	// A bare path parses successfully but has no host — this must be
+	// rejected with a clear configuration error, not silently turned into
+	// a relative request path.
+	_, err := Search(context.Background(), "x", Options{Endpoint: "/search"})
+	if err == nil {
+		t.Fatal("expected error for endpoint without host, got nil")
+	}
+	if !strings.Contains(err.Error(), "host") {
+		t.Errorf("expected error to mention host, got %v", err)
+	}
+}
+
 func TestSearch_HappyPath(t *testing.T) {
 	const expectedQuery = "search term"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

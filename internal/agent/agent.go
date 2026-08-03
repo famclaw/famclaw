@@ -1467,7 +1467,11 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 // Host-not-allowed and other genuine errors pass through as ("", err).
 func webSearchError(err error, endpoint string) (string, error) {
 	if errors.Is(err, websearch.ErrUnavailable) {
-		return fmt.Sprintf("I could not search right now — the search backend at %s is unreachable (connection refused, timeout, or not running). I'll answer from what I know rather than making up search results. A parent can check that the SearXNG service at %s is running.", endpoint, endpoint), nil
+		// Log the full endpoint server-side for debugging, but do NOT
+		// echo it to the family chat — it may contain internal hostnames,
+		// credentials, or network topology that should not reach the user.
+		log.Printf("[agent] web_search backend unreachable at %s", endpoint)
+		return "I could not search right now — the search backend is unreachable (connection refused, timeout, or not running). I'll answer from what I know rather than making up search results. A parent can check that the SearXNG service is running.", nil
 	}
 	return "", err
 }

@@ -74,14 +74,15 @@ func Search(ctx context.Context, query string, opts Options) ([]Hit, error) {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-
-	// Build the search URL by parsing the endpoint and joining the path
-	// with /search via path.Join. This avoids double-search when the
-	// endpoint already includes a path (e.g. http://host/searx →
-	// /searx/search, not /searx/search/search).
-	endpointParsed, perr := url.Parse(opts.Endpoint)
+	// Reject whitespace-only endpoints — url.Parse(" ") yields a URL with
+	// no host, and path.Join("", "search") would silently produce
+	// "/search" (a relative path) instead of a clear configuration error.
+	endpointParsed, perr := url.Parse(strings.TrimSpace(opts.Endpoint))
 	if perr != nil {
 		return nil, fmt.Errorf("web_search: parse endpoint: %w", perr)
+	}
+	if endpointParsed.Host == "" {
+		return nil, fmt.Errorf("web_search: endpoint %q must include a host", opts.Endpoint)
 	}
 	endpointParsed.Path = path.Join(endpointParsed.Path, "search")
 	if !strings.HasPrefix(endpointParsed.Path, "/") {

@@ -1071,9 +1071,12 @@ func checkSearchEndpointReachable(endpoint string) error {
 	// that an endpoint with an existing path (e.g. http://host/searx) yields
 	// /searx/search, not /searx/search/search. path.Join also cleans double
 	// slashes and trailing slashes.
-	parsed, err := url.Parse(endpoint)
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil {
 		return fmt.Errorf("parse search endpoint: %w", err)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("search endpoint %q must include a host", endpoint)
 	}
 	parsed.Path = path.Join(parsed.Path, "search")
 	if !strings.HasPrefix(parsed.Path, "/") {
