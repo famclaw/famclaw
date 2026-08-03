@@ -764,6 +764,8 @@ func (d *DB) LastMessageTime(ctx context.Context, userName string) (time.Time, b
 		return time.Time{}, false, fmt.Errorf("querying last message time for user %q: %w", userName, err)
 	}
 	return ts, true, nil
+}
+
 // MostRecentGatewayForUser returns the gateway name of the most recent message
 // for the given user across all of their conversations, or an empty string when
 // the user has no messages. Used to route replies back to the right platform.

@@ -1598,7 +1598,7 @@ func TestRouterSavesGatewayOnMessage(t *testing.T) {
 
 			// Also verify via GetConversationHistory that messages read back
 			// with the correct gateway.
-			msgs, err := router.db.GetConversationHistory(conversationID("sofia"), 20)
+			msgs, err := router.db.RecentMessagesByUser("sofia", 20)
 			if err != nil {
 				t.Fatalf("GetConversationHistory: %v", err)
 			}

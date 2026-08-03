@@ -281,7 +281,7 @@ func TestLastMessageTime(t *testing.T) {
 		{
 			name: "has prior message",
 			setup: func(db *DB) error {
-				return db.SaveMessage("conv-abc", "emma", "user", "hello", "safe", "allow")
+				return db.SaveMessage("conv-abc", "emma", "user", "hello", "safe", "allow", "unknown")
 			},
 			userName: "emma",
 			wantOk:   true,
@@ -289,7 +289,7 @@ func TestLastMessageTime(t *testing.T) {
 		{
 			name: "different user no messages",
 			setup: func(db *DB) error {
-				return db.SaveMessage("conv-abc", "emma", "user", "hello", "safe", "allow")
+				return db.SaveMessage("conv-abc", "emma", "user", "hello", "safe", "allow", "unknown")
 			},
 			userName: "lucas",
 			wantOk:   false,
