@@ -372,14 +372,14 @@ func TestSalvageGemmaToolCall_NestedBraces(t *testing.T) {
 	}{
 		{
 			name:        "nested-json-argument",
-			content:     "<|tool_call_begin|>call:web_search{query:{\"filter\":{\"a\":1}}}|<|tool_call_end|>",
+			content:     `<|tool_call_begin|>call:web_search{query:<|"|>{"filter":{"a":1}}<|"|>}<|tool_call_end|>`,
 			wantName:    "web_search",
 			wantArgs:    map[string]any{"query": map[string]any{"filter": map[string]any{"a": float64(1)}}},
 			wantContent: "",
 		},
 		{
 			name:        "deeply-nested-json-argument",
-			content:     "<|tool_call_begin|>call:web_search{query:{\"a\":{\"b\":{\"c\":1}}}}|<|tool_call_end|>",
+			content:     `<|tool_call_begin|>call:web_search{query:<|"|>{"a":{"b":{"c":1}}}<|"|>}<|tool_call_end|>`,
 			wantName:    "web_search",
 			wantContent: "",
 		},
@@ -420,7 +420,7 @@ func TestStripGemmaToolCallBlocks_LogsUnrecognizedTokens(t *testing.T) {
 	defer log.SetOutput(oldOutput)
 
 	// Content with a recognized block followed by an unrecognized token
-	content := `<|tool_call_begin|>call:web_search{query:<|"|>}|<|tool_call_end|> some prose <|unrecognized_format|>`
+	content := `<|tool_call_begin|>call:web_search{query:<|"|>test<|"|>}<|tool_call_end|> some prose <|unrecognized_format|>`
 
 	stripGemmaToolCallBlocks(content)
 
@@ -441,7 +441,7 @@ func TestStripGemmaToolCallBlocks_NoLogWhenAllRecognized(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(oldOutput)
 
-	content := `<|tool_call_begin|>call:web_search{query:<|"|>}|<|tool_call_end|>`
+	content := `<|tool_call_begin|>call:web_search{query:<|"|>test<|"|>}<|tool_call_end|>`
 
 	stripGemmaToolCallBlocks(content)
 

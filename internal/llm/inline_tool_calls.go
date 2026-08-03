@@ -184,7 +184,12 @@ func newInlineToolCallID() string {
 //
 //	1 = function name
 //	2 = raw argument body (inside { ... })
-var reGemmaToolCall = regexp.MustCompile(`(?s)(?:<\|tool_call_begin\|>|<\|tool_call>)call:(\w+)\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}\s*(?:<\|tool_call_end\|>|</\|tool_call\|>|<\|tool_call\|>|<tool_call\|>)`)
+//
+// The args body uses a non-greedy (.+?) capture so that nested
+// objects (e.g. {"filter":{"a":1}}) are not truncated at the first
+// closing brace. The closing brace is anchored by the required
+// trailing closing-tag variant.
+var reGemmaToolCall = regexp.MustCompile(`(?s)(?:<\|tool_call_begin\|>|<\|tool_call>)call:(\w+)\s*\{(.+?)\}\s*(?:<\|tool_call_end\|>|</\|tool_call\|>|<\|tool_call\|>|<tool_call\|>)`)
 
 // reGemmaArg extracts a single key:<|"|>value<|"|> pair from the
 // argument body. The <|"|> token is Gemma native string delimiter.
