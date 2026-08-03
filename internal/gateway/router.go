@@ -177,14 +177,25 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		return Reply{Text: "Policy evaluation error. Please try again.", PolicyAction: "error"}
 	}
 
+	// ── Compute stable conversation ID via idle-gap rule ────────────────
+	// The conversation continues as long as the gap since the user's last
+	// message is under ConversationIdleTimeout (6h). This replaces the old
+	// day-bucketing that silently reset every conversation at midnight.
+	now := time.Now().UTC()
+	lastMsg, hasLast, err := r.db.LastMessageTime(ctx, user.Name)
+	if err != nil {
+		log.Printf("[router] %s: LastMessageTime error: %v — treating as cold start", user.Name, err)
+	}
+	convID := store.ConversationID(user.Name, lastMsg, hasLast, now)
+
 	// ── Step 4: Handle non-allow decisions (LLM is NEVER called) ─────────
 	switch decision.Action {
 	case "block":
 		text := fmt.Sprintf("I'm sorry, I can't help with that topic. %s", decision.Reason)
-		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "user", msg.Text, string(cat), "block"); err != nil {
+		if err := r.db.SaveMessage(convID, user.Name, "user", msg.Text, string(cat), "block"); err != nil {
 			log.Printf("[gateway][%s] save blocked user message: %v", user.Name, err)
 		}
-		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "assistant", text, string(cat), "block"); err != nil {
+		if err := r.db.SaveMessage(convID, user.Name, "assistant", text, string(cat), "block"); err != nil {
 			log.Printf("[gateway][%s] save blocked assistant response: %v", user.Name, err)
 		}
 		return Reply{Text: text, PolicyAction: "block"}
@@ -195,20 +206,20 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 			return Reply{Text: "I was unable to submit your request for approval. Please try again.", PolicyAction: "error"}
 		}
 		text := "I've asked a parent to approve this topic for you. They'll get a notification — once they approve, just ask me again!"
-		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "user", msg.Text, string(cat), "request_approval"); err != nil {
+		if err := r.db.SaveMessage(convID, user.Name, "user", msg.Text, string(cat), "request_approval"); err != nil {
 			log.Printf("[gateway][%s] save approval-pending user message: %v", user.Name, err)
 		}
-		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "assistant", text, string(cat), "request_approval"); err != nil {
+		if err := r.db.SaveMessage(convID, user.Name, "assistant", text, string(cat), "request_approval"); err != nil {
 			log.Printf("[gateway][%s] save approval-pending assistant response: %v", user.Name, err)
 		}
 		return Reply{Text: text, PolicyAction: "request_approval"}
 
 	case "pending":
 		text := "A parent has already been notified about this request. Once they approve, you can ask me!"
-		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "user", msg.Text, string(cat), "pending"); err != nil {
+		if err := r.db.SaveMessage(convID, user.Name, "user", msg.Text, string(cat), "pending"); err != nil {
 			log.Printf("[gateway][%s] save pending user message: %v", user.Name, err)
 		}
-		if err := r.db.SaveMessage(conversationID(user.Name), user.Name, "assistant", text, string(cat), "pending"); err != nil {
+		if err := r.db.SaveMessage(convID, user.Name, "assistant", text, string(cat), "pending"); err != nil {
 			log.Printf("[gateway][%s] save pending assistant response: %v", user.Name, err)
 		}
 		return Reply{Text: text, PolicyAction: "pending"}
@@ -235,6 +246,7 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		GroupID:     msg.GroupID,
 		IsGroup:     msg.IsGroup,
 		Attachments: msg.Attachments,
+		ConvID:      convID,
 	})
 	if err != nil {
 		log.Printf("[router] chat error: %v", err)
@@ -281,12 +293,6 @@ func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, ca
 func approvalID(userName, category string) string {
 	day := time.Now().UTC().Format("2006-01-02")
 	h := sha256.Sum256([]byte(userName + ":" + category + ":" + day))
-	return hex.EncodeToString(h[:8])
-}
-
-func conversationID(userName string) string {
-	day := time.Now().UTC().Format("2006-01-02")
-	h := sha256.Sum256([]byte(userName + ":" + day))
 	return hex.EncodeToString(h[:8])
 }
 

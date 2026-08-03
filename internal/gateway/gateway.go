@@ -50,6 +50,11 @@ type MsgContext struct {
 	// audio attachments are transcribed into text before the policy
 	// gates run.
 	Attachments []Attachment
+	// ConvID is the stable conversation ID computed by the router
+	// using the idle-gap rule. When non-empty, the agent reuses it
+	// instead of computing its own, ensuring router and agent share
+	// the same conversation context.
+	ConvID string
 }
 
 // ChatFunc is the function signature for LLM chat.

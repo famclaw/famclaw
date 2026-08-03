@@ -204,7 +204,9 @@ func TestConversationID(t *testing.T) {
 	preMidnight := time.Date(2024, 1, 15, 23, 58, 0, 0, time.UTC)
 	postMidnight := time.Date(2024, 1, 16, 0, 2, 0, 0, time.UTC)
 	sevenHoursLater := postMidnight.Add(7 * time.Hour)
-	fiveMinLater := postMidnight.Add(5 * time.Minute)
+	// Same-day 5-minute gap for a clean 'continue' test (not straddling midnight).
+	tenAM := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+	fiveMinLaterSameDay := tenAM.Add(5 * time.Minute)
 
 	userA := "emma"
 	userB := "lucas"
@@ -229,8 +231,8 @@ func TestConversationID(t *testing.T) {
 		},
 		{
 			name:     "5min gap continues conversation",
-			id1:      ConversationID(userA, preMidnight, true, postMidnight),
-			id2:      ConversationID(userA, postMidnight, true, fiveMinLater),
+			id1:      ConversationID(userA, time.Time{}, false, tenAM),
+			id2:      ConversationID(userA, tenAM, true, fiveMinLaterSameDay),
 			wantSame: true,
 		},
 		{

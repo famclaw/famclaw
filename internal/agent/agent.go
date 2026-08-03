@@ -100,7 +100,7 @@ type Agent struct {
 	// msgContext holds the gateway-specific context for the current message
 	// (gateway, external_id, group_id, is_group). Used by outbound tools
 	// like reminders to know where to send the notification.
-	msgContext           gateway.MsgContext
+	msgContext gateway.MsgContext
 	// transcriber converts audio attachments into text at the top of Chat
 	// so the transcript enters the policy pipeline as Turn.Input (before
 	// SaveMessage and before any gate reads the input). nil disables voice
@@ -255,9 +255,21 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	evaluator *policy.Evaluator, clf *classifier.Classifier, db *store.DB,
 	deps AgentDeps) (*Agent, error) {
 
-	day := time.Now().UTC().Format("2006-01-02")
-	h := sha256.Sum256([]byte(user.Name + ":" + day))
-	convID := hex.EncodeToString(h[:8])
+	// Compute conversation ID. The router passes a convID computed via the
+	// idle-gap rule; reuse it for consistency. Otherwise (e.g. tests),
+	// compute it independently using the same store.ConversationID logic.
+	var convID string
+	if deps.MsgContext.ConvID != "" {
+		convID = deps.MsgContext.ConvID
+	} else if db != nil {
+		lastMsg, hasLast, err := db.LastMessageTime(context.Background(), user.Name)
+		if err != nil {
+			log.Printf("[agent] %s: LastMessageTime error: %v — treating as cold start", user.Name, err)
+		}
+		convID = store.ConversationID(user.Name, lastMsg, hasLast, time.Now())
+	} else {
+		convID = store.ConversationID(user.Name, time.Time{}, false, time.Now())
+	}
 
 	// Append admin tools for parent users so they are always available
 	// without callers needing to wire them individually.
