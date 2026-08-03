@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"regexp"
 	"strings"
 )
@@ -183,7 +184,7 @@ func newInlineToolCallID() string {
 //
 //	1 = function name
 //	2 = raw argument body (inside { ... })
-var reGemmaToolCall = regexp.MustCompile(`(?s)(?:<\|tool_call_begin\|>|<\|tool_call>)call:(\w+)\s*\{([^}]*)\}\s*(?:<\|tool_call_end\|>|</\|tool_call\|>|<\|tool_call\|>|<tool_call\|>)`)
+var reGemmaToolCall = regexp.MustCompile(`(?s)(?:<\|tool_call_begin\|>|<\|tool_call>)call:(\w+)\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}\s*(?:<\|tool_call_end\|>|</\|tool_call\|>|<\|tool_call\|>|<tool_call\|>)`)
 
 // reGemmaArg extracts a single key:<|"|>value<|"|> pair from the
 // argument body. The <|"|> token is Gemma native string delimiter.
@@ -281,6 +282,14 @@ func parseGemmaArgs(argBody string) map[string]any {
 // blocks and collapses surrounding whitespace.
 func stripGemmaToolCallBlocks(content string) string {
 	stripped := reGemmaToolCall.ReplaceAllString(content, "")
+	// After removing recognized tool-call blocks, any remaining <|...|>
+	// token is an unrecognized control token. Log it at warn level so a
+	// new Gemma format is diagnosable instead of silently deleted — the
+	// family would otherwise get an empty or truncated reply with nothing
+	// in the logs.
+	for _, tok := range reControlToken.FindAllString(stripped, -1) {
+		log.Printf("[llm] stripGemmaToolCallBlocks: unrecognized control token stripped: %q", tok)
+	}
 	stripped = reControlToken.ReplaceAllString(stripped, "")
 	stripped = regexp.MustCompile(`\n{3,}`).ReplaceAllString(stripped, "\n\n")
 	return strings.TrimSpace(stripped)

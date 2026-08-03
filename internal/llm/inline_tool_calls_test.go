@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"bytes"
+	"log"
 	"reflect"
 	"strings"
 	"testing"
@@ -354,5 +356,97 @@ func TestMergeReasoningStripsThinkingTokens(t *testing.T) {
 				t.Errorf("control token leaked into content: %q", msg.Content)
 			}
 		})
+	}
+}
+
+// TestSalvageGemmaToolCall_NestedBraces verifies that the argument body
+// capture is brace-aware: a JSON argument containing a nested object
+// like {"filter":{"a":1}} is not truncated at the first closing brace.
+func TestSalvageGemmaToolCall_NestedBraces(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantName    string
+		wantArgs    map[string]any
+		wantContent string
+	}{
+		{
+			name:        "nested-json-argument",
+			content:     "<|tool_call_begin|>call:web_search{query:{\"filter\":{\"a\":1}}}|<|tool_call_end|>",
+			wantName:    "web_search",
+			wantArgs:    map[string]any{"query": map[string]any{"filter": map[string]any{"a": float64(1)}}},
+			wantContent: "",
+		},
+		{
+			name:        "deeply-nested-json-argument",
+			content:     "<|tool_call_begin|>call:web_search{query:{\"a\":{\"b\":{\"c\":1}}}}|<|tool_call_end|>",
+			wantName:    "web_search",
+			wantContent: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := &Message{Role: "assistant", Content: tc.content}
+			salvageInlineToolCalls(msg)
+			if len(msg.ToolCalls) != 1 {
+				t.Fatalf("got %d tool_calls, want 1", len(msg.ToolCalls))
+			}
+			if msg.ToolCalls[0].Function.Name != tc.wantName {
+				t.Errorf("name = %q, want %q", msg.ToolCalls[0].Function.Name, tc.wantName)
+			}
+			if tc.wantArgs != nil {
+				gotArgs := map[string]any(msg.ToolCalls[0].Function.Arguments)
+				if !reflect.DeepEqual(gotArgs, tc.wantArgs) {
+					t.Errorf("args = %v, want %v", gotArgs, tc.wantArgs)
+				}
+			}
+			// Content should have no control tokens
+			if strings.Contains(msg.Content, "<|") {
+				t.Errorf("control token leaked into content: %q", msg.Content)
+			}
+		})
+	}
+}
+
+// TestStripGemmaToolCallBlocks_LogsUnrecognizedTokens verifies that when
+// reControlToken strips a token that was NOT part of a recognized
+// tool-call block, a warning is logged so the new format is diagnosable.
+func TestStripGemmaToolCallBlocks_LogsUnrecognizedTokens(t *testing.T) {
+	// Capture log output
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOutput)
+
+	// Content with a recognized block followed by an unrecognized token
+	content := `<|tool_call_begin|>call:web_search{query:<|"|>}|<|tool_call_end|> some prose <|unrecognized_format|>`
+
+	stripGemmaToolCallBlocks(content)
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "unrecognized control token") {
+		t.Errorf("expected log warning about unrecognized control token, got: %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "<|unrecognized_format|>") {
+		t.Errorf("expected log to include the token text, got: %q", logOutput)
+	}
+}
+
+// TestStripGemmaToolCallBlocks_NoLogWhenAllRecognized verifies that no
+// warning is logged when all tokens are part of recognized blocks.
+func TestStripGemmaToolCallBlocks_NoLogWhenAllRecognized(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOutput)
+
+	content := `<|tool_call_begin|>call:web_search{query:<|"|>}|<|tool_call_end|>`
+
+	stripGemmaToolCallBlocks(content)
+
+	logOutput := buf.String()
+	if strings.Contains(logOutput, "unrecognized control token") {
+		t.Errorf("should not log unrecognized token warning when all tokens are recognized, got: %q", logOutput)
 	}
 }
