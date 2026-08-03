@@ -25,6 +25,7 @@ import (
 	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/webfetch"
+	"github.com/famclaw/famclaw/internal/websearch"
 )
 
 func setupAgent(t *testing.T, serverURL string) *Agent {
@@ -1873,4 +1874,41 @@ func TestBuildMessages_UserMemoryScoped(t *testing.T) {
 	if strings.Contains(sysTeo, "blue") {
 		t.Errorf("teo's prompt must NOT contain dep's memory (blue):\n%s", sysTeo)
 	}
+}
+
+// TestWebSearchError verifies that when the backend is unreachable, the
+// error is translated into an honest, human-readable message containing
+// "I could not search right now" — NOT an empty result set that invites
+// hallucination.
+func TestWebSearchError(t *testing.T) {
+	t.Run("unavailable error becomes honest message", func(t *testing.T) {
+		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
+		err := webSearchError(wrapped, "http://localhost:8888")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "I could not search right now") {
+			t.Errorf("error should tell the user search is unavailable, got: %q", msg)
+		}
+		if !strings.Contains(msg, "localhost:8888") {
+			t.Errorf("error should name the endpoint, got: %q", msg)
+		}
+	})
+
+	t.Run("host-not-allowed error passes through", func(t *testing.T) {
+		hostErr := webfetch.NewHostNotAllowedError("evil.com")
+		err := webSearchError(hostErr, "http://localhost:8888")
+		if err != hostErr {
+			t.Errorf("host-not-allowed error should pass through unchanged, got %v", err)
+		}
+	})
+
+	t.Run("ordinary error passes through", func(t *testing.T) {
+		ordinary := errors.New("some other error")
+		err := webSearchError(ordinary, "http://localhost:8888")
+		if err != ordinary {
+			t.Errorf("ordinary error should pass through unchanged, got %v", err)
+		}
+	})
 }

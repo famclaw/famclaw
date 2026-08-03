@@ -100,7 +100,7 @@ func capturingLLMServer(t *testing.T, reply string) (*httptest.Server, *string, 
 
 		// Determine stream mode and extract user messages.
 		var req struct {
-			Stream   bool                       `json:"stream"`
+			Stream   bool                         `json:"stream"`
 			Messages []map[string]json.RawMessage `json:"messages"`
 		}
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -360,7 +360,7 @@ func TestTranscribeAttachments_NoAudioReturnsEmpty(t *testing.T) {
 	}
 	clf := classifier.New()
 	cfg := &config.Config{
-		LLM: config.LLMConfig{BaseURL: "http://x", Model: "t", MaxResponseTokens: 1, MaxContextTokens: 1},
+		LLM:   config.LLMConfig{BaseURL: "http://x", Model: "t", MaxResponseTokens: 1, MaxContextTokens: 1},
 		Users: []config.UserConfig{{Name: "parent", Role: "parent"}},
 	}
 	tr := &mockTranscriber{transcript: "should-not-be-used"}

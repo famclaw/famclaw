@@ -619,6 +619,15 @@ func main() {
 	if cfg.Tools.WebSearch.Enabled {
 		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
 		registered = append(registered, "web_search")
+		// Startup reachability check: verify the search endpoint responds so
+		// an operator never sees web_search "configured but dead." This is a
+		// best-effort warning — a unreachable endpoint does NOT prevent
+		// startup (the tool will fail honestly at call time via ErrUnavailable).
+		if wsErr := checkSearchEndpointReachable(cfg.Tools.WebSearch.Endpoint); wsErr != nil {
+			log.Printf("WARNING: web_search endpoint %q is unreachable at startup: %v — web_search will return honest failures until it comes back", cfg.Tools.WebSearch.Endpoint, wsErr)
+		} else {
+			log.Printf("web_search: endpoint %q reachable at startup", cfg.Tools.WebSearch.Endpoint)
+		}
 	}
 	// File tools are always available; access is restricted by OPA policy.
 	builtinTools = append(builtinTools,
@@ -1044,4 +1053,33 @@ func parseTTLByRole(in map[string]string) map[string]time.Duration {
 		}
 	}
 	return out
+}
+
+// checkSearchEndpointReachable does a best-effort HTTP probe against the
+// configured search endpoint at startup. It returns nil if the host responds
+// with any HTTP status (even an error status — the point is that the service
+// is up and listening). It returns an error only on connection-level failures
+// (refused, timeout, DNS failure), so the operator gets early warning when
+// web_search is "configured but dead." This check does NOT gate startup.
+func checkSearchEndpointReachable(endpoint string) error {
+	if endpoint == "" {
+		return fmt.Errorf("endpoint not configured")
+	}
+	probeURL := strings.TrimRight(endpoint, "/") + "/search?q=__famclaw_startup_probe__&format=json"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+	if err != nil {
+		return fmt.Errorf("build probe request: %w", err)
+	}
+	req.Header.Set("User-Agent", "famclaw-startup-check/1")
+	// A bare client — no allowlist enforcement here. This is a diagnostic
+	// only; the actual tool enforces the allowlist at call time.
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("unreachable: %w", err)
+	}
+	resp.Body.Close()
+	return nil
 }

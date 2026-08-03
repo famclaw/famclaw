@@ -285,7 +285,7 @@ func TestFetch_HostValidatorBlocksInitialURL(t *testing.T) {
 
 func TestHostNotAllowedError_NamesHostAndIsConfigNotNetwork(t *testing.T) {
 	host := "www.clinicaltrials.gov"
-	err := HostNotAllowedError(host)
+	err := NewHostNotAllowedError(host)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -314,7 +314,7 @@ func TestHostNotAllowedError_NamesHostAndIsConfigNotNetwork(t *testing.T) {
 func TestHostNotAllowedError_DistinctFromNetworkError(t *testing.T) {
 	// An allowlist rejection must be distinguishable from a network error
 	// by containing "configuration" and "not by a network failure".
-	allowlistErr := HostNotAllowedError("example.com")
+	allowlistErr := NewHostNotAllowedError("example.com")
 	networkErr := fmt.Errorf("web fetch: do: dial tcp: connection refused")
 
 	if !strings.Contains(allowlistErr.Error(), "configuration") {

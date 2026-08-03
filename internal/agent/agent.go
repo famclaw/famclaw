@@ -1225,7 +1225,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		return false
 	}
 	if !hostAllowed(u.Hostname()) {
-		return "", webfetch.HostNotAllowedError(u.Hostname())
+		return "", webfetch.NewHostNotAllowedError(u.Hostname())
 	}
 
 	opts := webfetch.Options{
@@ -1233,7 +1233,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		Timeout:  time.Duration(cfg.TimeoutSec) * time.Second,
 		HostValidator: func(host string) error {
 			if !hostAllowed(host) {
-				return webfetch.HostNotAllowedError(host)
+				return webfetch.NewHostNotAllowedError(host)
 			}
 			return nil
 		},
@@ -1365,7 +1365,7 @@ func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawUR
 	}
 	hostCheck := func(host string) error {
 		if !hostAllowed(host) {
-			return webfetch.HostNotAllowedError(host)
+			return webfetch.NewHostNotAllowedError(host)
 		}
 		return nil
 	}
@@ -1444,17 +1444,32 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 		Timeout:    time.Duration(cfg.TimeoutSec) * time.Second,
 		HostValidator: func(host string) error {
 			if !hostAllowed(host) {
-				return webfetch.HostNotAllowedError(host)
+				return webfetch.NewHostNotAllowedError(host)
 			}
 			return nil
 		},
 		AllowPrivateNetworks: !fcfg.BlockPrivateNetworks,
 	})
 	if err != nil {
-		return "", err
+		return "", webSearchError(err, cfg.Endpoint)
 	}
 	log.Printf("[agent][%s] web_search query=%q hits=%d", a.user.Name, query, len(hits))
 	return websearch.FormatHits(hits), nil
+}
+
+// webSearchError translates a web_search error into a human-readable message
+// the model can relay honestly. When the backend is unreachable (ErrUnavailable)
+// the LLM must tell the user "I could not search right now" rather than
+// inventing results. Host-not-allowed errors are configuration gaps the parent
+// can fix, so they are passed through verbatim.
+func webSearchError(err error, endpoint string) error {
+	if errors.Is(err, websearch.ErrUnavailable) {
+		// Surface a clear, honest message that the model can relay directly.
+		// The LLM receives this as the tool result text (not an error) so it
+		// is far less likely to be ignored in favour of hallucination.
+		return fmt.Errorf("I could not search right now — the search backend at %s is unreachable (connection refused, timeout, or not running). I'll answer from what I know rather than making up search results. A parent can check that the SearXNG service at %s is running.", endpoint, endpoint)
+	}
+	return err
 }
 
 // handleBrowser dispatches all builtin__browser_* tools. Auth boundary:
@@ -1488,7 +1503,7 @@ func (a *Agent) handleBrowser(ctx context.Context, toolName string, args map[str
 		Args:     args,
 		HostCheck: func(host string) error {
 			if !hostAllowed(host) {
-				return webfetch.HostNotAllowedError(host)
+				return webfetch.NewHostNotAllowedError(host)
 			}
 			return nil
 		},

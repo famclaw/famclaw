@@ -3,6 +3,7 @@ package websearch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -16,6 +17,13 @@ const (
 	hardMaxResults    = 16
 	defaultTimeout    = 30 * time.Second
 )
+
+// ErrUnavailable is returned when the search backend cannot be reached or
+// returned a non-searchable response. Callers use errors.Is to detect it and
+// translate it into an honest "I could not search right now" reply rather
+// than letting the LLM hallucinate results. It is distinct from a zero-result
+// response, which is a successful search that simply found nothing.
+var ErrUnavailable = errors.New("web_search: search backend unavailable")
 
 // Options configures a Search call.
 type Options struct {
@@ -35,6 +43,17 @@ type Hit struct {
 
 // Search runs query against the configured SearXNG endpoint and returns
 // up to opts.MaxResults hits.
+//
+// Error semantics:
+//   - ErrUnavailable: the backend could not be reached or returned a
+//     non-searchable response (connection refused, timeout, wrong content
+//     type, non-2xx, etc.). The caller MUST report this to the user honestly
+//     rather than inventing results.
+//   - A hostNotAllowedError from the URL allowlist is returned as-is — it is
+//     a configuration gap the parent fixes, not a transient failure.
+//   - A zero-length hit slice with a nil error means the backend responded
+//     normally but found no matches. This is NOT an error and must not be
+//     confused with ErrUnavailable.
 func Search(ctx context.Context, query string, opts Options) ([]Hit, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -57,6 +76,21 @@ func Search(ctx context.Context, query string, opts Options) ([]Hit, error) {
 
 	u := strings.TrimRight(opts.Endpoint, "/") + "/search?q=" + url.QueryEscape(query) + "&format=json"
 
+	// Pre-check the endpoint host with the HostValidator so we can
+	// distinguish "host not allowed" (a configuration error the parent
+	// fixes in url_allowlist) from "backend unreachable" (a transient
+	// failure the model must report honestly). webfetch.Fetch re-runs the
+	// same validator on redirect targets.
+	if opts.HostValidator != nil {
+		endpointURL, perr := url.Parse(u)
+		if perr != nil {
+			return nil, fmt.Errorf("web_search: parse endpoint: %w", perr)
+		}
+		if err := opts.HostValidator(endpointURL.Hostname()); err != nil {
+			return nil, err
+		}
+	}
+
 	res, err := webfetch.Fetch(ctx, u, webfetch.Options{
 		MaxBytes:             256 * 1024,
 		Timeout:              timeout,
@@ -65,14 +99,20 @@ func Search(ctx context.Context, query string, opts Options) ([]Hit, error) {
 		AllowPrivateNetworks: opts.AllowPrivateNetworks,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("web_search: fetch: %w", err)
+		// A redirect-bounce through an allowlist violation is still a
+		// configuration error, not a backend-unavailability.
+		var hostErr *webfetch.HostNotAllowedError
+		if errors.As(err, &hostErr) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 
 	var parsed struct {
 		Results []Hit `json:"results"`
 	}
 	if jerr := json.Unmarshal([]byte(res.Text), &parsed); jerr != nil {
-		return nil, fmt.Errorf("web_search: decode: %w", jerr)
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, jerr)
 	}
 	if len(parsed.Results) > n {
 		parsed.Results = parsed.Results[:n]

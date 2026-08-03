@@ -51,7 +51,7 @@ func TestBuildResearchDeliverable(t *testing.T) {
 	}{
 		{name: "completed", state: store.ResearchStatusCompleted, resultText: "odyssey not playing", timeoutSec: 300, wantSubstr: "🔬 Research task agent-1 completed:\nodyssey not playing"},
 		{name: "failed", state: store.ResearchStatusFailed, resultText: "HTTP 404", timeoutSec: 300, wantSubstr: "❌ Research task agent-1 failed: HTTP 404"},
-		{name: "timed_out", state: store.ResearchStatusTimedOut, resultText: "context deadline", timeoutSec: 300, wantSubstr: "⏰ Research task agent-1 timed out after 300 seconds."},
+		{name: "timed_out", state: store.ResearchStatusTimedOut, resultText: "context deadline", timeoutSec: 300, wantSubstr: "timed out after 300 seconds"},
 		{name: "unknown state falls back", state: "weird", resultText: "x", timeoutSec: 1, wantSubstr: "📋 Research task agent-1: x"},
 	}
 	for _, tc := range tests {

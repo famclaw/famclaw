@@ -3,7 +3,9 @@ package websearch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -139,10 +141,82 @@ func TestSearch_DecodesGarbageError(t *testing.T) {
 		AllowPrivateNetworks: true,
 	})
 	if err == nil {
-		t.Fatalf("expected decode error, got nil")
+		t.Fatalf("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "decode") {
-		t.Errorf("expected error to contain 'decode', got %v", err)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("expected ErrUnavailable for garbage response, got %v", err)
+	}
+}
+
+// TestSearch_BackendUnreachable_HTTPError verifies that a backend returning
+// a non-2xx status produces ErrUnavailable — never an empty result set.
+func TestSearch_BackendUnreachable_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	_, err := Search(context.Background(), "x", Options{
+		Endpoint:             server.URL,
+		Timeout:              5 * time.Second,
+		AllowPrivateNetworks: true,
+	})
+	if err == nil {
+		t.Fatal("expected error for 500 response, got nil — empty results would invite hallucination")
+	}
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("expected ErrUnavailable, got %v", err)
+	}
+}
+
+// TestSearch_BackendUnreachable_ConnectionRefused verifies that a backend
+// that cannot be reached at all (connection refused) produces ErrUnavailable.
+func TestSearch_BackendUnreachable_ConnectionRefused(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot create listener: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // close so the connection is refused
+
+	_, err = Search(context.Background(), "x", Options{
+		Endpoint:             "http://" + addr,
+		Timeout:              2 * time.Second,
+		AllowPrivateNetworks: true,
+	})
+	if err == nil {
+		t.Fatal("expected error for unreachable backend, got nil")
+	}
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("expected ErrUnavailable, got %v", err)
+	}
+}
+
+// TestSearch_ZeroResultsReturnsEmptySlice verifies that a backend returning
+// zero hits is a normal "no results" outcome — NOT an error, and distinct
+// from ErrUnavailable. This prevents the LLM from conflating "nothing found"
+// with "search is broken."
+func TestSearch_ZeroResultsReturnsEmptySlice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	hits, err := Search(context.Background(), "x", Options{
+		Endpoint:             server.URL,
+		Timeout:              5 * time.Second,
+		AllowPrivateNetworks: true,
+	})
+	if err != nil {
+		t.Fatalf("expected no error for zero results, got %v — zero results is a valid outcome, not an error", err)
+	}
+	if hits == nil {
+		t.Fatal("expected non-nil (but empty) hit slice, got nil")
+	}
+	if len(hits) != 0 {
+		t.Errorf("expected 0 hits, got %d", len(hits))
 	}
 }
 

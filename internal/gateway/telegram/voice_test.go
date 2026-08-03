@@ -35,8 +35,8 @@ func TestTelegramVoiceNoteAttachment(t *testing.T) {
 						{
 							"update_id": 1,
 							"message": map[string]any{
-								"chat":  map[string]any{"id": 100, "type": "private"},
-								"from":  map[string]any{"id": 42, "first_name": "John"},
+								"chat": map[string]any{"id": 100, "type": "private"},
+								"from": map[string]any{"id": 42, "first_name": "John"},
 								"voice": map[string]any{
 									"file_id":   "voice123",
 									"file_size": 100,
