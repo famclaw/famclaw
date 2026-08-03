@@ -187,17 +187,17 @@ func newInlineToolCallID() string {
 //  2 = raw argument body (inside { ... })
 var reGemmaToolCall = regexp.MustCompile(
 	`(?s)` +
-		`<\|tool_call_begin\|>|<\|tool_call` + // opening: <|tool_call_begin|> or <|tool_call>
-		`call:(\w+)` + // function name
-		`\s*\{` + // start of args
-		`([^}]*)` + // args body (no nested braces)
-		`\}` + // end of args
-		`<\|tool_call_end\|>|</\|tool_call\|>|<\|tool_call\|>|<tool_call\|>` // closing
+		`<\|tool_call_begin\|>|<\|tool_call>` +
+		`call:(\w+)` +
+		`\s*\{` +
+		`([^}]*)` +
+		`\}` +
+		`<\|tool_call_end\|>|</\|tool_call\|>|<\|tool_call\|>|<tool_call\|>`,
 )
 
 // reGemmaArg extracts a single key:<|"|>value<|"|> pair from the
 // argument body. The <|"|> token is Gemma's native string delimiter.
-var reGemmaArg = regexp.MustCompile(`(\w+):<\|\"\|>(\s*?)<\|\"\|>`)
+var reGemmaArg = regexp.MustCompile(`(\w+):<\|"\|>(\s*?)<\|"\|>`)
 
 // salvageGemmaToolCalls parses Gemma <|tool_call_begin|> blocks in
 // msg.Content, promotes them to ToolCall entries, and strips the raw
@@ -245,8 +245,8 @@ func parseGemmaToolCallBody(name string, argBody string) (ToolCall, bool) {
 	}, true
 }
 
-// parseGemmaArgs parses a Gemma argument body. It first tries the
-// native <|"|> delimited format, then falls back to JSON.
+// parseGemmaArgs parses a Gemma argument body. It first tries JSON,
+// then the native <|"|> delimited format.
 func parseGemmaArgs(argBody string) map[string]any {
 	argBody = strings.TrimSpace(argBody)
 	if argBody == "" {
