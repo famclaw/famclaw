@@ -68,7 +68,7 @@ type Agent struct {
 	scheduler    *subagent.Scheduler
 	builtinTools []agentcore.Tool // tools to inject onto every Turn
 	convID       string
-	gateway      string // gateway name (telegram, discord, web, etc.) for audit logs
+	gateway      string // construction-time gateway for audit-log context; the per-message authority for SaveMessage is msgContext.Gateway (see gatewayForSave)
 
 	// familyState is the always-injected family-state store used at
 	// prompt-build time. Phase 3.3 — nil disables family-state injection

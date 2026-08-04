@@ -210,6 +210,38 @@ func TestAgentChatZeroValueMsgContextSavesUnknown(t *testing.T) {
 	}
 }
 
+
+// TestGatewayForSave_PinsPerMessageAuthority verifies that gatewayForSave()
+// uses the per-message msgContext.Gateway, not the agent's construction-time
+// gateway field. This is the property that allows the same agent to record
+// the correct gateway even if msgContext is updated mid-conversation.
+func TestGatewayForSave_PinsPerMessageAuthority(t *testing.T) {
+	tests := []struct {
+		name    string
+		agentGw string
+		msgCtx  string
+		want    string
+	}{
+		{name: "msgCtx overrides agent", agentGw: "telegram", msgCtx: "discord", want: "discord"},
+		{name: "msgCtx web", agentGw: "telegram", msgCtx: "web", want: "web"},
+		{name: "empty msgCtx falls back", agentGw: "telegram", msgCtx: "", want: "unknown"},
+		{name: "empty msgCtx even if agent set", agentGw: "discord", msgCtx: "", want: "unknown"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Agent{
+				gateway:    tc.agentGw,
+				msgContext: gateway.MsgContext{Gateway: tc.msgCtx},
+			}
+			got := a.gatewayForSave()
+			if got != tc.want {
+				t.Errorf("gatewayForSave() = %q, want %q (agent=%q, msgCtx=%q)",
+					got, tc.want, tc.agentGw, tc.msgCtx)
+			}
+		})
+	}
+}
+
 func TestAgentChatPoolNil(t *testing.T) {
 	// Even with tool_calls in response, if pool is nil, they're ignored
 	server := mockLLMServer(t, []llm.Message{
