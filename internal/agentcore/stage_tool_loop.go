@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"time"
 
@@ -216,6 +217,20 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							turn.User.Name, tc.Function.Name, tc.Function.Name)
 						tc.Function.Name = "builtin__" + tc.Function.Name
 					}
+				}
+
+				// Short-circuit: if an identical (tool name + arguments) call
+				// already failed earlier this turn, feed back a corrective
+				// result instead of re-executing the same doomed call. This
+				// breaks the repeated apology-retry loop where the model
+				// re-emits a call that already failed. Different args and
+				// cross-turn calls are unaffected -- turn.ToolCalls holds
+				// only this turn's results, and only non-nil (failed)
+				// entries match.
+				if hasFailedCall(tc.Function.Name, tc.Function.Arguments, turn.ToolCalls) {
+					injectToolError(&llmMsgs, turn, tc, ErrToolAlreadyFailed,
+						"this exact tool call already failed earlier in this turn; try a different approach instead of repeating it", start)
+					continue
 				}
 
 				// Reject tools not in the turn's allowlist (prevents
@@ -582,6 +597,47 @@ func injectToolError(llmMsgs *[]llm.Message, turn *Turn, tc llm.ToolCall, err er
 		Error:    err,
 		Duration: time.Since(start),
 	})
+}
+
+// ErrToolAlreadyFailed is set on a ToolResult when the tool loop detects
+// that an identical (tool name + arguments) call already failed earlier in
+// this turn. The call is short-circuited -- not re-executed -- to break the
+// repeated apology-retry loop where the model re-emits a call that already
+// failed. It complements the policy gates ErrToolBlocked /
+// ErrApprovalRequested / ErrApprovalPending, which gate execution via the
+// OPA tool_policy engine.
+var ErrToolAlreadyFailed = fmt.Errorf("tool call already failed this turn")
+
+// hasFailedCall reports whether an identical tool call (same name and
+// arguments) already failed earlier in this turn, by scanning the turn's
+// accumulated ToolResults. It is the dedup guard behind the
+// apology-retry short-circuit: when the model re-emits a call the loop
+// already attempted and failed, it returns true so the call is fed back a
+// corrective result instead of being re-executed.
+//
+// Arguments are compared with reflect.DeepEqual, which is order-independent
+// for maps -- {"a":"b","c":"d"} and {"b":"d","a":"b"} are treated as
+// identical. Only calls whose ToolResult.Error is non-nil count as
+// failures; a previously-SUCCEEDED call with the same args does not
+// short-circuit.
+//
+// The scan is O(n) per call where n = len(results); n is bounded by
+// MaxIterations * batch size (small), so the simplicity of a scan -- which
+// automatically covers every failure path without per-path bookkeeping -- is
+// preferable to maintaining a parallel set across all failure sites.
+func hasFailedCall(name string, args map[string]any, results []ToolResult) bool {
+	for _, r := range results {
+		if r.Error == nil {
+			continue
+		}
+		if r.ToolName != name {
+			continue
+		}
+		if reflect.DeepEqual(r.Args, args) {
+			return true
+		}
+	}
+	return false
 }
 
 // approvalDescription builds a human-readable summary of the tool call
