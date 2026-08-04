@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"bytes"
+	"log"
 	"reflect"
 	"strings"
 	"testing"
@@ -142,5 +144,504 @@ func TestSalvageInlineToolCalls_JSONTypedParameter(t *testing.T) {
 	}
 	if got, want := args["note"], "plain text stays as string"; got != want {
 		t.Errorf("note = %v, want %v", got, want)
+	}
+}
+
+// --- Gemma native format leak tests (fc-convo-audit-scout, 2026-07-12) ---
+//
+// These tests use the EXACT leaked strings from the audit report.
+// Before the fix they FAIL: salvageInlineToolCalls did not recognise the
+// Gemma <|tool_call_begin|> format, so the raw tokens leaked and no
+// tool was executed. After the fix they PASS: the tokens are parsed
+// into real ToolCall entries and stripped from user-visible content.
+
+func TestSalvageGemmaToolCall(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantName    string
+		wantArgs    map[string]any
+		wantContent string
+		wantCalls   int
+	}{
+		{
+			name:        "audit-exact-gemma-tool-call",
+			content:     "<|tool_call_begin|>call:web_search{query:<|\"|>weather St Petersburg FL tomorrow<|\"|>}<|tool_call_end|>",
+			wantName:    "web_search",
+			wantArgs:    map[string]any{"query": "weather St Petersburg FL tomorrow"},
+			wantContent: "",
+			wantCalls:   1,
+		},
+		{
+			name:        "gemma-closing-variant-tool-call",
+			content:     "<|tool_call_begin|>call:web_search{query:<|\"|>weather St Petersburg FL tomorrow<|\"|>}<|tool_call|>",
+			wantName:    "web_search",
+			wantArgs:    map[string]any{"query": "weather St Petersburg FL tomorrow"},
+			wantContent: "",
+			wantCalls:   1,
+		},
+		{
+			name:        "gemma-closing-variant-slash-tool-call",
+			content:     "<|tool_call_begin|>call:web_search{query:<|\"|>weather St Petersburg FL tomorrow<|\"|>}</|tool_call|>",
+			wantName:    "web_search",
+			wantArgs:    map[string]any{"query": "weather St Petersburg FL tomorrow"},
+			wantContent: "",
+			wantCalls:   1,
+		},
+		{
+			name:        "gemma-closing-variant-bare-tool-call",
+			content:     "<|tool_call_begin|>call:web_search{query:<|\"|>weather St Petersburg FL tomorrow<|\"|>}<tool_call|>",
+			wantName:    "web_search",
+			wantArgs:    map[string]any{"query": "weather St Petersburg FL tomorrow"},
+			wantContent: "",
+			wantCalls:   1,
+		},
+		{
+			name:        "gemma-audit-abbreviated-opening",
+			content:     "<|tool_call>call:web_search{query:<|\"|>weather St Petersburg FL tomorrow<|\"|>}<|tool_call_end|>",
+			wantName:    "web_search",
+			wantArgs:    map[string]any{"query": "weather St Petersburg FL tomorrow"},
+			wantContent: "",
+			wantCalls:   1,
+		},
+		{
+			name:        "gemma-prose-then-tool-call",
+			content:     "I'll search the web for you.<|tool_call_begin|>call:web_search{query:<|\"|>weather St Petersburg FL tomorrow<|\"|>}<|tool_call_end|>",
+			wantName:    "web_search",
+			wantArgs:    map[string]any{"query": "weather St Petersburg FL tomorrow"},
+			wantContent: "I'll search the web for you.",
+			wantCalls:   1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := &Message{Role: "assistant", Content: tc.content}
+			salvageInlineToolCalls(msg)
+			if len(msg.ToolCalls) != tc.wantCalls {
+				t.Fatalf("got %d tool_calls, want %d", len(msg.ToolCalls), tc.wantCalls)
+			}
+			if msg.Content != tc.wantContent {
+				t.Errorf("content = %q, want %q", msg.Content, tc.wantContent)
+			}
+			if tc.wantCalls > 0 {
+				last := msg.ToolCalls[len(msg.ToolCalls)-1]
+				if last.Function.Name != tc.wantName {
+					t.Errorf("name = %q, want %q", last.Function.Name, tc.wantName)
+				}
+				if !reflect.DeepEqual(map[string]any(last.Function.Arguments), tc.wantArgs) {
+					t.Errorf("args = %v, want %v", last.Function.Arguments, tc.wantArgs)
+				}
+				if !strings.HasPrefix(last.ID, "inline_") {
+					t.Errorf("salvaged call ID should start with inline_")
+				}
+			}
+		})
+	}
+}
+
+// TestStripControlTokens is the belt-and-braces guarantee: no <|...|>
+// control token of any shape can ever reach user-visible content.
+func TestStripControlTokens(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "gemma-tool-call-begin",
+			input: "<|tool_call_begin|>",
+			want:  "",
+		},
+		{
+			name:  "gemma-tool-call-end",
+			input: "<|tool_call_end|>",
+			want:  "",
+		},
+		{
+			name:  "gemma-channel-thinking",
+			input: "<|channel>thought" + " I need to search the web. " + "<|channel|>",
+			want:  "thought I need to search the web. ",
+		},
+		{
+			name:  "gemma-tool-split",
+			input: "<|tool_split|>",
+			want:  "",
+		},
+		{
+			name:  "gemma-value-delimiter",
+			input: "<|\"|>",
+			want:  "",
+		},
+		{
+			name:  "prose-with-leaking-tokens",
+			input: "I'll search for weather<|tool_call_begin|>call:web_search{query:<|\"|>weather<|\"|>}<|tool_call_end|>",
+			want:  "I'll search for weathercall:web_search{query:weather}",
+		},
+		{
+			name:  "plain-text-unchanged",
+			input: "Hello, how are you today?",
+			want:  "Hello, how are you today?",
+		},
+		{
+			name:  "html-tags-without-pipe-preserved",
+			input: "<b>Hello</b> world",
+			want:  "<b>Hello</b> world",
+		},
+		{
+			name:  "html-tag-with-pipe-preserved",
+			input: "<a|b> link text </a>",
+			want:  "<a|b> link text </a>",
+		},
+		{
+			name:  "user-content-gemma-pattern-preserved",
+			input: "I typed <|something|> here and <|arbitrary|tokens|>",
+			want:  "I typed <|something|> here and <|arbitrary|tokens|>",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripControlTokens(tc.input)
+			if got != tc.want {
+				t.Errorf("stripControlTokens(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMergeReasoningStripsThinkingTokens verifies that mergeReasoning
+// strips Gemma control tokens before hoisting reasoning into Content.
+func TestMergeReasoningStripsThinkingTokens(t *testing.T) {
+	tests := []struct {
+		name      string
+		content   string
+		reasoning string
+		want      string
+	}{
+		{
+			name:      "channel-thinking-leak",
+			content:   "",
+			reasoning: "<|channel>thought" + " I need to search the web for weather info. " + "<|channel|>",
+			want:      "thought I need to search the web for weather info.",
+		},
+		{
+			name:      "reasoning_content-with-thinking",
+			content:   "",
+			reasoning: "<|channel>thought" + " Let me think about this. " + "<|channel|>",
+			want:      "thought Let me think about this.",
+		},
+		{
+			name:      "plain-reasoning-unchanged",
+			content:   "",
+			reasoning: "The answer is 42.",
+			want:      "The answer is 42.",
+		},
+		{
+			name:      "non-empty-content-ignores-reasoning",
+			content:   "Hello!",
+			reasoning: "<|channel>thought" + " hidden " + "<|channel|>",
+			want:      "Hello!",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := &Message{
+				Role:             "assistant",
+				Content:          tc.content,
+				ReasoningContent: tc.reasoning,
+			}
+			msg.mergeReasoning()
+			if msg.Content != tc.want {
+				t.Errorf("content = %q, want %q", msg.Content, tc.want)
+			}
+			if msg.ReasoningContent != "" {
+				t.Errorf("ReasoningContent should be cleared, got %q", msg.ReasoningContent)
+			}
+			if msg.Reasoning != "" {
+				t.Errorf("Reasoning should be cleared, got %q", msg.Reasoning)
+			}
+			if strings.Contains(msg.Content, "<|") {
+				t.Errorf("control token leaked into content: %q", msg.Content)
+			}
+		})
+	}
+}
+
+// TestSalvageGemmaToolCall_NestedBraces verifies that the argument body
+// capture is brace-aware: a JSON argument containing a nested object
+// like {"filter":{"a":1}} is not truncated at the first closing brace.
+func TestSalvageGemmaToolCall_NestedBraces(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantName    string
+		wantArgs    map[string]any
+		wantContent string
+	}{
+		{
+			name:        "nested-json-argument",
+			content:     `<|tool_call_begin|>call:web_search{query:<|"|>{"filter":{"a":1}}<|"|>}<|tool_call_end|>`,
+			wantName:    "web_search",
+			wantArgs:    map[string]any{"query": map[string]any{"filter": map[string]any{"a": float64(1)}}},
+			wantContent: "",
+		},
+		{
+			name:        "deeply-nested-json-argument",
+			content:     `<|tool_call_begin|>call:web_search{query:<|"|>{"a":{"b":{"c":1}}}<|"|>}<|tool_call_end|>`,
+			wantName:    "web_search",
+			wantContent: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := &Message{Role: "assistant", Content: tc.content}
+			salvageInlineToolCalls(msg)
+			if len(msg.ToolCalls) != 1 {
+				t.Fatalf("got %d tool_calls, want 1", len(msg.ToolCalls))
+			}
+			if msg.ToolCalls[0].Function.Name != tc.wantName {
+				t.Errorf("name = %q, want %q", msg.ToolCalls[0].Function.Name, tc.wantName)
+			}
+			if tc.wantArgs != nil {
+				gotArgs := map[string]any(msg.ToolCalls[0].Function.Arguments)
+				if !reflect.DeepEqual(gotArgs, tc.wantArgs) {
+					t.Errorf("args = %v, want %v", gotArgs, tc.wantArgs)
+				}
+			}
+			// Content should have no control tokens
+			if strings.Contains(msg.Content, "<|") {
+				t.Errorf("control token leaked into content: %q", msg.Content)
+			}
+		})
+	}
+}
+
+// TestStripGemmaToolCallBlocks_LogsUnrecognizedTokens verifies that when
+// reControlToken strips a token that was NOT part of a recognized
+// tool-call block, a warning is logged so the new format is diagnosable.
+func TestStripGemmaToolCallBlocks_LogsUnrecognizedTokens(t *testing.T) {
+	// Capture log output
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOutput)
+
+	// Content with a recognized block followed by a known Gemma token
+	// that is not part of the block. The token should be logged and
+	// stripped — the "unrecognized" in the log means "not part of a
+	// recognized tool-call block", not "not a known Gemma token".
+	content := `<|tool_call_begin|>call:web_search{query:<|"|>test<|"|>}<|tool_call_end|> some prose <|tool_split|>`
+
+	stripGemmaToolCallBlocks(content)
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "unrecognized control token") {
+		t.Errorf("expected log warning about unrecognized control token, got: %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "<|tool_split|>") {
+		t.Errorf("expected log to include the token text, got: %q", logOutput)
+	}
+}
+
+// TestStripGemmaToolCallBlocks_NoLogWhenAllRecognized verifies that no
+// warning is logged when all tokens are part of recognized blocks.
+func TestStripGemmaToolCallBlocks_NoLogWhenAllRecognized(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOutput)
+
+	content := `<|tool_call_begin|>call:web_search{query:<|"|>test<|"|>}<|tool_call_end|>`
+
+	stripGemmaToolCallBlocks(content)
+
+	logOutput := buf.String()
+	if strings.Contains(logOutput, "unrecognized control token") {
+		t.Errorf("should not log unrecognized token warning when all tokens are recognized, got: %q", logOutput)
+	}
+}
+
+// TestStripGemmaToolCallBlocks_StripsMalformedBlock verifies that a
+// malformed Gemma block (missing closing tag) does not leak the
+// call:NAME{...} body as visible text after the opening control token
+// is stripped.
+func TestStripGemmaToolCallBlocks_StripsMalformedBlock(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOutput)
+
+	// Malformed block: opening token present but no closing tag.
+	// reGemmaToolCall does not match; reControlToken strips the
+	// opening token; reGemmaLeftover must also strip the call body.
+	content := `<|tool_call_begin|>call:web_search{query:test} some prose`
+
+	got := stripGemmaToolCallBlocks(content)
+
+	if strings.Contains(got, "call:web_search") {
+		t.Errorf("malformed call body leaked into output: %q", got)
+	}
+	if !strings.Contains(got, "some prose") {
+		t.Errorf("expected prose to remain in output, got: %q", got)
+	}
+	if strings.Contains(got, "<|") {
+		t.Errorf("control token leaked into output: %q", got)
+	}
+}
+
+// TestStripGemmaToolCallBlocks_StripsMalformedBlockNestedArgs verifies
+// that reGemmaLeftover's brace-aware capture strips the entire call
+// body — including a nested JSON object argument — from a malformed
+// block (missing closing tag), so nothing leaks to the family.
+//
+// The pattern [^{}]*(?:\{[^{}]*\}[^{}]*])* handles one level of
+// nesting: query:{"filter":1} has the inner {"filter":1} fully
+// captured and stripped, unlike the old [^}]* which stopped at the
+// first } and left {"filter":1} visible.
+func TestStripGemmaToolCallBlocks_StripsMalformedBlockNestedArgs(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOutput)
+
+	// Malformed block: opening token present but no closing tag.
+	// Args contain a nested JSON object ({"filter":1}) inside the
+	// argument body.
+	content := `<|tool_call_begin|>call:web_search{query:{"filter":1}} some prose`
+
+	got := stripGemmaToolCallBlocks(content)
+
+	if strings.Contains(got, "call:web_search") {
+		t.Errorf("malformed call body leaked into output: %q", got)
+	}
+	if strings.Contains(got, "filter") {
+		t.Errorf("nested object arg leaked into output: %q", got)
+	}
+	if !strings.Contains(got, "some prose") {
+		t.Errorf("expected prose to remain in output, got: %q", got)
+	}
+	if strings.Contains(got, "<|") {
+		t.Errorf("control token leaked into output: %q", got)
+	}
+}
+
+// TestStripWithCarry verifies that stripWithCarry correctly handles
+// Gemma control tokens split across SSE chunks via a carry-over buffer.
+func TestStripWithCarry(t *testing.T) {
+	tests := []struct {
+		name      string
+		carry     string
+		token     string
+		wantEmit  string
+		wantCarry string
+	}{
+		{
+			name:      "token-split-across-two-chunks",
+			carry:     "",
+			token:     "<|tool_call_begin|>",
+			wantEmit:  "",
+			wantCarry: "", // token fully matched and stripped
+		},
+		{
+			name:      "token-split-part1",
+			carry:     "",
+			token:     "<|tool_call_begin",
+			wantEmit:  "",
+			wantCarry: "<|tool_call_begin",
+		},
+		{
+			name:      "token-split-part2-completes",
+			carry:     "<|tool_call_begin",
+			token:     "|>",
+			wantEmit:  "",
+			wantCarry: "", // joined = <|tool_call_begin|>, stripped to ""
+		},
+		{
+			name:      "ordinary-text-past-tail-window",
+			carry:     "",
+			token:     "Hello, this is a longer message that exceeds the tail window.",
+			wantEmit:  "Hello, this is a longer message that ex",
+			wantCarry: "ceeds the tail window.",
+		},
+		{
+			name:      "carry-flush-emits-held-text",
+			carry:     "Hello world.",
+			token:     "",
+			wantEmit:  "",
+			wantCarry: "Hello world.", // nothing to strip, held as carry
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			emit, carry := stripWithCarry(tc.carry, tc.token)
+			if emit != tc.wantEmit {
+				t.Errorf("emit = %q, want %q", emit, tc.wantEmit)
+			}
+			if carry != tc.wantCarry {
+				t.Errorf("carry = %q, want %q", carry, tc.wantCarry)
+			}
+		})
+	}
+}
+
+// TestStripWithCarry_ThreeChunkSplit verifies that a token split across
+// THREE chunks is fully stripped when the pieces are reassembled.
+func TestStripWithCarry_ThreeChunkSplit(t *testing.T) {
+	var emitted string
+	carry := ""
+
+	// Token: <|channel|>
+	// Chunk 1: <|ch
+	// Chunk 2: annel
+	// Chunk 3: |>
+	for _, chunk := range []string{"<|ch", "annel", "|>"} {
+		emit, newCarry := stripWithCarry(carry, chunk)
+		emitted += emit
+		carry = newCarry
+	}
+
+	// Flush final carry
+	if carry != "" {
+		cleaned := stripControlTokens(carry)
+		emitted += cleaned
+	}
+
+	if emitted != "" {
+		t.Errorf("expected empty output (token stripped), got: %q", emitted)
+	}
+}
+
+// TestStripWithCarry_StreamFlow verifies the normal streaming flow:
+// text is emitted past the tail window, then the final flush emits
+// any remaining held text.
+func TestStripWithCarry_StreamFlow(t *testing.T) {
+	var emitted string
+	carry := ""
+
+	// Send enough text to exceed the tail window, then a short
+	// ending that should be flushed at stream end.
+	for _, chunk := range []string{
+		"This is the first chunk of text from the model. ",
+		"It continues here and gets longer. ",
+		"Short.",
+	} {
+		emit, newCarry := stripWithCarry(carry, chunk)
+		emitted += emit
+		carry = newCarry
+	}
+
+	// Flush final carry
+	if carry != "" {
+		cleaned := stripControlTokens(carry)
+		emitted += cleaned
+	}
+
+	want := "This is the first chunk of text from the model. It continues here and gets longer. Short."
+	if emitted != want {
+		t.Errorf("emitted = %q, want %q", emitted, want)
 	}
 }

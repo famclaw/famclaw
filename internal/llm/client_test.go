@@ -117,8 +117,11 @@ func TestChatSSEStreaming(t *testing.T) {
 	if result != "Hello world" {
 		t.Errorf("result = %q, want 'Hello world'", result)
 	}
-	if len(tokens) != 3 {
-		t.Errorf("got %d tokens, want 3", len(tokens))
+	// With the SSE carry-over buffer (maxGemmaTokenLen = 22), the three
+	// short tokens "Hello", " ", "world" (total 11 chars) are all held
+	// back until stream end, where they are flushed as one piece.
+	if len(tokens) != 1 {
+		t.Errorf("got %d tokens, want 1 (carry-over flushes at stream end)", len(tokens))
 	}
 }
 
@@ -316,14 +319,15 @@ func TestChatEmptyChoices(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, "test", "")
-	msg, err := client.ChatMessage(context.Background(), []Message{
+	_, err := client.ChatMessage(context.Background(), []Message{
 		{Role: "user", Content: "hi"},
 	}, 0.7, 100)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// An empty response with no choices must never be sent silently.
+	if err == nil {
+		t.Fatal("expected error for empty choices, got nil")
 	}
-	if msg.Content != "" {
-		t.Errorf("expected empty content, got %q", msg.Content)
+	if !strings.Contains(err.Error(), "no choices") {
+		t.Errorf("error should mention 'no choices': %v", err)
 	}
 }
 
@@ -837,6 +841,7 @@ func TestMergeReasoningFields(t *testing.T) {
 		name    string
 		rawResp string
 		want    string
+		wantErr bool
 	}{
 		{
 			name:    "empty content + plain reasoning field",
@@ -859,9 +864,10 @@ func TestMergeReasoningFields(t *testing.T) {
 			want:    "The answer is 42",
 		},
 		{
-			name:    "empty content no reasoning stays empty",
+			name:    "empty content no reasoning returns error",
 			rawResp: `{"choices":[{"message":{"role":"assistant","content":""}}]}`,
 			want:    "",
+			wantErr: true,
 		},
 	}
 
@@ -878,7 +884,10 @@ func TestMergeReasoningFields(t *testing.T) {
 				{Role: "user", Content: "hi"},
 			}, 0.7, 100)
 			if err != nil {
-				t.Fatalf("ChatMessage: %v", err)
+				if !tt.wantErr {
+					t.Fatalf("ChatMessage: %v", err)
+				}
+				return
 			}
 			if msg.Content != tt.want {
 				t.Errorf("content = %q, want %q", msg.Content, tt.want)

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"regexp"
 	"strings"
 )
@@ -49,33 +50,37 @@ func salvageInlineToolCalls(msg *Message) {
 	if msg == nil || msg.Content == "" {
 		return
 	}
-	if !strings.Contains(msg.Content, "<tool_call>") {
-		return
-	}
-	if len(msg.ToolCalls) > 0 {
-		// Upstream parser already lifted at least one call. Just sanitize
-		// any stray inline blocks so they don't leak as visible XML — but
-		// don't double-execute by parsing them as new calls.
-		msg.Content = stripToolCallBlocks(msg.Content)
+
+	hasLlamaBlock := strings.Contains(msg.Content, "<tool_call>")
+	hasGemmaBlock := reGemmaToolCall.FindString(msg.Content) != ""
+	if !hasLlamaBlock && !hasGemmaBlock {
 		return
 	}
 
-	matches := reToolCall.FindAllStringSubmatchIndex(msg.Content, -1)
-	if len(matches) == 0 {
-		return
-	}
-
-	var calls []ToolCall
-	for _, m := range matches {
-		body := msg.Content[m[2]:m[3]]
-		call, ok := parseInlineToolCallBody(body)
-		if ok {
-			calls = append(calls, call)
+	if hasLlamaBlock {
+		if len(msg.ToolCalls) > 0 {
+			// Upstream parser already lifted at least one call. Just sanitize
+			// any stray inline blocks so they don't leak as visible XML — but
+			// don't double-execute by parsing them as new calls.
+			msg.Content = stripToolCallBlocks(msg.Content)
+		} else {
+			matches := reToolCall.FindAllStringSubmatchIndex(msg.Content, -1)
+			var calls []ToolCall
+			for _, m := range matches {
+				body := msg.Content[m[2]:m[3]]
+				call, ok := parseInlineToolCallBody(body)
+				if ok {
+					calls = append(calls, call)
+				}
+			}
+			msg.Content = stripToolCallBlocks(msg.Content)
+			msg.ToolCalls = append(msg.ToolCalls, calls...)
 		}
 	}
 
-	msg.Content = stripToolCallBlocks(msg.Content)
-	msg.ToolCalls = append(msg.ToolCalls, calls...)
+	if hasGemmaBlock {
+		salvageGemmaToolCalls(msg)
+	}
 }
 
 // stripToolCallBlocks removes <tool_call>...</tool_call> blocks and the
@@ -160,4 +165,206 @@ func newInlineToolCallID() string {
 		return "inline_fallback"
 	}
 	return "inline_" + hex.EncodeToString(b)
+}
+
+// --- Gemma native format ( <|tool_call_begin|>...<|tool_call_end|> ) ---
+//
+// LiteLLM (and some Ollama/LiteLLM gateway configs) fail to promote
+// Gemma native tool_call_begin> call:NAME {args} <|tool_call_end|> blocks
+// into the structured tool_calls[] array. When that happens the raw
+// tokens leak into the assistant visible content. These functions
+// rescue the real tool calls and strip the tokens.
+//
+// Observed closing-tag variants in the wild (from the fc-convo-audit-scout
+// report, 2026-07-12): <|tool_call_end|>, <|tool_call|>, and
+// <tool_call|> — we match all of them.
+
+// reGemmaToolCall matches a single Gemma tool-call block.
+// Groups:
+//
+//	1 = function name
+//	2 = raw argument body (inside { ... })
+//
+// The args body uses a non-greedy (.+?) capture so that nested
+// objects (e.g. {"filter":{"a":1}}) are not truncated at the first
+// closing brace. The closing brace is anchored by the required
+// trailing closing-tag variant.
+var reGemmaToolCall = regexp.MustCompile(`(?s)(?:<\|tool_call_begin\|>|<\|tool_call>)call:(\w+)\s*\{(.+?)\}\s*(?:<\|tool_call_end\|>|</\|tool_call\|>|<\|tool_call\|>|<tool_call\|>)`)
+
+// reGemmaArg extracts a single key:<|"|>value<|"|> pair from the
+// argument body. The <|"|> token is Gemma native string delimiter.
+var reGemmaArg = regexp.MustCompile(`(\w+):<\|"\|>(.*?)<\|"\|>`)
+
+// salvageGemmaToolCalls parses Gemma <|tool_call_begin|> blocks in
+// msg.Content, promotes them to ToolCall entries, and strips the raw
+// tokens so they never reach the user. No-op when no Gemma blocks
+// are present.
+func salvageGemmaToolCalls(msg *Message) {
+	matches := reGemmaToolCall.FindAllStringSubmatchIndex(msg.Content, -1)
+	if len(matches) == 0 {
+		return
+	}
+
+	var calls []ToolCall
+	for _, m := range matches {
+		name := msg.Content[m[2]:m[3]]
+		argBody := msg.Content[m[4]:m[5]]
+		call, ok := parseGemmaToolCallBody(name, argBody)
+		if ok {
+			calls = append(calls, call)
+		}
+	}
+
+	msg.Content = stripGemmaToolCallBlocks(msg.Content)
+	msg.ToolCalls = append(msg.ToolCalls, calls...)
+}
+
+// parseGemmaToolCallBody builds a ToolCall from a Gemma function name
+// and its raw argument body. The body may use <|"|> delimited
+// key:value pairs, or may already be JSON.
+func parseGemmaToolCallBody(name string, argBody string) (ToolCall, bool) {
+	if name == "" {
+		return ToolCall{}, false
+	}
+	args := parseGemmaArgs(argBody)
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return ToolCall{}, false
+	}
+	return ToolCall{
+		ID:   newInlineToolCallID(),
+		Type: "function",
+		Function: ToolCallFunction{
+			Name:      name,
+			Arguments: mustUnmarshalArgs(encoded),
+		},
+	}, true
+}
+
+// parseGemmaArgs parses a Gemma argument body. It first tries JSON,
+// then the native <|"|> delimited format.
+func parseGemmaArgs(argBody string) map[string]any {
+	argBody = strings.TrimSpace(argBody)
+	if argBody == "" {
+		return map[string]any{}
+	}
+
+	// Try JSON first — handles the standard Gemma format where
+	// arguments are a JSON object between <|tool_split|> and <|tool_call_end|>.
+	// Validate before unmarshalling so partial/malformed JSON falls through
+	// to the native parser rather than being silently accepted.
+	if json.Valid([]byte(argBody)) {
+		var jsonArgs map[string]any
+		if err := json.Unmarshal([]byte(argBody), &jsonArgs); err == nil {
+			return jsonArgs
+		}
+	}
+
+	// Native <|"|> delimited key:value pairs.
+	args := map[string]any{}
+	seen := map[string]bool{}
+	for _, p := range reGemmaArg.FindAllStringSubmatch(argBody, -1) {
+		key := strings.TrimSpace(p[1])
+		val := strings.TrimSpace(p[2])
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		var typed any
+		if err := json.Unmarshal([]byte(val), &typed); err == nil {
+			args[key] = typed
+		} else {
+			args[key] = val
+		}
+	}
+	if len(args) > 0 {
+		return args
+	}
+
+	// Last resort: treat the whole body as a single string value
+	// under a generic key. This preserves the content for debugging
+	// even when we can't parse the structure.
+	return map[string]any{"raw": argBody}
+}
+
+// stripGemmaToolCallBlocks removes all <|tool_call_begin|>...closing
+// blocks and collapses surrounding whitespace.
+func stripGemmaToolCallBlocks(content string) string {
+	stripped := reGemmaToolCall.ReplaceAllString(content, "")
+	// Strip leftover call:NAME{...} fragments from malformed blocks
+	// (missing closing tag). reGemmaToolCall did not match them, but
+	// reControlToken below would remove only the opening token and leave
+	// the call body visible.
+	stripped = reGemmaLeftover.ReplaceAllString(stripped, "")
+	// After removing recognized tool-call blocks, any remaining <|...|>
+	// token is an unrecognized control token. Log it at warn level so a
+	// new Gemma format is diagnosable instead of silently deleted — the
+	// family would otherwise get an empty or truncated reply with nothing
+	// in the logs.
+	for _, tok := range reControlToken.FindAllString(stripped, -1) {
+		log.Printf("[llm] stripGemmaToolCallBlocks: unrecognized control token stripped: %q", tok)
+	}
+	stripped = reControlToken.ReplaceAllString(stripped, "")
+	stripped = regexp.MustCompile(`\n{3,}`).ReplaceAllString(stripped, "\n\n")
+	return strings.TrimSpace(stripped)
+}
+
+// maxGemmaTokenLen is the length of the longest known Gemma control
+// token (currently "<|tool_call_begin|>" = 22 bytes). The SSE streaming
+// path holds back this many bytes at the tail of each chunk so that a
+// control token split across SSE boundaries is reassembled and stripped
+// before reaching the family.
+const maxGemmaTokenLen = 22
+
+// stripWithCarry applies stripControlTokens to carry+token and splits the
+// result into an emittable prefix and a carry. The carry is the last
+// maxGemmaTokenLen bytes of the cleaned text — those bytes might be the
+// start of a Gemma control token that was split across SSE chunks, so
+// they are prepended to the next chunk rather than emitted immediately.
+// When the cleaned text is no longer than maxGemmaTokenLen, everything
+// is held back as carry (it might all be a partial token).
+func stripWithCarry(carry, token string) (emit, newCarry string) {
+	joined := carry + token
+	cleaned := stripControlTokens(joined)
+	if len(cleaned) <= maxGemmaTokenLen {
+		return "", cleaned
+	}
+	split := len(cleaned) - maxGemmaTokenLen
+	return cleaned[:split], cleaned[split:]
+}
+
+// stripControlTokens is the belt-and-braces final pass: it removes
+// every known Gemma control token from a string by enumerating the
+// exact token vocabulary (tool_call_begin, tool_call_end, tool_call,
+// tool_split, channel, the <"|"|> value delimiter, and bare/slash
+// closing variants). Arbitrary user content like <|something|> or
+// <a|b> is preserved — only the specific tokens Gemma emits are
+// stripped. Runs AFTER format-specific parsing so already-extracted
+// tool calls are never affected.
+//
+// NOTE: this function does NOT TrimSpace. Callers that need trimming
+// (mergeReasoning, chatFull) call strings.TrimSpace themselves. The
+// streaming path uses this function on individual tokens where
+// trimming would incorrectly drop space tokens.
+var reControlToken = regexp.MustCompile(`</?\|(?:tool_call_begin|tool_call_end|tool_call|tool_split|channel)(?:\|)?>|<\|"\|>|<tool_call\|>`)
+
+// reGemmaLeftover matches a stray call:NAME{...} fragment that remains
+// when a Gemma tool-call block is malformed (e.g. missing the closing
+// <|tool_call_end|> tag). reGemmaToolCall did not match the full block,
+// so this picks up the call:NAME{args} body so it does not leak as
+// visible text after the opening control token is stripped.
+// reGemmaLeftover matches a stray call:NAME{...} fragment that remains
+// when a Gemma tool-call block is malformed (e.g. missing the closing
+// <|tool_call_end|> tag). reGemmaToolCall did not match the full block,
+// so this picks up the call:NAME{args} body so it does not leak as
+// visible text after the opening control token is stripped.
+//
+// The argument body uses a brace-aware capture [^{}]*(?:\{[^{}]*\}[^{}]*])*
+// (matching up to one level of nesting) so that nested JSON objects
+// like {filter:{a:1}} are fully captured and stripped, not
+// truncated at the first closing brace.
+var reGemmaLeftover = regexp.MustCompile(`call:\w+\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}`)
+
+func stripControlTokens(content string) string {
+	return reControlToken.ReplaceAllString(content, "")
 }
