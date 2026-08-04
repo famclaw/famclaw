@@ -1078,6 +1078,11 @@ func checkSearchEndpointReachable(endpoint string) error {
 	if parsed.Host == "" {
 		return fmt.Errorf("search endpoint must include a host (configured as %s)", websearch.SanitizeEndpoint(endpoint))
 	}
+	// Strip credentials from the probe URL so the startup diagnostic
+	// request does not transmit embedded userinfo (e.g. http://user:pass@host)
+	// to the search backend. The probe only checks that the host is
+	// listening — any HTTP response (even 401) means the service is up.
+	parsed.User = nil
 	parsed.Path = path.Join(parsed.Path, "search")
 	if !strings.HasPrefix(parsed.Path, "/") {
 		parsed.Path = "/" + parsed.Path

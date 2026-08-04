@@ -1472,14 +1472,21 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 // pre-written sentence would force it into English regardless of who is
 // asking.
 //
-// Host-not-allowed and other genuine errors pass through as ("", err).
+// Host-not-allowed errors are translated into a sanitized result
+// string so the tool loop does not format them as "Error: <msg>" —
+// the LLM may ignore or mishandle a non-nil error. Other genuine
+// errors pass through as ("", err) for the tool loop to surface.
 func webSearchError(err error, endpoint string) (string, error) {
 	if errors.Is(err, websearch.ErrUnavailable) {
 		// Log the full endpoint server-side for debugging, but do NOT
 		// echo it to the family chat — it may contain internal hostnames,
 		// credentials, or network topology that should not reach the user.
 		log.Printf("[agent] web_search backend unreachable at %s", websearch.SanitizeEndpoint(endpoint))
-		return "web_search: unavailable — search backend could not be reached.", nil
+		return "web_search: unavailable", nil
+	}
+	var hostErr *webfetch.HostNotAllowedError
+	if errors.As(err, &hostErr) {
+		return "web_search: host not permitted", nil
 	}
 	return "", err
 }

@@ -1898,9 +1898,6 @@ func TestWebSearchError(t *testing.T) {
 		if !strings.Contains(msg, "unavailable") {
 			t.Errorf("result should mark search as unavailable, got: %q", msg)
 		}
-		if !strings.Contains(msg, "could not be reached") {
-			t.Errorf("result should explain the backend was unreachable: %q", msg)
-		}
 	})
 
 	t.Run("unavailable error result is not a pre-written English sentence", func(t *testing.T) {
@@ -1941,14 +1938,21 @@ func TestWebSearchError(t *testing.T) {
 		}
 	})
 
-	t.Run("host-not-allowed error passes through", func(t *testing.T) {
+	t.Run("host-not-allowed error translated to sanitized result", func(t *testing.T) {
 		hostErr := webfetch.NewHostNotAllowedError("evil.com")
 		msg, err := webSearchError(hostErr, "http://localhost:8888")
-		if msg != "" {
-			t.Errorf("expected empty string for non-unavailable error, got %q", msg)
+		if err != nil {
+			t.Fatalf("host-not-allowed should return nil error (sanitized result), got %v", err)
 		}
-		if err != hostErr {
-			t.Errorf("host-not-allowed error should pass through unchanged, got %v", err)
+		if msg == "" {
+			t.Fatal("host-not-allowed should return a sanitized result string, got empty")
+		}
+		if !strings.Contains(msg, "host not permitted") {
+			t.Errorf("result should indicate host is not permitted, got: %q", msg)
+		}
+		// Must not leak the host name from the error into the user-facing message.
+		if strings.Contains(msg, "evil.com") {
+			t.Errorf("result must not leak the disallowed host: %q", msg)
 		}
 	})
 

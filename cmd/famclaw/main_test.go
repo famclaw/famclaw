@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -290,5 +291,49 @@ func TestCheckSearchEndpointReachable_Unreachable(t *testing.T) {
 	err := checkSearchEndpointReachable("http://127.0.0.1:1")
 	if err == nil {
 		t.Fatal("expected error for unreachable endpoint, got nil")
+	}
+}
+
+// TestCheckSearchEndpointReachable_StripsCredentials verifies that credentials
+// embedded in the endpoint URL (e.g. http://user:pass@host) are NOT transmitted
+// in the startup probe request. The probe should only check that the host is
+// listening.
+func TestCheckSearchEndpointReachable_StripsCredentials(t *testing.T) {
+	var gotAuth bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// r.URL.User is populated by Go's HTTP client when the request
+		// URL contains userinfo. If credentials were sent, this will be
+		// non-nil.
+		gotAuth = r.URL.User != nil
+	}))
+	defer server.Close()
+
+	// Parse the server URL and inject credentials.
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	parsed.User = url.UserPassword("user", "secret")
+	endpoint := parsed.String()
+
+	err = checkSearchEndpointReachable(endpoint)
+	if err != nil {
+		t.Fatalf("expected nil error for reachable endpoint, got %v", err)
+	}
+	if gotAuth {
+		t.Errorf("probe request must not transmit credentials embedded in the endpoint URL")
+	}
+}
+
+// TestCheckSearchEndpointReachable_CredentialedEndpointNoLeak verifies that
+// a credentialed endpoint is logged via SanitizeEndpoint (no credentials in
+// the warning/error message).
+func TestCheckSearchEndpointReachable_CredentialedEndpointNoLeak(t *testing.T) {
+	err := checkSearchEndpointReachable("http://user:pass@127.0.0.1:1")
+	if err == nil {
+		t.Fatal("expected error for unreachable endpoint, got nil")
+	}
+	if strings.Contains(err.Error(), "pass") {
+		t.Errorf("error must not contain credentials: %v", err)
 	}
 }
