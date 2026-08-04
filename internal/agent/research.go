@@ -171,7 +171,7 @@ func (a *Agent) finalizeResearch(ctx context.Context, agentID string, state stor
 	}
 
 	// Surface the outcome into the conversation history. We deliberately use
-	// msgCtx.Gateway — the gateway the request ARRIVED on — not a.gateway
+	// msgCtx.Gateway — the gateway the request ARRIVED on — not a.auditGateway
 	// (the agent construction-time value). Per-message gateway recording must
 	// capture the actual originating platform: a research task spawned from a
 	// Discord message must be attributed to Discord even if the agent was
