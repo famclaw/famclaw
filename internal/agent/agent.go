@@ -35,6 +35,7 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/prompt"
 	"github.com/famclaw/famclaw/internal/reminder"
+	"github.com/famclaw/famclaw/internal/sendmsg"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
@@ -275,6 +276,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	builtins := deps.BuiltinTools
 	if user.Role == "parent" {
 		builtins = append(builtins, admin.AllDefinitions()...)
+		builtins = append(builtins, sendmsg.Tool())
 	}
 
 	var fs *familystate.Store
@@ -713,6 +715,16 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			message, _ := args["message"].(string)
 			forUser, _ := args["for_user"].(string)
 			return reminder.HandleAddReminder(ctx, a.db, a.cfg, a.user, a.msgContext.Gateway, a.msgContext.ExternalID, a.msgContext.GroupID, a.msgContext.IsGroup, when, message, forUser)
+		case "builtin__send_message":
+			to, _ := args["to"].(string)
+			msg, _ := args["message"].(string)
+			a.senderRegistryMu.RLock()
+			senders := make(map[string]gateway.Sender, len(a.senderRegistry))
+			for k, v := range a.senderRegistry {
+				senders[k] = v
+			}
+			a.senderRegistryMu.RUnlock()
+			return sendmsg.Handle(ctx, a.db, a.cfg, senders, to, msg)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}

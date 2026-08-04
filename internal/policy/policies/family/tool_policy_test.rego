@@ -584,3 +584,35 @@ test_under8_add_reminder if {
         "tool_name": "add_reminder"
     }
 }
+
+# ── 10. send_message (proactive cross-chat messaging) ────────────────────────
+
+# send_message is parent-only — children (any age) are hard-blocked.
+
+test_parent_send_message if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "send_message"
+    }
+}
+
+test_child_no_send_message if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_13_17"},
+        "tool_name": "send_message"
+    }
+}
+
+test_under8_no_send_message if {
+    not tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "under_8"},
+        "tool_name": "send_message"
+    }
+}
+
+test_child_send_message_blocked_not_approval if {
+    not tool_policy.action == "request_approval" with input as {
+        "user": {"role": "child", "age_group": "age_8_12"},
+        "tool_name": "send_message"
+    }
+}
