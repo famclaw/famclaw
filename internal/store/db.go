@@ -787,6 +787,31 @@ func (d *DB) MostRecentGatewayForUser(userName string) (string, error) {
 	return gateway.String, nil
 }
 
+// MostRecentGatewayAndExternalIDForUser returns the gateway name and external_id
+// (chat ID) of the most recent message for the given user. The gateway is
+// resolved from the most-recent message; the external_id is looked up from the
+// gateway_accounts table for that user+gateway. Returns empty strings when the
+// user has no messages or no linked gateway account. Used to route outbound
+// notifications (reminders, cross-chat messages) back to the right platform.
+func (d *DB) MostRecentGatewayAndExternalIDForUser(ctx context.Context, userName string) (string, string, error) {
+	var gw, extID sql.NullString
+	err := d.sql.QueryRowContext(ctx, `
+		SELECT m.gateway, COALESCE(ga.external_id, '')
+		FROM messages m
+		JOIN conversations c ON c.id = m.conversation_id
+		LEFT JOIN gateway_accounts ga ON ga.user_name = c.user_name AND ga.gateway = m.gateway
+		WHERE c.user_name = ?
+		ORDER BY m.created_at DESC
+		LIMIT 1`, userName).Scan(&gw, &extID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("query most recent gateway and external_id for %q: %w", userName, err)
+	}
+	return gw.String, extID.String, nil
+}
+
 // ── Skills ────────────────────────────────────────────────────────────────────
 
 type Skill struct {

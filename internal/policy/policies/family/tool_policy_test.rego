@@ -558,3 +558,29 @@ test_child_spawn_blocked_not_approval if {
 test_child_admin_blocked_not_approval if {
     not tool_policy.action == "request_approval" with input as child_input_no_args("list_users")
 }
+
+# ── 9. add_reminder (set a reminder for self or family member) ──────────────
+
+# add_reminder is allowed for all roles at the policy level; the cross-user
+# (for_user) gate is enforced in the Go handler, not in OPA.
+
+test_parent_add_reminder if {
+    tool_policy.allow with input as {
+        "user": {"role": "parent", "age_group": ""},
+        "tool_name": "add_reminder"
+    }
+}
+
+test_child_add_reminder if {
+    tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "age_13_17"},
+        "tool_name": "add_reminder"
+    }
+}
+
+test_under8_add_reminder if {
+    tool_policy.allow with input as {
+        "user": {"role": "child", "age_group": "under_8"},
+        "tool_name": "add_reminder"
+    }
+}

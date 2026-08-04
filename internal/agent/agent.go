@@ -712,7 +712,7 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			when, _ := args["when"].(string)
 			message, _ := args["message"].(string)
 			forUser, _ := args["for_user"].(string)
-			return reminder.HandleAddReminder(ctx, a.db, a.user, a.msgContext.Gateway, a.msgContext.ExternalID, a.msgContext.GroupID, a.msgContext.IsGroup, when, message, forUser)
+			return reminder.HandleAddReminder(ctx, a.db, a.cfg, a.user, a.msgContext.Gateway, a.msgContext.ExternalID, a.msgContext.GroupID, a.msgContext.IsGroup, when, message, forUser)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}

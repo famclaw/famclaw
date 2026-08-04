@@ -44,7 +44,10 @@ func Tool() agentcore.Tool {
 
 // HandleAddReminder creates a reminder and stores it in the database.
 // The agent's makeBuiltinHandler should call this with the appropriate deps.
-func HandleAddReminder(ctx context.Context, db *store.DB, user *config.UserConfig, gateway, externalID, groupID string, isGroup bool, when, message, forUser string) (string, error) {
+// For cross-user reminders (forUser set), the target user's most recent
+// gateway and external_id are resolved from the store so the scheduler can
+// deliver proactively through the right platform.
+func HandleAddReminder(ctx context.Context, db *store.DB, cfg *config.Config, user *config.UserConfig, gateway, externalID, groupID string, isGroup bool, when, message, forUser string) (string, error) {
 	// Parse the time
 	now := time.Now()
 	dueAt, err := ParseTime(when, now, time.Local)
@@ -63,7 +66,26 @@ func HandleAddReminder(ctx context.Context, db *store.DB, user *config.UserConfi
 		if user.Role != "parent" {
 			return "", fmt.Errorf("only parents can set reminders for other users")
 		}
+		// Resolve the target against the configured family members.
+		// An unknown name is a clear error — never a silent no-op.
+		if cfg.GetUser(forUser) == nil {
+			return "", fmt.Errorf("%q is not a configured family member", forUser)
+		}
 		targetUser = forUser
+		// Look up the target user's most recent gateway + external_id so
+		// the scheduler can deliver proactively. If they have no recorded
+		// gateway, report it honestly rather than guessing a destination.
+		targetGateway, targetExternalID, err := db.MostRecentGatewayAndExternalIDForUser(ctx, targetUser)
+		if err != nil {
+			return "", fmt.Errorf("resolving gateway for %s: %w", targetUser, err)
+		}
+		if targetGateway == "" || targetExternalID == "" {
+			return "", fmt.Errorf("%s has not sent any messages yet, so I don't know how to reach them on any gateway", targetUser)
+		}
+		gateway = targetGateway
+		externalID = targetExternalID
+		groupID = ""
+		isGroup = false
 	}
 
 	reminder := &store.Reminder{

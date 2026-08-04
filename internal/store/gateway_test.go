@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -190,5 +191,87 @@ func TestMostRecentGatewayForUser(t *testing.T) {
 	}
 	if gw != "" {
 		t.Errorf("most recent gateway for no-message user = %q, want empty", gw)
+	}
+}
+
+// TestMostRecentGatewayAndExternalIDForUser verifies that the
+// most-recent-gateway-and-external_id query returns the latest gateway and
+// the linked external_id for a user, and returns empty strings for users
+// with no messages.
+func TestMostRecentGatewayAndExternalIDForUser(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// alice has a Telegram message and a linked Telegram account.
+	if err := db.SaveMessage("conv-tg-alice", "alice", "user", "hello", "", "", "telegram"); err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	if err := db.LinkGatewayAccount("alice", "telegram", "12345"); err != nil {
+		t.Fatalf("LinkGatewayAccount: %v", err)
+	}
+
+	gw, extID, err := db.MostRecentGatewayAndExternalIDForUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("MostRecentGatewayAndExternalIDForUser: %v", err)
+	}
+	if gw != "telegram" {
+		t.Errorf("gateway = %q, want %q", gw, "telegram")
+	}
+	if extID != "12345" {
+		t.Errorf("external_id = %q, want %q", extID, "12345")
+	}
+
+	// bob has Discord messages + account, then later Telegram messages + account.
+	if err := db.SaveMessage("conv-disc-bob", "bob", "user", "hi", "", "", "discord"); err != nil {
+		t.Fatalf("SaveMessage discord: %v", err)
+	}
+	if err := db.LinkGatewayAccount("bob", "discord", "d-999"); err != nil {
+		t.Fatalf("LinkGatewayAccount discord: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	if err := db.SaveMessage("conv-tg-bob", "bob", "user", "hello", "", "", "telegram"); err != nil {
+		t.Fatalf("SaveMessage telegram: %v", err)
+	}
+	if err := db.LinkGatewayAccount("bob", "telegram", "t-555"); err != nil {
+		t.Fatalf("LinkGatewayAccount telegram: %v", err)
+	}
+
+	gw, extID, err = db.MostRecentGatewayAndExternalIDForUser(ctx, "bob")
+	if err != nil {
+		t.Fatalf("MostRecentGatewayAndExternalIDForUser bob: %v", err)
+	}
+	if gw != "telegram" {
+		t.Errorf("gateway = %q, want %q (most recent)", gw, "telegram")
+	}
+	if extID != "t-555" {
+		t.Errorf("external_id = %q, want %q", extID, "t-555")
+	}
+
+	// User with no messages gets empty strings, no error.
+	gw, extID, err = db.MostRecentGatewayAndExternalIDForUser(ctx, "ghost")
+	if err != nil {
+		t.Fatalf("MostRecentGatewayAndExternalIDForUser ghost: %v", err)
+	}
+	if gw != "" || extID != "" {
+		t.Errorf("ghost: want empty gateway/external_id, got gw=%q ext=%q", gw, extID)
+	}
+
+	// User with messages but no linked gateway account: gateway is set but
+	// external_id is empty (COALESCE returns '') — the caller should treat
+	// this as "no reachable destination."
+	if err := db.SaveMessage("conv-tg-nolink", "carol", "user", "hi", "", "", "telegram"); err != nil {
+		t.Fatalf("SaveMessage carol: %v", err)
+	}
+	gw, extID, err = db.MostRecentGatewayAndExternalIDForUser(ctx, "carol")
+	if err != nil {
+		t.Fatalf("MostRecentGatewayAndExternalIDForUser carol: %v", err)
+	}
+	if gw != "telegram" {
+		t.Errorf("gateway = %q, want %q", gw, "telegram")
+	}
+	if extID != "" {
+		t.Errorf("external_id = %q, want empty (no linked account)", extID)
 	}
 }
