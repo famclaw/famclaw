@@ -1883,6 +1883,11 @@ func TestBuildMessages_UserMemoryScoped(t *testing.T) {
 // "Error: <msg>", which the LLM can treat as a system failure and
 // hallucinate around. A result string with nil error is treated as a
 // normal tool output.
+//
+// The result is intentionally a NEUTRAL marker (not a pre-written English
+// sentence addressed to the user) so the behavioural rule in components.go
+// can instruct the model to convey the unavailability in the family
+// member's preferred language.
 func TestWebSearchError(t *testing.T) {
 	t.Run("unavailable error becomes honest result string", func(t *testing.T) {
 		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
@@ -1890,8 +1895,29 @@ func TestWebSearchError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected nil error for ErrUnavailable, got %v", err)
 		}
-		if !strings.Contains(msg, "I could not search right now") {
-			t.Errorf("result should tell the user search is unavailable, got: %q", msg)
+		if !strings.Contains(msg, "unavailable") {
+			t.Errorf("result should mark search as unavailable, got: %q", msg)
+		}
+		if !strings.Contains(msg, "could not be reached") {
+			t.Errorf("result should explain the backend was unreachable: %q", msg)
+		}
+	})
+
+	t.Run("unavailable error result is not a pre-written English sentence", func(t *testing.T) {
+		// The result must be a neutral marker, NOT a full sentence addressed
+		// to the user in English (which would force every family member to
+		// receive an English error regardless of their language preference).
+		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
+		msg, err := webSearchError(wrapped, "http://localhost:8888")
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+		// A neutral marker: no first-person "I", no second-person "you", no
+		// imperative verbs directed at the user.
+		for _, sentence := range []string{"I could not", "I'll answer", "A parent can", "try your search", "do not try to"} {
+			if strings.Contains(msg, sentence) {
+				t.Errorf("result must not contain a pre-written English sentence fragment %q: %q", sentence, msg)
+			}
 		}
 	})
 
@@ -1910,7 +1936,7 @@ func TestWebSearchError(t *testing.T) {
 		if strings.Contains(msg, "8888") {
 			t.Errorf("user-facing message must not contain the raw endpoint port: %q", msg)
 		}
-		if !strings.Contains(msg, "I could not search right now") {
+		if !strings.Contains(msg, "unavailable") {
 			t.Errorf("message should be honest about search being unavailable: %q", msg)
 		}
 	})

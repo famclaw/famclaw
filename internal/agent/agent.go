@@ -1459,11 +1459,19 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 
 // webSearchError translates a web_search error into a (result, error) pair
 // that the agent's tool loop can feed to the LLM. When the backend is
-// unreachable (ErrUnavailable) it returns the honest message as the RESULT
-// STRING with a nil error — this is critical because the tool loop formats
-// non-nil errors as "Error: <msg>", which the LLM may treat as a system
-// failure and ignore in favour of hallucination. A result string with nil
-// error is treated as a normal tool output, so the LLM relays it honestly.
+// unreachable (ErrUnavailable) it returns a short NEUTRAL marker as the
+// RESULT string with a nil error — this is critical because the tool loop
+// formats non-nil errors as "Error: <msg>", which the LLM may treat as a
+// system failure and ignore in favour of hallucination. A result string
+// with nil error is treated as a normal tool output, so the LLM relays the
+// marker honestly.
+//
+// The marker is intentionally NOT a full English sentence addressed to the
+// user. The behavioural rule in internal/prompt/components.go instructs the
+// model to convey this in the family member's language. Returning a
+// pre-written sentence would force it into English regardless of who is
+// asking.
+//
 // Host-not-allowed and other genuine errors pass through as ("", err).
 func webSearchError(err error, endpoint string) (string, error) {
 	if errors.Is(err, websearch.ErrUnavailable) {
@@ -1471,7 +1479,7 @@ func webSearchError(err error, endpoint string) (string, error) {
 		// echo it to the family chat — it may contain internal hostnames,
 		// credentials, or network topology that should not reach the user.
 		log.Printf("[agent] web_search backend unreachable at %s", websearch.SanitizeEndpoint(endpoint))
-		return "I could not search right now — the search backend is unreachable (connection refused, timeout, or not running). I'll answer from what I know rather than making up search results. A parent can check that the SearXNG service is running.", nil
+		return "web_search: unavailable — search backend could not be reached.", nil
 	}
 	return "", err
 }

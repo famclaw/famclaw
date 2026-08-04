@@ -393,14 +393,16 @@ func TestBehavioralRules_Exported(t *testing.T) {
 		t.Errorf("exported BehavioralRules() still contains retired deflection phrasing")
 	}
 
-	// Unavailability relay rule: the model must relay verbatim (not invent
-	// around) whenever a tool reports it could not complete its task —
-	// regardless of whether that arrives as a tool error or a tool result
-	// string. This pins the rule so a regression to error-only handling
-	// (which web_search's honest-result-string path would bypass) is caught.
+	// Unavailability relay rule: the model must convey the unavailability
+	// to the user in their preferred language (not invent around it) whenever
+	// a tool reports it could not complete its task — regardless of whether
+	// that arrives as a tool error or a tool result string. This pins the
+	// rule so a regression to error-only handling (which web_search's
+	// honest-result-string path would bypass) is caught.
 	for _, want := range []string{
 		"If a tool returns an error OR a result that reports it could not complete its task",
-		"never invent search results to fill the gap",
+		"CONVEY to the user, in their preferred language",
+		"you will not invent results to fill the gap",
 		"whether the unavailability arrives as a tool error or as a tool result string",
 	} {
 		if !strings.Contains(rules, want) {
@@ -432,6 +434,7 @@ func TestBehavioralRules_Exported(t *testing.T) {
 	// The unavailability relay rule must also appear in the assembled prompt.
 	for _, want := range []string{
 		"If a tool returns an error OR a result that reports it could not complete its task",
+		"CONVEY to the user, in their preferred language",
 		"whether the unavailability arrives as a tool error or as a tool result string",
 	} {
 		if !strings.Contains(assembled, want) {
