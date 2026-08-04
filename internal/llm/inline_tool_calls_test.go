@@ -527,3 +527,121 @@ func TestStripGemmaToolCallBlocks_StripsMalformedBlockNestedArgs(t *testing.T) {
 		t.Errorf("control token leaked into output: %q", got)
 	}
 }
+
+// TestStripWithCarry verifies that stripWithCarry correctly handles
+// Gemma control tokens split across SSE chunks via a carry-over buffer.
+func TestStripWithCarry(t *testing.T) {
+	tests := []struct {
+		name      string
+		carry     string
+		token     string
+		wantEmit  string
+		wantCarry string
+	}{
+		{
+			name:      "token-split-across-two-chunks",
+			carry:     "",
+			token:     "<|tool_call_begin|>",
+			wantEmit:  "",
+			wantCarry: "", // token fully matched and stripped
+		},
+		{
+			name:      "token-split-part1",
+			carry:     "",
+			token:     "<|tool_call_begin",
+			wantEmit:  "",
+			wantCarry: "<|tool_call_begin",
+		},
+		{
+			name:      "token-split-part2-completes",
+			carry:     "<|tool_call_begin",
+			token:     "|>",
+			wantEmit:  "",
+			wantCarry: "", // joined = <|tool_call_begin|>, stripped to ""
+		},
+		{
+			name:      "ordinary-text-past-tail-window",
+			carry:     "",
+			token:     "Hello, this is a longer message that exceeds the tail window.",
+			wantEmit:  "Hello, this is a longer message that ex",
+			wantCarry: "ceeds the tail window.",
+		},
+		{
+			name:      "carry-flush-emits-held-text",
+			carry:     "Hello world.",
+			token:     "",
+			wantEmit:  "",
+			wantCarry: "Hello world.", // nothing to strip, held as carry
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			emit, carry := stripWithCarry(tc.carry, tc.token)
+			if emit != tc.wantEmit {
+				t.Errorf("emit = %q, want %q", emit, tc.wantEmit)
+			}
+			if carry != tc.wantCarry {
+				t.Errorf("carry = %q, want %q", carry, tc.wantCarry)
+			}
+		})
+	}
+}
+
+// TestStripWithCarry_ThreeChunkSplit verifies that a token split across
+// THREE chunks is fully stripped when the pieces are reassembled.
+func TestStripWithCarry_ThreeChunkSplit(t *testing.T) {
+	var emitted string
+	carry := ""
+
+	// Token: <|channel|>
+	// Chunk 1: <|ch
+	// Chunk 2: annel
+	// Chunk 3: |>
+	for _, chunk := range []string{"<|ch", "annel", "|>"} {
+		emit, newCarry := stripWithCarry(carry, chunk)
+		emitted += emit
+		carry = newCarry
+	}
+
+	// Flush final carry
+	if carry != "" {
+		cleaned := stripControlTokens(carry)
+		emitted += cleaned
+	}
+
+	if emitted != "" {
+		t.Errorf("expected empty output (token stripped), got: %q", emitted)
+	}
+}
+
+// TestStripWithCarry_StreamFlow verifies the normal streaming flow:
+// text is emitted past the tail window, then the final flush emits
+// any remaining held text.
+func TestStripWithCarry_StreamFlow(t *testing.T) {
+	var emitted string
+	carry := ""
+
+	// Send enough text to exceed the tail window, then a short
+	// ending that should be flushed at stream end.
+	for _, chunk := range []string{
+		"This is the first chunk of text from the model. ",
+		"It continues here and gets longer. ",
+		"Short.",
+	} {
+		emit, newCarry := stripWithCarry(carry, chunk)
+		emitted += emit
+		carry = newCarry
+	}
+
+	// Flush final carry
+	if carry != "" {
+		cleaned := stripControlTokens(carry)
+		emitted += cleaned
+	}
+
+	want := "This is the first chunk of text from the model. It continues here and gets longer. Short."
+	if emitted != want {
+		t.Errorf("emitted = %q, want %q", emitted, want)
+	}
+}

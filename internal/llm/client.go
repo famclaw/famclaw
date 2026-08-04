@@ -377,6 +377,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 // parseSSEStream reads an SSE stream (data: {...}\n) and extracts content tokens.
 func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, error) {
 	var full strings.Builder
+	var carry string
 	scanner := bufio.NewScanner(body)
 
 	for scanner.Scan() {
@@ -410,18 +411,30 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, e
 				}
 			}
 			if token != "" {
-				// Strip any Gemma control tokens from the token
-				// before passing it to the caller. In the streaming
-				// path we cannot parse tool calls, but we can
-				// guarantee that no model-internal token reaches
-				// the user's screen.
-				cleaned := stripControlTokens(token)
-				if cleaned != "" {
-					full.WriteString(cleaned)
+				// stripWithCarry handles control tokens that may be
+				// split across SSE chunks: it holds back a tail long
+				// enough to cover the longest known Gemma token and
+				// prepends it to the next chunk before stripping.
+				emit, newCarry := stripWithCarry(carry, token)
+				carry = newCarry
+				if emit != "" {
+					full.WriteString(emit)
 					if onToken != nil {
-						onToken(cleaned)
+						onToken(emit)
 					}
 				}
+			}
+		}
+	}
+
+	// Flush any remaining carry at stream end. A split token is now
+	// complete and will be stripped by stripControlTokens.
+	if carry != "" {
+		cleaned := stripControlTokens(carry)
+		if cleaned != "" {
+			full.WriteString(cleaned)
+			if onToken != nil {
+				onToken(cleaned)
 			}
 		}
 	}

@@ -117,8 +117,11 @@ func TestChatSSEStreaming(t *testing.T) {
 	if result != "Hello world" {
 		t.Errorf("result = %q, want 'Hello world'", result)
 	}
-	if len(tokens) != 3 {
-		t.Errorf("got %d tokens, want 3", len(tokens))
+	// With the SSE carry-over buffer (maxGemmaTokenLen = 22), the three
+	// short tokens "Hello", " ", "world" (total 11 chars) are all held
+	// back until stream end, where they are flushed as one piece.
+	if len(tokens) != 1 {
+		t.Errorf("got %d tokens, want 1 (carry-over flushes at stream end)", len(tokens))
 	}
 }
 

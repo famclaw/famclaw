@@ -309,6 +309,30 @@ func stripGemmaToolCallBlocks(content string) string {
 	return strings.TrimSpace(stripped)
 }
 
+// maxGemmaTokenLen is the length of the longest known Gemma control
+// token (currently "<|tool_call_begin|>" = 22 bytes). The SSE streaming
+// path holds back this many bytes at the tail of each chunk so that a
+// control token split across SSE boundaries is reassembled and stripped
+// before reaching the family.
+const maxGemmaTokenLen = 22
+
+// stripWithCarry applies stripControlTokens to carry+token and splits the
+// result into an emittable prefix and a carry. The carry is the last
+// maxGemmaTokenLen bytes of the cleaned text — those bytes might be the
+// start of a Gemma control token that was split across SSE chunks, so
+// they are prepended to the next chunk rather than emitted immediately.
+// When the cleaned text is no longer than maxGemmaTokenLen, everything
+// is held back as carry (it might all be a partial token).
+func stripWithCarry(carry, token string) (emit, newCarry string) {
+	joined := carry + token
+	cleaned := stripControlTokens(joined)
+	if len(cleaned) <= maxGemmaTokenLen {
+		return "", cleaned
+	}
+	split := len(cleaned) - maxGemmaTokenLen
+	return cleaned[:split], cleaned[split:]
+}
+
 // stripControlTokens is the belt-and-braces final pass: it removes
 // every known Gemma control token from a string by enumerating the
 // exact token vocabulary (tool_call_begin, tool_call_end, tool_call,
