@@ -55,6 +55,35 @@ FamClaw keeps two kinds of information so it can help without you repeating thin
 
 Kids proposing a new family fact go through the usual approval flow; parents can add, update, or delete directly in the dashboard.
 
+## Proactive reminders
+
+FamClaw can remind family members about things at the right time — it doesn't wait for the next message. When a reminder's time comes, FamClaw sends it straight to that family member's messaging app.
+
+Say something natural like:
+- "Remind me to take out the trash in 2 hours"
+- "Remind me tomorrow at 9am to call Grandma"
+- "Remind me at 14:30 to pick up Emma from soccer"
+
+The assistant parses the time (relative like "in 2 hours" or "30m", or absolute like "tomorrow 9am" / "monday 10:00") and the message, then stores the reminder. FamClaw's scheduler delivers due reminders proactively through the recipient's most recently used messaging app.
+
+### Reminding another family member
+
+A parent can set a reminder for someone else in the family:
+- "Remind Emma in 10 minutes to come downstairs for dinner"
+
+Only parents can set reminders for other people — children can remind themselves but not others. If the target hasn't messaged FamClaw yet on any gateway, FamClaw tells you it doesn't know how to reach them yet rather than guessing a channel. The feature is powered by the `builtin__add_reminder` tool.
+
+## The assistant can message another family member
+
+On its own initiative — not just in reply to one person — FamClaw can send a message to another family member on their messaging platform. You'll see this, for example, when a reminder fires for someone else, or when the assistant decides a note belongs to a different user.
+
+- **Who can be messaged:** only the family members configured in your Settings → Family. FamClaw will not address anyone outside the family.
+- **How it reaches them:** via the recipient's most recently connected app (Telegram, Discord, or WhatsApp when available). If a family member hasn't messaged FamClaw yet, FamClaw tells you it doesn't know how to reach them — it never guesses a channel.
+- **It's parent-gated:** only a parent's assistant can initiate one of these messages.
+- **It's audited.** Every proactive message is recorded in the audit log with who sent it, who it was for, and what it said, and it also appears in the recipient's conversation history in your dashboard.
+
+The feature is powered by the `builtin__send_message` tool.
+
 ## Topics that are always blocked
 
 Some topics are never allowed, even with your approval:

@@ -3,6 +3,26 @@
 All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.11.0 — 2026-08-04
+
+### Added
+- **Voice message transcription on Telegram and Discord.** Voice notes and audio clips sent to the bot are now transcribed into text by a local speech-to-text service and handled exactly like a typed message — they pass through the same age/approval policy before reaching the LLM. This closes the previous "voice is not supported" gap where a voice message was silently dropped with no reply; when transcription is not configured, the assistant now returns a visible "voice isn't available" notice instead. Enable it under `tools.transcription` (point `endpoint` at your `/v1/audio/transcriptions` service and set `model`; default `max_bytes` is 25 MB / 26,214,400 bytes, default `timeout_seconds` is 30).
+- **Proactive family reminders.** A family member can ask the assistant to be reminded about something at a specific time ("remind me to take out the trash in 2 hours" / "remind me tomorrow at 9am"), and FamClaw delivers the reminder automatically at that time — the recipient does not need to send another message first. Reminders are delivered through the recipient's most recently used messaging app. Parents can set reminders for other family members ("remind Emma to come downstairs"); children can only remind themselves. Backed by the `builtin__add_reminder` tool.
+- **The assistant can message another family member.** On its own initiative, the assistant can send a message to another family member on their messaging platform — for example when a reminder fires for someone else, or when the assistant decides a note belongs to a different user. Only configured family members are addressable; if a family member hasn't messaged the bot yet, FamClaw reports that honestly rather than guessing a channel. Every proactive message is recorded in the audit log (sender, target, content) and also appears in the recipient's conversation history in the dashboard. Parent-only, via the `builtin__send_message` tool.
+- **Messages now record which gateway they arrived on.** Each stored message keeps the gateway it came from (Telegram, Discord, etc.), which is what lets reminders and cross-chat messages be delivered to the right platform. Existing messages keep a `unknown` sentinel; no data is lost.
+- **The current date is injected into the system prompt.** The assistant now sees the host's current date and timezone in every system prompt, so it no longer invents wrong dates ("January 8, 2026" on an August run). This is on by default for all deployments.
+
+### Changed
+- **Conversations no longer reset at midnight.** The conversation ID used to be bucketed by calendar day, so every conversation silently restarted at midnight. FamClaw now keeps a conversation going as long as the gap since the user's last message is under 6 hours (the `ConversationIdleTimeout` constant); a longer gap or a cold start begins a fresh conversation.
+- **`web_search` now fails honestly when the backend is unreachable.** If your SearXNG endpoint is down, timing out, or returning errors, the assistant reports that it could not search right now instead of silently returning nothing or inventing results. A zero-hit response is still a normal "no results," distinct from an unavailable backend. FamClaw also logs a startup `WARNING` if the configured endpoint cannot be reached, so a dead search backend is never silently "configured but dead." Endpoint credentials are stripped before logging.
+
+### Fixed
+- **Gemma control tokens no longer leak into replies.** The Gemma model format (`<|tool_call_begin|>` and friends) was reaching the family as visible text when tool calls were emitted inline or streamed. FamClaw now salvages native Gemma tool calls, strips every control token from both streamed and full responses (with a carry-over buffer for tokens split across SSE chunks), and returns an honest error instead of a blank reply when the model produces no content and no tool calls.
+- **Repeated failed tool calls are short-circuited within a turn.** When a tool call (e.g. `web_search`) failed and the model re-emitted the identical call, the loop could re-execute the same doomed call and repeat the apology. FamClaw now detects an identical (same name + arguments) call that already failed earlier in the turn and feeds it back a corrective result instead of running it again. Calls with different arguments or from a different turn are unaffected.
+
+### Dependencies
+- Bumped `github.com/open-policy-agent/opa` from 1.18.2 to 1.19.0 and `modernc.org/sqlite` from 1.54.0 to 1.55.0 (go-minor-patch group).
+
 ## v0.10.0 — 2026-08-01
 
 ### Added
