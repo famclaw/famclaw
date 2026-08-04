@@ -1,7 +1,3 @@
--- FamClaw schema golden file. Regenerate with:
---   go test -tags dumpschema -run TestDumpSchema ./internal/store/
--- (or set UPDATE_SCHEMA_GOLDEN=1 and run TestSchemaGolden)
-
 CREATE INDEX idx_approvals_status ON approvals(status);
 
 CREATE INDEX idx_approvals_user ON approvals(user_name);
@@ -164,7 +160,9 @@ CREATE TABLE reminders (
 		due_at         TEXT NOT NULL,
 		dispatched     INTEGER NOT NULL DEFAULT 0,
 		dispatched_at  TEXT DEFAULT '',
-		created_at     TEXT NOT NULL
+		created_at         TEXT NOT NULL,
+		setter_gateway     TEXT DEFAULT '',
+		setter_external_id TEXT DEFAULT ''
 	);
 
 CREATE TABLE research_tasks (

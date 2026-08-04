@@ -46,7 +46,10 @@ func Tool() agentcore.Tool {
 // The agent's makeBuiltinHandler should call this with the appropriate deps.
 // For cross-user reminders (forUser set), the target user's most recent
 // gateway and external_id are resolved from the store so the scheduler can
-// deliver proactively through the right platform.
+// deliver proactively through the right platform. The setter's gateway/
+// external_id are preserved in SetterGateway/SetterExternalID so that
+// confirmations, delivery receipts, and audit can route back to the person
+// who created the reminder.
 func HandleAddReminder(ctx context.Context, db *store.DB, cfg *config.Config, user *config.UserConfig, gateway, externalID, groupID string, isGroup bool, when, message, forUser string) (string, error) {
 	// Parse the time
 	now := time.Now()
@@ -62,6 +65,15 @@ func HandleAddReminder(ctx context.Context, db *store.DB, cfg *config.Config, us
 
 	// Determine target user
 	targetUser := user.Name
+	// deliveryGateway/deliveryExternalID are where the reminder will be
+	// SENT (the target's platform). The setter's gateway/externalID stay
+	// in the original variables for the SetterGateway/SetterExternalID
+	// fields.
+	deliveryGateway := gateway
+	deliveryExternalID := externalID
+	deliveryGroupID := groupID
+	deliveryIsGroup := isGroup
+
 	if forUser != "" {
 		if user.Role != "parent" {
 			return "", fmt.Errorf("only parents can set reminders for other users")
@@ -82,22 +94,24 @@ func HandleAddReminder(ctx context.Context, db *store.DB, cfg *config.Config, us
 		if targetGateway == "" || targetExternalID == "" {
 			return "", fmt.Errorf("%s has not sent any messages yet, so I don't know how to reach them on any gateway", targetUser)
 		}
-		gateway = targetGateway
-		externalID = targetExternalID
-		groupID = ""
-		isGroup = false
+		deliveryGateway = targetGateway
+		deliveryExternalID = targetExternalID
+		deliveryGroupID = ""
+		deliveryIsGroup = false
 	}
 
 	reminder := &store.Reminder{
-		UserName:   targetUser,
-		Gateway:    gateway,
-		ExternalID: externalID,
-		GroupID:    groupID,
-		IsGroup:    isGroup,
-		Message:    message,
-		DueAt:      dueAt,
-		CreatedAt:  now,
-		Dispatched: false,
+		UserName:         targetUser,
+		Gateway:          deliveryGateway,
+		ExternalID:       deliveryExternalID,
+		GroupID:          deliveryGroupID,
+		IsGroup:          deliveryIsGroup,
+		Message:          message,
+		DueAt:            dueAt,
+		CreatedAt:        now,
+		Dispatched:       false,
+		SetterGateway:    gateway,
+		SetterExternalID: externalID,
 	}
 
 	if err := db.CreateReminder(ctx, reminder); err != nil {
@@ -105,11 +119,12 @@ func HandleAddReminder(ctx context.Context, db *store.DB, cfg *config.Config, us
 	}
 
 	result := map[string]any{
-		"reminder_id": reminder.ID,
-		"due_at":      dueAt.Format(time.RFC3339),
-		"message":     message,
-		"for_user":    targetUser,
-		"status":      "scheduled",
+		"reminder_id":    reminder.ID,
+		"due_at":         dueAt.Format(time.RFC3339),
+		"message":        message,
+		"for_user":       targetUser,
+		"setter_gateway": gateway,
+		"status":         "scheduled",
 	}
 	b, _ := json.Marshal(result)
 	return string(b), nil

@@ -724,7 +724,7 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 				senders[k] = v
 			}
 			a.senderRegistryMu.RUnlock()
-			return sendmsg.Handle(ctx, a.db, a.cfg, senders, to, msg)
+			return sendmsg.Handle(ctx, a.db, a.cfg, senders, a.user.Name, a.gatewayForSave(), to, msg)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}

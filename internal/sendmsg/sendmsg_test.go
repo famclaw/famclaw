@@ -2,6 +2,7 @@ package sendmsg
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -99,23 +100,22 @@ func TestHandle(t *testing.T) {
 		to         string
 		message    string
 		setupDB    func(t *testing.T, db *store.DB)
-		extraGW    string // gateway to register a sender for beyond telegram/discord
 		wantErr    bool
 		wantErrSub string
 	}{
 		{
-			name:      "deliver to telegram user",
-			to:        "julia",
-			message:   "hi from mom",
-			setupDB:   func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "telegram", "julia-chat") },
-			wantErr:   false,
+			name:     "deliver to telegram user",
+			to:       "julia",
+			message:  "hi from mom",
+			setupDB:  func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "telegram", "julia-chat") },
+			wantErr:  false,
 		},
 		{
-			name:      "deliver to discord user",
-			to:        "julia",
-			message:   "hello via discord",
-			setupDB:   func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "discord", "julia-disc") },
-			wantErr:   false,
+			name:     "deliver to discord user",
+			to:       "julia",
+			message:  "hello via discord",
+			setupDB:  func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "discord", "julia-disc") },
+			wantErr:  false,
 		},
 		{
 			name:       "unknown target",
@@ -186,7 +186,7 @@ func TestHandle(t *testing.T) {
 				senders["discord"] = &mockSender{}
 			}
 
-			_, err := Handle(ctx, db, parentCfg(), senders, tc.to, tc.message)
+			_, err := Handle(ctx, db, parentCfg(), senders, "mom", "telegram", tc.to, tc.message)
 
 			if tc.wantErr {
 				if err == nil {
@@ -235,7 +235,7 @@ func TestHandleResolvesTargetGateway(t *testing.T) {
 		"discord":  discordSender,
 	}
 
-	result, err := Handle(ctx, db, parentCfg(), senders, "julia", "message to julia")
+	result, err := Handle(ctx, db, parentCfg(), senders, "mom", "telegram", "julia", "message to julia")
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestHandleNoBroadcast(t *testing.T) {
 		"discord":  discordSender,
 	}
 
-	_, err := Handle(ctx, db, parentCfg(), senders, "julia", "single message")
+	_, err := Handle(ctx, db, parentCfg(), senders, "mom", "telegram", "julia", "single message")
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -284,5 +284,107 @@ func TestHandleNoBroadcast(t *testing.T) {
 	}
 	if len(discordSender.getSent()) != 0 {
 		t.Errorf("expected 0 messages to discord (no broadcast), got %d", len(discordSender.getSent()))
+	}
+}
+
+// TestHandleAuditRecord verifies that a successful send writes an audit row
+// recording who initiated it, the target, and the content.
+func TestHandleAuditRecord(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	linkUser(t, db, "julia", "telegram", "julia-chat")
+
+	senders := map[string]gateway.Sender{
+		"telegram": &mockSender{},
+	}
+
+	msg := "remember to lock the door"
+	result, err := Handle(ctx, db, parentCfg(), senders, "mom", "telegram", "julia", msg)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	// Query the audit_log table for our entry.
+	rows, err := db.SQL().QueryContext(ctx,
+		`SELECT actor_name, gateway, tool_name, args FROM audit_log WHERE tool_name = ? ORDER BY id DESC LIMIT 1`,
+		ToolName)
+	if err != nil {
+		t.Fatalf("query audit_log: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatalf("expected at least one audit row, got none; result=%s", result)
+	}
+
+	var actor, gw, toolName, argsJSON string
+	if err := rows.Scan(&actor, &gw, &toolName, &argsJSON); err != nil {
+		t.Fatalf("scan audit row: %v", err)
+	}
+
+	if actor != "mom" {
+		t.Errorf("actor = %q, want %q", actor, "mom")
+	}
+	if toolName != ToolName {
+		t.Errorf("tool_name = %q, want %q", toolName, ToolName)
+	}
+
+	// The args JSON should contain the target and message.
+	var args map[string]string
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		t.Fatalf("unmarshal audit args: %v", err)
+	}
+	if args["to"] != "julia" {
+		t.Errorf("audit args.to = %q, want %q", args["to"], "julia")
+	}
+	if args["message"] != msg {
+		t.Errorf("audit args.message = %q, want %q", args["message"], msg)
+	}
+}
+
+// TestHandleSavesConversationHistory verifies the sent message appears in
+// the target user's conversation history.
+func TestHandleSavesConversationHistory(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	linkUser(t, db, "julia", "telegram", "julia-chat")
+
+	senders := map[string]gateway.Sender{
+		"telegram": &mockSender{},
+	}
+
+	msg := "proactive check-in"
+	_, err := Handle(ctx, db, parentCfg(), senders, "mom", "telegram", "julia", msg)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	// Query the conversation that received the message.
+	var convID string
+	if err := db.SQL().QueryRowContext(ctx,
+		`SELECT DISTINCT conversation_id FROM messages WHERE role = 'assistant' AND content = ? LIMIT 1`,
+		msg).Scan(&convID); err != nil {
+		t.Fatalf("query conversation for sent message: %v", err)
+	}
+
+	// Check the conversation's history contains our message.
+	history, err := db.GetConversationHistory(convID, 20)
+	if err != nil {
+		t.Fatalf("GetConversationHistory: %v", err)
+	}
+
+	var found bool
+	for _, m := range history {
+		if m.Role == "assistant" && m.Content == msg {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("sent message not found in conversation history")
 	}
 }

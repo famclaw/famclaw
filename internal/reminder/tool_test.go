@@ -309,3 +309,56 @@ func TestToolRegistration(t *testing.T) {
 		t.Fatalf("expected 2 required fields, got %d", len(required))
 	}
 }
+
+// TestHandleAddReminderCrossUserStoresBothGateways verifies that a cross-user
+// reminder stores the TARGET's gateway/external_id in the delivery fields
+// (Gateway/ExternalID) and the SETTER's gateway/external_id in the
+// SetterGateway/SetterExternalID fields — never the same pair.
+func TestHandleAddReminderCrossUserStoresBothGateways(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Mom (setter) sends from Telegram.
+	linkUser(t, db, "mom", "telegram", "mom-chat-id")
+	// Julia (target) sends from Discord.
+	linkUser(t, db, "julia", "discord", "julia-disc-id")
+
+	// Mom sets a reminder for Julia.
+	_, err := HandleAddReminder(ctx, db, parentCfg(), parentUser(),
+		"telegram", "mom-chat-id", "", false,
+		"in 1 hour", "create trello API token", "julia")
+	if err != nil {
+		t.Fatalf("HandleAddReminder: %v", err)
+	}
+
+	reminders, err := db.GetPendingReminders(ctx)
+	if err != nil {
+		t.Fatalf("GetPendingReminders: %v", err)
+	}
+	if len(reminders) != 1 {
+		t.Fatalf("expected 1 reminder, got %d", len(reminders))
+	}
+	r := reminders[0]
+
+	// Delivery fields must point to the TARGET (Julia's Discord).
+	if r.Gateway != "discord" {
+		t.Errorf("Gateway = %q, want %q (target's gateway, not setter's)", r.Gateway, "discord")
+	}
+	if r.ExternalID != "julia-disc-id" {
+		t.Errorf("ExternalID = %q, want %q (target's external_id)", r.ExternalID, "julia-disc-id")
+	}
+
+	// Setter fields must point to the SETTER (Mom's Telegram).
+	if r.SetterGateway != "telegram" {
+		t.Errorf("SetterGateway = %q, want %q (setter's gateway, not target's)", r.SetterGateway, "telegram")
+	}
+	if r.SetterExternalID != "mom-chat-id" {
+		t.Errorf("SetterExternalID = %q, want %q (setter's external_id)", r.SetterExternalID, "mom-chat-id")
+	}
+
+	// The two pairs must be distinct.
+	if r.Gateway == r.SetterGateway && r.ExternalID == r.SetterExternalID {
+		t.Error("delivery and setter routing must not be the same pair")
+	}
+}

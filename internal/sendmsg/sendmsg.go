@@ -8,12 +8,14 @@ package sendmsg
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/gateway"
+	"github.com/famclaw/famclaw/internal/store"
 )
 
 // ToolName is the name of the send_message tool.
@@ -49,21 +51,27 @@ func Tool() agentcore.Tool {
 	}
 }
 
-// DB provides the store lookups needed for cross-chat delivery.
+// DB provides the store lookups and audit needed for cross-chat delivery.
 // Implemented by *store.DB.
 type DB interface {
 	MostRecentGatewayAndExternalIDForUser(ctx context.Context, userName string) (gateway, externalID string, err error)
+	LogAudit(ctx context.Context, actorName, gateway, toolName string, args []byte) error
+	SaveMessage(convID, userName, role, content, category, policyAction, gateway string) error
 }
 
 // Handle resolves the target family member's most recent gateway and
 // external_id, then delivers the message through the matching gateway.Sender.
+//
+// The outbound message is recorded in both the audit log (who initiated it,
+// the target, and the content) and the target user's conversation history
+// so it appears in the web dashboard.
 //
 // Safety guarantees:
 //   - target must be a configured family member (unknown → clear error)
 //   - target must have a recorded gateway (no gateway → honest error)
 //   - no sender for that gateway → honest error
 //   - no broadcast — only the resolved destination is used
-func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[string]gateway.Sender, to, message string) (string, error) {
+func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[string]gateway.Sender, actor, actorGateway, to, message string) (string, error) {
 	if to == "" || message == "" {
 		return "", fmt.Errorf("send_message requires both 'to' and 'message'")
 	}
@@ -94,6 +102,21 @@ func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[s
 	if err := sender.Send(deadlineCtx, externalID, message); err != nil {
 		return "", fmt.Errorf("sending message to %s via %s: %w", to, gatewayName, err)
 	}
+
+	// Audit: who sent what to whom, via which gateway.
+	auditArgs := map[string]string{
+		"to":      to,
+		"message": message,
+		"gateway": gatewayName,
+	}
+	if b, jerr := json.Marshal(auditArgs); jerr == nil {
+		_ = db.LogAudit(ctx, actor, actorGateway, ToolName, b)
+	}
+
+	// Save to the target user's conversation history so the web
+	// dashboard shows what the assistant sent.
+	convID := store.ConversationID(to, time.Time{}, false, time.Now())
+	_ = db.SaveMessage(convID, to, "assistant", message, "send_message", "allow", gatewayName)
 
 	return fmt.Sprintf("Message sent to %s via %s", to, gatewayName), nil
 }

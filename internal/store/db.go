@@ -336,7 +336,9 @@ func (d *DB) migrate() error {
 		due_at         TEXT NOT NULL,
 		dispatched     INTEGER NOT NULL DEFAULT 0,
 		dispatched_at  TEXT DEFAULT '',
-		created_at     TEXT NOT NULL
+		created_at         TEXT NOT NULL,
+		setter_gateway     TEXT DEFAULT '',
+		setter_external_id TEXT DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_reminders_due_at ON reminders(due_at);
 	CREATE INDEX IF NOT EXISTS idx_reminders_user_dispatched ON reminders(user_name, dispatched);
@@ -378,6 +380,20 @@ func (d *DB) migrate() error {
 		}
 	}
 
+	// Guard for existing deployments that predate the setter_gateway columns.
+	// SQLite does not support ADD COLUMN IF NOT EXISTS, so we attempt the
+	// ALTER TABLE and ignore the error when the column already exists.
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE reminders ADD COLUMN setter_gateway TEXT DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add reminders setter_gateway: %w", err)
+		}
+	}
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE reminders ADD COLUMN setter_external_id TEXT DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add reminders setter_external_id: %w", err)
+		}
+	}
+
 	// Phase 3.3 seed: built-in family_fact_categories. Idempotent.
 	now := time.Now().Unix()
 	if _, err := d.sql.ExecContext(context.Background(), `
@@ -390,15 +406,6 @@ func (d *DB) migrate() error {
 		ON CONFLICT(name) DO NOTHING`,
 		now, now, now, now, now, now, now, now); err != nil {
 		return fmt.Errorf("migrate seed family_fact_categories: %w", err)
-	}
-
-	// Guard for existing deployments that predate the reminders table migration.
-	// SQLite does not support ADD COLUMN IF NOT EXISTS, so we attempt the
-	// ALTER TABLE and ignore the error when the column already exists.
-	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE reminders ADD COLUMN dispatched INTEGER NOT NULL DEFAULT 0`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			return fmt.Errorf("migrate add reminders dispatched: %w", err)
-		}
 	}
 
 	// Guard for existing deployments that predate the gateway column on
@@ -1416,14 +1423,17 @@ type Reminder struct {
 	Dispatched   bool
 	DispatchedAt *time.Time
 	CreatedAt    time.Time
+	SetterGateway     string
+	SetterExternalID  string
 }
 
 // CreateReminder inserts a new reminder.
 func (d *DB) CreateReminder(ctx context.Context, r *Reminder) error {
 	_, err := d.sql.ExecContext(ctx, `
-		INSERT INTO reminders (user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)`,
-		r.UserName, r.Gateway, r.ExternalID, r.GroupID, boolToInt(r.IsGroup), r.Message, r.DueAt.UTC().Format(time.RFC3339))
+		INSERT INTO reminders (user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, created_at, setter_gateway, setter_external_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, ?, ?)`,
+		r.UserName, r.Gateway, r.ExternalID, r.GroupID, boolToInt(r.IsGroup), r.Message, r.DueAt.UTC().Format(time.RFC3339),
+		r.SetterGateway, r.SetterExternalID)
 	if err != nil {
 		return fmt.Errorf("creating reminder: %w", err)
 	}
@@ -1440,7 +1450,7 @@ func boolToInt(b bool) int {
 // GetDueReminders returns all reminders that are due and not yet dispatched.
 func (d *DB) GetDueReminders(ctx context.Context, now time.Time) ([]*Reminder, error) {
 	rows, err := d.sql.QueryContext(ctx, `
-		SELECT id, user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, dispatched_at, created_at
+		SELECT id, user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, dispatched_at, created_at, setter_gateway, setter_external_id
 		FROM reminders
 		WHERE dispatched = 0 AND due_at <= ?
 		ORDER BY due_at ASC`, now.UTC().Format(time.RFC3339))
@@ -1455,7 +1465,8 @@ func (d *DB) GetDueReminders(ctx context.Context, now time.Time) ([]*Reminder, e
 		var dueAtStr, dispatchedAtStr, createdAtStr string
 		var dispatched, isGroup int
 		if err := rows.Scan(&r.ID, &r.UserName, &r.Gateway, &r.ExternalID, &r.GroupID, &isGroup,
-			&r.Message, &dueAtStr, &dispatched, &dispatchedAtStr, &createdAtStr); err != nil {
+			&r.Message, &dueAtStr, &dispatched, &dispatchedAtStr, &createdAtStr,
+			&r.SetterGateway, &r.SetterExternalID); err != nil {
 			return nil, fmt.Errorf("scanning reminder: %w", err)
 		}
 		r.DueAt, _ = time.Parse(time.RFC3339, dueAtStr)
@@ -1486,7 +1497,7 @@ func (d *DB) MarkReminderDispatched(ctx context.Context, id int64, now time.Time
 // GetPendingReminders returns all reminders that are not yet dispatched.
 func (d *DB) GetPendingReminders(ctx context.Context) ([]*Reminder, error) {
 	rows, err := d.sql.QueryContext(ctx, `
-		SELECT id, user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, dispatched_at, created_at
+		SELECT id, user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, dispatched_at, created_at, setter_gateway, setter_external_id
 		FROM reminders
 		WHERE dispatched = 0
 		ORDER BY due_at ASC`)
@@ -1501,7 +1512,8 @@ func (d *DB) GetPendingReminders(ctx context.Context) ([]*Reminder, error) {
 		var dueAtStr, dispatchedAtStr, createdAtStr string
 		var dispatched, isGroup int
 		if err := rows.Scan(&r.ID, &r.UserName, &r.Gateway, &r.ExternalID, &r.GroupID, &isGroup,
-			&r.Message, &dueAtStr, &dispatched, &dispatchedAtStr, &createdAtStr); err != nil {
+			&r.Message, &dueAtStr, &dispatched, &dispatchedAtStr, &createdAtStr,
+			&r.SetterGateway, &r.SetterExternalID); err != nil {
 			return nil, fmt.Errorf("scanning reminder: %w", err)
 		}
 		r.DueAt, _ = time.Parse(time.RFC3339, dueAtStr)
