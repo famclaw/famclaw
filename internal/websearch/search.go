@@ -40,6 +40,28 @@ func SanitizeEndpoint(rawEndpoint string) string {
 	return u.String()
 }
 
+// JoinSearchPath appends the "search" path segment to base, avoiding a
+// double-append when the configured endpoint already ends with the search
+// path. This handles all endpoint shapes:
+//   - bare host ("")      → "/search"
+//   - base path ("/searx")  → "/searx/search"
+//   - full URL ("/searx/search") → "/searx/search" (unchanged)
+//   - trailing slash ("/searx/") → "/searx/search"
+//
+// Both websearch.Search and cmd/famclaw.checkSearchEndpointReachable use
+// this helper so the URL construction cannot diverge.
+func JoinSearchPath(base string) string {
+	base = strings.TrimRight(base, "/")
+	if base == "search" || strings.HasSuffix(base, "/search") {
+		return base
+	}
+	joined := path.Join(base, "search")
+	if !strings.HasPrefix(joined, "/") {
+		joined = "/" + joined
+	}
+	return joined
+}
+
 // Options configures a Search call.
 type Options struct {
 	Endpoint             string
@@ -98,10 +120,7 @@ func Search(ctx context.Context, query string, opts Options) ([]Hit, error) {
 	if endpointParsed.Host == "" {
 		return nil, fmt.Errorf("web_search: endpoint %q must include a host", opts.Endpoint)
 	}
-	endpointParsed.Path = path.Join(endpointParsed.Path, "search")
-	if !strings.HasPrefix(endpointParsed.Path, "/") {
-		endpointParsed.Path = "/" + endpointParsed.Path
-	}
+	endpointParsed.Path = JoinSearchPath(endpointParsed.Path)
 	q := endpointParsed.Query()
 	q.Set("q", query)
 	q.Set("format", "json")

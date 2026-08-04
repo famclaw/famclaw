@@ -51,9 +51,7 @@ func TestSearch_EndpointWithoutHostRejected(t *testing.T) {
 	}
 }
 
-// TestSanitizeEndpoint ensures credentials in the endpoint URL are redacted
-// before the endpoint is written to logs, preventing password leakage
-// through log collection.
+// TestSanitizeEndpoint ensures credentials are stripped before logging.
 func TestSanitizeEndpoint(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -380,5 +378,66 @@ func TestFormatHits_SkipsEmptyFields(t *testing.T) {
 	got := FormatHits([]Hit{{Title: "OnlyTitle"}})
 	if got != "1. OnlyTitle" {
 		t.Errorf("FormatHits = %q, want %q", got, "1. OnlyTitle")
+	}
+}
+
+// TestJoinSearchPath verifies that the search path is constructed correctly
+// for all endpoint shapes, with no double-append when the endpoint already
+// ends in /search.
+func TestJoinSearchPath(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "bare host", input: "", want: "/search"},
+		{name: "root path", input: "/", want: "/search"},
+		{name: "base path", input: "/searx", want: "/searx/search"},
+		{name: "base path trailing slash", input: "/searx/", want: "/searx/search"},
+		{name: "full search URL", input: "/searx/search", want: "/searx/search"},
+		{name: "full search URL root", input: "/search", want: "/search"},
+		{name: "double trailing slash", input: "/searx//", want: "/searx/search"},
+		{name: "nested base path", input: "/foo/searx", want: "/foo/searx/search"},
+		{name: "nested full URL", input: "/foo/searx/search", want: "/foo/searx/search"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := JoinSearchPath(tc.input)
+			if got != tc.want {
+				t.Errorf("JoinSearchPath(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSearch_EndpointWithFullPath verifies that Search does not double-append
+// /search when the configured endpoint already includes it.
+func TestSearch_EndpointWithFullPath(t *testing.T) {
+	const expectedQuery = "search term"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/searx/search" {
+			t.Errorf("expected path /searx/search, got %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("q") != expectedQuery {
+			t.Errorf("expected query %q, got %q", expectedQuery, r.URL.Query().Get("q"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{{"title": "test", "content": "content", "url": "http://test"}}})
+	}))
+	defer server.Close()
+
+	// Full search URL with /search already in the path.
+	endpoint := server.URL + "/searx/search"
+	hits, err := Search(context.Background(), expectedQuery, Options{
+		Endpoint:             endpoint,
+		MaxResults:           2,
+		Timeout:              5 * time.Second,
+		AllowPrivateNetworks: true,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit, got %d", len(hits))
 	}
 }

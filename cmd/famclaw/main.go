@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1067,10 +1066,10 @@ func checkSearchEndpointReachable(endpoint string) error {
 	if endpoint == "" {
 		return fmt.Errorf("endpoint not configured")
 	}
-	// Parse the endpoint and join the path with /search using path.Join so
-	// that an endpoint with an existing path (e.g. http://host/searx) yields
-	// /searx/search, not /searx/search/search. path.Join also cleans double
-	// slashes and trailing slashes.
+	// Parse the endpoint and join the search path. websearch.JoinSearchPath
+	// handles all endpoint shapes (bare host, base path, full search URL,
+	// trailing slash) without double-appending /search. The path is
+	// cleaned of double slashes and trailing slashes.
 	parsed, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil {
 		return fmt.Errorf("parse search endpoint: %w", err)
@@ -1083,10 +1082,7 @@ func checkSearchEndpointReachable(endpoint string) error {
 	// to the search backend. The probe only checks that the host is
 	// listening — any HTTP response (even 401) means the service is up.
 	parsed.User = nil
-	parsed.Path = path.Join(parsed.Path, "search")
-	if !strings.HasPrefix(parsed.Path, "/") {
-		parsed.Path = "/" + parsed.Path
-	}
+	parsed.Path = websearch.JoinSearchPath(parsed.Path)
 	parsed.RawQuery = "q=__famclaw_startup_probe__&format=json"
 	probeURL := parsed.String()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

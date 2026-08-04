@@ -337,3 +337,28 @@ func TestCheckSearchEndpointReachable_CredentialedEndpointNoLeak(t *testing.T) {
 		t.Errorf("error must not contain credentials: %v", err)
 	}
 }
+
+// TestCheckSearchEndpointReachable_FullSearchURL verifies that when the
+// configured endpoint already includes /search, the probe does not
+// double-append it (producing /searx/search/search which would falsely
+// report the backend unreachable).
+func TestCheckSearchEndpointReachable_FullSearchURL(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	// Full search URL — the probe should hit /searx/search, not
+	// /searx/search/search.
+	endpoint := server.URL + "/searx/search"
+	err := checkSearchEndpointReachable(endpoint)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedPath != "/searx/search" {
+		t.Errorf("probe path = %q, want /searx/search (double-path would warn)", capturedPath)
+	}
+}
