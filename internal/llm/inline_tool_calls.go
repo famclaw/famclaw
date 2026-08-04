@@ -310,18 +310,19 @@ func stripGemmaToolCallBlocks(content string) string {
 }
 
 // stripControlTokens is the belt-and-braces final pass: it removes
-// every Gemma control token from a string. The regex is anchored on
-// the <| (or </|) prefix that all known Gemma control tokens share,
-// so legitimate user content like <a|b> or markdown table cells with
-// pipes in angle brackets is preserved. It runs AFTER format-specific
-// parsing (salvageInlineToolCalls, salvageGemmaToolCalls) so that
-// already-extracted tool calls are never affected.
+// every known Gemma control token from a string by enumerating the
+// exact token vocabulary (tool_call_begin, tool_call_end, tool_call,
+// tool_split, channel, the <"|"|> value delimiter, and bare/slash
+// closing variants). Arbitrary user content like <|something|> or
+// <a|b> is preserved — only the specific tokens Gemma emits are
+// stripped. Runs AFTER format-specific parsing so already-extracted
+// tool calls are never affected.
 //
 // NOTE: this function does NOT TrimSpace. Callers that need trimming
 // (mergeReasoning, chatFull) call strings.TrimSpace themselves. The
 // streaming path uses this function on individual tokens where
 // trimming would incorrectly drop space tokens.
-var reControlToken = regexp.MustCompile(`<[/?]?\|[^>]*\|?>`)
+var reControlToken = regexp.MustCompile(`</?\|(?:tool_call_begin|tool_call_end|tool_call|tool_split|channel)(?:\|)?>|<\|"\|>|<tool_call\|>`)
 
 // reGemmaLeftover matches a stray call:NAME{...} fragment that remains
 // when a Gemma tool-call block is malformed (e.g. missing the closing

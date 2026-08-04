@@ -293,6 +293,11 @@ func TestStripControlTokens(t *testing.T) {
 			input: "<a|b> link text </a>",
 			want:  "<a|b> link text </a>",
 		},
+		{
+			name:  "user-content-gemma-pattern-preserved",
+			input: "I typed <|something|> here and <|arbitrary|tokens|>",
+			want:  "I typed <|something|> here and <|arbitrary|tokens|>",
+		},
 	}
 
 	for _, tc := range tests {
@@ -424,8 +429,11 @@ func TestStripGemmaToolCallBlocks_LogsUnrecognizedTokens(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(oldOutput)
 
-	// Content with a recognized block followed by an unrecognized token
-	content := `<|tool_call_begin|>call:web_search{query:<|"|>test<|"|>}<|tool_call_end|> some prose <|unrecognized_format|>`
+	// Content with a recognized block followed by a known Gemma token
+	// that is not part of the block. The token should be logged and
+	// stripped — the "unrecognized" in the log means "not part of a
+	// recognized tool-call block", not "not a known Gemma token".
+	content := `<|tool_call_begin|>call:web_search{query:<|"|>test<|"|>}<|tool_call_end|> some prose <|tool_split|>`
 
 	stripGemmaToolCallBlocks(content)
 
@@ -433,7 +441,7 @@ func TestStripGemmaToolCallBlocks_LogsUnrecognizedTokens(t *testing.T) {
 	if !strings.Contains(logOutput, "unrecognized control token") {
 		t.Errorf("expected log warning about unrecognized control token, got: %q", logOutput)
 	}
-	if !strings.Contains(logOutput, "<|unrecognized_format|>") {
+	if !strings.Contains(logOutput, "<|tool_split|>") {
 		t.Errorf("expected log to include the token text, got: %q", logOutput)
 	}
 }
