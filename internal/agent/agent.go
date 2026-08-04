@@ -68,7 +68,7 @@ type Agent struct {
 	scheduler    *subagent.Scheduler
 	builtinTools []agentcore.Tool // tools to inject onto every Turn
 	convID       string
-	gateway      string // construction-time gateway for audit-log context; the per-message authority for SaveMessage is msgContext.Gateway (see gatewayForSave)
+	auditGateway string // construction-time gateway for audit-log context; the per-message authority for SaveMessage is msgContext.Gateway (see gatewayForSave)
 
 	// familyState is the always-injected family-state store used at
 	// prompt-build time. Phase 3.3 — nil disables family-state injection
@@ -306,7 +306,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		scheduler:            deps.Scheduler,
 		builtinTools:         builtins,
 		convID:               convID,
-		gateway:              deps.Gateway,
+		auditGateway:            deps.Gateway,
 		familyState:          fs,
 		todoStore:            ts,
 		userMemory:           um,
@@ -668,37 +668,37 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			label, _ := args["label"].(string)
 			return usermemory.HandleForget(ctx, a.userMemory, a.user.Name, category, label)
 		case "builtin__list_pending_approvals":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleListPendingApprovals(ctx, deps, args)
 		case "builtin__list_users":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleListUsers(ctx, deps, args)
 		case "builtin__list_unknown_accounts":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleListUnknownAccounts(ctx, deps, args)
 		case "builtin__approve_request":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, FamilyState: a.familyState}
 			return admin.HandleApproveRequest(ctx, deps, args)
 		case "builtin__deny_request":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleDenyRequest(ctx, deps, args)
 		case "builtin__set_user_role":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleSetUserRole(ctx, deps, args)
 		case "builtin__link_account":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleLinkAccount(ctx, deps, args)
 		case "builtin__set_family_fact":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, FamilyState: a.familyState}
 			return admin.HandleSetFamilyFact(ctx, deps, args)
 		case "builtin__delete_family_fact":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, FamilyState: a.familyState}
 			return admin.HandleDeleteFamilyFact(ctx, deps, args)
 		case "builtin__add_family_category":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, FamilyState: a.familyState}
 			return admin.HandleAddFamilyCategory(ctx, deps, args)
 		case "builtin__delete_family_category":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, FamilyState: a.familyState}
 			return admin.HandleDeleteFamilyCategory(ctx, deps, args)
 		case "builtin__file_read":
 			return a.handleFileRead(ctx, args)
@@ -1604,7 +1604,7 @@ func (a *Agent) handleProposeFamilyFact(ctx context.Context, args map[string]any
 			"id": f.ID, "auto_apply_parent": true,
 		})
 		if a.db != nil {
-			_ = a.db.LogAudit(ctx, a.user.Name, a.gateway, "builtin__propose_family_fact", auditArgs)
+			_ = a.db.LogAudit(ctx, a.user.Name, a.auditGateway, "builtin__propose_family_fact", auditArgs)
 		}
 		return fmt.Sprintf("ok — fact #%d applied directly (parent auto-apply)", f.ID), nil
 	}

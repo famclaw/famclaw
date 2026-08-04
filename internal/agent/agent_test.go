@@ -131,7 +131,7 @@ func TestAgentChatNoToolCalls(t *testing.T) {
 
 // TestAgentChatRecordsMsgContextGatewayNotAgentGateway verifies that
 // SaveMessage in Chat uses a.msgContext.Gateway (the gateway the message
-// actually arrived on) rather than a.gateway (the agent construction-time
+// actually arrived on) rather than a.auditGateway (the agent construction-time
 // value). An agent constructed with gateway "telegram" handling a message
 // whose msgCtx.Gateway is "discord" must save "discord".
 func TestAgentChatRecordsMsgContextGatewayNotAgentGateway(t *testing.T) {
@@ -143,7 +143,7 @@ func TestAgentChatRecordsMsgContextGatewayNotAgentGateway(t *testing.T) {
 	agent := setupAgent(t, server.URL)
 	// Agent constructed with telegram as its default gateway, but the
 	// message actually arrives on Discord.
-	agent.gateway = "telegram"
+	agent.auditGateway = "telegram"
 	agent.msgContext = gateway.MsgContext{
 		Gateway:    "discord",
 		ExternalID: "discord-chat-1",
@@ -169,7 +169,7 @@ func TestAgentChatRecordsMsgContextGatewayNotAgentGateway(t *testing.T) {
 	for _, m := range msgs {
 		if m.Gateway != "discord" {
 			t.Errorf("saved message gateway = %q, want %q (msgCtx gateway, not agent gateway %q)",
-				m.Gateway, "discord", agent.gateway)
+				m.Gateway, "discord", agent.auditGateway)
 		}
 	}
 }
@@ -230,7 +230,7 @@ func TestGatewayForSave_PinsPerMessageAuthority(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &Agent{
-				gateway:    tc.agentGw,
+				auditGateway: tc.agentGw,
 				msgContext: gateway.MsgContext{Gateway: tc.msgCtx},
 			}
 			got := a.gatewayForSave()
@@ -949,7 +949,7 @@ func TestHandleProposeFamilyFact_Parent_AutoApply(t *testing.T) {
 		t.Fatalf("evaluator: %v", err)
 	}
 
-	a := &Agent{cfg: cfg, db: db, familyState: fs, evaluator: ev, user: &cfg.Users[0], gateway: "test"}
+	a := &Agent{cfg: cfg, db: db, familyState: fs, evaluator: ev, user: &cfg.Users[0], auditGateway: "test"}
 
 	out, err := a.handleProposeFamilyFact(context.Background(), map[string]any{
 		"category": "pets", "subject": "family", "label": "Stella", "value": "cat",
@@ -982,7 +982,7 @@ func TestHandleProposeFamilyFact_Child_QueuesApproval(t *testing.T) {
 		{Name: "dep", Role: "parent"},
 		{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "age_13_17"},
 	}}
-	a := &Agent{cfg: cfg, db: db, familyState: fs, user: &cfg.Users[1], gateway: "test"}
+	a := &Agent{cfg: cfg, db: db, familyState: fs, user: &cfg.Users[1], auditGateway: "test"}
 
 	out, err := a.handleProposeFamilyFact(context.Background(), map[string]any{
 		"category": "pets", "subject": "family", "label": "Rex", "value": "dog",

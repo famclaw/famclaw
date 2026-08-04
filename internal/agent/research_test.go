@@ -231,7 +231,7 @@ func TestResearchStatus_RunningThenTerminal(t *testing.T) {
 
 // TestFinalizeResearch_UsesMsgCtxGateway verifies that the research result
 // saved to the conversation history carries msgCtx.Gateway (the gateway the
-// request actually arrived on), NOT a.gateway (the agent construction-time
+// request actually arrived on), NOT a.auditGateway (the agent construction-time
 // value). This is the core guarantee of per-message gateway recording: a
 // research task spawned from a Discord message must be attributed to Discord
 // even if the agent was constructed with a different default gateway.
@@ -240,7 +240,7 @@ func TestFinalizeResearch_UsesMsgCtxGateway(t *testing.T) {
 	a := setupResearchAgent(t, sink)
 	// Agent constructed with telegram as its default gateway, but the
 	// research request actually arrives on Discord.
-	a.gateway = "telegram"
+	a.auditGateway = "telegram"
 	a.senderRegistry["discord"] = sink
 
 	discordCtx := gateway.MsgContext{
@@ -261,7 +261,7 @@ func TestFinalizeResearch_UsesMsgCtxGateway(t *testing.T) {
 	}
 	if hist[0].Gateway != "discord" {
 		t.Errorf("saved message gateway = %q, want %q (msgCtx gateway, not agent gateway %q)",
-			hist[0].Gateway, "discord", a.gateway)
+			hist[0].Gateway, "discord", a.auditGateway)
 	}
 
 	// The research status record must also capture the msgCtx gateway.
