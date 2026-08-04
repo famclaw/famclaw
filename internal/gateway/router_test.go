@@ -1558,3 +1558,58 @@ func TestRouterImageAttachmentForwarded(t *testing.T) {
 		t.Errorf("text-only message should have 0 attachments, got %d", len(got2.attachments))
 	}
 }
+
+// TestRouterSavesGatewayOnMessage verifies that the real gateway name from the
+// inbound Message is persisted by the router's SaveMessage calls — proving the
+// gateway value originates from the gateway layer, not a store-layer default.
+// Uses the block path (router calls SaveMessage directly) for determinism
+// without depending on the LLM agent.
+func TestRouterSavesGatewayOnMessage(t *testing.T) {
+	cases := []struct {
+		name       string
+		gateway    string
+		externalID string
+	}{
+		{name: "telegram", gateway: "telegram", externalID: "sofia-tg"},
+		{name: "discord", gateway: "discord", externalID: "sofia-dc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, identStore := setupRouter(t, panicChat)
+			identStore.LinkAccount("sofia", tc.gateway, tc.externalID)
+
+			reply := router.Handle(context.Background(), Message{
+				Gateway:    tc.gateway,
+				ExternalID: tc.externalID,
+				Text:       "show me porn",
+			})
+			if reply.PolicyAction != "block" {
+				t.Fatalf("critical category should be blocked, got %q", reply.PolicyAction)
+			}
+
+			// The most-recent-gateway query must reflect the real gateway.
+			gw, err := router.db.MostRecentGatewayForUser("sofia")
+			if err != nil {
+				t.Fatalf("MostRecentGatewayForUser: %v", err)
+			}
+			if gw != tc.gateway {
+				t.Errorf("most recent gateway = %q, want %q", gw, tc.gateway)
+			}
+
+			// Also verify via GetConversationHistory that messages read back
+			// with the correct gateway.
+			msgs, err := router.db.RecentMessagesByUser("sofia", 20)
+			if err != nil {
+				t.Fatalf("GetConversationHistory: %v", err)
+			}
+			if len(msgs) == 0 {
+				t.Fatalf("expected saved messages, got 0")
+			}
+			for _, m := range msgs {
+				if m.Gateway != tc.gateway {
+					t.Errorf("message gateway = %q, want %q", m.Gateway, tc.gateway)
+				}
+			}
+		})
+	}
+}

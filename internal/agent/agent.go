@@ -68,7 +68,7 @@ type Agent struct {
 	scheduler    *subagent.Scheduler
 	builtinTools []agentcore.Tool // tools to inject onto every Turn
 	convID       string
-	gateway      string // gateway name (telegram, discord, web, etc.) for audit logs
+	auditGateway string // construction-time gateway for audit-log context; the per-message authority for SaveMessage is msgContext.Gateway (see gatewayForSave)
 
 	// familyState is the always-injected family-state store used at
 	// prompt-build time. Phase 3.3 — nil disables family-state injection
@@ -306,7 +306,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		scheduler:            deps.Scheduler,
 		builtinTools:         builtins,
 		convID:               convID,
-		gateway:              deps.Gateway,
+		auditGateway:            deps.Gateway,
 		familyState:          fs,
 		todoStore:            ts,
 		userMemory:           um,
@@ -376,6 +376,26 @@ func (a *Agent) transcribeAttachments(ctx context.Context, attachments []gateway
 	return strings.Join(parts, "\n"), nil
 }
 
+// gatewayOrUnknown returns the gateway name, falling back to "unknown" when
+// the value is empty. gateway.MsgContext is a value type, so a zero-valued
+// context yields an empty string — not the "unknown" sentinel. Routing every
+// SaveMessage call through this helper guarantees MostRecentGatewayForUser
+// never returns "", which would cause cross-chat delivery to misroute or
+// drop the reply.
+func gatewayOrUnknown(gw string) string {
+	if gw == "" {
+		return "unknown"
+	}
+	return gw
+}
+
+// gatewayForSave returns the per-message gateway to record for a message
+// saved by the agent. It uses the gateway the message arrived on
+// (a.msgContext.Gateway) and falls back to "unknown" when that is empty.
+func (a *Agent) gatewayForSave() string {
+	return gatewayOrUnknown(a.msgContext.Gateway)
+}
+
 // Chat processes a single user message and returns a Response.
 // Delegates to agentcore.FamilyPipeline for the processing stages.
 func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(string)) (*Response, error) {
@@ -392,7 +412,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	}
 
 	// Save user message before processing
-	if err := a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, "", ""); err != nil {
+	if err := a.db.SaveMessage(a.convID, a.user.Name, "user", userMessage, "", "", a.gatewayForSave()); err != nil {
 		log.Printf("[agent][%s] save user message: %v", a.user.Name, err)
 	}
 
@@ -508,7 +528,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// Handle policy blocks (not a real error — just a non-allow decision)
 	if errors.Is(err, agentcore.ErrPolicyBlock) {
 		log.Printf("[agent][%s] cat=%s action=%s", a.user.Name, turn.Category, turn.Policy.Action)
-		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), turn.Policy.Action); err != nil {
+		if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), turn.Policy.Action, a.gatewayForSave()); err != nil {
 			log.Printf("[agent][%s] save policy-blocked response: %v", a.user.Name, err)
 		}
 		return &Response{
@@ -533,7 +553,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 				log.Printf("[agent][%s] output gate error (treating as block): %v", a.user.Name, gateErr)
 			}
 			blocked := "I'm unable to send this response right now."
-			if dbErr := a.db.SaveMessage(a.convID, a.user.Name, "assistant", blocked, string(turn.Category), "block"); dbErr != nil {
+			if dbErr := a.db.SaveMessage(a.convID, a.user.Name, "assistant", blocked, string(turn.Category), "block", a.gatewayForSave()); dbErr != nil {
 				log.Printf("[agent][%s] save output-gated response: %v", a.user.Name, dbErr)
 			}
 			return &Response{
@@ -582,7 +602,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	log.Printf("[agent][%s] cat=%s action=allow", a.user.Name, turn.Category)
 
 	// Save assistant response
-	if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), "allow"); err != nil {
+	if err := a.db.SaveMessage(a.convID, a.user.Name, "assistant", turn.Output, string(turn.Category), "allow", a.gatewayForSave()); err != nil {
 		log.Printf("[agent][%s] save assistant response: %v", a.user.Name, err)
 	}
 
@@ -648,37 +668,37 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			label, _ := args["label"].(string)
 			return usermemory.HandleForget(ctx, a.userMemory, a.user.Name, category, label)
 		case "builtin__list_pending_approvals":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleListPendingApprovals(ctx, deps, args)
 		case "builtin__list_users":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleListUsers(ctx, deps, args)
 		case "builtin__list_unknown_accounts":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleListUnknownAccounts(ctx, deps, args)
 		case "builtin__approve_request":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, FamilyState: a.familyState}
 			return admin.HandleApproveRequest(ctx, deps, args)
 		case "builtin__deny_request":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleDenyRequest(ctx, deps, args)
 		case "builtin__set_user_role":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleSetUserRole(ctx, deps, args)
 		case "builtin__link_account":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleLinkAccount(ctx, deps, args)
 		case "builtin__set_family_fact":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, FamilyState: a.familyState}
 			return admin.HandleSetFamilyFact(ctx, deps, args)
 		case "builtin__delete_family_fact":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, FamilyState: a.familyState}
 			return admin.HandleDeleteFamilyFact(ctx, deps, args)
 		case "builtin__add_family_category":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, FamilyState: a.familyState}
 			return admin.HandleAddFamilyCategory(ctx, deps, args)
 		case "builtin__delete_family_category":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.gateway, FamilyState: a.familyState}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, FamilyState: a.familyState}
 			return admin.HandleDeleteFamilyCategory(ctx, deps, args)
 		case "builtin__file_read":
 			return a.handleFileRead(ctx, args)
@@ -1584,7 +1604,7 @@ func (a *Agent) handleProposeFamilyFact(ctx context.Context, args map[string]any
 			"id": f.ID, "auto_apply_parent": true,
 		})
 		if a.db != nil {
-			_ = a.db.LogAudit(ctx, a.user.Name, a.gateway, "builtin__propose_family_fact", auditArgs)
+			_ = a.db.LogAudit(ctx, a.user.Name, a.auditGateway, "builtin__propose_family_fact", auditArgs)
 		}
 		return fmt.Sprintf("ok — fact #%d applied directly (parent auto-apply)", f.ID), nil
 	}

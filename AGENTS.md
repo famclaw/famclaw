@@ -95,6 +95,7 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 - Where is the web fetch tool registered? → `cmd/famclaw/main.go` (line 588)
 - Where is the approval decision notified? → `internal/gateway/router.go:createApproval` (line 252)
 - Where is the database migrated? → `internal/store/db.go:migrate` (line 63)
+- Where is the message gateway recorded? → `internal/store/db.go:SaveMessage` (gateway param; `MostRecentGatewayForUser` query; column backfilled to `unknown` for pre-migration rows)
 - Where is the notification sent? → `internal/notify/notifier.go:Notify` (line 63)
 - Where is the agent chat function defined? → `cmd/famclaw/main.go` (line 653)
 - Where is the family state stored? → `internal/familystate/store.go:Store` (line 14)

@@ -129,6 +129,119 @@ func TestAgentChatNoToolCalls(t *testing.T) {
 	}
 }
 
+// TestAgentChatRecordsMsgContextGatewayNotAgentGateway verifies that
+// SaveMessage in Chat uses a.msgContext.Gateway (the gateway the message
+// actually arrived on) rather than a.auditGateway (the agent construction-time
+// value). An agent constructed with gateway "telegram" handling a message
+// whose msgCtx.Gateway is "discord" must save "discord".
+func TestAgentChatRecordsMsgContextGatewayNotAgentGateway(t *testing.T) {
+	server := mockLLMServer(t, []llm.Message{
+		{Role: "assistant", Content: "Hello!"},
+	})
+	defer server.Close()
+
+	agent := setupAgent(t, server.URL)
+	// Agent constructed with telegram as its default gateway, but the
+	// message actually arrives on Discord.
+	agent.auditGateway = "telegram"
+	agent.msgContext = gateway.MsgContext{
+		Gateway:    "discord",
+		ExternalID: "discord-chat-1",
+	}
+
+	resp, err := agent.Chat(context.Background(), "hi", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.PolicyAction != "allow" {
+		t.Fatalf("expected allow, got %q", resp.PolicyAction)
+	}
+
+	// Saved messages must carry the msgCtx gateway (discord), not the
+	// agent's construction-time gateway (telegram).
+	msgs, err := agent.db.GetConversationHistory(agent.convID, 20)
+	if err != nil {
+		t.Fatalf("GetConversationHistory: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatalf("expected saved messages, got 0")
+	}
+	for _, m := range msgs {
+		if m.Gateway != "discord" {
+			t.Errorf("saved message gateway = %q, want %q (msgCtx gateway, not agent gateway %q)",
+				m.Gateway, "discord", agent.auditGateway)
+		}
+	}
+}
+
+// TestAgentChatZeroValueMsgContextSavesUnknown verifies that when the agent
+// is constructed without a message context (zero-valued MsgContext), the
+// gateway saved is "unknown" — never an empty string. This is the safety
+// net that prevents MostRecentGatewayForUser from returning "", which would
+// cause cross-chat delivery to misroute or drop the reply.
+func TestAgentChatZeroValueMsgContextSavesUnknown(t *testing.T) {
+	server := mockLLMServer(t, []llm.Message{
+		{Role: "assistant", Content: "Hello!"},
+	})
+	defer server.Close()
+
+	agent := setupAgent(t, server.URL)
+	// setupAgent uses AgentDeps{} so a.msgContext is zero-valued (Gateway="").
+
+	resp, err := agent.Chat(context.Background(), "hi", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.PolicyAction != "allow" {
+		t.Fatalf("expected allow, got %q", resp.PolicyAction)
+	}
+
+	msgs, err := agent.db.GetConversationHistory(agent.convID, 20)
+	if err != nil {
+		t.Fatalf("GetConversationHistory: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatalf("expected saved messages, got 0")
+	}
+	for _, m := range msgs {
+		if m.Gateway != "unknown" {
+			t.Errorf("zero-value msgContext gateway = %q, want %q", m.Gateway, "unknown")
+		}
+	}
+}
+
+
+// TestGatewayForSave_PinsPerMessageAuthority verifies that gatewayForSave()
+// uses the per-message msgContext.Gateway, not the agent's construction-time
+// gateway field. This is the property that allows the same agent to record
+// the correct gateway even if msgContext is updated mid-conversation.
+func TestGatewayForSave_PinsPerMessageAuthority(t *testing.T) {
+	tests := []struct {
+		name    string
+		agentGw string
+		msgCtx  string
+		want    string
+	}{
+		{name: "msgCtx overrides agent", agentGw: "telegram", msgCtx: "discord", want: "discord"},
+		{name: "msgCtx web", agentGw: "telegram", msgCtx: "web", want: "web"},
+		{name: "empty msgCtx falls back", agentGw: "telegram", msgCtx: "", want: "unknown"},
+		{name: "empty msgCtx even if agent set", agentGw: "discord", msgCtx: "", want: "unknown"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Agent{
+				auditGateway: tc.agentGw,
+				msgContext: gateway.MsgContext{Gateway: tc.msgCtx},
+			}
+			got := a.gatewayForSave()
+			if got != tc.want {
+				t.Errorf("gatewayForSave() = %q, want %q (agent=%q, msgCtx=%q)",
+					got, tc.want, tc.agentGw, tc.msgCtx)
+			}
+		})
+	}
+}
+
 func TestAgentChatPoolNil(t *testing.T) {
 	// Even with tool_calls in response, if pool is nil, they're ignored
 	server := mockLLMServer(t, []llm.Message{
@@ -836,7 +949,7 @@ func TestHandleProposeFamilyFact_Parent_AutoApply(t *testing.T) {
 		t.Fatalf("evaluator: %v", err)
 	}
 
-	a := &Agent{cfg: cfg, db: db, familyState: fs, evaluator: ev, user: &cfg.Users[0], gateway: "test"}
+	a := &Agent{cfg: cfg, db: db, familyState: fs, evaluator: ev, user: &cfg.Users[0], auditGateway: "test"}
 
 	out, err := a.handleProposeFamilyFact(context.Background(), map[string]any{
 		"category": "pets", "subject": "family", "label": "Stella", "value": "cat",
@@ -869,7 +982,7 @@ func TestHandleProposeFamilyFact_Child_QueuesApproval(t *testing.T) {
 		{Name: "dep", Role: "parent"},
 		{Name: "teo", DisplayName: "Teo", Role: "child", AgeGroup: "age_13_17"},
 	}}
-	a := &Agent{cfg: cfg, db: db, familyState: fs, user: &cfg.Users[1], gateway: "test"}
+	a := &Agent{cfg: cfg, db: db, familyState: fs, user: &cfg.Users[1], auditGateway: "test"}
 
 	out, err := a.handleProposeFamilyFact(context.Background(), map[string]any{
 		"category": "pets", "subject": "family", "label": "Rex", "value": "dog",

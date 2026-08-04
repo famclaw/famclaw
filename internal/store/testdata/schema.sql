@@ -1,3 +1,7 @@
+-- FamClaw schema golden file. Regenerate with:
+--   go test -tags dumpschema -run TestDumpSchema ./internal/store/
+-- (or set UPDATE_SCHEMA_GOLDEN=1 and run TestSchemaGolden)
+
 CREATE INDEX idx_approvals_status ON approvals(status);
 
 CREATE INDEX idx_approvals_user ON approvals(user_name);
@@ -136,6 +140,7 @@ CREATE TABLE messages (
 		content         TEXT NOT NULL,
 		category        TEXT,
 		policy_action   TEXT,           -- allow | block | request_approval | pending
+		gateway         TEXT NOT NULL DEFAULT 'unknown',  -- telegram | discord | whatsapp | web
 		created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 

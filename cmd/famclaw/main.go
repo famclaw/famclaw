@@ -704,6 +704,7 @@ func main() {
 			Scanner:        hbScanner,
 			Scheduler:      agentScheduler,
 			BuiltinTools:   builtinTools,
+			Gateway:        msgCtx.Gateway,
 			Cache:          toolCache,
 			BrowserPool:    browserPool,
 			MsgContext:     msgCtx,
