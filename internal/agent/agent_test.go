@@ -211,7 +211,6 @@ func TestAgentChatZeroValueMsgContextSavesUnknown(t *testing.T) {
 	}
 }
 
-
 // TestGatewayForSave_PinsPerMessageAuthority verifies that gatewayForSave()
 // uses the per-message msgContext.Gateway, not the agent's construction-time
 // gateway field. This is the property that allows the same agent to record
@@ -232,7 +231,7 @@ func TestGatewayForSave_PinsPerMessageAuthority(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &Agent{
 				auditGateway: tc.agentGw,
-				msgContext: gateway.MsgContext{Gateway: tc.msgCtx},
+				msgContext:   gateway.MsgContext{Gateway: tc.msgCtx},
 			}
 			got := a.gatewayForSave()
 			if got != tc.want {

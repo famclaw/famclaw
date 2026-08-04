@@ -306,7 +306,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		scheduler:            deps.Scheduler,
 		builtinTools:         builtins,
 		convID:               convID,
-		auditGateway:            deps.Gateway,
+		auditGateway:         deps.Gateway,
 		familyState:          fs,
 		todoStore:            ts,
 		userMemory:           um,
