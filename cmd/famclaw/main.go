@@ -45,6 +45,7 @@ import (
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/reminder"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
@@ -610,6 +611,11 @@ func main() {
 	builtinTools = append(builtinTools, todo.Tool(nil))
 	registered = append(registered, "todo")
 
+	// Reminder tool — registered alongside todo; access controlled by tool_policy.rego
+	// (parents can set reminders for any family member; children for themselves).
+	builtinTools = append(builtinTools, reminder.Tool())
+	registered = append(registered, "add_reminder")
+
 	// Phase 4 — user memory tools (remember/recall/forget) available to all roles.
 	builtinTools = append(builtinTools,
 		usermemory.RememberDefinition(),
@@ -755,6 +761,7 @@ func main() {
 	}
 
 	stopGateways := func() {}
+	var reminderScheduler *reminder.Scheduler
 	if len(gateways) > 0 {
 		// Wire every enabled gateway that can send outbound messages into the
 		// agent's sender registry, keyed by gateway name (e.g. "telegram").
@@ -766,6 +773,19 @@ func main() {
 		stopGateways = gateway.StartAll(gwCtx, gateways, router.Handle)
 		log.Printf("Gateways: %d started", len(gateways))
 	}
+
+	// Reminder scheduler — delivers due reminders proactively through the
+	// appropriate gateway. Shares the gateway senders registered above into
+	// senderRegistry, keyed by gateway name (the same keys the dispatcher
+	// uses to look up a Sender at dispatch time).
+	reminderDispatcher := reminder.NewDispatcher()
+	for name, s := range senderRegistry {
+		reminderDispatcher.RegisterSender(name, s)
+	}
+	reminderScheduler = reminder.NewScheduler(db, reminderDispatcher, 30*time.Second)
+	reminderScheduler.Start(gwCtx)
+	reminderScheduler.ReschedulePending(gwCtx)
+	log.Printf("Reminder scheduler: started (poll interval 30s)")
 
 	// Session store + credential vault for the web admin auth flow.
 	// SessionStore needs the raw *sql.DB underlying store.DB. The vault is
@@ -949,6 +969,7 @@ func main() {
 	}
 	router.Shutdown()      // cancel in-flight session processing
 	sessionCleanupCancel() // stop session-cleanup goroutine
+	reminderScheduler.Stop() // stop reminder scheduler goroutine
 
 	ctx, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel2()

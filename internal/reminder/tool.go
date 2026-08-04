@@ -44,7 +44,13 @@ func Tool() agentcore.Tool {
 
 // HandleAddReminder creates a reminder and stores it in the database.
 // The agent's makeBuiltinHandler should call this with the appropriate deps.
-func HandleAddReminder(ctx context.Context, db *store.DB, user *config.UserConfig, gateway, externalID, groupID string, isGroup bool, when, message, forUser string) (string, error) {
+// For cross-user reminders (forUser set), the target user's most recent
+// gateway and external_id are resolved from the store so the scheduler can
+// deliver proactively through the right platform. The setter's gateway/
+// external_id are preserved in SetterGateway/SetterExternalID so that
+// confirmations, delivery receipts, and audit can route back to the person
+// who created the reminder.
+func HandleAddReminder(ctx context.Context, db *store.DB, cfg *config.Config, user *config.UserConfig, gateway, externalID, groupID string, isGroup bool, when, message, forUser string) (string, error) {
 	// Parse the time
 	now := time.Now()
 	dueAt, err := ParseTime(when, now, time.Local)
@@ -59,23 +65,53 @@ func HandleAddReminder(ctx context.Context, db *store.DB, user *config.UserConfi
 
 	// Determine target user
 	targetUser := user.Name
+	// deliveryGateway/deliveryExternalID are where the reminder will be
+	// SENT (the target's platform). The setter's gateway/externalID stay
+	// in the original variables for the SetterGateway/SetterExternalID
+	// fields.
+	deliveryGateway := gateway
+	deliveryExternalID := externalID
+	deliveryGroupID := groupID
+	deliveryIsGroup := isGroup
+
 	if forUser != "" {
 		if user.Role != "parent" {
 			return "", fmt.Errorf("only parents can set reminders for other users")
 		}
+		// Resolve the target against the configured family members.
+		// An unknown name is a clear error — never a silent no-op.
+		if cfg.GetUser(forUser) == nil {
+			return "", fmt.Errorf("%q is not a configured family member", forUser)
+		}
 		targetUser = forUser
+		// Look up the target user's most recent gateway + external_id so
+		// the scheduler can deliver proactively. If they have no recorded
+		// gateway, report it honestly rather than guessing a destination.
+		targetGateway, targetExternalID, err := db.MostRecentGatewayAndExternalIDForUser(ctx, targetUser)
+		if err != nil {
+			return "", fmt.Errorf("resolving gateway for %s: %w", targetUser, err)
+		}
+		if targetGateway == "" || targetExternalID == "" {
+			return "", fmt.Errorf("%s has not sent any messages yet, so I don't know how to reach them on any gateway", targetUser)
+		}
+		deliveryGateway = targetGateway
+		deliveryExternalID = targetExternalID
+		deliveryGroupID = ""
+		deliveryIsGroup = false
 	}
 
 	reminder := &store.Reminder{
-		UserName:   targetUser,
-		Gateway:    gateway,
-		ExternalID: externalID,
-		GroupID:    groupID,
-		IsGroup:    isGroup,
-		Message:    message,
-		DueAt:      dueAt,
-		CreatedAt:  now,
-		Dispatched: false,
+		UserName:         targetUser,
+		Gateway:          deliveryGateway,
+		ExternalID:       deliveryExternalID,
+		GroupID:          deliveryGroupID,
+		IsGroup:          deliveryIsGroup,
+		Message:          message,
+		DueAt:            dueAt,
+		CreatedAt:        now,
+		Dispatched:       false,
+		SetterGateway:    gateway,
+		SetterExternalID: externalID,
 	}
 
 	if err := db.CreateReminder(ctx, reminder); err != nil {
@@ -83,11 +119,12 @@ func HandleAddReminder(ctx context.Context, db *store.DB, user *config.UserConfi
 	}
 
 	result := map[string]any{
-		"reminder_id": reminder.ID,
-		"due_at":      dueAt.Format(time.RFC3339),
-		"message":     message,
-		"for_user":    targetUser,
-		"status":      "scheduled",
+		"reminder_id":    reminder.ID,
+		"due_at":         dueAt.Format(time.RFC3339),
+		"message":        message,
+		"for_user":       targetUser,
+		"setter_gateway": gateway,
+		"status":         "scheduled",
 	}
 	b, _ := json.Marshal(result)
 	return string(b), nil

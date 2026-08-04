@@ -185,4 +185,7 @@ admin_tools := {
     # Closes the "OPA hole" identified by R3 council — without this, a Go bug
     # could let a child auto-apply via the propose_family_fact path.
     "family_fact_proposal_auto_apply",
+    # Phase 4 — proactive cross-chat messaging. Only parents may address
+    # another family member on a platform they are not currently on.
+    "send_message",
 }
