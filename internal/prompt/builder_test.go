@@ -393,6 +393,28 @@ func TestBehavioralRules_Exported(t *testing.T) {
 		t.Errorf("exported BehavioralRules() still contains retired deflection phrasing")
 	}
 
+	// Unavailability relay rule: the model must convey the unavailability
+	// to the user in their preferred language (not invent around it) whenever
+	// a tool reports it could not complete its task — regardless of whether
+	// that arrives as a tool error or a tool result string. This pins the
+	// rule so a regression to error-only handling (which web_search's
+	// honest-result-string path would bypass) is caught.
+	for _, want := range []string{
+		"If a tool returns an error OR a result that reports it could not complete its task",
+		"CONVEY to the user, in their preferred language",
+		"you will not invent results to fill the gap",
+		"whether the unavailability arrives as a tool error or as a tool result string",
+	} {
+		if !strings.Contains(rules, want) {
+			t.Errorf("exported BehavioralRules() missing unavailability relay rule %q", want)
+		}
+	}
+	// The old error-only phrasing must be gone — it would miss the
+	// result-string path that web_search now uses.
+	if strings.Contains(rules, "TELL the user exactly what the error says") {
+		t.Errorf("exported BehavioralRules() still contains retired error-only phrasing (should cover result strings too)")
+	}
+
 	// Strongest form: the retired phrasing must be absent from the fully
 	// assembled prompt too. behavioralRules() is only injected when tools
 	// are present (capabilitiesComponent), so build a prompt with a tool.
@@ -407,6 +429,16 @@ func TestBehavioralRules_Exported(t *testing.T) {
 	for _, want := range []string{"ALWAYS try your search or fetch tools first", "Only if you have actually tried"} {
 		if !strings.Contains(assembled, want) {
 			t.Errorf("built prompt missing grounding guidance %q", want)
+		}
+	}
+	// The unavailability relay rule must also appear in the assembled prompt.
+	for _, want := range []string{
+		"If a tool returns an error OR a result that reports it could not complete its task",
+		"CONVEY to the user, in their preferred language",
+		"whether the unavailability arrives as a tool error or as a tool result string",
+	} {
+		if !strings.Contains(assembled, want) {
+			t.Errorf("built prompt missing unavailability relay rule %q", want)
 		}
 	}
 }

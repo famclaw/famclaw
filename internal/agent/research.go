@@ -109,7 +109,7 @@ func chatIDOf(m gateway.MsgContext) string {
 func buildResearchDeliverable(agentID string, state store.ResearchStatusState, resultText string, timeoutSec int) string {
 	switch state {
 	case store.ResearchStatusTimedOut:
-		return fmt.Sprintf("⏰ Research task %s timed out after %d seconds.", agentID, timeoutSec)
+		return fmt.Sprintf("The research task (%s) I started timed out after %d seconds. I saved what it found — you can check its status with: research status %s.", agentID, timeoutSec, agentID)
 	case store.ResearchStatusFailed:
 		return fmt.Sprintf("❌ Research task %s failed: %s", agentID, resultText)
 	case store.ResearchStatusCompleted:

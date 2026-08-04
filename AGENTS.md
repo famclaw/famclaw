@@ -106,6 +106,8 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 - Where is the LLM client created? → `cmd/famclaw/main.go` (line 442)
 - Where is the gateway account linked? → `internal/gateway/router.go:handleUnknownAccount` (line 373)
 - Where is the current date injected into the system prompt? → `internal/prompt/components.go:dateComponent` (clock via `BuildContext.Now`, falls back to `time.Now()`; snapshot fixtures use a fixed clock in `internal/prompt/snapshot_test.go`)
+- Where is web_search's "backend unavailable" sentinel? → `internal/websearch/search.go` (`ErrUnavailable`, detected via `errors.Is`); `internal/agent/agent.go` (`webSearchError`) translates it into an honest "I could not search right now" message.
+- Where is the search endpoint startup reachability check? → `cmd/famclaw/main.go` (`checkSearchEndpointReachable`)
 
 ### Notable sharp edges
 

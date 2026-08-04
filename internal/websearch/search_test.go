@@ -3,12 +3,16 @@ package websearch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
 func TestSearch_EmptyQueryRejected(t *testing.T) {
@@ -28,6 +32,51 @@ func TestSearch_EmptyEndpointRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "endpoint not configured") {
 		t.Errorf("expected error to contain 'endpoint not configured', got %v", err)
+	}
+}
+
+// TestSearch_EndpointWithoutHostRejected verifies that an endpoint that
+// parses but has no host (e.g. a bare path) is rejected with a clear
+// configuration error, not silently turned into a relative request path.
+func TestSearch_EndpointWithoutHostRejected(t *testing.T) {
+	// A bare path parses successfully but has no host — this must be
+	// rejected with a clear configuration error, not silently turned into
+	// a relative request path.
+	_, err := Search(context.Background(), "x", Options{Endpoint: "/search"})
+	if err == nil {
+		t.Fatal("expected error for endpoint without host, got nil")
+	}
+	if !strings.Contains(err.Error(), "host") {
+		t.Errorf("expected error to mention host, got %v", err)
+	}
+}
+
+// TestSanitizeEndpoint ensures credentials are stripped before logging.
+func TestSanitizeEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		want     string
+	}{
+		{name: "no credentials", endpoint: "http://localhost:8888", want: "http://localhost:8888"},
+		{name: "with path", endpoint: "http://localhost:8888/searx", want: "http://localhost:8888/searx"},
+		{name: "user and pass", endpoint: "http://user:pass@searx.example.com:8888/search", want: "http://searx.example.com:8888/search"},
+		{name: "user only", endpoint: "http://user@searx.example.com:8888", want: "http://searx.example.com:8888"},
+		{name: "unparseable", endpoint: "://not-a-url", want: "[unparseable endpoint]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeEndpoint(tc.endpoint)
+			if tc.name == "user and pass" {
+				// Strongest assertion: the password must not appear anywhere.
+				if strings.Contains(got, "pass") {
+					t.Errorf("sanitized endpoint must not contain the password: %q", got)
+				}
+			}
+			if got != tc.want {
+				t.Errorf("SanitizeEndpoint(%q) = %q, want %q", tc.endpoint, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -139,10 +188,150 @@ func TestSearch_DecodesGarbageError(t *testing.T) {
 		AllowPrivateNetworks: true,
 	})
 	if err == nil {
-		t.Fatalf("expected decode error, got nil")
+		t.Fatalf("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "decode") {
-		t.Errorf("expected error to contain 'decode', got %v", err)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("expected ErrUnavailable for garbage response, got %v", err)
+	}
+}
+
+// TestSearch_BackendUnreachable_HTTPError verifies that a backend returning
+// a non-2xx status produces ErrUnavailable — never an empty result set.
+func TestSearch_BackendUnreachable_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	_, err := Search(context.Background(), "x", Options{
+		Endpoint:             server.URL,
+		Timeout:              5 * time.Second,
+		AllowPrivateNetworks: true,
+	})
+	if err == nil {
+		t.Fatal("expected error for 500 response, got nil — empty results would invite hallucination")
+	}
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("expected ErrUnavailable, got %v", err)
+	}
+}
+
+// TestSearch_BackendUnreachable_ConnectionRefused verifies that a backend
+// that cannot be reached at all (connection refused) produces ErrUnavailable.
+func TestSearch_BackendUnreachable_ConnectionRefused(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot create listener: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // close so the connection is refused
+
+	_, err = Search(context.Background(), "x", Options{
+		Endpoint:             "http://" + addr,
+		Timeout:              2 * time.Second,
+		AllowPrivateNetworks: true,
+	})
+	if err == nil {
+		t.Fatal("expected error for unreachable backend, got nil")
+	}
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("expected ErrUnavailable, got %v", err)
+	}
+}
+
+// TestSearch_ZeroResultsReturnsEmptySlice verifies that a backend returning
+// zero hits is a normal "no results" outcome — NOT an error, and distinct
+// from ErrUnavailable. This prevents the LLM from conflating "nothing found"
+// with "search is broken."
+func TestSearch_ZeroResultsReturnsEmptySlice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	hits, err := Search(context.Background(), "x", Options{
+		Endpoint:             server.URL,
+		Timeout:              5 * time.Second,
+		AllowPrivateNetworks: true,
+	})
+	if err != nil {
+		t.Fatalf("expected no error for zero results, got %v — zero results is a valid outcome, not an error", err)
+	}
+	if hits == nil {
+		t.Fatal("expected non-nil (but empty) hit slice, got nil")
+	}
+	if len(hits) != 0 {
+		t.Errorf("expected 0 hits, got %d", len(hits))
+	}
+}
+
+// TestSearch_RedirectToDisallowedHost verifies that a redirect to a host
+// not on the URL allowlist is classified as a HostNotAllowedError (a
+// configuration gap), NOT as ErrUnavailable. This confirms that the
+// errors.As check in Search correctly traverses the error chain from
+// webfetch.Fetch through the CheckRedirect wrapper.
+func TestSearch_RedirectToDisallowedHost(t *testing.T) {
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Redirect to a host that is NOT in the allowlist.
+		http.Redirect(w, r, "http://evil.example.com/search?q=test", http.StatusFound)
+	}))
+	defer redirectServer.Close()
+
+	_, err := Search(context.Background(), "x", Options{
+		Endpoint:             redirectServer.URL,
+		Timeout:              5 * time.Second,
+		AllowPrivateNetworks: true,
+		HostValidator: func(host string) error {
+			if host == "evil.example.com" {
+				return webfetch.NewHostNotAllowedError(host)
+			}
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for redirect to disallowed host, got nil")
+	}
+	// The redirect-bounce host error must NOT be misclassified as
+	// ErrUnavailable — it is a configuration error, not a backend outage.
+	if errors.Is(err, ErrUnavailable) {
+		t.Errorf("redirect to disallowed host should NOT be ErrUnavailable, got: %v", err)
+	}
+	// And it should be a HostNotAllowedError, confirming errors.As
+	// traversed the CheckRedirect → url.Error → Fetch wrapping chain.
+	var hostErr *webfetch.HostNotAllowedError
+	if !errors.As(err, &hostErr) {
+		t.Errorf("expected HostNotAllowedError for redirect to disallowed host, got: %v", err)
+	}
+}
+
+// TestSearch_EndpointWithPath verifies that an endpoint containing a
+// sub-path (e.g. http://host/searx) produces a probe/search URL of
+// /searx/search, not /searx/search/search. This prevents the startup
+// reachability check from always warning due to a double-path.
+func TestSearch_EndpointWithPath(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	// Construct an endpoint with a sub-path.
+	endpoint := server.URL + "/searx"
+	_, err := Search(context.Background(), "x", Options{
+		Endpoint:             endpoint,
+		Timeout:              5 * time.Second,
+		AllowPrivateNetworks: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantPath := "/searx/search"
+	if capturedPath != wantPath {
+		t.Errorf("path = %q, want %q (endpoint with sub-path should join, not double)", capturedPath, wantPath)
 	}
 }
 
@@ -189,5 +378,66 @@ func TestFormatHits_SkipsEmptyFields(t *testing.T) {
 	got := FormatHits([]Hit{{Title: "OnlyTitle"}})
 	if got != "1. OnlyTitle" {
 		t.Errorf("FormatHits = %q, want %q", got, "1. OnlyTitle")
+	}
+}
+
+// TestJoinSearchPath verifies that the search path is constructed correctly
+// for all endpoint shapes, with no double-append when the endpoint already
+// ends in /search.
+func TestJoinSearchPath(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "bare host", input: "", want: "/search"},
+		{name: "root path", input: "/", want: "/search"},
+		{name: "base path", input: "/searx", want: "/searx/search"},
+		{name: "base path trailing slash", input: "/searx/", want: "/searx/search"},
+		{name: "full search URL", input: "/searx/search", want: "/searx/search"},
+		{name: "full search URL root", input: "/search", want: "/search"},
+		{name: "double trailing slash", input: "/searx//", want: "/searx/search"},
+		{name: "nested base path", input: "/foo/searx", want: "/foo/searx/search"},
+		{name: "nested full URL", input: "/foo/searx/search", want: "/foo/searx/search"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := JoinSearchPath(tc.input)
+			if got != tc.want {
+				t.Errorf("JoinSearchPath(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSearch_EndpointWithFullPath verifies that Search does not double-append
+// /search when the configured endpoint already includes it.
+func TestSearch_EndpointWithFullPath(t *testing.T) {
+	const expectedQuery = "search term"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/searx/search" {
+			t.Errorf("expected path /searx/search, got %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("q") != expectedQuery {
+			t.Errorf("expected query %q, got %q", expectedQuery, r.URL.Query().Get("q"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{{"title": "test", "content": "content", "url": "http://test"}}})
+	}))
+	defer server.Close()
+
+	// Full search URL with /search already in the path.
+	endpoint := server.URL + "/searx/search"
+	hits, err := Search(context.Background(), expectedQuery, Options{
+		Endpoint:             endpoint,
+		MaxResults:           2,
+		Timeout:              5 * time.Second,
+		AllowPrivateNetworks: true,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit, got %d", len(hits))
 	}
 }

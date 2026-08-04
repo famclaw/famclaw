@@ -252,6 +252,8 @@ tools:
 
 **Dependency:** a running SearXNG instance (or any OpenSearch-compatible JSON search endpoint). Install SearXNG via Docker or run it locally; point `endpoint` at its `search` JSON URL.
 
+**Failure behavior:** if the search backend is unreachable (connection refused, timeout, wrong content type, non-2xx), `web_search` returns an explicit unavailable error rather than an empty result set — the LLM is instructed to relay this honestly ("I could not search right now") instead of inventing results. A zero-hit response is still a normal "no results" outcome, distinct from an unavailable backend. FamClaw also logs a `WARNING` at startup if the configured endpoint cannot be reached, so a dead SearXNG is never silently "configured but dead."
+
 ---
 
 ## Security scanning

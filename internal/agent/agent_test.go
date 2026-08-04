@@ -25,6 +25,7 @@ import (
 	"github.com/famclaw/famclaw/internal/subagent"
 	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/webfetch"
+	"github.com/famclaw/famclaw/internal/websearch"
 )
 
 func setupAgent(t *testing.T, serverURL string) *Agent {
@@ -210,7 +211,6 @@ func TestAgentChatZeroValueMsgContextSavesUnknown(t *testing.T) {
 	}
 }
 
-
 // TestGatewayForSave_PinsPerMessageAuthority verifies that gatewayForSave()
 // uses the per-message msgContext.Gateway, not the agent's construction-time
 // gateway field. This is the property that allows the same agent to record
@@ -231,7 +231,7 @@ func TestGatewayForSave_PinsPerMessageAuthority(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &Agent{
 				auditGateway: tc.agentGw,
-				msgContext: gateway.MsgContext{Gateway: tc.msgCtx},
+				msgContext:   gateway.MsgContext{Gateway: tc.msgCtx},
 			}
 			got := a.gatewayForSave()
 			if got != tc.want {
@@ -1873,4 +1873,96 @@ func TestBuildMessages_UserMemoryScoped(t *testing.T) {
 	if strings.Contains(sysTeo, "blue") {
 		t.Errorf("teo's prompt must NOT contain dep's memory (blue):\n%s", sysTeo)
 	}
+}
+
+// TestWebSearchError verifies that when the backend is unreachable, the
+// error is translated into an honest, human-readable message returned as
+// the RESULT STRING with a nil error — NOT as a tool error that the LLM
+// might ignore. This is critical: the tool loop wraps non-nil errors as
+// "Error: <msg>", which the LLM can treat as a system failure and
+// hallucinate around. A result string with nil error is treated as a
+// normal tool output.
+//
+// The result is intentionally a NEUTRAL marker (not a pre-written English
+// sentence addressed to the user) so the behavioural rule in components.go
+// can instruct the model to convey the unavailability in the family
+// member's preferred language.
+func TestWebSearchError(t *testing.T) {
+	t.Run("unavailable error becomes honest result string", func(t *testing.T) {
+		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
+		msg, err := webSearchError(wrapped, "http://localhost:8888")
+		if err != nil {
+			t.Fatalf("expected nil error for ErrUnavailable, got %v", err)
+		}
+		if !strings.Contains(msg, "unavailable") {
+			t.Errorf("result should mark search as unavailable, got: %q", msg)
+		}
+	})
+
+	t.Run("unavailable error result is not a pre-written English sentence", func(t *testing.T) {
+		// The result must be a neutral marker, NOT a full sentence addressed
+		// to the user in English (which would force every family member to
+		// receive an English error regardless of their language preference).
+		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
+		msg, err := webSearchError(wrapped, "http://localhost:8888")
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+		// A neutral marker: no first-person "I", no second-person "you", no
+		// imperative verbs directed at the user.
+		for _, sentence := range []string{"I could not", "I'll answer", "A parent can", "try your search", "do not try to"} {
+			if strings.Contains(msg, sentence) {
+				t.Errorf("result must not contain a pre-written English sentence fragment %q: %q", sentence, msg)
+			}
+		}
+	})
+
+	t.Run("unavailable error does not leak endpoint", func(t *testing.T) {
+		// The endpoint may contain internal hostnames, credentials, or
+		// network topology — it must NEVER appear in the user-facing
+		// message the model speaks to the family.
+		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
+		msg, err := webSearchError(wrapped, "http://internal.corp:8888/searx")
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+		if strings.Contains(msg, "internal.corp") {
+			t.Errorf("user-facing message must not contain the raw endpoint: %q", msg)
+		}
+		if strings.Contains(msg, "8888") {
+			t.Errorf("user-facing message must not contain the raw endpoint port: %q", msg)
+		}
+		if !strings.Contains(msg, "unavailable") {
+			t.Errorf("message should be honest about search being unavailable: %q", msg)
+		}
+	})
+
+	t.Run("host-not-allowed error translated to sanitized result", func(t *testing.T) {
+		hostErr := webfetch.NewHostNotAllowedError("evil.com")
+		msg, err := webSearchError(hostErr, "http://localhost:8888")
+		if err != nil {
+			t.Fatalf("host-not-allowed should return nil error (sanitized result), got %v", err)
+		}
+		if msg == "" {
+			t.Fatal("host-not-allowed should return a sanitized result string, got empty")
+		}
+		if !strings.Contains(msg, "host not permitted") {
+			t.Errorf("result should indicate host is not permitted, got: %q", msg)
+		}
+		// Must not leak the host name from the error into the user-facing message.
+		if strings.Contains(msg, "evil.com") {
+			t.Errorf("result must not leak the disallowed host: %q", msg)
+		}
+	})
+
+	t.Run("ordinary error passes through", func(t *testing.T) {
+		ordinary := errors.New("some other error")
+		msg, err := webSearchError(ordinary, "http://localhost:8888")
+		if msg != "" {
+			t.Errorf("expected empty string for non-unavailable error, got %q", msg)
+		}
+		if err != ordinary {
+			t.Errorf("ordinary error should pass through unchanged, got %v", err)
+		}
+	})
 }

@@ -23,9 +23,9 @@ import (
 	"golang.org/x/image/draw"
 )
 
-const maxImageBytes = 5 * 1024 * 1024 // 5MB cap (RPi-friendly)
-const maxImageWidth = 1280            // Maximum width in pixels (preserve aspect ratio)
-const maxImageHeight = 720            // Maximum height in pixels (preserve aspect ratio)
+const maxImageBytes = 5 * 1024 * 1024  // 5MB cap (RPi-friendly)
+const maxImageWidth = 1280             // Maximum width in pixels (preserve aspect ratio)
+const maxImageHeight = 720             // Maximum height in pixels (preserve aspect ratio)
 const maxAudioBytes = 25 * 1024 * 1024 // 25MB cap (matches transcription max_bytes default)
 // Bot is a Telegram gateway using the Bot API with long-polling.
 type Bot struct {

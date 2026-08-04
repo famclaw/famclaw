@@ -54,9 +54,9 @@ type ToolsConfig struct {
 // service - it is never hardcoded.
 type TranscriptionConfig struct {
 	Enabled    bool   `yaml:"enabled"`
-	Endpoint   string `yaml:"endpoint,omitempty"`     // e.g. "http://192.168.1.243:8092"; required when Enabled
-	Model      string `yaml:"model,omitempty"`        // e.g. "whisper-1"; required when Enabled
-	MaxBytes   int64  `yaml:"max_bytes,omitempty"`    // cap on downloaded audio file size; default 25 MB
+	Endpoint   string `yaml:"endpoint,omitempty"`        // e.g. "http://192.168.1.243:8092"; required when Enabled
+	Model      string `yaml:"model,omitempty"`           // e.g. "whisper-1"; required when Enabled
+	MaxBytes   int64  `yaml:"max_bytes,omitempty"`       // cap on downloaded audio file size; default 25 MB
 	TimeoutSec int    `yaml:"timeout_seconds,omitempty"` // per-request timeout; default 30
 }
 

@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -257,3 +260,105 @@ func TestPrepareSandboxRoot(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// TestCheckSearchEndpointReachable_EndpointWithPath verifies that the
+// startup probe correctly joins a sub-path endpoint with /search, producing
+// /searx/search (not /searx/search/search) so the reachability check does
+// not always warn due to a double-path.
+func TestCheckSearchEndpointReachable_EndpointWithPath(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	// Endpoint with a sub-path — the probe should hit /searx/search.
+	endpoint := server.URL + "/searx"
+	err := checkSearchEndpointReachable(endpoint)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedPath != "/searx/search" {
+		t.Errorf("probe path = %q, want /searx/search (double-path would warn)", capturedPath)
+	}
+}
+
+// TestCheckSearchEndpointReachable_Unreachable verifies that a connection
+// refused produces an error (not nil), so the startup WARNING fires.
+func TestCheckSearchEndpointReachable_Unreachable(t *testing.T) {
+	err := checkSearchEndpointReachable("http://127.0.0.1:1")
+	if err == nil {
+		t.Fatal("expected error for unreachable endpoint, got nil")
+	}
+}
+
+// TestCheckSearchEndpointReachable_StripsCredentials verifies that credentials
+// embedded in the endpoint URL (e.g. http://user:pass@host) are NOT transmitted
+// in the startup probe request. The probe should only check that the host is
+// listening.
+func TestCheckSearchEndpointReachable_StripsCredentials(t *testing.T) {
+	var gotAuth bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// r.URL.User is populated by Go's HTTP client when the request
+		// URL contains userinfo. If credentials were sent, this will be
+		// non-nil.
+		gotAuth = r.URL.User != nil
+	}))
+	defer server.Close()
+
+	// Parse the server URL and inject credentials.
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	parsed.User = url.UserPassword("user", "secret")
+	endpoint := parsed.String()
+
+	err = checkSearchEndpointReachable(endpoint)
+	if err != nil {
+		t.Fatalf("expected nil error for reachable endpoint, got %v", err)
+	}
+	if gotAuth {
+		t.Errorf("probe request must not transmit credentials embedded in the endpoint URL")
+	}
+}
+
+// TestCheckSearchEndpointReachable_CredentialedEndpointNoLeak verifies that
+// a credentialed endpoint is logged via SanitizeEndpoint (no credentials in
+// the warning/error message).
+func TestCheckSearchEndpointReachable_CredentialedEndpointNoLeak(t *testing.T) {
+	err := checkSearchEndpointReachable("http://user:pass@127.0.0.1:1")
+	if err == nil {
+		t.Fatal("expected error for unreachable endpoint, got nil")
+	}
+	if strings.Contains(err.Error(), "pass") {
+		t.Errorf("error must not contain credentials: %v", err)
+	}
+}
+
+// TestCheckSearchEndpointReachable_FullSearchURL verifies that when the
+// configured endpoint already includes /search, the probe does not
+// double-append it (producing /searx/search/search which would falsely
+// report the backend unreachable).
+func TestCheckSearchEndpointReachable_FullSearchURL(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	// Full search URL — the probe should hit /searx/search, not
+	// /searx/search/search.
+	endpoint := server.URL + "/searx/search"
+	err := checkSearchEndpointReachable(endpoint)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedPath != "/searx/search" {
+		t.Errorf("probe path = %q, want /searx/search (double-path would warn)", capturedPath)
+	}
+}
