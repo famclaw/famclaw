@@ -2,6 +2,7 @@ package reminder
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -32,7 +33,7 @@ func ParseTime(input string, now time.Time, loc *time.Location) (time.Time, erro
 		return t.UTC(), nil
 	}
 
-	return time.Time{}, errors.New("could not parse time expression: " + input)
+	return time.Time{}, fmt.Errorf("could not parse time expression %q; try e.g. \"in 10 minutes\", \"in 2 hours\", \"tomorrow morning\", \"at 9am\"", input)
 }
 
 func parseAbsolute(input string, now time.Time, loc *time.Location) (time.Time, bool) {
@@ -102,6 +103,14 @@ func parseAbsolute(input string, now time.Time, loc *time.Location) (time.Time, 
 		return t, true
 	}
 
+	// "tomorrow morning"/"tomorrow afternoon"/"tomorrow evening"/"tomorrow night"
+	tomorrowPeriodRegex := regexp.MustCompile(`^tomorrow\s+(morning|afternoon|evening|night)$`)
+	if m := tomorrowPeriodRegex.FindStringSubmatch(input); m != nil {
+		tomorrow := now.Add(24 * time.Hour)
+		hour := periodStartHour(m[1])
+		return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), hour, 0, 0, 0, loc), true
+	}
+
 	// Day of week: "monday at HH:MM", "next friday 10am"
 	dowRegex := regexp.MustCompile(`^(?:next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?$`)
 	if m := dowRegex.FindStringSubmatch(input); m != nil {
@@ -152,23 +161,25 @@ func parseDayOfWeek(s string) time.Weekday {
 }
 
 func parseRelative(input string, now time.Time, loc *time.Location) (time.Time, bool) {
-	// "in X minutes/hours/days" or "in a minute/hour/day"
-	inRegex := regexp.MustCompile(`^in\s+(?:a\s+|an\s+|(\d+)\s+)(minute|minutes|hour|hours|day|days)$`)
+	// "in half an hour" / "in half hour" -> 30 minutes
+	halfHourRegex := regexp.MustCompile(`^in\s+half(?:\s+an)?\s+hour$`)
+	if halfHourRegex.MatchString(input) {
+		return now.Add(30 * time.Minute), true
+	}
+
+	// "in <n> <unit>" or "in a/an <unit>". Units accept common abbreviations
+	// (min, mins, sec, secs, hr, hrs, m, h) in addition to full words.
+	inRegex := regexp.MustCompile(`^in\s+(?:a\s+|an\s+|(\d+)\s+)(minute|minutes|min|mins|second|seconds|sec|secs|hour|hours|hr|hrs|day|days|m|h)$`)
 	if m := inRegex.FindStringSubmatch(input); m != nil {
-		var amount int
+		amount := 1
 		if m[1] != "" {
 			amount, _ = strconv.Atoi(m[1])
-		} else {
-			amount = 1
 		}
-		switch m[2] {
-		case "minute", "minutes":
-			return now.Add(time.Duration(amount) * time.Minute), true
-		case "hour", "hours":
-			return now.Add(time.Duration(amount) * time.Hour), true
-		case "day", "days":
-			return now.Add(time.Duration(amount) * 24 * time.Hour), true
+		dur := unitToDuration(m[2])
+		if dur == 0 {
+			return time.Time{}, false
 		}
+		return now.Add(dur * time.Duration(amount)), true
 	}
 	return time.Time{}, false
 }
@@ -190,6 +201,37 @@ func parseShorthand(input string, now time.Time, loc *time.Location) (time.Time,
 		}
 	}
 	return time.Time{}, false
+}
+
+// unitToDuration maps a (possibly abbreviated) time unit to its duration.
+// It returns 0 for anything it does not recognise.
+func unitToDuration(unit string) time.Duration {
+	switch unit {
+	case "minute", "minutes", "min", "mins", "m":
+		return time.Minute
+	case "second", "seconds", "sec", "secs":
+		return time.Second
+	case "hour", "hours", "hr", "hrs", "h":
+		return time.Hour
+	case "day", "days":
+		return 24 * time.Hour
+	}
+	return 0
+}
+
+// periodStartHour returns a default hour for a named time-of-day period.
+func periodStartHour(period string) int {
+	switch period {
+	case "morning":
+		return 9
+	case "afternoon":
+		return 14
+	case "evening":
+		return 18
+	case "night":
+		return 21
+	}
+	return 9
 }
 
 // FormatDuration formats a duration in a human-readable way.
