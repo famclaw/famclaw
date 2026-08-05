@@ -258,9 +258,10 @@ func TestMostRecentGatewayAndExternalIDForUser(t *testing.T) {
 		t.Errorf("ghost: want empty gateway/external_id, got gw=%q ext=%q", gw, extID)
 	}
 
-	// User with messages but no linked gateway account: gateway is set but
-	// external_id is empty (COALESCE returns '') — the caller should treat
-	// this as "no reachable destination."
+	// carol has sent a message but has NO linked gateway account. With the
+	// gateway_accounts-authoritative resolution, she is unreachable: the
+	// destination can only come from a linked account. The caller treats empty
+	// gateway/external_id as "no reachable destination."
 	if err := db.SaveMessage("conv-tg-nolink", "carol", "user", "hi", "", "", "telegram"); err != nil {
 		t.Fatalf("SaveMessage carol: %v", err)
 	}
@@ -268,10 +269,25 @@ func TestMostRecentGatewayAndExternalIDForUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MostRecentGatewayAndExternalIDForUser carol: %v", err)
 	}
-	if gw != "telegram" {
-		t.Errorf("gateway = %q, want %q", gw, "telegram")
+	if gw != "" || extID != "" {
+		t.Errorf("carol: want empty gateway/external_id (message without a linked account is unreachable), got gw=%q ext=%q", gw, extID)
 	}
-	if extID != "" {
-		t.Errorf("external_id = %q, want empty (no linked account)", extID)
+
+	// julia is linked on telegram + discord but has NEVER sent a message.
+	// Resolution must come from gateway_accounts (the authoritative reach
+	// record), not from messages — a linked-but-silent user must always
+	// be reachable. This case FAILS on the old messages-only query.
+	if err := db.LinkGatewayAccount("julia", "telegram", "julia-tg"); err != nil {
+		t.Fatalf("LinkGatewayAccount julia telegram: %v", err)
+	}
+	if err := db.LinkGatewayAccount("julia", "discord", "julia-disc"); err != nil {
+		t.Fatalf("LinkGatewayAccount julia discord: %v", err)
+	}
+	gw, extID, err = db.MostRecentGatewayAndExternalIDForUser(ctx, "julia")
+	if err != nil {
+		t.Fatalf("MostRecentGatewayAndExternalIDForUser julia (linked, no messages): %v", err)
+	}
+	if gw == "" || extID == "" {
+		t.Errorf("julia (linked-but-silent): got empty destination gw=%q ext=%q; want a usable gateway+external_id from gateway_accounts", gw, extID)
 	}
 }

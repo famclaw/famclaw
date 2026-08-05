@@ -10,6 +10,14 @@ import (
 	"github.com/famclaw/famclaw/internal/store"
 )
 
+// MaxDeliveryAttempts is the number of consecutive failed proactive deliveries
+// after which the scheduler gives up on a reminder, marking it dispatched so it
+// is no longer retried. This prevents an indefinite retry loop against a
+// permanently-failing destination (e.g. a Discord channel that 404s as
+// "Unknown Channel" every 30s). The counter persists across restarts via the
+// reminders.delivery_attempts column.
+const MaxDeliveryAttempts = 3
+
 // ReminderStore is the interface for storing and retrieving reminders.
 // Implemented by *store.DB and test mocks.
 type ReminderStore interface {
@@ -17,6 +25,7 @@ type ReminderStore interface {
 	GetDueReminders(ctx context.Context, now time.Time) ([]*store.Reminder, error)
 	GetPendingReminders(ctx context.Context) ([]*store.Reminder, error)
 	MarkReminderDispatched(ctx context.Context, id int64, now time.Time) error
+	IncrementDeliveryAttempt(ctx context.Context, id int64) (int, error)
 }
 
 // Dispatcher handles sending reminder messages through the appropriate gateway.
@@ -161,19 +170,40 @@ func (s *Scheduler) processDue(ctx context.Context) {
 		default:
 		}
 
-		if err := s.dispatcher.Dispatch(ctx, r); err != nil {
-			log.Printf("[reminder] dispatch failed for reminder %d: %v", r.ID, err)
-			continue
-		}
-
-		if err := s.db.MarkReminderDispatched(ctx, r.ID, now); err != nil {
-			log.Printf("[reminder] mark dispatched failed for reminder %d: %v", r.ID, err)
-		}
+		s.dispatchOnce(ctx, r, now)
 	}
 }
 
-// ReschedulePending loads all pending reminders and processes any that are already due.
-// Call this on startup to handle reminders that were due while the service was down.
+// dispatchOnce delivers a single reminder. On success it marks the reminder
+// dispatched. On failure it records a bounded delivery attempt and, once
+// MaxDeliveryAttempts consecutive failures have accumulated, gives up (marks
+// dispatched) so the reminder is never retried indefinitely against a
+// permanently-failing destination.
+func (s *Scheduler) dispatchOnce(ctx context.Context, r *store.Reminder, now time.Time) {
+	if err := s.dispatcher.Dispatch(ctx, r); err != nil {
+		log.Printf("[reminder] dispatch failed for reminder %d: %v", r.ID, err)
+		attempts, aerr := s.db.IncrementDeliveryAttempt(ctx, r.ID)
+		if aerr != nil {
+			log.Printf("[reminder] recording delivery failure for reminder %d: %v", r.ID, aerr)
+			return
+		}
+		if attempts >= MaxDeliveryAttempts {
+			if merr := s.db.MarkReminderDispatched(ctx, r.ID, now); merr != nil {
+				log.Printf("[reminder] give-up mark failed for reminder %d: %v", r.ID, merr)
+			} else {
+				log.Printf("[reminder] gave up on reminder %d after %d failed delivery attempts", r.ID, attempts)
+			}
+		}
+		return
+	}
+	if err := s.db.MarkReminderDispatched(ctx, r.ID, now); err != nil {
+		log.Printf("[reminder] mark dispatched failed for reminder %d: %v", r.ID, err)
+	}
+}
+
+// ReschedulePending loads all pending reminders and processes any that are
+// already due. Call this on startup to handle reminders that were due while the
+// service was down.
 func (s *Scheduler) ReschedulePending(ctx context.Context) {
 	now := s.clock()
 	reminders, err := s.db.GetPendingReminders(ctx)
@@ -186,12 +216,6 @@ func (s *Scheduler) ReschedulePending(ctx context.Context) {
 		if r.DueAt.After(now) {
 			continue // not due yet
 		}
-		if err := s.dispatcher.Dispatch(ctx, r); err != nil {
-			log.Printf("[reminder] dispatch failed for reminder %d: %v", r.ID, err)
-			continue
-		}
-		if err := s.db.MarkReminderDispatched(ctx, r.ID, now); err != nil {
-			log.Printf("[reminder] mark dispatched failed for reminder %d: %v", r.ID, err)
-		}
+		s.dispatchOnce(ctx, r, now)
 	}
 }
