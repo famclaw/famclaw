@@ -185,6 +185,15 @@ func (s *Scheduler) dispatchOnce(ctx context.Context, r *store.Reminder, now tim
 		attempts, aerr := s.db.IncrementDeliveryAttempt(ctx, r.ID)
 		if aerr != nil {
 			log.Printf("[reminder] recording delivery failure for reminder %d: %v", r.ID, aerr)
+			// The attempt counter could not be persisted (e.g. a transient
+			// database fault). To guarantee the bounded-retry invariant —
+			// no reminder retries without limit — give up now by marking the
+			// reminder dispatched. A reminder that cannot record its own
+			// failure is not being delivered reliably enough to justify
+			// further retries.
+			if merr := s.db.MarkReminderDispatched(ctx, r.ID, now); merr != nil {
+				log.Printf("[reminder] give-up mark failed after attempt-counter fault for reminder %d: %v", r.ID, merr)
+			}
 			return
 		}
 		if attempts >= MaxDeliveryAttempts {

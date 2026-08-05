@@ -49,6 +49,7 @@ type mockDB struct {
 	mu               sync.Mutex
 	reminders        []*store.Reminder
 	deliveryAttempts map[int64]int
+	incrementErr     error // if non-nil, IncrementDeliveryAttempt returns this error
 }
 
 func newMockDB() *mockDB {
@@ -104,6 +105,9 @@ func (m *mockDB) MarkReminderDispatched(ctx context.Context, id int64, at time.T
 func (m *mockDB) IncrementDeliveryAttempt(ctx context.Context, id int64) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.incrementErr != nil {
+		return 0, m.incrementErr
+	}
 	m.deliveryAttempts[id]++
 	return m.deliveryAttempts[id], nil
 }
@@ -412,5 +416,58 @@ func TestSchedulerStopsRetryingPermanentlyFailingDelivery(t *testing.T) {
 	pending, _ := db.GetPendingReminders(ctx)
 	if len(pending) != 0 {
 		t.Errorf("expected 0 pending reminders after give-up, got %d", len(pending))
+	}
+}
+
+// TestSchedulerGivesUpWhenIncrementDeliveryAttemptFails verifies that when
+// IncrementDeliveryAttempt itself errors (e.g. a transient database fault),
+// the scheduler still gives up — marks the reminder dispatched — rather than
+// leaving it pending for infinite retries. The bounded-retry invariant must
+// hold even when the attempt counter cannot be persisted.
+func TestSchedulerGivesUpWhenIncrementDeliveryAttemptFails(t *testing.T) {
+	db := newMockDB()
+	db.incrementErr = errors.New("database locked")
+	clock := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	dispatcher := NewDispatcher()
+	fl := &failSender{}
+	dispatcher.RegisterSender("discord", fl)
+
+	s := NewScheduler(db, dispatcher, 10*time.Millisecond)
+	s.SetClock(func() time.Time { return clock })
+
+	ctx := context.Background()
+	if err := db.CreateReminder(ctx, &store.Reminder{
+		UserName:   "julia",
+		Gateway:    "discord",
+		ExternalID: "bad-channel",
+		Message:    "remind me anyway",
+		DueAt:      clock.Add(-1 * time.Minute),
+	}); err != nil {
+		t.Fatalf("create reminder: %v", err)
+	}
+
+	// Drive processDue once. With the bug, IncrementDeliveryAttempt fails
+	// and the function returns without marking dispatched, so the reminder
+	// stays pending and would be retried forever. With the fix, the
+	// reminder is given up (marked dispatched) on the first failure.
+	s.processDue(ctx)
+
+	// The reminder must have been dispatched (given up), not left pending.
+	due, err := db.GetDueReminders(ctx, clock)
+	if err != nil {
+		t.Fatalf("GetDueReminders: %v", err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("expected 0 due reminders after processDue (reminder should be given up), got %d", len(due))
+	}
+
+	// No pending reminders — the bound was honoured.
+	pending, err := db.GetPendingReminders(ctx)
+	if err != nil {
+		t.Fatalf("GetPendingReminders: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected 0 pending reminders after give-up, got %d", len(pending))
 	}
 }
