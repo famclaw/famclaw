@@ -721,56 +721,62 @@ const ConversationIdleTimeout = 6 * time.Hour
 
 // ConversationID computes a stable, deterministic conversation ID for a user.
 //
-// If the user has a previous message (hasLast is true) and the gap between
-// now and that message is under ConversationIdleTimeout, the ID is derived
-// from the last message's timestamp — keeping the conversation stable across
-// day boundaries and brief idle periods. Otherwise (cold start or idle gap
-// exceeded) a fresh ID is derived from the current time.
+// If the user has a previous message (hasLast is true), the gap between now
+// and that message is under ConversationIdleTimeout, and lastConvID is the
+// stored ID of that previous conversation, the stored lastConvID is reused
+// verbatim. This keeps the ID stable for the life of a conversation: every
+// message within the idle window lands in the same conversation.
+//
+// Otherwise (cold start, idle gap exceeded, or no stored ID yet) a fresh ID
+// is derived from the current time.
+//
+// lastConvID MUST be the conversation ID of the most recent user message
+// (obtainable via LastMessage). Deriving the seed from the last message's
+// timestamp instead — as a previous version did — moves the seed forward on
+// every message and produces a fresh ID per message, losing history.
 //
 // Callers should compute the ID once per message and reuse it for all
 // SaveMessage calls within that processing turn.
-func ConversationID(userName string, lastMsg time.Time, hasLast bool, now time.Time) string {
-	var seed time.Time
-	if hasLast && now.Sub(lastMsg) < ConversationIdleTimeout {
-		seed = lastMsg
-	} else {
-		seed = now
+func ConversationID(userName string, lastMsg time.Time, hasLast bool, lastConvID string, now time.Time) string {
+	if hasLast && !lastMsg.IsZero() && now.Sub(lastMsg) < ConversationIdleTimeout && lastConvID != "" {
+		return lastConvID
 	}
-	h := sha256.Sum256([]byte(userName + ":" + seed.UTC().Format(time.RFC3339)))
+	h := sha256.Sum256([]byte(userName + ":" + now.UTC().Format(time.RFC3339)))
 	return hex.EncodeToString(h[:8])
 }
 
-// LastMessageTime returns the timestamp of the most recent message from a user
-// across ALL of that user's conversations (not scoped to a single conversation
-// ID). Returns ok=false when the user has no prior messages (cold start).
+// LastMessage returns the stored conversation ID and created_at of the most
+// recent user-initiated message (role='user') from userName, across ALL of that
+// user's conversations. hasLast is false on cold start (no prior messages).
 //
-// This intentionally looks across all conversations because the idle-gap rule
-// treats the user's most recent activity as the conversation boundary: when a
-// new message arrives, the conversation continues if the gap since the user's
-// last message (in any conversation) is under ConversationIdleTimeout. Since a
-// user can only have one active conversation at a time (the previous one ended
-// only after a 6h+ idle gap that started a new one), the most recent message
-// is always in the active conversation. Scoping to a specific conversation
-// would be impossible here because the conversation ID is what we're trying
-// to determine.
+// Looking across all conversations is intentional: the idle-gap rule treats
+// the user's most recent activity as the conversation boundary. A user can
+// only have one active conversation at a time (the previous one ended only
+// after a 6h+ idle gap that started a new one), so the most recent message is
+// always in the active conversation. Scoping to a single conversation would
+// be impossible here because the conversation ID is what we are trying to
+// determine.
+//
+// The returned convID is what ConversationID reuses verbatim when the gap is
+// within ConversationIdleTimeout — this is what makes the ID stable for the
+// life of a conversation.
 //
 // Only user-initiated messages (role='user') are considered — assistant
 // responses must not reset the idle timer, otherwise the gap would be
 // measured from the bot's last reply rather than the user's last input.
-func (d *DB) LastMessageTime(ctx context.Context, userName string) (time.Time, bool, error) {
-	var ts time.Time
-	err := d.sql.QueryRowContext(ctx, `
-		SELECT m.created_at FROM messages m
+func (d *DB) LastMessage(ctx context.Context, userName string) (convID string, ts time.Time, hasLast bool, err error) {
+	err = d.sql.QueryRowContext(ctx, `
+		SELECT m.conversation_id, m.created_at FROM messages m
 		JOIN conversations c ON m.conversation_id = c.id
 		WHERE c.user_name = ? AND m.role = 'user'
-		ORDER BY m.created_at DESC LIMIT 1`, userName).Scan(&ts)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return time.Time{}, false, nil
-		}
-		return time.Time{}, false, fmt.Errorf("querying last message time for user %q: %w", userName, err)
+		ORDER BY m.created_at DESC LIMIT 1`, userName).Scan(&convID, &ts)
+	if err == nil {
+		return convID, ts, true, nil
 	}
-	return ts, true, nil
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", time.Time{}, false, nil
+	}
+	return "", time.Time{}, false, fmt.Errorf("querying last message for user %q: %w", userName, err)
 }
 
 // MostRecentGatewayForUser returns the gateway name of the most recent message
