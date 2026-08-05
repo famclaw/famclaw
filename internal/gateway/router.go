@@ -182,18 +182,18 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 	// message is under ConversationIdleTimeout (6h). This replaces the old
 	// day-bucketing that silently reset every conversation at midnight.
 	now := time.Now().UTC()
-	lastMsg, hasLast, err := r.db.LastMessageTime(ctx, user.Name)
+	lastConvID, lastMsg, hasLast, err := r.db.LastMessage(ctx, user.Name)
 	if err != nil {
 		// A DB error here means we can't determine the conversation
 		// boundary. We do NOT return an error to the caller because a
 		// transient DB issue should not block the user from interacting.
-		// Instead, treat as a cold start (hasLast=false → seed=now).
+		// Instead, treat as a cold start (hasLast=false → mint fresh).
 		// The error is logged for observability. If the DB recovers on
-		// the next message, LastMessageTime will succeed and the
+		// the next message, LastMessage will succeed and the
 		// conversation will re-anchor from that point.
-		log.Printf("[router] %s: LastMessageTime error: %v — treating as cold start", user.Name, err)
+		log.Printf("[router] %s: LastMessage error: %v — treating as cold start", user.Name, err)
 	}
-	convID := store.ConversationID(user.Name, lastMsg, hasLast, now)
+	convID := store.ConversationID(user.Name, lastMsg, hasLast, lastConvID, now)
 
 	// ── Step 4: Handle non-allow decisions (LLM is NEVER called) ─────────
 	switch decision.Action {
