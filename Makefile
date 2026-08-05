@@ -79,9 +79,12 @@ cross-linux64:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-linux-amd64 $(CMD)
 
-## install: Install binary to /usr/local/bin
+## install: Install binary to /usr/local/bin (atomic rename; never overwrites a running binary)
 install: build
-	sudo cp $(BUILD_DIR)/$(BINARY) /usr/local/bin/$(BINARY)
+	@TMP="/usr/local/bin/.$(BINARY).tmp.$$$$"; \
+	sudo cp $(BUILD_DIR)/$(BINARY) "$$TMP" && \
+	sudo chmod +x "$$TMP" && \
+	sudo mv -f "$$TMP" /usr/local/bin/$(BINARY) || sudo rm -f "$$TMP"
 
 ## install-rpi: Deploy to RPi over SSH (set RPI_HOST env var)
 install-rpi: cross-rpi4

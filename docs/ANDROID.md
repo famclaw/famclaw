@@ -127,8 +127,10 @@ case "$ARCH" in
     armv7l)  BIN="famclaw-android-armv7" ;;
 esac
 
-curl -fsSL "https://github.com/famclaw/famclaw/releases/latest/download/$BIN" -o "$PREFIX/bin/famclaw"
-chmod +x "$PREFIX/bin/famclaw"
+FAMCLAW_TMP="$PREFIX/bin/.famclaw.tmp.$$"
+curl -fsSL "https://github.com/famclaw/famclaw/releases/latest/download/$BIN" -o "$FAMCLAW_TMP"
+chmod +x "$FAMCLAW_TMP"
+mv -f "$FAMCLAW_TMP" "$PREFIX/bin/famclaw"
 
 # Restart
 pkill famclaw

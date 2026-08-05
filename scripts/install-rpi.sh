@@ -51,8 +51,15 @@ chown -R "$FAMCLAW_USER:$FAMCLAW_USER" "$FAMCLAW_DIR"
 
 # Download binary
 echo "→ Downloading famclaw ($BINARY)…"
-curl -fsSL "$RELEASE_BASE/$BINARY" -o /usr/local/bin/famclaw
-chmod +x /usr/local/bin/famclaw
+FAMCLAW_TMP="/usr/local/bin/.famclaw.tmp.$$"
+if curl -fsSL "$RELEASE_BASE/$BINARY" -o "$FAMCLAW_TMP"; then
+  chmod +x "$FAMCLAW_TMP"
+  mv -f "$FAMCLAW_TMP" /usr/local/bin/famclaw
+else
+  rm -f "$FAMCLAW_TMP"
+  echo "✗ Failed to download famclaw ($BINARY)" >&2
+  exit 1
+fi
 
 # Download HoneyBadger for security scanning
 HB_INSTALLED=0
@@ -66,11 +73,14 @@ esac
 
 if [ -n "$HB_BINARY" ]; then
   echo "→ Downloading HoneyBadger ($HB_BINARY)…"
-  if curl -fsSL "$HB_RELEASE_BASE/$HB_BINARY" -o /usr/local/bin/honeybadger 2>/dev/null; then
-    chmod +x /usr/local/bin/honeybadger
+  HB_TMP="/usr/local/bin/.honeybadger.tmp.$$"
+  if curl -fsSL "$HB_RELEASE_BASE/$HB_BINARY" -o "$HB_TMP" 2>/dev/null; then
+    chmod +x "$HB_TMP"
+    mv -f "$HB_TMP" /usr/local/bin/honeybadger
     HB_INSTALLED=1
     echo "  HoneyBadger installed ✅"
   else
+    rm -f "$HB_TMP"
     echo ""
     echo "================================================================"
     echo "  WARNING: Could not download HoneyBadger."
