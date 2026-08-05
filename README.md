@@ -296,8 +296,22 @@ Serving a multimodal model is not enough. Two things are required and both were 
 1. The model server must be started with its vision projector (for llama.cpp: `--mmproj <projector.gguf>`), or images fail with "image input is not supported ... you may need to provide the mmproj";
 2. FamClaw's config needs a `vision_profile` pointing at a profile that reaches that model, or images are never routed to it.
 
-### Known gap — voice is not supported
-`gateway.Attachment` handles only `"image"`. A voice message is **silently dropped** before it reaches the assistant: no reply, no error. This is a limitation in the current implementation and not a bug.
+### Voice message transcription
+Voice notes sent on Telegram and Discord are now transcribed into text and handled exactly like a typed message — they pass through the same age/approval policy before the LLM sees them, so a spoken request gets the same gating as a typed one. Voice transcription is **off by default** and requires a local speech-to-text service (e.g. whisper.cpp started with `--convert`, or a LiteLLM gateway in front of one).
+
+Enable in `config.yaml`:
+
+```yaml
+tools:
+  transcription:
+    enabled: true
+    endpoint: "http://192.168.1.243:8092"   # base URL of your /v1/audio/transcriptions service
+    model: "whisper-1"                       # model name sent to the service
+    max_bytes: 26214400                      # cap on downloaded audio; default 25 MB
+    timeout_seconds: 30                      # per-request timeout; default 30
+```
+
+When `enabled` is not set (or `false`), a voice message is **not** silently dropped — the assistant replies with a visible "voice isn't available" notice so the sender knows to either configure transcription or rephrase. Audio is sent as a multipart upload to `<endpoint>/v1/audio/transcriptions`; the transcript becomes the user's message. See [docs/GATEWAYS.md](./docs/GATEWAYS.md) for per-gateway details.
 
 ### Additional notes
 `tools.web_fetch.url_allowlist` matches on a dot boundary, so an entry like `gov` permits `clinicaltrials.gov` and `pubmed.ncbi.nlm.nih.gov` but NOT `evilgov.com`. This is genuinely useful and non-obvious.
@@ -320,6 +334,7 @@ Serving a multimodal model is not enough. Two things are required and both were 
 | **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
 | **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps. Optional headless-browser fallback for JS-heavy sites (`fallback_to_browser`, off by default; requires `tools.browser.enabled`) |
 | **Web search** | `web_search` builtin tool (off by default) — query a SearXNG JSON endpoint; requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate |
+| **Voice transcription** | `transcription` builtin (off by default) — transcribes Telegram/Discord voice notes via a local `/v1/audio/transcriptions` service; default 25 MB cap, 30s timeout. See [docs/GATEWAYS.md](./docs/GATEWAYS.md) |
 | **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
 | **Skill install** | From parent dashboard Skills tab; HoneyBadger-scanned at install time |
 | **llama.cpp sidecar** | Spawns llama-server, GGUF model catalog, TurboQuant support |

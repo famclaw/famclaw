@@ -36,6 +36,10 @@ sudo journalctl -u famclaw | grep "unknown account"
 
 Photos sent on Telegram are forwarded to the AI as image attachments, even when the photo has no caption. To have the AI see and describe the image, set `llm.vision_profile` to a vision-capable model (see [ADVANCED_LLM.md](./ADVANCED_LLM.md)).
 
+### Voice messages
+
+Voice notes and audio clips sent on Telegram are transcribed into text before they reach the assistant, so a spoken request gets the same age/approval gating as a typed one. Telegram voice notes are OGG/Opus. This requires voice transcription to be enabled (see `tools.transcription` in the README); when it is not enabled, the assistant replies with a visible "voice isn't available" notice instead of silently dropping the message.
+
 ---
 
 ## Discord
@@ -70,6 +74,8 @@ gateways:
 Same as Telegram — each family member sends a message in the Discord server. The bot logs unknown accounts. Link them in the web dashboard.
 
 **File attachments.** Discord message attachments are persisted to the agent sandbox (path-traversal-safe, extension/MIME-consistent, size-capped) so the agent can inspect images and files you upload. See `docs/SECURITY_MODEL.md` for sandbox confinement details.
+
+**Voice messages.** Audio attachments — voice clips and audio files — sent on Discord are transcribed into text before they reach the assistant, so a spoken request gets the same age/approval gating as a typed one. This requires voice transcription to be enabled (see `tools.transcription` in the README); when it is not enabled, the assistant replies with a visible "voice isn't available" notice instead of silently dropping the message.
 
 ---
 
