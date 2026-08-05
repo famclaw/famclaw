@@ -50,6 +50,7 @@ type mockDB struct {
 	reminders        []*store.Reminder
 	deliveryAttempts map[int64]int
 	incrementErr     error // if non-nil, IncrementDeliveryAttempt returns this error
+	markErr          error // if non-nil, MarkReminderDispatched returns this error
 }
 
 func newMockDB() *mockDB {
@@ -92,6 +93,9 @@ func (m *mockDB) GetPendingReminders(ctx context.Context) ([]*store.Reminder, er
 func (m *mockDB) MarkReminderDispatched(ctx context.Context, id int64, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.markErr != nil {
+		return m.markErr
+	}
 	for _, r := range m.reminders {
 		if r.ID == id {
 			r.Dispatched = true
@@ -469,5 +473,48 @@ func TestSchedulerGivesUpWhenIncrementDeliveryAttemptFails(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("expected 0 pending reminders after give-up, got %d", len(pending))
+	}
+}
+
+// TestSchedulerAbandonsWhenBothIncrementAndMarkFail is the twin hole: when
+// IncrementDeliveryAttempt fails AND the give-up MarkReminderDispatched also
+// fails, the reminder is neither counted nor marked dispatched. Without an
+// in-memory abandonment guard the scheduler retries on every tick, forever.
+// This test asserts the scheduler abandons the reminder in-memory and never
+// retries, even when both DB writes are unavailable.
+func TestSchedulerAbandonsWhenBothIncrementAndMarkFail(t *testing.T) {
+	db := newMockDB()
+	db.incrementErr = errors.New("database locked")
+	db.markErr = errors.New("database still locked")
+	clock := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	dispatcher := NewDispatcher()
+	fl := &failSender{}
+	dispatcher.RegisterSender("discord", fl)
+
+	s := NewScheduler(db, dispatcher, 10*time.Millisecond)
+	s.SetClock(func() time.Time { return clock })
+
+	ctx := context.Background()
+	if err := db.CreateReminder(ctx, &store.Reminder{
+		UserName:   "julia",
+		Gateway:    "discord",
+		ExternalID: "bad-channel",
+		Message:    "remind me anyway",
+		DueAt:      clock.Add(-1 * time.Minute),
+	}); err != nil {
+		t.Fatalf("create reminder: %v", err)
+	}
+
+	// Drive processDue multiple times (as the 30s ticker would). Without the
+	// in-memory abandonment guard, each call re-dispatches because neither the
+	// counter nor the mark could be persisted. With the fix, the scheduler
+	// abandons the reminder after the first failure and never retries.
+	for i := 0; i < 5; i++ {
+		s.processDue(ctx)
+	}
+
+	if fl.calls != 1 {
+		t.Errorf("expected sender called once then abandoned in-memory, got %d calls", fl.calls)
 	}
 }

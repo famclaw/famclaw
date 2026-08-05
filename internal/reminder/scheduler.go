@@ -81,6 +81,14 @@ type Scheduler struct {
 	stopOnce   sync.Once
 	wg         sync.WaitGroup
 	clock      func() time.Time // injectable for testing
+	// failedReminders tracks reminders abandoned within the current process
+	// lifetime because the database could not persist either the delivery
+	// attempt counter or the dispatched flag. These are skipped on every
+	// subsequent processDue/ReschedulePending iteration, guaranteeing that
+	// no failure combination produces unbounded retries. The set is
+	// process-volatile: on restart a reminder in this set gets one more
+	// attempt (not a per-30s-forever storm).
+	failedReminders map[int64]bool
 }
 
 // NewScheduler creates a new reminder scheduler.
@@ -90,11 +98,12 @@ func NewScheduler(db ReminderStore, dispatcher *Dispatcher, interval time.Durati
 		interval = 30 * time.Second
 	}
 	return &Scheduler{
-		db:         db,
-		dispatcher: dispatcher,
-		interval:   interval,
-		stopCh:     make(chan struct{}),
-		clock:      time.Now,
+		db:              db,
+		dispatcher:      dispatcher,
+		interval:        interval,
+		stopCh:          make(chan struct{}),
+		clock:           time.Now,
+		failedReminders: make(map[int64]bool),
 	}
 }
 
@@ -179,7 +188,22 @@ func (s *Scheduler) processDue(ctx context.Context) {
 // MaxDeliveryAttempts consecutive failures have accumulated, gives up (marks
 // dispatched) so the reminder is never retried indefinitely against a
 // permanently-failing destination.
+//
+// When the database cannot persist either the attempt counter or the
+// dispatched flag, the reminder cannot be reliably tracked or marked. To
+// guarantee that NO failure combination produces unbounded retries, the
+// scheduler abandons the reminder in-memory (failedReminders) so it is
+// skipped on every subsequent tick. This is process-volatile: a scheduler
+// restart grants at most one more attempt, not a per-30s-forever storm.
 func (s *Scheduler) dispatchOnce(ctx context.Context, r *store.Reminder, now time.Time) {
+	// Skip reminders already abandoned in this process lifetime.
+	s.mu.Lock()
+	abandoned := s.failedReminders[r.ID]
+	s.mu.Unlock()
+	if abandoned {
+		return
+	}
+
 	if err := s.dispatcher.Dispatch(ctx, r); err != nil {
 		log.Printf("[reminder] dispatch failed for reminder %d: %v", r.ID, err)
 		attempts, aerr := s.db.IncrementDeliveryAttempt(ctx, r.ID)
@@ -193,12 +217,20 @@ func (s *Scheduler) dispatchOnce(ctx context.Context, r *store.Reminder, now tim
 			// further retries.
 			if merr := s.db.MarkReminderDispatched(ctx, r.ID, now); merr != nil {
 				log.Printf("[reminder] give-up mark failed after attempt-counter fault for reminder %d: %v", r.ID, merr)
+				s.mu.Lock()
+				s.failedReminders[r.ID] = true
+				s.mu.Unlock()
+				log.Printf("[reminder] abandoned reminder %d in-memory (counter fault: %v, mark fault: %v) — no further retries this process", r.ID, aerr, merr)
 			}
 			return
 		}
 		if attempts >= MaxDeliveryAttempts {
 			if merr := s.db.MarkReminderDispatched(ctx, r.ID, now); merr != nil {
 				log.Printf("[reminder] give-up mark failed for reminder %d: %v", r.ID, merr)
+				s.mu.Lock()
+				s.failedReminders[r.ID] = true
+				s.mu.Unlock()
+				log.Printf("[reminder] abandoned reminder %d in-memory after %d failed delivery attempts (mark fault: %v) — no further retries this process", r.ID, attempts, merr)
 			} else {
 				log.Printf("[reminder] gave up on reminder %d after %d failed delivery attempts", r.ID, attempts)
 			}
