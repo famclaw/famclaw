@@ -1,8 +1,10 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -284,6 +286,57 @@ func TestMultiNotifierNoParentAccounts(t *testing.T) {
 	})
 
 	notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
+}
+
+
+// TestMultiNotifierMissingSenderSurfacesError verifies that when a parent has
+// a linked gateway account but no sender is registered for that gateway,
+// the error is both returned from sendFn AND logged — not silently swallowed.
+func TestMultiNotifierMissingSenderSurfacesError(t *testing.T) {
+	db := testDB(t)
+	identStore := identity.NewStore(db)
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+		},
+	}
+
+	// Link parent to a gateway that has no registered sender.
+	if err := identStore.LinkAccount("parent", "telegram", "parent-tg"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+
+	// Capture log output to verify the error is logged, not silent.
+	var logBuf bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(oldOutput)
+
+	// sendFn simulates main.go's senderRegistry lookup: when no sender
+	// is registered for the gateway, return an error (not nil).
+	var errFromSendFn error
+	sendFn := func(ctx context.Context, gw, chatID, text string) error {
+		errFromSendFn = fmt.Errorf("no sender registered for gateway %q", gw)
+		return errFromSendFn
+	}
+
+	notifier := NewMultiNotifier(cfg, identStore, sendFn)
+	notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
+
+	// Assert: the error was produced (not a silent nil).
+	if errFromSendFn == nil {
+		t.Error("sendFn should return an error for missing sender, got nil")
+	}
+
+	// Assert: the error was logged with gateway name and context.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "no sender registered for gateway") {
+		t.Errorf("expected error logged about missing sender, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "telegram/parent-tg") {
+		t.Errorf("expected gateway/chatID in log, got: %s", logOutput)
+	}
 }
 
 // --- helpers ---

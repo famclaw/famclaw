@@ -466,7 +466,7 @@ func main() {
 	senderFn := func(ctx context.Context, gw, chatID, text string) error {
 		sender, ok := senderRegistry[gw]
 		if !ok {
-			return nil
+			return fmt.Errorf("no sender registered for gateway %q", gw)
 		}
 		return sender.Send(ctx, chatID, text)
 	}
