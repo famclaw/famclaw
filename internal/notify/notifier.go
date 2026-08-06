@@ -76,6 +76,11 @@ func (m *MultiNotifier) sendToParents(ctx context.Context, text string) {
 			continue
 		}
 		for _, acct := range accounts {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			if err := m.sendFn(ctx, acct.Gateway, acct.ExternalID, text); err != nil {
 				log.Printf("[notify] sending to %s/%s: %v",
 					acct.Gateway, acct.ExternalID, redactWebhookURLInError(err))

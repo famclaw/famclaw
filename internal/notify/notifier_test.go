@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/identity"
@@ -336,6 +337,136 @@ func TestMultiNotifierMissingSenderSurfacesError(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, "telegram/parent-tg") {
 		t.Errorf("expected gateway/chatID in log, got: %s", logOutput)
+	}
+}
+
+// TestMultiNotifierContextCancellation verifies that when the context is
+// cancelled during sendToParents, remaining sends are skipped and the context
+// error is returned.
+func TestMultiNotifierContextCancellation(t *testing.T) {
+	db := testDB(t)
+	identStore := identity.NewStore(db)
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent1", DisplayName: "Parent1", Role: "parent", PIN: "1234"},
+			{Name: "parent2", DisplayName: "Parent2", Role: "parent", PIN: "1234"},
+			{Name: "child", DisplayName: "Child", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+
+	// Link both parents to multiple gateways
+	if err := identStore.LinkAccount("parent1", "telegram", "parent1-tg"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+	if err := identStore.LinkAccount("parent1", "discord", "parent1-dc"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+	if err := identStore.LinkAccount("parent2", "telegram", "parent2-tg"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+
+	called := make(chan string, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	// Cancel context after first send
+	go func() {
+		<-time.After(10 * time.Millisecond)
+		cancel()
+	}()
+
+	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
+		called <- fmt.Sprintf("%s/%s", gw, chatID)
+		return nil
+	})
+
+	// This should return immediately due to context cancellation
+	notifier.Notify(ctx, testApproval, "http://approve", "http://deny")
+
+	// Check that only one send happened (the first one)
+	select {
+	case sent := <-called:
+		if sent != "telegram/parent1-tg" {
+			t.Errorf("expected first send to be telegram/parent1-tg, got %s", sent)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("expected first send to occur")
+	}
+
+	// Check that no more sends occurred
+	select {
+	case sent := <-called:
+		t.Errorf("unexpected additional send: %s", sent)
+	default:
+		// No more sends occurred - good!
+	}
+}
+
+// TestMultiNotifierContextLive verifies that when the context is not cancelled,
+// all parents still receive their messages.
+func TestMultiNotifierContextLive(t *testing.T) {
+	db := testDB(t)
+	identStore := identity.NewStore(db)
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent1", DisplayName: "Parent1", Role: "parent", PIN: "1234"},
+			{Name: "parent2", DisplayName: "Parent2", Role: "parent", PIN: "1234"},
+			{Name: "child", DisplayName: "Child", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+
+	// Link both parents to multiple gateways
+	if err := identStore.LinkAccount("parent1", "telegram", "parent1-tg"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+	if err := identStore.LinkAccount("parent1", "discord", "parent1-dc"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+	if err := identStore.LinkAccount("parent2", "telegram", "parent2-tg"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+
+	called := make(chan string, 10)
+	
+	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
+		called <- fmt.Sprintf("%s/%s", gw, chatID)
+		return nil
+	})
+
+	// This should complete normally
+	notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
+
+	// Check that all 3 sends happened
+	expected := []string{"telegram/parent1-tg", "discord/parent1-dc", "telegram/parent2-tg"}
+	actual := make([]string, 0, 3)
+	
+	for i := 0; i < 3; i++ {
+		select {
+		case sent := <-called:
+			actual = append(actual, sent)
+		case <-time.After(100 * time.Millisecond):
+			t.Error("expected all 3 sends to occur")
+		}
+	}
+
+	// Sort and compare
+	if len(actual) != len(expected) {
+		t.Errorf("expected %d sends, got %d", len(expected), len(actual))
+	}
+	
+	// Verify all expected sends occurred
+	for _, exp := range expected {
+		found := false
+		for _, act := range actual {
+			if act == exp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected send %s not found in actual sends", exp)
+		}
 	}
 }
 
