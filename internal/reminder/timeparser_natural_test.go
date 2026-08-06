@@ -46,3 +46,49 @@ func TestParseTimeNaturalLanguage(t *testing.T) {
 		})
 	}
 }
+
+// TestParseTimeBareUnits tests the specific issue with bare units
+// that should be rejected to improve usability
+func TestParseTimeBareUnits(t *testing.T) {
+	base := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	// Cases that SHOULD work (current valid cases)
+	validCases := []string{
+		"in 1 hour", 
+		"in an hour", 
+		"in a min", 
+		"in 1 min", 
+		"in 2 mins", 
+		"in 20 seconds", 
+		"in half an hour", 
+		"in 30 sec", 
+		"in 2 hrs", 
+		"in 3 days",
+		"in hour", // This is already accepted but should remain accepted
+	}
+
+	// Cases that SHOULD NOT work (bare units that cause confusion)
+	invalidCases := []string{
+		"in minute",
+		"in second", 
+		"in day",
+	}
+
+	for _, tc := range validCases {
+		t.Run("valid_"+tc, func(t *testing.T) {
+			_, err := ParseTime(tc, base, time.UTC)
+			if err != nil {
+				t.Errorf("ParseTime(%q) should succeed but got error: %v", tc, err)
+			}
+		})
+	}
+
+	for _, tc := range invalidCases {
+		t.Run("invalid_"+tc, func(t *testing.T) {
+			_, err := ParseTime(tc, base, time.UTC)
+			if err == nil {
+				t.Errorf("ParseTime(%q) should fail but succeeded", tc)
+			}
+		})
+	}
+}
