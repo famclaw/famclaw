@@ -1,8 +1,8 @@
 package agent
 
-// computeHeadBudget returns the maximum bytes a single tool result's head
-// slice may occupy before the result spills into the toolcache. It is the
-// spill threshold AND the preview size the LLM receives inline.
+// HeadBudgetForContext returns the maximum bytes a single tool result's
+// head slice may occupy before it spills into the toolcache. It is the spill
+// threshold AND the preview size the LLM receives inline.
 // See spec §6.
 //
 //	budget = headShare * (n_ctx * (1 - margin) - non_droppable - response_reserve)
@@ -12,9 +12,13 @@ package agent
 // larger models get larger previews, but absolute floor/ceiling bounds keep
 // the value sane at extreme context sizes.
 //
+// This is exported as a pure function of the context size so that tests in
+// other packages (e.g. toolcache) can call the same helper the production
+// path uses, rather than duplicating the derived value as a magic number.
+//
 // Returns bytes. Conversion uses 4 chars/token (SimpleEstimator's
 // heuristic) which matches what compress.Compress uses for budget math.
-func computeHeadBudget(a *Agent) int {
+func HeadBudgetForContext(nCtx int) int {
 	const (
 		bytesPerToken   = 4
 		responseReserve = 1024 // tokens reserved for response
@@ -37,10 +41,6 @@ func computeHeadBudget(a *Agent) int {
 		maxHeadBytes = 64 * 1024
 	)
 
-	nCtx := 0
-	if a != nil && a.cfg != nil {
-		nCtx = a.cfg.LLM.MaxContextTokens
-	}
 	if nCtx <= 0 {
 		nCtx = 4096
 	}
@@ -65,4 +65,14 @@ func computeHeadBudget(a *Agent) int {
 		budgetBytes = maxHeadBytes
 	}
 	return budgetBytes
+}
+
+// computeHeadBudget returns the head budget for the agent's configured
+// context window. Delegates to the exported HeadBudgetForContext.
+func computeHeadBudget(a *Agent) int {
+	nCtx := 0
+	if a != nil && a.cfg != nil {
+		nCtx = a.cfg.LLM.MaxContextTokens
+	}
+	return HeadBudgetForContext(nCtx)
 }
