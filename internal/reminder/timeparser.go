@@ -160,9 +160,11 @@ func parseDayOfWeek(s string) time.Weekday {
 	}
 }
 
+// halfHourRegex matches "in half an hour" / "in half hour" (-> 30 minutes).
+var halfHourRegex = regexp.MustCompile(`^in\s+half(?:\s+an)?\s+hour$`)
+
 func parseRelative(input string, now time.Time, loc *time.Location) (time.Time, bool) {
 	// "in half an hour" / "in half hour" -> 30 minutes
-	halfHourRegex := regexp.MustCompile(`^in\s+half(?:\s+an)?\s+hour$`)
 	if halfHourRegex.MatchString(input) {
 		return now.Add(30 * time.Minute), true
 	}
