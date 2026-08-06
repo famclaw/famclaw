@@ -65,6 +65,8 @@ func TestParseTimeBareUnits(t *testing.T) {
 		"in 2 hrs", 
 		"in 3 days",
 		"in hour", // This is already accepted but should remain accepted
+		"in 30 s",
+		"in 1 d",
 	}
 
 	// Cases that SHOULD NOT work (bare units that cause confusion)
@@ -72,6 +74,8 @@ func TestParseTimeBareUnits(t *testing.T) {
 		"in minute",
 		"in second", 
 		"in day",
+		"in s",
+		"in d",
 	}
 
 	for _, tc := range validCases {

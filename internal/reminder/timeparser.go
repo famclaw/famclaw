@@ -177,7 +177,7 @@ func parseRelative(input string, now time.Time, loc *time.Location) (time.Time, 
 	// be either a number or an a/an article, so bare units such as "in minute",
 	// "in second", "in day" are rejected. Units accept common abbreviations
 	// (min, mins, sec, secs, hr, hrs, m, h) as well as full words.
-	inRegex := regexp.MustCompile(`^in\s+(?:(\d+)\s+|an?\s+)(minute|minutes|min|mins|second|seconds|sec|secs|hour|hours|hr|hrs|day|days|m|h)$`)
+	inRegex := regexp.MustCompile(`^in\s+(?:(\d+)\s+|an?\s+)(minute|minutes|min|mins|second|seconds|sec|secs|hour|hours|hr|hrs|day|days|m|h|s|d)$`)
 	if m := inRegex.FindStringSubmatch(input); m != nil {
 		amount := 1
 		if m[1] != "" {
@@ -217,11 +217,11 @@ func unitToDuration(unit string) time.Duration {
 	switch unit {
 	case "minute", "minutes", "min", "mins", "m":
 		return time.Minute
-	case "second", "seconds", "sec", "secs":
+	case "second", "seconds", "sec", "secs", "s":
 		return time.Second
 	case "hour", "hours", "hr", "hrs", "h":
 		return time.Hour
-	case "day", "days":
+	case "day", "days", "d":
 		return 24 * time.Hour
 	}
 	return 0
