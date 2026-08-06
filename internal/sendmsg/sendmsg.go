@@ -87,7 +87,7 @@ func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[s
 		return "", fmt.Errorf("resolving gateway for %s: %w", to, err)
 	}
 	if gatewayName == "" || externalID == "" {
-		return "", fmt.Errorf("%s has not sent any messages yet, so I don't know how to reach them on any gateway", to)
+		return "", fmt.Errorf("%s has no linked gateway account to send through, so I don't know how to reach them on any gateway", to)
 	}
 
 	// Look up the sender for that gateway.

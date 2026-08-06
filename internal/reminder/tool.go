@@ -92,7 +92,7 @@ func HandleAddReminder(ctx context.Context, db *store.DB, cfg *config.Config, us
 			return "", fmt.Errorf("resolving gateway for %s: %w", targetUser, err)
 		}
 		if targetGateway == "" || targetExternalID == "" {
-			return "", fmt.Errorf("%s has not sent any messages yet, so I don't know how to reach them on any gateway", targetUser)
+			return "", fmt.Errorf("%s has no linked gateway account to send through, so I don't know how to reach them on any gateway", targetUser)
 		}
 		deliveryGateway = targetGateway
 		deliveryExternalID = targetExternalID
