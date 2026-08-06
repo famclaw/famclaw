@@ -289,7 +289,6 @@ func TestMultiNotifierNoParentAccounts(t *testing.T) {
 	notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
 }
 
-
 // TestMultiNotifierMissingSenderSurfacesError verifies that when a parent has
 // a linked gateway account but no sender is registered for that gateway,
 // the error is both returned from sendFn AND logged — not silently swallowed.
@@ -368,8 +367,11 @@ func TestMultiNotifierContextCancellation(t *testing.T) {
 
 	called := make(chan string, 10)
 	ctx, cancel := context.WithCancel(context.Background())
-	
-	// Cancel context after first send
+
+	// Cancel context after the first send is in flight. The sendFn below
+	// blocks until ctx is done, simulating the latency of a real network
+	// send so that the cancellation check between sends is actually
+	// exercised.
 	go func() {
 		<-time.After(10 * time.Millisecond)
 		cancel()
@@ -377,10 +379,12 @@ func TestMultiNotifierContextCancellation(t *testing.T) {
 
 	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
 		called <- fmt.Sprintf("%s/%s", gw, chatID)
+		<-ctx.Done() // simulate a blocking send interrupted by cancellation
 		return nil
 	})
 
-	// This should return immediately due to context cancellation
+	// Notify delivers to the first parent, then returns when cancellation
+	// is detected before the next send — remaining parents are skipped.
 	notifier.Notify(ctx, testApproval, "http://approve", "http://deny")
 
 	// Check that only one send happened (the first one)
@@ -428,7 +432,7 @@ func TestMultiNotifierContextLive(t *testing.T) {
 	}
 
 	called := make(chan string, 10)
-	
+
 	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
 		called <- fmt.Sprintf("%s/%s", gw, chatID)
 		return nil
@@ -440,7 +444,7 @@ func TestMultiNotifierContextLive(t *testing.T) {
 	// Check that all 3 sends happened
 	expected := []string{"telegram/parent1-tg", "discord/parent1-dc", "telegram/parent2-tg"}
 	actual := make([]string, 0, 3)
-	
+
 	for i := 0; i < 3; i++ {
 		select {
 		case sent := <-called:
@@ -454,7 +458,7 @@ func TestMultiNotifierContextLive(t *testing.T) {
 	if len(actual) != len(expected) {
 		t.Errorf("expected %d sends, got %d", len(expected), len(actual))
 	}
-	
+
 	// Verify all expected sends occurred
 	for _, exp := range expected {
 		found := false
