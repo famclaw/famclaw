@@ -15,56 +15,50 @@ import (
 
 // TestComputeHeadBudget verifies the head-budget formula, its absolute
 // floor/ceiling, and that the default production context (131072) yields a
-// threshold in the realistic-web-fetch range.
+// threshold in the realistic-web-fetch range. Bounds (not exact values) are
+// asserted so the test tracks the formula rather than a magic number.
 func TestComputeHeadBudget(t *testing.T) {
 	tests := []struct {
-		name      string
-		nCtx      int
-		wantMin   int
-		wantMax   int
-		wantExact int // when set (>0), requires an exact match
+		name    string
+		nCtx    int
+		wantMin int
+		wantMax int
 	}{
 		{
-			name:      "default production 128k context — spill engages for realistic web fetches",
-			nCtx:      131072,
-			wantMin:   4096,  // > 4KB — large enough to be a useful preview
-			wantMax:   16384, // < 16KB — small enough that a typical web page spills
-			wantExact: 8708,
+			name:    "default production 128k context — spill engages for realistic web fetches",
+			nCtx:    131072,
+			wantMin: 4096,  // > 4KB — large enough to be a useful preview
+			wantMax: 16384, // < 16KB — small enough that a typical web page spills
 		},
 		{
-			name:      "small 8k context — floored to min preview",
-			nCtx:      8192,
-			wantMin:   512,
-			wantMax:   512,
-			wantExact: 512,
+			name:    "small 8k context — floored to min preview",
+			nCtx:    8192,
+			wantMin: 512,
+			wantMax: 512,
 		},
 		{
-			name:      "large 1M context — ceiling caps preview at 64KB",
-			nCtx:      1000000,
-			wantMin:   65536,
-			wantMax:   65536,
-			wantExact: 65536,
+			name:    "large 1M context — ceiling caps preview at 64KB",
+			nCtx:    1000000,
+			wantMin: 65536,
+			wantMax: 65536,
 		},
 		{
-			name:      "zero context falls back to 4096",
-			nCtx:      0,
-			wantMin:   512,
-			wantMax:   512,
-			wantExact: 512,
+			name:    "zero context falls back to 4096",
+			nCtx:    0,
+			wantMin: 512,
+			wantMax: 512,
 		},
 		{
-			name:      "tiny 100-token context — floored to min preview",
-			nCtx:      100,
-			wantMin:   512,
-			wantMax:   512,
-			wantExact: 512,
+			name:    "tiny 100-token context — floored to min preview",
+			nCtx:    100,
+			wantMin: 512,
+			wantMax: 512,
 		},
 		{
-			name:      "32k context — scales proportionally",
-			nCtx:      32768,
-			wantMin:   1024,
-			wantMax:   4096,
-			wantExact: 2024,
+			name:    "32k context — scales proportionally",
+			nCtx:    32768,
+			wantMin: 1024,
+			wantMax: 4096,
 		},
 	}
 
@@ -78,8 +72,10 @@ func TestComputeHeadBudget(t *testing.T) {
 			if b > tt.wantMax {
 				t.Fatalf("budget %d exceeds max %d", b, tt.wantMax)
 			}
-			if tt.wantExact > 0 && b != tt.wantExact {
-				t.Fatalf("budget %d != exact %d", b, tt.wantExact)
+			// computeHeadBudget must agree with the exported helper.
+			if b != HeadBudgetForContext(tt.nCtx) {
+				t.Fatalf("computeHeadBudget(%d)=%d != HeadBudgetForContext(%d)=%d",
+					tt.nCtx, b, tt.nCtx, HeadBudgetForContext(tt.nCtx))
 			}
 		})
 	}

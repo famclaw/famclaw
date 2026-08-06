@@ -8,9 +8,9 @@ package agent
 //	budget = headShare * (n_ctx * (1 - margin) - non_droppable - response_reserve)
 //	budget = clamp(budget, minHeadBytes, maxHeadBytes)
 //
-// The fraction (headShare) scales with the model's context window so that
-// larger models get larger previews, but absolute floor/ceiling bounds keep
-// the value sane at extreme context sizes.
+// The resulting budget scales with the context window so that larger
+// models get larger previews, but absolute floor/ceiling bounds keep the
+// value sane at extreme context sizes.
 //
 // This is exported as a pure function of the context size so that tests in
 // other packages (e.g. toolcache) can call the same helper the production
@@ -30,7 +30,6 @@ func HeadBudgetForContext(nCtx int) int {
 		// never engaged in production because no real tool result is that
 		// large) to 0.02 (2%) so realistic results — fetched web pages,
 		// file reads, search output — spill while small inline results
-		// stay inline. The value still scales with context.
 		headShare = 0.02
 		// minHeadBytes is an absolute floor: even on the smallest supported
 		// context the model gets at least this many bytes of preview.
