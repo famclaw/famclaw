@@ -331,7 +331,7 @@ When `enabled` is not set (or `false`), a voice message is **not** silently drop
 | **Multi-backend LLM** | OpenAI-compatible: Ollama, llama.cpp, Groq, OpenAI, OpenRouter |
 | **Smart tool selection** | Token-budget-aware filtering, role+skill scoping |
 | **Context compression** | Tiered truncation keeping system prompt + pinned messages |
-| **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
+| **Tool-result spillover cache** | Large tool results (>head budget, ~213 KB at 128k ctx) spill to a per-user file cache with TTL + LRU eviction; smaller results stay inline. `builtin__tool_result_more` reads the tail | **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
 | **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps. Optional headless-browser fallback for JS-heavy sites (`fallback_to_browser`, off by default; requires `tools.browser.enabled`) |
 | **Web search** | `web_search` builtin tool (off by default) — query a SearXNG JSON endpoint; requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate |
 | **Voice transcription** | `transcription` builtin (off by default) — transcribes Telegram/Discord voice notes via a local `/v1/audio/transcriptions` service; default 25 MB cap, 30s timeout. See [docs/GATEWAYS.md](./docs/GATEWAYS.md) |
