@@ -108,6 +108,94 @@ func TestPutLargePayloadTruncatesAndCaches(t *testing.T) {
 	}
 }
 
+// TestPutRealisticWebFetchSpills verifies that a realistically-sized web
+// page — the kind builtin__web_fetch actually returns — spills into the
+// cache under the production head budget. The head budget at the default
+// 128K-token context is 8708 bytes (see agent.computeHeadBudget); a typical
+// rendered web page is 10–30 KB, so a 15 KB payload must spill while a
+// sub-threshold result stays inline. This is the case that was missing from
+// PR 336, which used an artificially huge payload and thus never reflected
+// the real production threshold.
+func TestPutRealisticWebFetchSpills(t *testing.T) {
+	// HeadBudget matches computeHeadBudget at 131072 tokens (the live
+	// default context). See internal/agent/budget_test.go.
+	const headBudget = 8708
+
+	// 15 KB of plausible web-page body text — larger than the head budget,
+	// so it must spill.
+	payload := bytes.Repeat([]byte("This is a paragraph of web page content that a real fetch would return. "), 240)
+	if len(payload) <= headBudget {
+		t.Fatalf("test payload %d must exceed head budget %d", len(payload), headBudget)
+	}
+
+	c := newTestCache(t)
+	out, err := c.Put(context.Background(), PutInput{
+		User:        "alice",
+		ConvID:      "c1",
+		ToolName:    "builtin__web_fetch",
+		Args:        map[string]any{"url": "https://example.com/article"},
+		Payload:     payload,
+		ContentType: "text/plain",
+		Category:    "web_fetch",
+		HeadBudget:  headBudget,
+	})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if !out.Truncated {
+		t.Error("15 KB web fetch should spill (truncated=true)")
+	}
+	if len(out.Head) > headBudget {
+		t.Errorf("head %d exceeds budget %d", len(out.Head), headBudget)
+	}
+	if out.TotalBytes != len(payload) {
+		t.Errorf("TotalBytes = %d, want %d", out.TotalBytes, len(payload))
+	}
+	// Spillover path: a cache row must exist.
+	if _, err := c.store.getCacheByID(context.Background(), "alice", out.ID); err != nil {
+		t.Fatalf("cache row should exist for spilled payload: %v", err)
+	}
+}
+
+// TestPutRealisticSmallResultStaysInline verifies that a small tool result —
+// the kind that should stay inline — does NOT spill. This is the
+// counterpart to TestPutRealisticWebFetchSpills: normal replies stay inline
+// while large web fetches spill.
+func TestPutRealisticSmallResultStaysInline(t *testing.T) {
+	const headBudget = 8708
+
+	// ~2 KB of text — a small answer or short file read. Below the head
+	// budget, so it must stay inline (no cache row).
+	payload := bytes.Repeat([]byte("Short answer. "), 140)
+	if len(payload) >= headBudget {
+		t.Fatalf("test payload %d must be below head budget %d", len(payload), headBudget)
+	}
+
+	c := newTestCache(t)
+	out, err := c.Put(context.Background(), PutInput{
+		User:        "alice",
+		ConvID:      "c1",
+		ToolName:    "builtin__file_read",
+		Args:        map[string]any{"path": "/docs/notes.txt"},
+		Payload:     payload,
+		ContentType: "text/plain",
+		HeadBudget:  headBudget,
+	})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if out.Truncated {
+		t.Error("small result should not be truncated")
+	}
+	if !bytes.Equal(out.Head, payload) {
+		t.Error("inline result head should equal full payload")
+	}
+	// Inline path: no cache row, only an audit row.
+	if _, err := c.store.getCacheByID(context.Background(), "alice", out.ID); err != ErrNotFound {
+		t.Errorf("expected no cache row for inline put, got err=%v", err)
+	}
+}
+
 func TestMoreReadsTailAfterHead(t *testing.T) {
 	c := newTestCache(t)
 	payload := make([]byte, 5000)

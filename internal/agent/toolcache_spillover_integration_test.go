@@ -21,10 +21,6 @@ import (
 // homelab config. The test derives the spillover threshold from it rather
 // than from a hardcoded budget number, so a change to the context-window
 // size or the budget formula automatically scales the test payload.
-//
-// NOTE: another branch is exporting agent.HeadBudgetForContext(nCtx) for
-// exactly this derivation. Once that lands on main, this test should switch
-// to it and drop the probe-agent construction below.
 const prodContextTokens = 131072
 
 // TestWebFetchSpilloverIntegration verifies the tool-result spillover path
@@ -36,22 +32,17 @@ const prodContextTokens = 131072
 //
 // This is the integration test audit finding 5 (internal/toolcache "never
 // fired") asked for. In production every web_fetch result was ≤70KB, well
-// under the ~213KB threshold, so the cache stayed empty. This test forces a
-// payload strictly above the threshold to prove the spillover path actually
-// works rather than merely existing.
+// under the ~8.5KB threshold (with headShare=0.02), so the cache stayed
+// empty. This test forces a payload strictly above the threshold to prove
+// the spillover path actually works rather than merely existing.
 func TestWebFetchSpilloverIntegration(t *testing.T) {
-	// Derive the spillover threshold from the config rather than hardcoding
-	// a budget number. computeHeadBudget(131072) == 217772 bytes (~212.7KB):
-	//   usable = 131072*(1-0.15) - 1500 - 1024 = 108887.2 tokens
-	//   budget = int(108887.2 * 0.5) * 4 = 54443 * 4 = 217772 bytes
-	//   floor  = int(0.5 * 131072 * 4) = 262144  (budget < floor, so budget wins)
-	//
-	// Once agent.HeadBudgetForContext(nCtx) lands on main, replace the
-	// probe construction with: headBudget := HeadBudgetForContext(prodContextTokens)
-	probe := &Agent{cfg: &config.Config{LLM: config.LLMConfig{MaxContextTokens: prodContextTokens}}}
-	headBudget := computeHeadBudget(probe)
+	// Derive the spillover threshold from the exported helper rather than
+	// hardcoding a budget number. With headShare=0.02 at 131072 tokens the
+	// budget is ~8.5 KB, so the threshold scales automatically if the
+	// context size or formula changes.
+	headBudget := HeadBudgetForContext(prodContextTokens)
 	if headBudget <= 0 {
-		t.Fatalf("computeHeadBudget returned non-positive %d", headBudget)
+		t.Fatalf("HeadBudgetForContext returned non-positive %d", headBudget)
 	}
 	t.Logf("head budget threshold = %d bytes (%.1f KB); spillover fires for payloads > this",
 		headBudget, float64(headBudget)/1024.0)

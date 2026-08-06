@@ -1,22 +1,40 @@
 package agent
 
 // computeHeadBudget returns the maximum bytes a single tool result's head
-// slice should occupy when the result is being spilled to the toolcache.
+// slice may occupy before the result spills into the toolcache. It is the
+// spill threshold AND the preview size the LLM receives inline.
 // See spec §6.
 //
-//	budget = head_share * (n_ctx * (1 - margin) - non_droppable - response_reserve)
-//	floor  = 0.5 * n_ctx in bytes (safety floor — never exceed)
+//	budget = headShare * (n_ctx * (1 - margin) - non_droppable - response_reserve)
+//	budget = clamp(budget, minHeadBytes, maxHeadBytes)
+//
+// The fraction (headShare) scales with the model's context window so that
+// larger models get larger previews, but absolute floor/ceiling bounds keep
+// the value sane at extreme context sizes.
 //
 // Returns bytes. Conversion uses 4 chars/token (SimpleEstimator's
 // heuristic) which matches what compress.Compress uses for budget math.
 func computeHeadBudget(a *Agent) int {
 	const (
-		bytesPerToken    = 4
-		responseReserve  = 1024 // tokens reserved for response
-		nonDroppableEst  = 1500 // tokens for system prompt + last K turns
-		estimatorMargin  = 0.15
-		headShare        = 0.5
-		safetyFloorRatio = 0.5
+		bytesPerToken   = 4
+		responseReserve = 1024 // tokens reserved for response
+		nonDroppableEst = 1500 // tokens for system prompt + last K turns
+		estimatorMargin = 0.15
+		// headShare is the fraction of the usable context window a single
+		// tool result may occupy before it spills. Lowered from 0.50 (50%
+		// of the window ≈ 213 KB at the default 128K-token context — which
+		// never engaged in production because no real tool result is that
+		// large) to 0.02 (2%) so realistic results — fetched web pages,
+		// file reads, search output — spill while small inline results
+		// stay inline. The value still scales with context.
+		headShare = 0.02
+		// minHeadBytes is an absolute floor: even on the smallest supported
+		// context the model gets at least this many bytes of preview.
+		minHeadBytes = 512
+		// maxHeadBytes is an absolute ceiling: the head is a preview, not a
+		// dump, so it never exceeds 64 KB regardless of how large the
+		// configured context window is.
+		maxHeadBytes = 64 * 1024
 	)
 
 	nCtx := 0
@@ -37,12 +55,14 @@ func computeHeadBudget(a *Agent) int {
 	budgetTokens := int(usableTokens * headShare)
 	budgetBytes := budgetTokens * bytesPerToken
 
-	floorBytes := int(safetyFloorRatio * float64(nCtx) * bytesPerToken)
-	if budgetBytes > floorBytes {
-		budgetBytes = floorBytes
+	// Floor: ensure a minimally useful preview even on tiny contexts.
+	if budgetBytes < minHeadBytes {
+		budgetBytes = minHeadBytes
 	}
-	if budgetBytes < 512 {
-		budgetBytes = 512 // never starve the model
+	// Ceiling: cap the head regardless of context size so it stays a
+	// preview, not a context-dump.
+	if budgetBytes > maxHeadBytes {
+		budgetBytes = maxHeadBytes
 	}
 	return budgetBytes
 }
