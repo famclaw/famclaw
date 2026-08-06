@@ -30,6 +30,8 @@ func TestParseTimeNaturalLanguage(t *testing.T) {
 		{"in 5 m", "in 5 m", 5 * time.Minute},
 		{"in 3 h", "in 3 h", 3 * time.Hour},
 		{"tomorrow morning", "tomorrow morning", tomorrowMorning.Sub(base)},
+		// amount is now optional and independent of the a/an form:
+		{"in hour", "in hour", 1 * time.Hour},
 	}
 
 	for _, tc := range tests {

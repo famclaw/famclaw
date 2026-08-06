@@ -167,9 +167,12 @@ func parseRelative(input string, now time.Time, loc *time.Location) (time.Time, 
 		return now.Add(30 * time.Minute), true
 	}
 
-	// "in <n> <unit>" or "in a/an <unit>". Units accept common abbreviations
-	// (min, mins, sec, secs, hr, hrs, m, h) in addition to full words.
-	inRegex := regexp.MustCompile(`^in\s+(?:a\s+|an\s+|(\d+)\s+)(minute|minutes|min|mins|second|seconds|sec|secs|hour|hours|hr|hrs|day|days|m|h)$`)
+	// "in <n> <unit>", "in a/an <unit>", or "in <unit>" (the leading amount is
+	// optional and independent of the a/an form, so all of these parse:
+	// "in 1 hour", "in an hour", "in 1 min", "in half an hour"). Units accept
+	// common abbreviations (min, mins, sec, secs, hr, hrs, m, h) as well as
+	// full words.
+	inRegex := regexp.MustCompile(`^in\s+(?:(\d+)\s+)?(?:an?\s+)?(minute|minutes|min|mins|second|seconds|sec|secs|hour|hours|hr|hrs|day|days|m|h)$`)
 	if m := inRegex.FindStringSubmatch(input); m != nil {
 		amount := 1
 		if m[1] != "" {
