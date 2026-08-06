@@ -130,7 +130,10 @@ esac
 FAMCLAW_TMP="$PREFIX/bin/.famclaw.tmp.$$"
 curl -fsSL "https://github.com/famclaw/famclaw/releases/latest/download/$BIN" -o "$FAMCLAW_TMP"
 chmod +x "$FAMCLAW_TMP"
-mv -f "$FAMCLAW_TMP" "$PREFIX/bin/famclaw"
+# Use atomic rename to avoid SIGKILL (exit 137) when binary is running
+  FAMCLAW_TMP_PATH="$PREFIX/bin/.famclaw.tmp.$$"
+  mv -f "$FAMCLAW_TMP" "$FAMCLAW_TMP_PATH"
+  mv -f "$FAMCLAW_TMP_PATH" "$PREFIX/bin/famclaw"
 
 # Restart
 pkill famclaw
