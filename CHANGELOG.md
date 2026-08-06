@@ -3,6 +3,16 @@
 All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.11.2 — 2026-08-06
+
+### Fixed
+- **Reminders are now actually delivered.** v0.11.0 added proactive family reminders, but the delivery path was broken in three ways: FamClaw resolved a family member's destination from past message activity instead of their linked `gateway_accounts`, so anyone who had been set up on a gateway but never messaged the bot was silently reported as unreachable; Discord reminders were sent to a Discord user ID where a channel ID was required, producing a permanent "Unknown Channel" 404 on every delivery attempt; and a reminder whose delivery failed was never marked as dispatched, so it was retried forever in a 30-second loop. FamClaw now resolves destinations from `gateway_accounts` (the authoritative reach record) and only uses recent message activity to prefer one gateway when several are linked — a linked-but-silent family member is always reachable; Discord reminders open (or reuse, cached) a DM channel and send to that channel; and delivery is capped at 3 attempts (`MaxDeliveryAttempts`) before the reminder is given up, so a broken destination stops hammering instead of looping forever. A family member with no linked account at all is honestly reported as unreachable.
+
+## v0.11.1 — 2026-08-05
+
+### Fixed
+- **Conversation memory is restored.** v0.11.0 introduced a regression that broke conversation continuity: every user message was treated as the start of a brand-new conversation, so the assistant forgot everything between turns and the family lost their chat history mid-conversation (measured at roughly 2 messages per conversation on affected databases, down from the normal 30+). FamClaw now reuses the existing conversation ID verbatim for the life of a conversation, so messages keep landing in the same conversation as long as the gap between the user's last message and now is under the 6-hour `ConversationIdleTimeout`; only a longer idle gap or a cold start begins a fresh conversation. Existing conversations and their history are preserved.
+
 ## v0.11.0 — 2026-08-04
 
 ### Added
