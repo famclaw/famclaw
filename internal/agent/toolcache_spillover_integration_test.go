@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,8 +17,18 @@ import (
 	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
+// prodContextTokens is the MaxContextTokens used by the captain's live
+// homelab config. The test derives the spillover threshold from it rather
+// than from a hardcoded budget number, so a change to the context-window
+// size or the budget formula automatically scales the test payload.
+//
+// NOTE: another branch is exporting agent.HeadBudgetForContext(nCtx) for
+// exactly this derivation. Once that lands on main, this test should switch
+// to it and drop the probe-agent construction below.
+const prodContextTokens = 131072
+
 // TestWebFetchSpilloverIntegration verifies the tool-result spillover path
-// end-to-end: when web_fetch returns a payload larger than computeHeadBudget
+// end-to-end: when web_fetch returns a payload larger than the head budget
 // (the spillover threshold), the agent writes a tool_result_cache row
 // linked from a tool_result_audit row (via payload_id) and the full payload
 // — including the bytes beyond the inline head — is retrievable through
@@ -28,13 +40,15 @@ import (
 // payload strictly above the threshold to prove the spillover path actually
 // works rather than merely existing.
 func TestWebFetchSpilloverIntegration(t *testing.T) {
-	// Reproduce the live config's MaxContextTokens so the threshold matches
-	// production exactly. computeHeadBudget(131072) == 217772 bytes (~212.7KB):
+	// Derive the spillover threshold from the config rather than hardcoding
+	// a budget number. computeHeadBudget(131072) == 217772 bytes (~212.7KB):
 	//   usable = 131072*(1-0.15) - 1500 - 1024 = 108887.2 tokens
 	//   budget = int(108887.2 * 0.5) * 4 = 54443 * 4 = 217772 bytes
 	//   floor  = int(0.5 * 131072 * 4) = 262144  (budget < floor, so budget wins)
-	const liveMaxContextTokens = 131072
-	probe := &Agent{cfg: &config.Config{LLM: config.LLMConfig{MaxContextTokens: liveMaxContextTokens}}}
+	//
+	// Once agent.HeadBudgetForContext(nCtx) lands on main, replace the
+	// probe construction with: headBudget := HeadBudgetForContext(prodContextTokens)
+	probe := &Agent{cfg: &config.Config{LLM: config.LLMConfig{MaxContextTokens: prodContextTokens}}}
 	headBudget := computeHeadBudget(probe)
 	if headBudget <= 0 {
 		t.Fatalf("computeHeadBudget returned non-positive %d", headBudget)
@@ -45,8 +59,8 @@ func TestWebFetchSpilloverIntegration(t *testing.T) {
 	// Build a payload strictly larger than the head budget. The content is a
 	// deterministic A-Z pattern (no sentence terminators) so buildHead falls
 	// back to an exact-budget head length, making the tail offset predictable.
-	needed := headBudget + 8192
-	payload := make([]byte, needed)
+	const tailExtra = 8192
+	payload := make([]byte, headBudget+tailExtra)
 	for i := range payload {
 		payload[i] = 'A' + byte(i%26)
 	}
@@ -81,11 +95,16 @@ func TestWebFetchSpilloverIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("toolcache.New: %v", err)
 	}
+	// New() does not start the sweeper (see toolcache.New doc), so there is
+	// no background goroutine to stop. StopSweeper is idempotent and a no-op
+	// here — called for defensiveness so the cache is never leaked if
+	// StartSweeper is ever called in this test.
+	t.Cleanup(func() { c.StopSweeper() })
 
 	a := &Agent{
 		user: &config.UserConfig{Name: "spillover-test", Role: "parent"},
 		cfg: &config.Config{
-			LLM: config.LLMConfig{MaxContextTokens: liveMaxContextTokens},
+			LLM: config.LLMConfig{MaxContextTokens: prodContextTokens},
 			Tools: config.ToolsConfig{
 				WebFetch: config.WebFetchConfig{
 					Enabled:      true,
@@ -161,18 +180,43 @@ func TestWebFetchSpilloverIntegration(t *testing.T) {
 			payloadID.Valid, payloadID.String, cacheID)
 	}
 
+	// Verify the payload_path column points at a real file on disk whose
+	// full contents match the original payload (not just the head slice).
+	var payloadPath string
+	var storedBytes int64
+	if err := db.QueryRow(
+		`SELECT payload_path, bytes FROM tool_result_cache WHERE id = ?`, cacheID,
+	).Scan(&payloadPath, &storedBytes); err != nil {
+		t.Fatalf("query payload_path: %v", err)
+	}
+	if storedBytes != int64(len(payload)) {
+		t.Errorf("stored bytes = %d, want %d", storedBytes, len(payload))
+	}
+	onDisk, err := os.ReadFile(filepath.Join(cacheDir, payloadPath))
+	if err != nil {
+		t.Fatalf("read payload file %s: %v", payloadPath, err)
+	}
+	if !bytes.Equal(onDisk, payload) {
+		t.Errorf("on-disk payload (%d bytes) does not match original (%d bytes)", len(onDisk), len(payload))
+	}
+
 	// Read the tail (offset = headBudget, past the inline head) back from the
-	// cache and confirm it matches the original payload bytes. This proves the
-	// *full* payload was spilled, not just the inline head.
+	// cache and confirm it matches the original payload bytes. This proves
+	// the *full* payload was spilled, not just the inline head. Clamp to the
+	// actual bytes returned in case of a short read near EOF.
 	tail, err := c.More(context.Background(), "spillover-test", cacheID, headBudget, 8192)
 	if err != nil {
 		t.Fatalf("Cache.More tail: %v", err)
 	}
-	wantTail := payload[headBudget : headBudget+len(tail.Data)]
+	if len(tail.Data) == 0 {
+		t.Fatal("Cache.More tail returned 0 bytes")
+	}
+	wantLen := min(len(tail.Data), len(payload)-headBudget)
+	wantTail := payload[headBudget : headBudget+wantLen]
 	if !bytes.Equal(tail.Data, wantTail) {
 		t.Errorf("tail mismatch: got %d bytes, want %d (got=%q want=%q)",
-			len(tail.Data), len(wantTail),
-			tail.Data[:min(16, len(tail.Data))], wantTail[:min(16, len(wantTail))])
+			len(tail.Data), wantLen,
+			tail.Data[:min(16, len(tail.Data))], wantTail[:min(16, wantLen)])
 	}
 
 	// Read the head (offset 0) and confirm it is the budget-sized prefix.
