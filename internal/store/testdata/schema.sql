@@ -162,7 +162,8 @@ CREATE TABLE reminders (
 		dispatched_at  TEXT DEFAULT '',
 		created_at         TEXT NOT NULL,
 		setter_gateway     TEXT DEFAULT '',
-		setter_external_id TEXT DEFAULT ''
+		setter_external_id TEXT DEFAULT '',
+		delivery_attempts  INTEGER NOT NULL DEFAULT 0
 	);
 
 CREATE TABLE research_tasks (

@@ -2,6 +2,7 @@ package reminder
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -28,14 +29,32 @@ func (m *mockSender) getSent() []struct{ chatID, text string } {
 	return m.sent
 }
 
+// failSender is a gateway.Sender whose Send always fails with a permanent
+// "unknown channel" error, simulating a Discord channel that 404s. Used to
+// verify the scheduler gives up instead of retrying forever.
+type failSender struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *failSender) Send(ctx context.Context, chatID, text string) error {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	return errors.New("unknown channel")
+}
+
 // mockDB implements a minimal store for testing scheduler.
 type mockDB struct {
-	mu        sync.Mutex
-	reminders []*store.Reminder
+	mu               sync.Mutex
+	reminders        []*store.Reminder
+	deliveryAttempts map[int64]int
+	incrementErr     error // if non-nil, IncrementDeliveryAttempt returns this error
+	markErr          error // if non-nil, MarkReminderDispatched returns this error
 }
 
 func newMockDB() *mockDB {
-	return &mockDB{reminders: []*store.Reminder{}}
+	return &mockDB{reminders: []*store.Reminder{}, deliveryAttempts: map[int64]int{}}
 }
 
 func (m *mockDB) CreateReminder(ctx context.Context, r *store.Reminder) error {
@@ -74,6 +93,9 @@ func (m *mockDB) GetPendingReminders(ctx context.Context) ([]*store.Reminder, er
 func (m *mockDB) MarkReminderDispatched(ctx context.Context, id int64, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.markErr != nil {
+		return m.markErr
+	}
 	for _, r := range m.reminders {
 		if r.ID == id {
 			r.Dispatched = true
@@ -82,6 +104,16 @@ func (m *mockDB) MarkReminderDispatched(ctx context.Context, id int64, at time.T
 		}
 	}
 	return nil
+}
+
+func (m *mockDB) IncrementDeliveryAttempt(ctx context.Context, id int64) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.incrementErr != nil {
+		return 0, m.incrementErr
+	}
+	m.deliveryAttempts[id]++
+	return m.deliveryAttempts[id], nil
 }
 
 func TestDispatcher(t *testing.T) {
@@ -333,5 +365,156 @@ func TestSchedulerStop(t *testing.T) {
 	case <-done2:
 	case <-time.After(1 * time.Second):
 		t.Error("Second Stop did not return within 1 second")
+	}
+}
+
+// TestSchedulerStopsRetryingPermanentlyFailingDelivery verifies that a reminder
+// whose delivery fails every time is retried only MaxDeliveryAttempts times
+// before being given up (marked dispatched), rather than looping forever every
+// 30s against a permanently-failing destination.
+func TestSchedulerStopsRetryingPermanentlyFailingDelivery(t *testing.T) {
+	db := newMockDB()
+	clock := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	dispatcher := NewDispatcher()
+	fl := &failSender{}
+	dispatcher.RegisterSender("discord", fl)
+
+	s := NewScheduler(db, dispatcher, 10*time.Millisecond)
+	s.SetClock(func() time.Time { return clock })
+
+	ctx := context.Background()
+	if err := db.CreateReminder(ctx, &store.Reminder{
+		UserName:   "julia",
+		Gateway:    "discord",
+		ExternalID: "bad-channel",
+		Message:    "remind me anyway",
+		DueAt:      clock.Add(-1 * time.Minute),
+	}); err != nil {
+		t.Fatalf("create reminder: %v", err)
+	}
+
+	// Drive processDue repeatedly (as the 30s ticker would) until the reminder
+	// is no longer due (it was given up), bailing out past a sane bound.
+	var rounds int
+	for {
+		s.processDue(ctx)
+		rounds++
+		if rounds > MaxDeliveryAttempts+2 {
+			t.Fatalf("reminder was not given up after %d rounds (sender calls=%d)", rounds, fl.calls)
+		}
+		due, _ := db.GetDueReminders(ctx, clock)
+		if len(due) == 0 {
+			break
+		}
+	}
+
+	if rounds != MaxDeliveryAttempts {
+		t.Errorf("expected %d processDue rounds before giving up, got %d", MaxDeliveryAttempts, rounds)
+	}
+	if fl.calls != MaxDeliveryAttempts {
+		t.Errorf("expected sender called %d times, got %d", MaxDeliveryAttempts, fl.calls)
+	}
+
+	// Given-up reminders must not appear in the pending set.
+	pending, _ := db.GetPendingReminders(ctx)
+	if len(pending) != 0 {
+		t.Errorf("expected 0 pending reminders after give-up, got %d", len(pending))
+	}
+}
+
+// TestSchedulerGivesUpWhenIncrementDeliveryAttemptFails verifies that when
+// IncrementDeliveryAttempt itself errors (e.g. a transient database fault),
+// the scheduler still gives up — marks the reminder dispatched — rather than
+// leaving it pending for infinite retries. The bounded-retry invariant must
+// hold even when the attempt counter cannot be persisted.
+func TestSchedulerGivesUpWhenIncrementDeliveryAttemptFails(t *testing.T) {
+	db := newMockDB()
+	db.incrementErr = errors.New("database locked")
+	clock := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	dispatcher := NewDispatcher()
+	fl := &failSender{}
+	dispatcher.RegisterSender("discord", fl)
+
+	s := NewScheduler(db, dispatcher, 10*time.Millisecond)
+	s.SetClock(func() time.Time { return clock })
+
+	ctx := context.Background()
+	if err := db.CreateReminder(ctx, &store.Reminder{
+		UserName:   "julia",
+		Gateway:    "discord",
+		ExternalID: "bad-channel",
+		Message:    "remind me anyway",
+		DueAt:      clock.Add(-1 * time.Minute),
+	}); err != nil {
+		t.Fatalf("create reminder: %v", err)
+	}
+
+	// Drive processDue once. With the bug, IncrementDeliveryAttempt fails
+	// and the function returns without marking dispatched, so the reminder
+	// stays pending and would be retried forever. With the fix, the
+	// reminder is given up (marked dispatched) on the first failure.
+	s.processDue(ctx)
+
+	// The reminder must have been dispatched (given up), not left pending.
+	due, err := db.GetDueReminders(ctx, clock)
+	if err != nil {
+		t.Fatalf("GetDueReminders: %v", err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("expected 0 due reminders after processDue (reminder should be given up), got %d", len(due))
+	}
+
+	// No pending reminders — the bound was honoured.
+	pending, err := db.GetPendingReminders(ctx)
+	if err != nil {
+		t.Fatalf("GetPendingReminders: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected 0 pending reminders after give-up, got %d", len(pending))
+	}
+}
+
+// TestSchedulerAbandonsWhenBothIncrementAndMarkFail is the twin hole: when
+// IncrementDeliveryAttempt fails AND the give-up MarkReminderDispatched also
+// fails, the reminder is neither counted nor marked dispatched. Without an
+// in-memory abandonment guard the scheduler retries on every tick, forever.
+// This test asserts the scheduler abandons the reminder in-memory and never
+// retries, even when both DB writes are unavailable.
+func TestSchedulerAbandonsWhenBothIncrementAndMarkFail(t *testing.T) {
+	db := newMockDB()
+	db.incrementErr = errors.New("database locked")
+	db.markErr = errors.New("database still locked")
+	clock := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	dispatcher := NewDispatcher()
+	fl := &failSender{}
+	dispatcher.RegisterSender("discord", fl)
+
+	s := NewScheduler(db, dispatcher, 10*time.Millisecond)
+	s.SetClock(func() time.Time { return clock })
+
+	ctx := context.Background()
+	if err := db.CreateReminder(ctx, &store.Reminder{
+		UserName:   "julia",
+		Gateway:    "discord",
+		ExternalID: "bad-channel",
+		Message:    "remind me anyway",
+		DueAt:      clock.Add(-1 * time.Minute),
+	}); err != nil {
+		t.Fatalf("create reminder: %v", err)
+	}
+
+	// Drive processDue multiple times (as the 30s ticker would). Without the
+	// in-memory abandonment guard, each call re-dispatches because neither the
+	// counter nor the mark could be persisted. With the fix, the scheduler
+	// abandons the reminder after the first failure and never retries.
+	for i := 0; i < 5; i++ {
+		s.processDue(ctx)
+	}
+
+	if fl.calls != 1 {
+		t.Errorf("expected sender called once then abandoned in-memory, got %d calls", fl.calls)
 	}
 }

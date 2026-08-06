@@ -23,8 +23,8 @@ func newTestDB(t *testing.T) (*store.DB, func()) {
 	return db, func() { _ = db.Close() }
 }
 
-// linkUser creates a message + gateway account so MostRecentGatewayAndExternalIDForUser
-// can resolve targetUser's destination.
+// linkUser links a gateway account (and records a message) so
+// MostRecentGatewayAndExternalIDForUser can resolve targetUser's destination.
 func linkUser(t *testing.T, db *store.DB, userName, gateway, externalID string) {
 	t.Helper()
 	convID := "conv-" + userName
@@ -68,9 +68,9 @@ func TestHandleAddReminder(t *testing.T) {
 	cases := []struct {
 		name string
 		// setup
-		user     *config.UserConfig
-		cfg      *config.Config
-		forUser  string
+		user       *config.UserConfig
+		cfg        *config.Config
+		forUser    string
 		linkTarget bool // if true, link the forUser to a gateway before calling
 		targetGW   string
 		targetID   string
@@ -83,77 +83,77 @@ func TestHandleAddReminder(t *testing.T) {
 		wantForUser string
 	}{
 		{
-			name:         "self reminder parent",
-			user:         parentUser(),
-			cfg:          parentCfg(),
-			forUser:      "",
-			when:         "in 10 minutes",
-			message:      "buy milk",
-			wantForUser:  "mom",
-			wantErr:      false,
-		},
-		{
-			name:         "self reminder child",
-			user:         childUser(),
-			cfg:          childCfg(),
-			forUser:      "",
-			when:         "in 30 minutes",
-			message:      "homework",
-			wantForUser:  "julia",
-			wantErr:      false,
-		},
-		{
-			name:         "parent sets reminder for child",
-			user:         parentUser(),
-			cfg:          parentCfg(),
-			forUser:      "julia",
-			linkTarget:   true,
-			targetGW:     "telegram",
-			targetID:     "julia-chat-123",
-			when:         "in 2 hours",
-			message:      "create trello API token",
-			wantForUser:  "julia",
-			wantErr:      false,
-		},
-		{
-			name:        "child sets reminder for parent — blocked by role",
-			user:        childUser(),
-			cfg:         childCfg(),
-			forUser:     "mom",
-			when:        "in 1 hour",
-			message:     "do something",
-			wantErr:     true,
-			wantErrSub:  "only parents can set reminders for other users",
-		},
-		{
-			name:        "unknown target — not a family member",
+			name:        "self reminder parent",
 			user:        parentUser(),
 			cfg:         parentCfg(),
-			forUser:     "stranger",
-			when:        "in 1 hour",
-			message:     "hi",
-			wantErr:     true,
-			wantErrSub:  "is not a configured family member",
+			forUser:     "",
+			when:        "in 10 minutes",
+			message:     "buy milk",
+			wantForUser: "mom",
+			wantErr:     false,
 		},
 		{
-			name:        "known target but no gateway recorded",
+			name:        "self reminder child",
+			user:        childUser(),
+			cfg:         childCfg(),
+			forUser:     "",
+			when:        "in 30 minutes",
+			message:     "homework",
+			wantForUser: "julia",
+			wantErr:     false,
+		},
+		{
+			name:        "parent sets reminder for child",
 			user:        parentUser(),
 			cfg:         parentCfg(),
 			forUser:     "julia",
-			linkTarget:  false,
-			when:        "in 1 hour",
-			message:     "hi",
-			wantErr:     true,
-			wantErrSub:  "has not sent any messages yet",
+			linkTarget:  true,
+			targetGW:    "telegram",
+			targetID:    "julia-chat-123",
+			when:        "in 2 hours",
+			message:     "create trello API token",
+			wantForUser: "julia",
+			wantErr:     false,
 		},
 		{
-			name:        "past time — rejected",
-			user:        parentUser(),
-			cfg:         parentCfg(),
-			when:        "in -1 minutes",
-			message:     "should fail",
-			wantErr:     true,
-			wantErrSub:  "invalid time",
+			name:       "child sets reminder for parent — blocked by role",
+			user:       childUser(),
+			cfg:        childCfg(),
+			forUser:    "mom",
+			when:       "in 1 hour",
+			message:    "do something",
+			wantErr:    true,
+			wantErrSub: "only parents can set reminders for other users",
+		},
+		{
+			name:       "unknown target — not a family member",
+			user:       parentUser(),
+			cfg:        parentCfg(),
+			forUser:    "stranger",
+			when:       "in 1 hour",
+			message:    "hi",
+			wantErr:    true,
+			wantErrSub: "is not a configured family member",
+		},
+		{
+			name:       "known target but no gateway recorded",
+			user:       parentUser(),
+			cfg:        parentCfg(),
+			forUser:    "julia",
+			linkTarget: false,
+			when:       "in 1 hour",
+			message:    "hi",
+			wantErr:    true,
+			wantErrSub: "no linked gateway account",
+		},
+		{
+			name:       "past time — rejected",
+			user:       parentUser(),
+			cfg:        parentCfg(),
+			when:       "in -1 minutes",
+			message:    "should fail",
+			wantErr:    true,
+			wantErrSub: "invalid time",
 		},
 	}
 
