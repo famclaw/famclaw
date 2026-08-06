@@ -36,7 +36,6 @@ import (
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/gateway/discord"
 	"github.com/famclaw/famclaw/internal/gateway/telegram"
-	"github.com/famclaw/famclaw/internal/gateway/whatsapp"
 	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/inference"
@@ -453,31 +452,37 @@ func main() {
 		cancel()
 	}
 
-	// Notifications
-	notifier := notify.NewMultiNotifier(cfg.Notifications, cfg.Server.Secret)
-
-	// Check for potential silent notification failures
-	if notifier.Len() == 0 {
-		// Check if any user has parent role
-		hasParent := false
-		for _, user := range cfg.Users {
-			if user.Role == "parent" {
-				hasParent = true
-				break
-			}
-		}
-
-		// Log warning if notifications are expected but no channels are configured
-		if hasParent || cfg.SecCheck.NotifyOnQuarantine {
-			log.Printf("[notify] WARNING: no notification channels enabled but parent users or seccheck.notify_on_quarantine are configured; parental approvals will fire into the void — add an enabled channel under `notifications:` in your config.yaml (email, slack, discord, sms, ntfy)")
-		}
-	}
-
-	log.Printf("Notifications: configured (%d channel(s))", notifier.Len())
-
-	// Identity store
+	// Identity store (needed by the notifier to resolve parent gateway accounts)
 	identStore := identity.NewStore(db)
 	log.Printf("Identity: ready")
+
+	// senderRegistry maps gateway name → outbound Sender. Populated after the
+	// gateways are built below and captured by the notifier closure to deliver
+	// approval requests through the parent's linked gateway.
+	senderRegistry := make(map[string]gateway.Sender)
+
+	// Notifications — approval requests are delivered through the parent's
+	// linked gateway accounts (Telegram, Discord) via the senderRegistry.
+	senderFn := func(ctx context.Context, gw, chatID, text string) error {
+		sender, ok := senderRegistry[gw]
+		if !ok {
+			return nil
+		}
+		return sender.Send(ctx, chatID, text)
+	}
+	notifier := notify.NewMultiNotifier(cfg, identStore, senderFn)
+
+	// Check for potential silent notification failures
+	hasParent := false
+	for _, u := range cfg.Users {
+		if u.Role == "parent" {
+			hasParent = true
+			break
+		}
+	}
+	if hasParent || cfg.SecCheck.NotifyOnQuarantine {
+		log.Printf("[notify] approval requests will be delivered to parents via their linked gateway accounts (Telegram, Discord)")
+	}
 	// MCP tool server pool (stdio, HTTP, SSE transports)
 	var sandboxRoot string
 	if cfg.Tools.SandboxRoot != "" {
@@ -667,11 +672,6 @@ func main() {
 	}
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
-	// senderRegistry maps gateway name -> outbound Sender, populated after the
-	// gateways are built below and captured by the closure so async research
-	// results can be delivered back to the originating conversation.
-	senderRegistry := make(map[string]gateway.Sender)
-
 	// Voice transcription: when enabled, inbound audio attachments (Telegram
 	// voice notes, Discord audio clips) are transcribed into text at the top
 	// of Agent.Chat() — before SaveMessage and before the policy gates read
@@ -755,11 +755,6 @@ func main() {
 		gateways = append(gateways, discord.NewWithSandbox(cfg.Gateways.Discord.Token, sandboxRoot))
 		log.Printf("Gateway: Discord enabled")
 	}
-	if cfg.Gateways.WhatsApp.Enabled {
-		gateways = append(gateways, whatsapp.New(cfg.Gateways.WhatsApp.DBPath))
-		log.Printf("Gateway: WhatsApp enabled (placeholder)")
-	}
-
 	stopGateways := func() {}
 	var reminderScheduler *reminder.Scheduler
 	if len(gateways) > 0 {

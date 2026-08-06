@@ -181,7 +181,7 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 		identStore: identStore,
 		evaluator:  ev,
 		clf:        clf,
-		notifier:   &notify.MultiNotifier{},
+		notifier:   notify.NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error { return nil }),
 		cfgMu:      sync.RWMutex{},
 		clients:    make(map[*websocket.Conn]*wsClient),
 	}

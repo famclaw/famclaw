@@ -202,8 +202,7 @@ func TestWizardSetupFlow(t *testing.T) {
 		],
 		"gateways": {
 			"telegram": {"enabled": false},
-			"discord": {"enabled": false},
-			"whatsapp": {"enabled": false}
+			"discord": {"enabled": false}
 		}
 	}`
 

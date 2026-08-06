@@ -1,4 +1,4 @@
-// Package identity maps gateway accounts (Telegram, WhatsApp, Discord) to FamClaw users.
+// Package identity maps gateway accounts (Telegram, Discord) to FamClaw users.
 // Unknown accounts get an onboarding message instead of reaching the LLM.
 package identity
 
@@ -96,6 +96,13 @@ func (s *Store) LinkAndClearUnknown(ctx context.Context, userName, gateway, exte
 		return fmt.Errorf("link and clear unknown: %w", err)
 	}
 	return nil
+}
+
+// ListGatewayAccountsByUser returns all gateway accounts linked to a given
+// user name. Used by the notify package to deliver approval requests through
+// the parent's linked gateway accounts.
+func (s *Store) ListGatewayAccountsByUser(ctx context.Context, userName string) ([]store.GatewayAccount, error) {
+	return s.db.ListGatewayAccountsByUser(ctx, userName)
 }
 
 // UnlinkedUsers returns the family-config users that have no linked

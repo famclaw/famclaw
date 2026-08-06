@@ -56,7 +56,6 @@ These are enforced across the project (see [CLAUDE.md](./CLAUDE.md) for the full
 
 ## Where to contribute
 
-- **WhatsApp gateway** — currently a placeholder, needs whatsmeow QR pairing flow
 - **i18n** — translate topic taxonomy (`internal/policy/policies/data/topics.json`) and web UI
 - **Docker** — Dockerfile and docker-compose improvements, multi-arch builds
 - **Topic taxonomy** — expand `internal/policy/policies/data/topics.json` with more categories

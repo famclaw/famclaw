@@ -4,34 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/store"
 )
-
-type mockNotifier struct {
-	notifyCalled   atomic.Int32
-	decisionCalled atomic.Int32
-	shouldErr      bool
-}
-
-func (m *mockNotifier) Notify(ctx context.Context, a *store.Approval, approveURL, denyURL string) error {
-	m.notifyCalled.Add(1)
-	if m.shouldErr {
-		return fmt.Errorf("mock error")
-	}
-	return nil
-}
-
-func (m *mockNotifier) NotifyDecision(ctx context.Context, a *store.Approval) error {
-	m.decisionCalled.Add(1)
-	if m.shouldErr {
-		return fmt.Errorf("mock error")
-	}
-	return nil
-}
 
 var testApproval = &store.Approval{
 	ID:          "test-123",
@@ -48,7 +28,6 @@ func TestGenerateToken(t *testing.T) {
 	if token == "" {
 		t.Error("token should not be empty")
 	}
-	// Token is base64 encoded — should be longer than the old 64-char hex
 	if len(token) < 40 {
 		t.Errorf("token too short: %d", len(token))
 	}
@@ -85,9 +64,7 @@ func TestVerifyTokenWrongSecret(t *testing.T) {
 }
 
 func TestVerifyTokenExpired(t *testing.T) {
-	// Generate token, then verify with 0 hours expiry — should be expired
 	token := GenerateToken("req-1", "approve", "secret")
-	// Use -1 expiry hours to simulate expired
 	_, _, err := VerifyToken(token, "secret", -1)
 	if err == nil {
 		t.Error("expected error for expired token")
@@ -112,148 +89,212 @@ func TestVerifyTokenReturnsIDAndAction(t *testing.T) {
 	}
 }
 
-func TestMultiNotifierDispatch(t *testing.T) {
-	m1 := &mockNotifier{}
-	m2 := &mockNotifier{}
-	mn := &MultiNotifier{channels: []Notifier{m1, m2}}
+// TestMultiNotifierSendsToParentGateway verifies that Notify delivers the
+// approval message through the parent's linked gateway via sendFn.
+func TestMultiNotifierSendsToParentGateway(t *testing.T) {
+	db := testDB(t)
+	identStore := identity.NewStore(db)
 
-	mn.Notify(context.Background(), testApproval, "http://approve", "http://deny")
-
-	if m1.notifyCalled.Load() != 1 {
-		t.Error("channel 1 should be called once")
-	}
-	if m2.notifyCalled.Load() != 1 {
-		t.Error("channel 2 should be called once")
-	}
-}
-
-func TestMultiNotifierDecision(t *testing.T) {
-	m1 := &mockNotifier{}
-	m2 := &mockNotifier{}
-	mn := &MultiNotifier{channels: []Notifier{m1, m2}}
-
-	mn.NotifyDecision(context.Background(), testApproval)
-
-	if m1.decisionCalled.Load() != 1 {
-		t.Error("channel 1 decision should be called once")
-	}
-	if m2.decisionCalled.Load() != 1 {
-		t.Error("channel 2 decision should be called once")
-	}
-}
-
-func TestMultiNotifierErrorDoesNotBlock(t *testing.T) {
-	failing := &mockNotifier{shouldErr: true}
-	working := &mockNotifier{}
-	mn := &MultiNotifier{channels: []Notifier{failing, working}}
-
-	mn.Notify(context.Background(), testApproval, "http://approve", "http://deny")
-
-	if working.notifyCalled.Load() != 1 {
-		t.Error("working channel should still be called even when other fails")
-	}
-}
-
-func TestMultiNotifierEmpty(t *testing.T) {
-	mn := &MultiNotifier{}
-	mn.Notify(context.Background(), testApproval, "http://approve", "http://deny")
-	mn.NotifyDecision(context.Background(), testApproval)
-}
-
-func TestNewMultiNotifierNoChannelsEnabled(t *testing.T) {
-	cfg := config.NotificationsConfig{}
-	mn := NewMultiNotifier(cfg, "secret")
-	if len(mn.channels) != 0 {
-		t.Errorf("no channels enabled, got %d", len(mn.channels))
-	}
-}
-
-func TestNewMultiNotifierWithChannels(t *testing.T) {
-	cfg := config.NotificationsConfig{
-		Slack: config.SlackConfig{Enabled: true, WebhookURL: "http://slack"},
-		Ntfy:  config.NtfyConfig{Enabled: true, URL: "http://ntfy", Topic: "test"},
-	}
-	mn := NewMultiNotifier(cfg, "secret")
-	if len(mn.channels) != 2 {
-		t.Errorf("expected 2 channels, got %d", len(mn.channels))
-	}
-}
-
-func TestMultiNotifierLen(t *testing.T) {
-	empty := NewMultiNotifier(config.NotificationsConfig{}, "secret")
-	if empty.Len() != 0 {
-		t.Errorf("expected 0 channels on empty config, got %d", empty.Len())
-	}
-
-	oneChannel := NewMultiNotifier(config.NotificationsConfig{
-		Ntfy: config.NtfyConfig{Enabled: true, URL: "http://localhost:2586", Topic: "test"},
-	}, "secret")
-	if oneChannel.Len() != 1 {
-		t.Errorf("expected 1 channel when Ntfy enabled, got %d", oneChannel.Len())
-	}
-}
-
-// TestRedactWebhookURLInErrorLogPath verifies that tokens in error strings are properly
-// redacted when logged through the notifier's error logging path.
-func TestRedactWebhookURLInErrorLogPath(t *testing.T) {
-	// Test cases with tokens that should be redacted
-	tests := []struct {
-		name string
-		err  error
-		want string
-	}{
-		{
-			name: "Telegram bot token in URL",
-			err:  fmt.Errorf("telegram API error: Post \"https://api.telegram.org/bot123456:ABC/getUpdates\": dial tcp: lookup api.telegram.org: no such host"),
-			want: "[notify] channel error: telegram API error: Post \"https://api.telegram.org/bot<REDACTED>/getUpdates\": dial tcp: lookup api.telegram.org: no such host",
-		},
-		{
-			name: "Discord webhook token in URL",
-			err:  fmt.Errorf("failed to send message: Post \"https://discord.com/api/webhooks/123456789/abcdefg_token_here_12345\": dial tcp: lookup discord.com: no such host"),
-			want: "[notify] channel error: failed to send message: Post \"https://discord.com/api/webhooks/123456789/<REDACTED>\": dial tcp: lookup discord.com: no such host",
-		},
-		{
-			name: "Slack webhook token in URL",
-			err:  fmt.Errorf("slack webhook error: Post \"https://hooks.slack.com/services/T00000000/B00000000/FAKE_SLACK_TOKEN\": context deadline exceeded"),
-			want: "[notify] channel error: slack webhook error: Post \"https://hooks.slack.com/services/T00000000/B00000000/<REDACTED>\": context deadline exceeded",
-		},
-		{
-			name: "Bearer token in Authorization header (ntfy)",
-			err:  fmt.Errorf("posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer FAKE_BEARER_TOKEN"),
-			want: "[notify] channel error: posting to ntfy: Post \"https://ntfy.sh/mytopic\": authorization: Bearer <REDACTED>",
-		},
-		{
-			name: "Bot token in Authorization header (Discord)",
-			err:  fmt.Errorf("discord API error: Post \"https://discord.com/api/v10/channels/123456789/messages\": authorization: Bot FAKE_DISCORD_BOT_TOKEN"),
-			want: "[notify] channel error: discord API error: Post \"https://discord.com/api/v10/channels/123456789/messages\": authorization: Bot <REDACTED>",
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+			{Name: "emma", DisplayName: "Emma", Role: "child", AgeGroup: "age_8_12"},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Capture log output by using a mock logger or by checking the error string directly
-			// Since we're testing the redaction function's effect on logged errors,
-			// we can test the redacted error string directly
-			redactedErr := RedactWebhookURLInError(tt.err)
-			if redactedErr == nil {
-				t.Fatal("expected non-nil error from redaction")
-			}
-
-			// Format as it would appear in the log
-			logged := fmt.Sprintf("[notify] channel error: %v", redactedErr)
-
-			if logged != tt.want {
-				t.Errorf("TestRedactWebhookURLInErrorLogPath(%v) = %q, want %q", tt.err, logged, tt.want)
-			}
-
-			// Additionally verify that the original token is not present in the logged output
-			if strings.Contains(logged, "123456:ABC") ||
-				strings.Contains(logged, "abcdefg_token_here_12345") ||
-				strings.Contains(logged, "FAKE_SLACK_TOKEN") ||
-				strings.Contains(logged, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") ||
-				strings.Contains(logged, "FAKE_DISCORD_BOT_TOKEN") {
-				t.Errorf("original token still present in logged output: %s", logged)
-			}
-		})
+	if err := identStore.LinkAccount("parent", "telegram", "parent-tg"); err != nil {
+		t.Fatalf("link account: %v", err)
 	}
+
+	var sentText, sentChatID, sentGateway string
+	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
+		sentGateway = gw
+		sentChatID = chatID
+		sentText = text
+		return nil
+	})
+
+	approveURL := "http://example.com/decide?id=1&action=approve&token=abc"
+	denyURL := "http://example.com/decide?id=1&action=deny&token=def"
+	notifier.Notify(context.Background(), testApproval, approveURL, denyURL)
+
+	if sentGateway != "telegram" {
+		t.Errorf("gateway = %q, want telegram", sentGateway)
+	}
+	if sentChatID != "parent-tg" {
+		t.Errorf("chatID = %q, want parent-tg", sentChatID)
+	}
+	if sentText == "" {
+		t.Error("notification text should not be empty")
+	}
+	if !strings.Contains(sentText, "Approval Request") {
+		t.Errorf("notification text should contain approval header, got: %s", sentText)
+	}
+	if !strings.Contains(sentText, approveURL) {
+		t.Error("notification should contain the approve URL")
+	}
+	if !strings.Contains(sentText, denyURL) {
+		t.Error("notification should contain the deny URL")
+	}
+}
+
+// TestMultiNotifierSkipsNonParents verifies that child users do not receive
+// notifications — only parents are notified.
+func TestMultiNotifierSkipsNonParents(t *testing.T) {
+	db := testDB(t)
+	identStore := identity.NewStore(db)
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+			{Name: "emma", DisplayName: "Emma", Role: "child", AgeGroup: "age_8_12"},
+		},
+	}
+
+	if err := identStore.LinkAccount("parent", "telegram", "parent-tg"); err != nil {
+		t.Fatalf("link parent: %v", err)
+	}
+	if err := identStore.LinkAccount("emma", "telegram", "emma-tg"); err != nil {
+		t.Fatalf("link child: %v", err)
+	}
+
+	var calls int32
+	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
+		atomic.AddInt32(&calls, 1)
+		return nil
+	})
+
+	notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("should notify parent only (1 call), got %d", got)
+	}
+}
+
+// TestMultiNotifierSendsDecision verifies that NotifyDecision delivers the
+// decision message to the parent's gateway.
+func TestMultiNotifierSendsDecision(t *testing.T) {
+	db := testDB(t)
+	identStore := identity.NewStore(db)
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+		},
+	}
+
+	if err := identStore.LinkAccount("parent", "discord", "parent-dc"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+
+	var sentText string
+	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
+		sentText = text
+		return nil
+	})
+
+	decision := &store.Approval{
+		ID:          "test-123",
+		UserDisplay: "Alice",
+		Category:    "social_media",
+		Status:      "approved",
+		DecidedBy:   "Parent",
+	}
+	notifier.NotifyDecision(context.Background(), decision)
+
+	if !strings.Contains(sentText, "approved") {
+		t.Errorf("decision message should contain status, got: %s", sentText)
+	}
+}
+
+// TestMultiNotifierSendsToManyGateways verifies that a parent linked to
+// multiple gateways receives the notification on each.
+func TestMultiNotifierSendsToManyGateways(t *testing.T) {
+	db := testDB(t)
+	identStore := identity.NewStore(db)
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+		},
+	}
+
+	if err := identStore.LinkAccount("parent", "telegram", "parent-tg"); err != nil {
+		t.Fatalf("link telegram: %v", err)
+	}
+	if err := identStore.LinkAccount("parent", "discord", "parent-dc"); err != nil {
+		t.Fatalf("link discord: %v", err)
+	}
+
+	var sentChatIDs []string
+	var mu sync.Mutex
+	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
+		mu.Lock()
+		sentChatIDs = append(sentChatIDs, chatID)
+		mu.Unlock()
+		return nil
+	})
+
+	notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
+
+	if len(sentChatIDs) != 2 {
+		t.Errorf("expected 2 deliveries (telegram + discord), got %d: %v", len(sentChatIDs), sentChatIDs)
+	}
+}
+
+// TestMultiNotifierSendErrorIsHandled verifies that a send error from sendFn
+// is logged but does not panic.
+func TestMultiNotifierSendErrorIsHandled(t *testing.T) {
+	db := testDB(t)
+	identStore := identity.NewStore(db)
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+		},
+	}
+
+	if err := identStore.LinkAccount("parent", "telegram", "parent-tg"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+
+	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
+		return fmt.Errorf("gateway down: Post \"https://api.telegram.org/bot123:ABC/sendMessage\": connection refused")
+	})
+
+	// Should not panic — the error is logged, not returned.
+	notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
+}
+
+// TestMultiNotifierNoParentAccounts verifies that Notify is a no-op when no
+// parent has any linked gateway accounts.
+func TestMultiNotifierNoParentAccounts(t *testing.T) {
+	db := testDB(t)
+	identStore := identity.NewStore(db)
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+		},
+	}
+
+	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
+		t.Error("sendFn should not be called when parent has no gateway accounts")
+		return nil
+	})
+
+	notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
+}
+
+// --- helpers ---
+
+func testDB(t *testing.T) *store.DB {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := store.Open(dir + "/test.db")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
 }

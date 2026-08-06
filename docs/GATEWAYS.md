@@ -1,6 +1,6 @@
 # Gateway Setup
 
-FamClaw connects to Telegram, Discord, and WhatsApp so your family can chat with the AI from their existing messaging apps.
+FamClaw connects to Telegram and Discord so your family can chat with the AI from their existing messaging apps.
 
 ## Telegram
 
@@ -79,18 +79,7 @@ Same as Telegram — each family member sends a message in the Discord server. T
 
 ---
 
-## WhatsApp
-
-> **Status:** WhatsApp gateway is a **placeholder** — the whatsmeow integration is not yet implemented. The config and code structure are ready, but the QR pairing flow and message handling are not functional yet.
-
-Once implemented, WhatsApp will use whatsmeow (pure Go, no Chromium):
-
-```yaml
-gateways:
-  whatsapp:
-    enabled: true
-    db_path: "/opt/famclaw/whatsapp.db"
-```
+The same family member can be linked to multiple gateways. Emma's Telegram and Discord accounts all map to her FamClaw profile with her age-based policy.
 
 ---
 
@@ -106,7 +95,7 @@ Telegram msg from user 12345
   → known accounts get policy-checked AI response
 ```
 
-The same family member can be linked to multiple gateways. Emma's Telegram, Discord, and WhatsApp accounts all map to her FamClaw profile with her age-based policy.
+The same family member can be linked to multiple gateways. Emma's Telegram and Discord accounts all map to her FamClaw profile with her age-based policy.
 
 ---
 

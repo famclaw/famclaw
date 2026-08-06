@@ -16,7 +16,6 @@ require (
 	github.com/mark3labs/mcp-go v0.57.0
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/stretchr/testify v1.11.1
-	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
