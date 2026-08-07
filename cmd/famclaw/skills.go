@@ -91,7 +91,16 @@ func skillInstall(dir, nameOrPath string) {
 
 	var scanner skillbridge.Scanner
 	if installCfg.Enabled && installCfg.AutoSecCheck {
-		scanner = honeybadger.New()
+		hb := honeybadger.New()
+		if !hb.Available() {
+			fmt.Fprintf(os.Stderr, "[seccheck] honeybadger not in PATH; fetching %s via go install...\n", honeybadger.HoneyBadgerVersion)
+			if err := hb.EnsureScanner(context.Background(), honeybadger.HoneyBadgerVersion); err != nil {
+				fmt.Fprintf(os.Stderr, "[seccheck] honeybadger scanner unavailable: %v\n", err)
+			}
+		}
+		if hb.Available() {
+			scanner = hb
+		}
 	}
 
 	reg := skillbridge.NewRegistry(dir, scanner, installCfg, nil)
