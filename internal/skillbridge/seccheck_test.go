@@ -29,9 +29,9 @@ func (f *fakeScanner) Scan(_ context.Context, _ string, _ honeybadger.ScanOption
 
 // fakeReporter captures persisted reports in memory.
 type fakeReporter struct {
-	saved      []fakeReport
-	fresh      bool
-	hasFresh   func(string, time.Duration) (bool, error)
+	saved    []fakeReport
+	fresh    bool
+	hasFresh func(string, time.Duration) (bool, error)
 }
 
 type fakeReport struct {
@@ -191,6 +191,74 @@ func TestInstallRefusesWhenScannerUnavailable(t *testing.T) {
 	}
 }
 
+// TestInstallRefusesWhenEnabledWithoutAutoSecCheck is the regression test for
+// the security bypass: when seccheck.enabled: true is set but auto_seccheck
+// is NOT (the default), the master switch must still require a scan. Before the
+// fix, the scan gate was conditioned on `Enabled && AutoSecCheck` — so with
+// auto_seccheck unset the install silently proceeded without scanning. After
+// the fix, `Enabled` alone is the gate.
+func TestInstallRefusesWhenEnabledWithoutAutoSecCheck(t *testing.T) {
+	// Simulate the config state that triggers the bypass: Enabled=true but
+	// AutoSecCheck=false (the Go zero value when the operator omits it).
+	reg := NewRegistry(t.TempDir(), nil,
+		InstallConfig{Enabled: true, AutoSecCheck: false, BlockOnFail: true}, nil)
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte(minimalSKILLMD), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := reg.Install(context.Background(), src)
+	if err == nil {
+		t.Fatal("expected install to be refused (Enabled=true, scanner nil, AutoSecCheck=false) — " +
+			"unscanned skill must NOT be written to disk")
+	}
+	if !errors.Is(err, ErrScannerUnavailable) {
+		t.Errorf("expected ErrScannerUnavailable, got: %v", err)
+	}
+
+	// Nothing should have been written to the skills dir.
+	entries, _ := os.ReadDir(reg.dir)
+	if len(entries) != 0 {
+		t.Errorf("expected empty skills dir after refused install, got %d entries", len(entries))
+	}
+}
+
+// TestInstallProceedsWhenSecCheckDisabled verifies that when seccheck is NOT
+// enabled, installs proceed normally (no scanner required). This is the only
+// case where the gate is legitimately open.
+func TestInstallProceedsWhenSecCheckDisabled(t *testing.T) {
+	reg := NewRegistry(t.TempDir(), nil,
+		InstallConfig{Enabled: false, AutoSecCheck: false}, nil)
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte(minimalSKILLMD), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	skill, err := reg.Install(context.Background(), src)
+	if err != nil {
+		t.Fatalf("expected install to succeed when seccheck disabled, got: %v", err)
+	}
+	if skill.Name != "minimal" {
+		t.Errorf("name = %q, want minimal", skill.Name)
+	}
+}
+
+// TestScanSkillUnavailableExplicitErr verifies ScanSkill surfaces
+// ErrScannerUnavailable explicitly (not silently).
+func TestScanSkillUnavailableExplicitErr(t *testing.T) {
+	reg := NewRegistry(t.TempDir(), nil,
+		InstallConfig{Enabled: true, AutoSecCheck: true}, nil)
+	_, err := reg.ScanSkill(context.Background(), &Skill{Name: "demo"}, "/tmp/demo")
+	if err == nil {
+		t.Fatal("expected error when scanner unavailable")
+	}
+	if !errors.Is(err, ErrScannerUnavailable) {
+		t.Fatalf("expected ErrScannerUnavailable, got: %v", err)
+	}
+}
+
 func TestInstallPersistsScanReport(t *testing.T) {
 	reporter := &fakeReporter{}
 	reg := NewRegistry(t.TempDir(),
@@ -223,10 +291,10 @@ func TestInstallPersistsScanReport(t *testing.T) {
 func TestInstallBlocksOnFailVerdict(t *testing.T) {
 	reg := NewRegistry(t.TempDir(),
 		&fakeScanner{available: true, result: &honeybadger.ScanResult{
-			Verdict:   "FAIL",
-			Reasoning: "pwn",
+			Verdict:    "FAIL",
+			Reasoning:  "pwn",
 			KeyFinding: "evil",
-			Findings:  []honeybadger.Finding{{Severity: "critical", Title: "x"}},
+			Findings:   []honeybadger.Finding{{Severity: "critical", Title: "x"}},
 		}},
 		InstallConfig{Enabled: true, AutoSecCheck: true, BlockOnFail: true}, nil)
 

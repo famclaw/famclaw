@@ -530,7 +530,12 @@ func main() {
 	// rather than silently pretending to scan.
 	var hbScanner skillbridge.Scanner
 	var quarantine *skillbridge.Quarantine
-	if cfg.SecCheck.Enabled && (cfg.SecCheck.AutoSecCheck || cfg.SecCheck.RuntimeScan) {
+	// Ensure the scanner is available whenever seccheck is enabled — the master
+	// switch is `seccheck.enabled: true` alone. Install-time scanning always
+	// runs when Enabled is true, so the scanner must be present. If it cannot
+	// be made available, installs are refused (fail-closed) and runtime tool
+	// scanning is disabled.
+	if cfg.SecCheck.Enabled {
 		hb := honeybadger.New()
 		if !hb.Available() {
 			log.Printf("[seccheck] honeybadger not in PATH; fetching %s via go install...", cfg.SecCheck.ScannerVersion)
