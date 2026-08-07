@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"errors"
 	"strings"
 	"time"
 
@@ -20,6 +21,12 @@ import (
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/store"
 )
+
+// ErrNoSender is returned by a sendFn when no gateway Sender is registered
+// for the requested gateway — e.g. the parent is linked to a gateway that
+// isn't enabled. sendToParents checks for this sentinel to emit a clear
+// WARNING rather than logging it as a routine delivery error.
+var ErrNoSender = errors.New("no sender registered for gateway")
 
 // Notifier sends approval notifications through a single channel.
 // Retained for test mocks.
@@ -82,8 +89,13 @@ func (m *MultiNotifier) sendToParents(ctx context.Context, text string) {
 			default:
 			}
 			if err := m.sendFn(ctx, acct.Gateway, acct.ExternalID, text); err != nil {
-				log.Printf("[notify] sending to %s/%s: %v",
-					acct.Gateway, acct.ExternalID, redactWebhookURLInError(err))
+				if errors.Is(err, ErrNoSender) {
+					log.Printf("[notify] WARNING: no sender registered for gateway %q; notification for %s/%s dropped",
+						acct.Gateway, acct.Gateway, acct.ExternalID)
+				} else {
+					log.Printf("[notify] sending to %s/%s: %v",
+						acct.Gateway, acct.ExternalID, redactWebhookURLInError(err))
+				}
 			}
 		}
 	}

@@ -317,7 +317,7 @@ func TestMultiNotifierMissingSenderSurfacesError(t *testing.T) {
 	// is registered for the gateway, return an error (not nil).
 	var errFromSendFn error
 	sendFn := func(ctx context.Context, gw, chatID, text string) error {
-		errFromSendFn = fmt.Errorf("no sender registered for gateway %q", gw)
+		errFromSendFn = fmt.Errorf("%w: %q", ErrNoSender, gw)
 		return errFromSendFn
 	}
 
@@ -331,6 +331,9 @@ func TestMultiNotifierMissingSenderSurfacesError(t *testing.T) {
 
 	// Assert: the error was logged with gateway name and context.
 	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "WARNING") {
+		t.Errorf("expected WARNING in log, got: %s", logOutput)
+	}
 	if !strings.Contains(logOutput, "no sender registered for gateway") {
 		t.Errorf("expected error logged about missing sender, got: %s", logOutput)
 	}
