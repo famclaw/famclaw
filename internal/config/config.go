@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/honeybadger"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
@@ -287,6 +288,9 @@ type SecCheckConfig struct {
 	AsyncScanTimeout   string `yaml:"async_scan_timeout"`   // per-scan timeout, e.g. "60s"
 	QuarantineOnFail   bool   `yaml:"quarantine_on_fail"`   // block tools after FAIL
 	NotifyOnQuarantine bool   `yaml:"notify_on_quarantine"` // send parent notification
+	// ScannerVersion pins the honeybadger binary that EnsureScanner fetches when
+	// the binary is missing. Empty defaults to honeybadger.HoneyBadgerVersion.
+	ScannerVersion     string `yaml:"scanner_version"`
 }
 
 type NotificationsConfig struct {
@@ -439,9 +443,14 @@ func applyDefaults(c *Config) {
 	if c.Storage.DBPath == "" {
 		c.Storage.DBPath = "./data/famclaw.db"
 	}
-	// SecCheck defaults — auto-enable master switch if any scanning feature is on
-	if !c.SecCheck.Enabled && (c.SecCheck.AutoSecCheck || c.SecCheck.RuntimeScan) {
-		c.SecCheck.Enabled = true
+	// SecCheck master switch is EXPLICIT only. We deliberately do NOT auto-enable
+	// it from auto_seccheck/runtime_scan: a config that reads as "armed" while
+	// the honeybadger binary is absent is the exact false promise that ships a
+	// family assistant with an unenforced gate. An operator must set
+	// seccheck.enabled: true, which then makes famclaw ensure the scanner is
+	// actually present (and refuse to install unscanned skills if it cannot).
+	if c.SecCheck.ScannerVersion == "" {
+		c.SecCheck.ScannerVersion = honeybadger.HoneyBadgerVersion
 	}
 	if c.SecCheck.Paranoia == "" {
 		c.SecCheck.Paranoia = "family"

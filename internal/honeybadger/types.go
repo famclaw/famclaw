@@ -5,13 +5,20 @@ package honeybadger
 
 import "time"
 
+// HoneyBadgerVersion is the default scanner version pin used by EnsureScanner
+// when no explicit version is configured. Pinned for reproducibility; bump in
+// lockstep with the honeybadger release whose rules this famclaw build ships
+// against.
+const HoneyBadgerVersion = "v0.6.2"
+
 // ScanOptions configures a HoneyBadger scan.
 type ScanOptions struct {
-	Paranoia          string // minimal | family | strict | paranoid
+	Paranoia          string // off|minimal|family|strict|paranoid
 	InstalledSHA      string // for update verification
 	InstalledToolHash string // for rug-pull detection
 	Attested          bool   // was previous version attested
 	Path              string // subdirectory for monorepos
+	Offline           bool   // scan local path without network checks (faster, deterministic)
 	Force             bool   // skip scan entirely
 }
 
