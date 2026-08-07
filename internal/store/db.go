@@ -940,6 +940,12 @@ type GatewayAccount struct {
 	Gateway    string    `json:"gateway"`
 	ExternalID string    `json:"external_id"`
 	CreatedAt  time.Time `json:"created_at"`
+	// LastMsgAt is the most recent time the user sent a message on this
+	// gateway, or nil if they have never messaged there. Populated only by
+	// GatewayAccountsByUserWithLastMsg; nil everywhere else. This is the
+	// messages-table signal that decides whether a linked Telegram account can
+	// actually be *initiated* for proactive delivery.
+	LastMsgAt *time.Time `json:"last_msg_at,omitempty"`
 }
 
 // ListGatewayAccountsByUser returns all gateway accounts linked to a given user name.
@@ -961,6 +967,51 @@ func (d *DB) ListGatewayAccountsByUser(ctx context.Context, userName string) ([]
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list gateway accounts by user: %w", err)
+	}
+	return out, nil
+}
+
+// GatewayAccountsByUserWithLastMsg returns every gateway account linked to
+// userName, annotated with the user's most recent message timestamp on that
+// gateway (nil if the user has never messaged there). Each account is one row.
+//
+// This is the messages-table lookup that PR 332 moved away from for
+// *destination* resolution (which is now driven solely by gateway_accounts):
+// it is repurposed here, narrowly, to decide whether a linked gateway can be
+// *initiated* for proactive delivery. A bot cannot start a Telegram
+// conversation until the user has sent the bot at least one message; that
+// "has messaged" signal is exactly what LastMsgAt != nil encodes. Discord, by
+// contrast, is initiable regardless of prior messages.
+func (d *DB) GatewayAccountsByUserWithLastMsg(ctx context.Context, userName string) ([]GatewayAccount, error) {
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT ga.id, ga.user_name, ga.gateway, ga.external_id, ga.created_at,
+		       (SELECT m.created_at
+		        FROM messages m
+		        JOIN conversations c ON c.id = m.conversation_id
+		        WHERE c.user_name = ? AND m.gateway = ga.gateway
+		        ORDER BY m.created_at DESC
+		        LIMIT 1)
+		FROM gateway_accounts ga
+		WHERE ga.user_name = ?`,
+		userName, userName)
+	if err != nil {
+		return nil, fmt.Errorf("gateway accounts with last message for %q: %w", userName, err)
+	}
+	defer rows.Close()
+	var out []GatewayAccount
+	for rows.Next() {
+		var g GatewayAccount
+		var lastMsg sql.NullTime
+		if err := rows.Scan(&g.ID, &g.UserName, &g.Gateway, &g.ExternalID, &g.CreatedAt, &lastMsg); err != nil {
+			return nil, fmt.Errorf("scan gateway account with last message: %w", err)
+		}
+		if lastMsg.Valid {
+			g.LastMsgAt = &lastMsg.Time
+		}
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("gateway accounts with last message for %q: %w", userName, err)
 	}
 	return out, nil
 }

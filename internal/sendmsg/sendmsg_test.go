@@ -153,7 +153,7 @@ func TestHandle(t *testing.T) {
 			name:       "gateway has no sender",
 			to:         "julia",
 			message:    "hi",
-			setupDB:    func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "whatsapp", "julia-wa") },
+			setupDB:    func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "telegram", "julia-chat") },
 			wantErr:    true,
 			wantErrSub: "no sender available for gateway",
 		},
@@ -386,5 +386,130 @@ func TestHandleSavesConversationHistory(t *testing.T) {
 	}
 	if !found {
 		t.Error("sent message not found in conversation history")
+	}
+}
+
+// TestResolveDestination covers each branch of the reachability resolution:
+//   - a linked-but-never-messaged Telegram account is NOT initiable, while
+//     Discord is always initiable → discord is chosen.
+//   - Telegram becomes initiable once the user has a prior message.
+//   - when nothing is initiable, the error names the person, lists the linked
+//     gateway, explains why it can't be started, and gives the unblock step.
+func TestResolveDestination(t *testing.T) {
+	cases := []struct {
+		name    string
+		setup   func(t *testing.T, db *store.DB)
+		wantGw  string
+		wantExt string
+		wantErr bool
+		errSubs []string
+	}{
+		{
+			name: "discord-only initiable: telegram linked but never messaged",
+			setup: func(t *testing.T, db *store.DB) {
+				// Link telegram WITHOUT saving a message → not initiable.
+				if err := db.LinkGatewayAccount("julia", "telegram", "j-tg"); err != nil {
+					t.Fatalf("LinkGatewayAccount: %v", err)
+				}
+				// Link discord → always initiable.
+				if err := db.LinkGatewayAccount("julia", "discord", "j-disc"); err != nil {
+					t.Fatalf("LinkGatewayAccount: %v", err)
+				}
+			},
+			wantGw:  "discord",
+			wantExt: "j-disc",
+		},
+		{
+			name: "telegram initiable after a prior message",
+			setup: func(t *testing.T, db *store.DB) {
+				// linkUser saves a user message first → telegram becomes initiable.
+				linkUser(t, db, "julia", "telegram", "j-tg")
+			},
+			wantGw:  "telegram",
+			wantExt: "j-tg",
+		},
+		{
+			name: "nothing initiable produces explanatory error",
+			setup: func(t *testing.T, db *store.DB) {
+				// Link telegram without a message and no discord → nothing initiable.
+				if err := db.LinkGatewayAccount("julia", "telegram", "j-tg"); err != nil {
+					t.Fatalf("LinkGatewayAccount: %v", err)
+				}
+			},
+			wantErr: true,
+			// Error must name the person, name the linked gateway, explain why,
+			// and state what unblocks it.
+			errSubs: []string{"julia", "telegram", "send one message", "Discord"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, cleanup := newTestDB(t)
+			defer cleanup()
+			ctx := context.Background()
+
+			tc.setup(t, db)
+
+			gw, ext, err := ResolveDestination(ctx, db, "julia")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("ResolveDestination: expected error, got nil")
+				}
+				for _, sub := range tc.errSubs {
+					if !strings.Contains(err.Error(), sub) {
+						t.Fatalf("error = %q, missing required substring %q", err.Error(), sub)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveDestination: unexpected error: %v", err)
+			}
+			if gw != tc.wantGw {
+				t.Errorf("gateway = %q, want %q", gw, tc.wantGw)
+			}
+			if ext != tc.wantExt {
+				t.Errorf("externalID = %q, want %q", ext, tc.wantExt)
+			}
+		})
+	}
+}
+
+// TestResolveDestinationPrefersMostRecentInitiable verifies that when several
+// linked gateways are initiable, the most-recently-messaged one is chosen
+// (preserving the ordering PR 332 established before initiability was layered
+// in).
+func TestResolveDestinationPrefersMostRecentInitiable(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	linkUser(t, db, "julia", "discord", "j-disc")
+	time.Sleep(1100 * time.Millisecond)
+	linkUser(t, db, "julia", "telegram", "j-tg")
+
+	gw, ext, err := ResolveDestination(ctx, db, "julia")
+	if err != nil {
+		t.Fatalf("ResolveDestination: %v", err)
+	}
+	if gw != "telegram" || ext != "j-tg" {
+		t.Errorf("wanted telegram/j-tg (most recent), got %s/%s", gw, ext)
+	}
+}
+
+// TestResolveDestinationNoLinkedGateway verifies the honest "no linked gateway"
+// error is still returned when the user has no gateway_accounts rows at all.
+func TestResolveDestinationNoLinkedGateway(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, _, err := ResolveDestination(ctx, db, "julia")
+	if err == nil {
+		t.Fatal("expected error for user with no linked gateway, got nil")
+	}
+	if !strings.Contains(err.Error(), "no linked gateway account") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "no linked gateway account")
 	}
 }
