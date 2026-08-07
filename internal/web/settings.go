@@ -54,10 +54,6 @@ type gatewaySettingsView struct {
 		Enabled bool   `json:"enabled"`
 		Token   string `json:"token,omitempty"`
 	} `json:"discord"`
-	WhatsApp struct {
-		Enabled bool   `json:"enabled"`
-		DBPath  string `json:"db_path,omitempty"`
-	} `json:"whatsapp"`
 }
 
 // handleSettings handles GET (read config) and POST (update config).
@@ -120,7 +116,6 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 
 	view.Gateways.Telegram.Enabled = s.cfg.Gateways.Telegram.Enabled
 	view.Gateways.Discord.Enabled = s.cfg.Gateways.Discord.Enabled
-	view.Gateways.WhatsApp.Enabled = s.cfg.Gateways.WhatsApp.Enabled
 
 	jsonOK(w, view)
 }
@@ -210,7 +205,6 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	if update.Gateways.Discord.Token != "" {
 		s.cfg.Gateways.Discord.Token = update.Gateways.Discord.Token
 	}
-	s.cfg.Gateways.WhatsApp.Enabled = update.Gateways.WhatsApp.Enabled
 
 	// Write back to config.yaml
 	if s.cfgPath != "" {

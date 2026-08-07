@@ -134,38 +134,6 @@ skills:
   #     headers:
   #       Authorization: "Bearer ${MCP_TOKEN}"
 
-# ── Notifications ─────────────────────────────────────────────────────────────
-notifications:
-  email:
-    enabled: false
-    smtp_host: "smtp.gmail.com"
-    smtp_port: 587
-    from: "${EMAIL_FROM}"
-    password: "${EMAIL_PASSWORD}"
-    to: ["${PARENT_EMAIL}"]
-
-  slack:
-    enabled: false
-    webhook_url: "${SLACK_WEBHOOK_URL}"
-
-  discord:
-    enabled: false
-    webhook_url: "${DISCORD_WEBHOOK_URL}"
-
-  sms:
-    enabled: false
-    twilio_account_sid: "${TWILIO_ACCOUNT_SID}"
-    twilio_auth_token: "${TWILIO_AUTH_TOKEN}"
-    from_number: "${TWILIO_FROM_NUMBER}"
-    to_numbers: ["${PARENT_PHONE}"]
-
-  # Push to a ntfy.sh topic (self-hosted or cloud) — great for local-only setups
-  ntfy:
-    enabled: false
-    url: "http://localhost:2586"   # self-hosted ntfy server
-    topic: "${NTFY_TOPIC:-famclaw-alerts}"
-    token: "${NTFY_TOKEN}"
-
 # ── Storage ───────────────────────────────────────────────────────────────────
 storage:
   # SQLite database path

@@ -202,11 +202,6 @@ func TestApplyDefaults_SandboxRootDefault(t *testing.T) {
 				Storage: StorageConfig{
 					DBPath: "./data/famclaw.db",
 				},
-				Notifications: NotificationsConfig{
-					Ntfy: NtfyConfig{
-						URL: "http://localhost:2586",
-					},
-				},
 			}
 			applyDefaults(c)
 			if c.Tools.SandboxRoot != tt.expectedDefault {
@@ -245,11 +240,6 @@ func TestValidate_SandboxRootDefaultCreatesDir(t *testing.T) {
 		},
 		Storage: StorageConfig{
 			DBPath: "./data/famclaw.db",
-		},
-		Notifications: NotificationsConfig{
-			Ntfy: NtfyConfig{
-				URL: "http://localhost:2586",
-			},
 		},
 	}
 
@@ -334,12 +324,6 @@ func TestValidate_SandboxRootErrors(t *testing.T) {
 	storageCfg := StorageConfig{
 		DBPath: "./data/famclaw.db",
 	}
-	notificationsCfg := NotificationsConfig{
-		Ntfy: NtfyConfig{
-			URL: "http://localhost:2586",
-		},
-	}
-
 	tests := []struct {
 		name            string
 		sandboxRootFunc func() string
@@ -401,7 +385,6 @@ func TestValidate_SandboxRootErrors(t *testing.T) {
 				Approval:      approvalCfg,
 				Skills:        skillsCfg,
 				Storage:       storageCfg,
-				Notifications: notificationsCfg,
 			}
 
 			err := c.Validate()

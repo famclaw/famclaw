@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,7 +74,7 @@ func setupRouter(t *testing.T, chatFn ChatFunc) (*Router, *identity.Store) {
 
 	identStore := identity.NewStore(db)
 	clf := classifier.New()
-	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
+	notifier := notify.NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error { return nil })
 	reg := skillbridge.NewRegistry(t.TempDir(), nil, skillbridge.InstallConfig{}, nil)
 
 	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "")
@@ -1016,17 +1014,19 @@ func TestCleanExpiredPending(t *testing.T) {
 // notification for a child-triggered approval but skips it entirely for a
 // parent-triggered one.
 func TestCreateApprovalSkipsParentNotify(t *testing.T) {
-	var notifyCalls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&notifyCalls, 1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(srv.Close)
+	router, identStore := setupRouter(t, panicChat)
 
-	router, _ := setupRouter(t, panicChat)
-	router.notifier = notify.NewMultiNotifier(config.NotificationsConfig{
-		Ntfy: config.NtfyConfig{Enabled: true, URL: srv.URL, Topic: "test"},
-	}, "test-secret")
+	// Link the parent to a gateway account so the notifier can deliver.
+	if err := identStore.LinkAccount("parent", "telegram", "parent-tg"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+
+	var notifyCalls int32
+	router.notifier = notify.NewMultiNotifier(router.cfg, identStore,
+		func(ctx context.Context, gw, chatID, text string) error {
+			atomic.AddInt32(&notifyCalls, 1)
+			return nil
+		})
 
 	child := &config.UserConfig{Name: "emma", DisplayName: "Emma", Role: "child", AgeGroup: "age_8_12"}
 	router.createApproval(context.Background(), child, "violence", "why do wars happen", "req-child")
@@ -1074,7 +1074,7 @@ func TestHandleSkillCommand(t *testing.T) {
 
 	identStore := identity.NewStore(db)
 	clf := classifier.New()
-	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
+	notifier := notify.NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error { return nil })
 	skillTmpDir := t.TempDir()
 	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{}, nil)
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
@@ -1341,7 +1341,7 @@ func TestHandleSkillCommandInstallEnableDisable(t *testing.T) {
 
 	identStore := identity.NewStore(db)
 	clf := classifier.New()
-	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
+	notifier := notify.NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error { return nil })
 	skillTmpDir := t.TempDir()
 	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{}, nil)
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
@@ -1463,7 +1463,7 @@ func TestHandleSkillCommandEmptyList(t *testing.T) {
 
 	identStore := identity.NewStore(db)
 	clf := classifier.New()
-	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, "test-secret")
+	notifier := notify.NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error { return nil })
 	skillTmpDir := t.TempDir()
 	reg := skillbridge.NewRegistry(skillTmpDir, nil, skillbridge.InstallConfig{}, nil)
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {

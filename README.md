@@ -2,7 +2,7 @@
 
 **A secure, local-first family AI gateway. Runs on Raspberry Pi, Mac, or any Linux box.**
 
-FamClaw is a lightweight Go gateway that connects your family to any AI model — local or cloud — through Telegram, WhatsApp, Discord, and a web interface. Every message goes through a policy engine before the AI ever sees it.
+FamClaw is a lightweight Go gateway that connects your family to any AI model — local or cloud — through Telegram, Discord, and a web interface. Every message goes through a policy engine before the AI ever sees it.
 
 ---
 
@@ -18,7 +18,7 @@ FamClaw is a lightweight Go gateway that connects your family to any AI model �
 
 ```
 Family member sends message
-  → via Telegram / WhatsApp / Discord / Web UI
+  → via Telegram / Discord / Web UI
     → FamClaw identifies user from gateway account
       → OPA policy evaluates: allow / block / request approval
         → if allow: forwards to your LLM endpoint
@@ -122,7 +122,6 @@ make build
 | Web UI | Built — HTTP + WebSocket + embedded UI |
 | Telegram | Built — long-poll Bot API |
 | Discord | Built — via discordgo |
-| WhatsApp | Placeholder — needs whatsmeow QR pairing |
 
 Each family member's gateway account maps to their profile. Emma's Telegram account → Emma's age policy. Parent's Discord account → parent access.
 

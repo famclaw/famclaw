@@ -1,5 +1,5 @@
 // Package gateway provides the messaging gateway abstraction for FamClaw.
-// Each gateway (Telegram, WhatsApp, Discord) receives messages, routes them
+// Each gateway (Telegram, Discord) receives messages, routes them
 // through identity → classifier → policy → agent, and sends replies.
 package gateway
 
@@ -11,7 +11,7 @@ import (
 
 // Message is an inbound message from any gateway.
 type Message struct {
-	Gateway     string // telegram | whatsapp | discord
+	Gateway     string // telegram | discord
 	ExternalID  string // platform-specific user ID
 	Text        string
 	DisplayName string       // from platform profile (best effort)
@@ -40,7 +40,7 @@ type Reply struct {
 // MsgContext holds the gateway-specific context for a message.
 // Used by tools that need to send outbound messages (e.g., reminders).
 type MsgContext struct {
-	Gateway    string // telegram | discord | whatsapp
+	Gateway    string // telegram | discord
 	ExternalID string // platform-specific user ID
 	GroupID    string // platform-specific group/channel ID (empty for DMs)
 	IsGroup    bool   // true if message is from a group/channel

@@ -72,7 +72,7 @@ func setupIntegration(t *testing.T) *testEnv {
 
 	clf := classifier.New()
 	identStore := identity.NewStore(db)
-	notifier := notify.NewMultiNotifier(config.NotificationsConfig{}, cfg.Server.Secret)
+	notifier := notify.NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error { return nil })
 
 	// echoChat simulates a working LLM — returns predictable response
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {

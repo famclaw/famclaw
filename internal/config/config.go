@@ -22,7 +22,6 @@ type Config struct {
 	Policies      PoliciesConfig      `yaml:"policies"`
 	Approval      ApprovalConfig      `yaml:"approval"`
 	Skills        SkillsConfig        `yaml:"skills"`
-	Notifications NotificationsConfig `yaml:"notifications"`
 	Storage       StorageConfig       `yaml:"storage"`
 	SecCheck      SecCheckConfig      `yaml:"seccheck"` // deprecated — use honeybadger instead
 	Tools         ToolsConfig         `yaml:"tools,omitempty"`
@@ -166,18 +165,12 @@ type InferenceConfig struct {
 
 type GatewaysConfig struct {
 	Telegram TelegramConfig  `yaml:"telegram"`
-	WhatsApp WhatsAppConfig  `yaml:"whatsapp"`
 	Discord  DiscordGWConfig `yaml:"discord"`
 }
 
 type TelegramConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Token   string `yaml:"token"`
-}
-
-type WhatsAppConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	DBPath  string `yaml:"db_path"`
 }
 
 type DiscordGWConfig struct {
@@ -302,49 +295,6 @@ type SecCheckConfig struct {
 	NotifyOnQuarantine bool   `yaml:"notify_on_quarantine"` // send parent notification
 }
 
-type NotificationsConfig struct {
-	Email   EmailConfig   `yaml:"email"`
-	Slack   SlackConfig   `yaml:"slack"`
-	Discord DiscordConfig `yaml:"discord"`
-	SMS     SMSConfig     `yaml:"sms"`
-	Ntfy    NtfyConfig    `yaml:"ntfy"`
-}
-
-type EmailConfig struct {
-	Enabled  bool     `yaml:"enabled"`
-	SMTPHost string   `yaml:"smtp_host"`
-	SMTPPort int      `yaml:"smtp_port"`
-	From     string   `yaml:"from"`
-	Password string   `yaml:"password"`
-	To       []string `yaml:"to"`
-}
-
-type SlackConfig struct {
-	Enabled    bool   `yaml:"enabled"`
-	WebhookURL string `yaml:"webhook_url"`
-}
-
-type DiscordConfig struct {
-	Enabled    bool   `yaml:"enabled"`
-	WebhookURL string `yaml:"webhook_url"`
-}
-
-type SMSConfig struct {
-	Enabled    bool     `yaml:"enabled"`
-	AccountSID string   `yaml:"twilio_account_sid"`
-	AuthToken  string   `yaml:"twilio_auth_token"`
-	FromNumber string   `yaml:"from_number"`
-	ToNumbers  []string `yaml:"to_numbers"`
-}
-
-// NtfyConfig is for ntfy.sh — ideal for fully-local push notifications.
-type NtfyConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	URL     string `yaml:"url"`
-	Topic   string `yaml:"topic"`
-	Token   string `yaml:"token"`
-}
-
 // MCPServerConfig defines a single MCP tool server's transport and connection details.
 type MCPServerConfig struct {
 	Transport string            `yaml:"transport"`          // stdio | http | sse
@@ -464,12 +414,6 @@ func applyDefaults(c *Config) {
 	}
 	if c.SecCheck.AsyncScanTimeout == "" {
 		c.SecCheck.AsyncScanTimeout = "60s"
-	}
-	if c.Notifications.Email.SMTPPort == 0 {
-		c.Notifications.Email.SMTPPort = 587
-	}
-	if c.Notifications.Ntfy.URL == "" {
-		c.Notifications.Ntfy.URL = "http://localhost:2586"
 	}
 	// web_fetch defaults — only meaningful when Enabled, but applied
 	// unconditionally so the values are usable if a runtime toggle ever exists.

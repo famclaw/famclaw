@@ -15,7 +15,7 @@ import (
 )
 
 // GatewaySender is a minimal interface for dispatching a message to a chat user.
-// Implementations are provided by each gateway bot (telegram, discord, whatsapp).
+// Implementations are provided by each gateway bot (telegram, discord).
 // The chatID is the gateway-specific external identifier (e.g. Telegram chat ID).
 type GatewaySender interface {
 	Send(chatID string, msg string) error

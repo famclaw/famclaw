@@ -110,7 +110,6 @@ ifconfig wlan0 | grep inet
 | Web UI | Works |
 | Telegram bot | Works |
 | Discord bot | Works |
-| WhatsApp bot | Not supported (whatsmeow needs persistent storage) |
 | mDNS (famclaw.local) | Not reliable on Android |
 | Ollama (local LLM) | **Not supported** — use external backend |
 | systemd service | Not available — use Termux:Boot or nohup |

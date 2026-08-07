@@ -78,7 +78,7 @@ Only parents can set reminders for other people — children can remind themselv
 On its own initiative — not just in reply to one person — FamClaw can send a message to another family member on their messaging platform. You'll see this, for example, when a reminder fires for someone else, or when the assistant decides a note belongs to a different user.
 
 - **Who can be messaged:** only the family members configured in your Settings → Family. FamClaw will not address anyone outside the family.
-- **How it reaches them:** via the recipient's most recently connected app (Telegram, Discord, or WhatsApp when available). If a family member hasn't messaged FamClaw yet, FamClaw tells you it doesn't know how to reach them — it never guesses a channel.
+- **How it reaches them:** via the recipient's most recently connected app (Telegram or Discord). If a family member hasn't messaged FamClaw yet, FamClaw tells you it doesn't know how to reach them — it never guesses a channel.
 - **It's parent-gated:** only a parent's assistant can initiate one of these messages.
 - **It's audited.** Every proactive message is recorded in the audit log with who sent it, who it was for, and what it said, and it also appears in the recipient's conversation history in your dashboard.
 

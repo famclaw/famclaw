@@ -291,7 +291,9 @@ func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, ca
 				baseURL, a.ID, notify.GenerateToken(a.ID, "approve", r.cfg.Server.Secret))
 			denyURL := fmt.Sprintf("%s/decide?id=%s&action=deny&token=%s",
 				baseURL, a.ID, notify.GenerateToken(a.ID, "deny", r.cfg.Server.Secret))
-			r.notifier.Notify(ctx, a, approveURL, denyURL)
+			if err := r.notifier.Notify(ctx, a, approveURL, denyURL); err != nil {
+				log.Printf("[router] approval %s: notification delivery had failures (see [notify] logs for per-gateway detail)", a.ID)
+			}
 		}
 	}
 	return nil

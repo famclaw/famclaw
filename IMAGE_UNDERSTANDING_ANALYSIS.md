@@ -5,7 +5,7 @@ I've analyzed the image understanding feature implementation in FamClaw and iden
 ## Key Issues Found
 
 ### Security Concerns:
-1. **Incomplete Gateway Support** - Image handling is implemented for Telegram and Discord via the multimodal agent path (`internal/gateway/discord/bot.go` decodes Discord attachments; `internal/agent/agent.go` builds `image_url` ContentParts for any attachment). WhatsApp is a placeholder; the web interface does not accept image uploads.
+1. **Incomplete Gateway Support** - Image handling is implemented for Telegram and Discord via the multimodal agent path (`internal/gateway/discord/bot.go` decodes Discord attachments; `internal/agent/agent.go` builds `image_url` ContentParts for any attachment). The web interface does not accept image uploads.
 2. **Resource Exhaustion** - No limits on image sizes, potential memory issues from full-resolution downloads
 3. **Privacy Risks** - Images sent to LLM providers without content filtering or user consent mechanisms
 4. **Inconsistent Architecture** - Multimodal support added but not consistently applied across all message flows

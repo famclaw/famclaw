@@ -2,11 +2,11 @@
 
 ## Codebase orientation
 
-FamClaw is a secure, local-first family AI gateway that connects family members to AI models through Telegram, WhatsApp, Discord, and a web interface. Every message passes through a policy engine before reaching the LLM, ensuring age-appropriate responses and parental approval for sensitive topics. It runs on Raspberry Pi, Mac, or any Linux box, using a single CGO_ENABLED=0 binary.
+FamClaw is a secure, local-first family AI gateway that connects family members to AI models through Telegram, Discord, and a web interface. Every message passes through a policy engine before reaching the LLM, ensuring age-appropriate responses and parental approval for sensitive topics. It runs on Raspberry Pi, Mac, or any Linux box, using a single CGO_ENABLED=0 binary.
 
 ### Runtime shape
 
-The process starts with `cmd/famclaw/main.go`, which loads configuration from the path specified by `--config` (default `config.yaml`), initializes the database, and starts gateways (Telegram, Discord, WhatsApp) and the web server. The gateway router (`internal/gateway/router.go`) handles incoming messages, resolves identities, and routes them through the policy pipeline. The web server (`internal/web/server.go`) serves the UI and REST/WebSocket API. All components are wired through dependency injection, with the `main.go` file orchestrating startup and shutdown.
+The process starts with `cmd/famclaw/main.go`, which loads configuration from the path specified by `--config` (default `config.yaml`), initializes the database, and starts gateways (Telegram, Discord) and the web server. The gateway router (`internal/gateway/router.go`) handles incoming messages, resolves identities, and routes them through the policy pipeline. The web server (`internal/web/server.go`) serves the UI and REST/WebSocket API. All components are wired through dependency injection, with the `main.go` file orchestrating startup and shutdown.
 
 ### Package map (internal/)
 
@@ -17,7 +17,7 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 | web | HTTP server, web UI, WebSocket API | `Server`, `Handler`, `NewServer` | config, store, identity, policy, notify, skillbridge, mcp, classifier |
 | store | SQLite database access and migrations | `DB`, `Open`, `migrate` | - |
 | policy | OPA policy evaluation for input, tool calls, and output | `Evaluator`, `Evaluate`, `EvaluateOutput` | - |
-| notify | Multi-channel notification system | `MultiNotifier`, `Notify`, `GenerateToken` | store |
+| notify | Approval notifications via gateway senders | `MultiNotifier`, `Notify`, `GenerateToken` | config, identity, store |
 | identity | User identity and account linking | `Store`, `Resolve`, `LinkAccount` | store |
 | agent | Core AI chat and pipeline execution | `Agent`, `Chat`, `NewAgent` | agentcore, browser, classifier, compress, config, familystate, gateway, llm, mcp, policy, prompt, reminder, skillbridge, store, subagent, todo, toolcache, usermemory, webfetch, websearch |
 | agentcore | Composable pipeline stages (classify → policy → LLM → tools → output) | `Pipeline`, `Stage`, `Turn` | classifier, compress, config, honeybadger, llm, mcp, policy, skillbridge, store |
@@ -34,7 +34,6 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 | reminder | Recurring family reminders tied to family-state dates | `ReminderStore`, `Scheduler` | agentcore, config, gateway, store |
 | skillbridge | Skill loading and registration | `Registry`, `List`, `Install` | - |
 | skilladapt | Multi-format skill adapters (SKILL.md / SOUL.md) | `Skill` | - |
-| wasmskill | WASM skill runtime | `Runtime`, `NewRuntime` | - |
 | toolreg | Unified tool registry and token-budget selection | `Tool`, `Registry`, `SelectOptions` | mcp |
 | mcp | Multi-transport tool server pool (stdio/HTTP/SSE) | `Pool`, `NewPool`, `RegisterFromConfig` | - |
 | llm | LLM client abstraction and tool calling | `Client`, `NewClient`, `Ping` | - |
@@ -156,7 +155,7 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 
 ### What this is
 Secure family AI assistant in Go.  
-Runs locally on RPi/Mac; Telegram/WhatsApp/Discord + web.  
+Runs locally on RPi/Mac; Telegram/Discord + web.  
 Every message passes policy engine before LLM.  
 Single CGO_ENABLED=0 binary.
 

@@ -1,6 +1,7 @@
-// Package notify provides multi-channel parent notifications for FamClaw.
-// When a child's message requires parental approval, notifications are sent
-// through all enabled channels (email, Slack, Discord, SMS, ntfy).
+// Package notify delivers approval notifications to parent users through
+// their linked gateway accounts (Telegram, Discord). Approval requests are
+// routed via the same chat gateway the parent already uses — no external
+// channels (email, SMS, Slack, ntfy) are required.
 package notify
 
 import (
@@ -12,89 +13,110 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"errors"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
+// ErrNoSender is returned by a sendFn when no gateway Sender is registered
+// for the requested gateway — e.g. the parent is linked to a gateway that
+// isn't enabled. sendToParents checks for this sentinel to emit a clear
+// WARNING rather than logging it as a routine delivery error.
+var ErrNoSender = errors.New("no sender registered for gateway")
+
 // Notifier sends approval notifications through a single channel.
+// Retained for test mocks.
 type Notifier interface {
 	Notify(ctx context.Context, a *store.Approval, approveURL, denyURL string) error
 	NotifyDecision(ctx context.Context, a *store.Approval) error
 }
 
-// MultiNotifier dispatches notifications to all enabled channels concurrently.
+// MultiNotifier delivers approval requests and decisions to parent users
+// via their linked gateway accounts. Instead of external channels (email,
+// Slack, SMS, ntfy), it resolves each parent's gateway accounts through the
+// identity store and sends through the matching gateway Sender.
 type MultiNotifier struct {
-	channels []Notifier
+	cfg        *config.Config
+	identStore *identity.Store
+	sendFn     func(ctx context.Context, gateway, chatID, text string) error
 }
 
-// Len returns the number of enabled notification channels.
-func (m *MultiNotifier) Len() int {
-	return len(m.channels)
+// NewMultiNotifier creates a MultiNotifier that delivers approval requests
+// to parent users via their linked gateway accounts. The sendFn closure
+// resolves a gateway name to its Sender (e.g. from the shared
+// senderRegistry) and sends the text to the given chat ID.
+//
+// The sendFn receives the request context so the underlying sender can
+// honour cancellation and deadlines mid-send. sendToParents also checks
+// ctx.Done() at both the per-parent and per-account loop levels.
+func NewMultiNotifier(cfg *config.Config, identStore *identity.Store, sendFn func(ctx context.Context, gateway, chatID, text string) error) *MultiNotifier {
+	return &MultiNotifier{
+		cfg:        cfg,
+		identStore: identStore,
+		sendFn:     sendFn,
+	}
 }
 
-// NewMultiNotifier creates a MultiNotifier from the notification config.
-func NewMultiNotifier(cfg config.NotificationsConfig, secret string) *MultiNotifier {
-	var channels []Notifier
-
-	if cfg.Email.Enabled {
-		channels = append(channels, NewEmailNotifier(cfg.Email))
-	}
-	if cfg.Slack.Enabled {
-		channels = append(channels, NewSlackNotifier(cfg.Slack))
-	}
-	if cfg.Discord.Enabled {
-		channels = append(channels, NewDiscordNotifier(cfg.Discord))
-	}
-	if cfg.SMS.Enabled {
-		channels = append(channels, NewSMSNotifier(cfg.SMS))
-	}
-	if cfg.Ntfy.Enabled {
-		channels = append(channels, NewNtfyNotifier(cfg.Ntfy))
-	}
-
-	return &MultiNotifier{channels: channels}
+// Notify sends an approval request to all parent users via their linked
+// gateway accounts. Each parent's message is delivered through every gateway
+// they have linked (Telegram, Discord, …). Returns an aggregated error if
+// any deliveries fail.
+func (m *MultiNotifier) Notify(ctx context.Context, a *store.Approval, approveURL, denyURL string) error {
+	return m.sendToParents(ctx, formatApprovalMessage(a, approveURL, denyURL))
 }
 
-// Notify sends approval request to all channels concurrently.
-func (m *MultiNotifier) Notify(ctx context.Context, a *store.Approval, approveURL, denyURL string) {
-	if len(m.channels) == 0 {
-		return
-	}
+// NotifyDecision sends an approval decision to all parent users via their
+// linked gateway accounts. Returns an aggregated error if any deliveries fail.
+func (m *MultiNotifier) NotifyDecision(ctx context.Context, a *store.Approval) error {
+	return m.sendToParents(ctx, formatDecisionMessage(a))
+}
 
-	var wg sync.WaitGroup
-	for _, ch := range m.channels {
-		wg.Add(1)
-		go func(n Notifier) {
-			defer wg.Done()
-			if err := n.Notify(ctx, a, approveURL, denyURL); err != nil {
-				log.Printf("[notify] channel error: %v", redactWebhookURLInError(err))
+// sendToParents iterates parent users in the config, resolves each parent's
+// linked gateway accounts, and sends text through the matching gateway Sender.
+// Honours context cancellation at every loop level and returns an aggregated
+// error for any failed deliveries.
+func (m *MultiNotifier) sendToParents(ctx context.Context, text string) error {
+	var errs []error
+	for _, user := range m.cfg.Users {
+		if user.Role != "parent" {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("notifications aborted: %w", ctx.Err())
+		default:
+		}
+		accounts, err := m.identStore.ListGatewayAccountsByUser(ctx, user.Name)
+		if err != nil {
+			log.Printf("[notify] listing accounts for %s: %v", user.Name, err)
+			errs = append(errs, fmt.Errorf("listing accounts for %s: %w", user.Name, err))
+			continue
+		}
+		for _, acct := range accounts {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("notifications aborted: %w", ctx.Err())
+			default:
 			}
-		}(ch)
-	}
-	wg.Wait()
-}
-
-// NotifyDecision sends decision notification to all channels concurrently.
-func (m *MultiNotifier) NotifyDecision(ctx context.Context, a *store.Approval) {
-	if len(m.channels) == 0 {
-		return
-	}
-
-	var wg sync.WaitGroup
-	for _, ch := range m.channels {
-		wg.Add(1)
-		go func(n Notifier) {
-			defer wg.Done()
-			if err := n.NotifyDecision(ctx, a); err != nil {
-				log.Printf("[notify] decision channel error: %v", redactWebhookURLInError(err))
+			// sendFn receives ctx so the underlying gateway sender can honour
+			// cancellation mid-send (e.g., abort a slow HTTP POST to Telegram).
+			if err := m.sendFn(ctx, acct.Gateway, acct.ExternalID, text); err != nil {
+				if errors.Is(err, ErrNoSender) {
+					log.Printf("[notify] WARNING: no sender registered for gateway %q; notification for %s/%s dropped",
+						acct.Gateway, acct.Gateway, acct.ExternalID)
+				} else {
+					log.Printf("[notify] sending to %s/%s: %v",
+						acct.Gateway, acct.ExternalID, redactWebhookURLInError(err))
+				}
+				errs = append(errs, fmt.Errorf("sending to %s/%s: %w", acct.Gateway, acct.ExternalID, err))
 			}
-		}(ch)
+		}
 	}
-	wg.Wait()
+	return errors.Join(errs...)
 }
 
 // GenerateToken creates a time-limited HMAC token for one-click approve/deny links.
