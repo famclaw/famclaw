@@ -106,6 +106,15 @@ const WebSearchTimeoutDefault = 30
 // ToolCacheConfig controls the Phase 2 tool-result spillover cache. When
 // disabled, the agent falls back to inline-everything (legacy v0.5.x
 // behavior — vulnerable to context overflow on big tool results).
+//
+// Spillover threshold: a tool result is spilled to the cache (file +
+// tool_result_cache row) rather than returned inline when its payload
+// exceeds computeHeadBudget (internal/agent/budget.go). With the default
+// MaxContextTokens=131072 that threshold is ~212.7 KB (217772 bytes);
+// results at or below it stay inline. This is why the cache can read as
+// "enabled" in the log while tool_result_cache has 0 rows — the spillover
+// path only engages for oversized results.
+// See TestWebFetchSpilloverIntegration for a test that forces the threshold.
 type ToolCacheConfig struct {
 	Enabled       bool              `yaml:"enabled"`         // default true when config block present; auto-enabled in main.go
 	PerUserCapMB  int64             `yaml:"per_user_cap_mb"` // default 100
