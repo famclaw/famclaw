@@ -3,6 +3,11 @@
 All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.11.2 — 2026-08-06
+
+### Fixed
+- **Reminders are now actually delivered.** v0.11.0 added proactive family reminders, but the delivery path was broken in three ways: FamClaw resolved a family member's destination from past message activity instead of their linked `gateway_accounts`, so anyone who had been set up on a gateway but never messaged the bot was silently reported as unreachable; Discord reminders were sent to a Discord user ID where a channel ID was required, producing a permanent "Unknown Channel" 404 on every delivery attempt; and a reminder whose delivery failed was never marked as dispatched, so it was retried forever in a 30-second loop. FamClaw now resolves destinations from `gateway_accounts` (the authoritative reach record) and only uses recent message activity to prefer one gateway when several are linked — a linked-but-silent family member is always reachable; Discord reminders open (or reuse, cached) a DM channel and send to that channel; and delivery is capped at 3 attempts (`MaxDeliveryAttempts`) before the reminder is given up, so a broken destination stops hammering instead of looping forever. A family member with no linked account at all is honestly reported as unreachable.
+
 ## v0.11.1 — 2026-08-05
 
 ### Fixed
