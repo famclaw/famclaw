@@ -111,10 +111,9 @@ func (r *Registry) Install(ctx context.Context, nameOrPath string) (*Skill, erro
 		result, err := r.scan(ctx, skill, scanTarget, online)
 		if err != nil {
 			if errors.Is(err, ErrScannerUnavailable) {
-				return nil, fmt.Errorf(
-					"skill install refused: honeybadger scanner is not available and could not be fetched\n" +
-						"install manually: go install github.com/famclaw/honeybadger/cmd/honeybadger@latest\n" +
-						"or set seccheck.enabled: false in config.yaml to disable the security gate")
+				return nil, fmt.Errorf("skill install refused: %w\n"+
+					"  install manually: go install github.com/famclaw/honeybadger/cmd/honeybadger@latest\n"+
+					"  or set seccheck.enabled: false in config.yaml to disable the security gate", err)
 			}
 			return nil, fmt.Errorf("security scan failed: %w", err)
 		}
