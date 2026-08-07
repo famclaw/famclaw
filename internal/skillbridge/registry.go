@@ -341,9 +341,10 @@ func (r *Registry) ScanAll(ctx context.Context, stale time.Duration) error {
 		if !r.IsEnabled(sk.Name) {
 			continue
 		}
-		target := sk.Path
-		if target == "" {
-			target = filepath.Join(r.dir, sk.Name)
+		// Scan the skill's installed directory, not the SKILL.md path.
+		target := filepath.Join(r.dir, sk.Name)
+		if sk.Path != "" {
+			target = filepath.Dir(sk.Path)
 		}
 		if r.reporter != nil {
 			if fresh, _ := r.reporter.HasFreshSecCheckReport(target, stale); fresh {
