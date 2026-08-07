@@ -10,9 +10,8 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/webfetch"
 )
@@ -57,27 +56,15 @@ func TestWebFetchSpilloverIntegration(t *testing.T) {
 	}
 	body := string(payload)
 
-	// In-memory sqlite with the two toolcache tables (same schema as
-	// internal/store/db.go:migrate).
-	db, err := sql.Open("sqlite", ":memory:")
+	// In-memory sqlite via the production migration (store.Open) so the
+	// schema stays in sync with internal/store/db.go:migrate rather than
+	// duplicating CREATE TABLE statements.
+	s, err := store.Open(":memory:")
 	if err != nil {
-		t.Fatalf("open db: %v", err)
+		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
-	for _, s := range []string{
-		`CREATE TABLE tool_result_cache (
-			id TEXT PRIMARY KEY, user_name TEXT, conv_id TEXT, tool_name TEXT,
-			args_hash TEXT, payload_path TEXT, bytes INTEGER, content_type TEXT,
-			created_at INTEGER, expires_at INTEGER, accessed_at INTEGER)`,
-		`CREATE TABLE tool_result_audit (
-			id TEXT PRIMARY KEY, user_name TEXT, conv_id TEXT, tool_name TEXT,
-			args_hash TEXT, args_summary TEXT, bytes INTEGER, content_type TEXT,
-			category TEXT, created_at INTEGER, payload_id TEXT, payload_purged_at INTEGER)`,
-	} {
-		if _, err := db.Exec(s); err != nil {
-			t.Fatalf("schema: %v", err)
-		}
-	}
+	t.Cleanup(func() { _ = s.Close() })
+	db := s.SQL()
 
 	cacheDir := t.TempDir()
 	c, err := toolcache.New(toolcache.Config{

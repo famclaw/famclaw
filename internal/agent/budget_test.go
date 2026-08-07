@@ -3,13 +3,11 @@ package agent
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/toolcache"
 )
 
@@ -72,30 +70,19 @@ func TestComputeHeadBudgetNilAgent(t *testing.T) {
 	}
 }
 
-// newTestToolCache creates an in-memory toolcache.Cache suitable for
-// integration tests that exercise spillover with the real budget helper.
+// newTestToolCache creates an in-memory toolcache.Cache backed by the
+// production migration (store.Open) so the schema stays in sync with
+// internal/store/db.go:migrate rather than duplicating CREATE TABLE
+// statements that could silently drift.
 func newTestToolCache(t *testing.T) *toolcache.Cache {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	s, err := store.Open(":memory:")
 	if err != nil {
-		t.Fatalf("open db: %v", err)
+		t.Fatalf("open store: %v", err)
 	}
-	for _, s := range []string{
-		`CREATE TABLE tool_result_cache (
-			id TEXT PRIMARY KEY, user_name TEXT, conv_id TEXT, tool_name TEXT,
-			args_hash TEXT, payload_path TEXT, bytes INTEGER, content_type TEXT,
-			created_at INTEGER, expires_at INTEGER, accessed_at INTEGER)`,
-		`CREATE TABLE tool_result_audit (
-			id TEXT PRIMARY KEY, user_name TEXT, conv_id TEXT, tool_name TEXT,
-			args_hash TEXT, args_summary TEXT, bytes INTEGER, content_type TEXT,
-			category TEXT, created_at INTEGER, payload_id TEXT, payload_purged_at INTEGER)`,
-	} {
-		if _, err := db.Exec(s); err != nil {
-			t.Fatalf("exec schema: %v", err)
-		}
-	}
+	t.Cleanup(func() { _ = s.Close() })
 	c, err := toolcache.New(toolcache.Config{
-		DB: db, CacheDir: t.TempDir(), TTLDefault: time.Hour,
+		DB: s.SQL(), CacheDir: t.TempDir(), TTLDefault: time.Hour,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

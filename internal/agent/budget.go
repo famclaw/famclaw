@@ -1,5 +1,7 @@
 package agent
 
+import "github.com/famclaw/famclaw/internal/compress"
+
 // Absolute bounds for the head budget. Extracted to package-level so that
 // tests can reference them by name rather than restating literal byte values.
 const (
@@ -28,11 +30,11 @@ const (
 // other packages (e.g. toolcache) can call the same helper the production
 // path uses, rather than duplicating the derived value as a magic number.
 //
-// Returns bytes. Conversion uses 4 chars/token (SimpleEstimator's
-// heuristic) which matches what compress.Compress uses for budget math.
+// Returns bytes. Conversion uses compress.CharsPerToken (the same
+// heuristic as SimpleEstimator) so the budget math stays in sync
+// with the estimator used for context compression.
 func HeadBudgetForContext(nCtx int) int {
 	const (
-		bytesPerToken   = 4
 		responseReserve = 1024 // tokens reserved for response
 		nonDroppableEst = 1500 // tokens for system prompt + last K turns
 		estimatorMargin = 0.15
@@ -42,7 +44,8 @@ func HeadBudgetForContext(nCtx int) int {
 		// never engaged in production because no real tool result is that
 		// large) to 0.02 (2%) so realistic results — fetched web pages,
 		// file reads, search output — spill while small inline results
-		// stay inline.
+		// stay inline. The fraction is fixed; the absolute budget scales
+		// with the context window via the formula below.
 		headShare = 0.02
 	)
 
@@ -58,7 +61,7 @@ func HeadBudgetForContext(nCtx int) int {
 		usableTokens = float64(nCtx) * 0.1
 	}
 	budgetTokens := int(usableTokens * headShare)
-	budgetBytes := budgetTokens * bytesPerToken
+	budgetBytes := budgetTokens * compress.CharsPerToken
 
 	// Floor: ensure a minimally useful preview even on tiny contexts.
 	if budgetBytes < minHeadBytes {
