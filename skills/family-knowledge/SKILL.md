@@ -5,7 +5,7 @@ version: "0.1"
 author: famclaw
 license: AGPL-3.0-only
 tags: [family, knowledge, memory, household]
- platforms: [linux, darwin]
+platforms: [linux, darwin]
 requires:
   bins: []
 trigger:

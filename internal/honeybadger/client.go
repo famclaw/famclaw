@@ -114,6 +114,10 @@ func (c *Client) Scan(ctx context.Context, repoURL string, opts ScanOptions) (*S
 		case "result":
 			var r ScanResult
 			if json.Unmarshal(scanner.Bytes(), &r) == nil && r.Verdict != "" {
+				// The result line does not embed individual findings (those
+				// arrive as separate "finding" lines), so merge rather than
+				// overwrite the findings accumulated so far.
+				r.Findings = append(r.Findings, result.Findings...)
 				result = r
 				foundResult = true
 			}
@@ -126,8 +130,11 @@ func (c *Client) Scan(ctx context.Context, repoURL string, opts ScanOptions) (*S
 	}
 
 	if err := cmd.Wait(); err != nil {
-		// honeybadger exits non-zero on FAIL verdict — that's expected.
-		if foundResult && result.Verdict == "FAIL" {
+		// honeybadger exits non-zero when findings exist (WARN=1, FAIL=2) and
+		// only exits 0 on a clean PASS. The "result" line is authoritative,
+		// so return it whenever we captured one rather than treating the exit
+		// status as an error.
+		if foundResult {
 			return &result, nil
 		}
 		return nil, fmt.Errorf("honeybadger exited with error: %w", err)

@@ -2,9 +2,12 @@ BINARY    := famclaw
 BUILD_DIR := ./bin
 CMD       := ./cmd/famclaw
 VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+# honeybadger scanner version that famclaw ships against. Bump in lockstep
+# with internal/honeybadger/types.go.HoneyBadgerVersion.
+HONEYBADGER_VERSION := v0.6.2
 LDFLAGS   := -ldflags "-s -w -X main.Version=$(VERSION)"
 
-.PHONY: all build run dev test opa-test behavioral cross clean install install-service install-rpi install-systemd install-launchd build-seccheck cross-rpi3 cross-rpi4 cross-rpi5 cross-android cross-mac-intel cross-mac-arm cross-linux64
+.PHONY: all build run dev test opa-test behavioral cross clean install install-service install-rpi install-systemd install-launchd build-seccheck install-scanner cross-rpi3 cross-rpi4 cross-rpi5 cross-android cross-mac-intel cross-mac-arm cross-linux64
 
 ## build: Build for current machine
 build:
@@ -79,8 +82,14 @@ cross-linux64:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-linux-amd64 $(CMD)
 
+## install-scanner: Install the HoneyBadger security scanner binary (dependency of famclaw seccheck)
+install-scanner:
+	@echo "Fetching honeybadger $$(HONEYBADGER_VERSION)..."
+	go install github.com/famclaw/honeybadger/cmd/honeybadger@$(HONEYBADGER_VERSION)
+	@echo "✅ honeybadger scanner installed to $$(go env GOPATH)/bin"
+
 ## install: Install binary to /usr/local/bin
-install: build
+install: install-scanner build
 	sudo cp $(BUILD_DIR)/$(BINARY) /usr/local/bin/$(BINARY)
 
 ## install-rpi: Deploy to RPi over SSH (set RPI_HOST env var)
