@@ -109,11 +109,15 @@ const WebSearchTimeoutDefault = 30
 //
 // Spillover threshold: a tool result is spilled to the cache (file +
 // tool_result_cache row) rather than returned inline when its payload
-// exceeds computeHeadBudget (internal/agent/budget.go). With the default
-// MaxContextTokens=131072 that threshold is ~212.7 KB (217772 bytes);
-// results at or below it stay inline. This is why the cache can read as
-// "enabled" in the log while tool_result_cache has 0 rows — the spillover
-// path only engages for oversized results.
+// exceeds the head budget computed by agent.HeadBudgetForContext(nCtx).
+// The budget is derived dynamically from MaxContextTokens — it is NOT a
+// static size. With the default 131072-token context the threshold is
+// ~8.5 KB (was ~213 KB under the old headShare=0.50, which never engaged
+// because no real tool result was that large); results at or below it stay
+// inline. This is why the cache can read as "enabled" in the log while
+// tool_result_cache has 0 rows — the spillover path only engages for
+// oversized results. The threshold is clamped to [512 B, 64 KB] so tiny
+// and enormous contexts stay sane.
 // See TestWebFetchSpilloverIntegration for a test that forces the threshold.
 type ToolCacheConfig struct {
 	Enabled       bool              `yaml:"enabled"`         // default true when config block present; auto-enabled in main.go

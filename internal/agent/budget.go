@@ -1,28 +1,54 @@
 package agent
 
-// computeHeadBudget returns the maximum bytes a single tool result's head
-// slice should occupy when the result is being spilled to the toolcache.
+import "github.com/famclaw/famclaw/internal/compress"
+
+// Absolute bounds for the head budget. Extracted to package-level so that
+// tests can reference them by name rather than restating literal byte values.
+const (
+	// minHeadBytes is the absolute floor: even on the smallest supported
+	// context the model gets at least this many bytes of preview.
+	minHeadBytes = 512
+	// maxHeadBytes is the absolute ceiling: the head is a preview, not a
+	// dump, so it never exceeds 64 KB regardless of how large the
+	// configured context window is.
+	maxHeadBytes = 64 * 1024
+)
+
+// HeadBudgetForContext returns the maximum bytes a single tool result's head
+// slice may occupy before it spills into the toolcache. It is the spill
+// threshold AND the preview size the LLM receives inline.
 // See spec §6.
 //
-//	budget = head_share * (n_ctx * (1 - margin) - non_droppable - response_reserve)
-//	floor  = 0.5 * n_ctx in bytes (safety floor — never exceed)
+//	budget = headShare * (n_ctx * (1 - margin) - non_droppable - response_reserve)
+//	budget = clamp(budget, minHeadBytes, maxHeadBytes)
 //
-// Returns bytes. Conversion uses 4 chars/token (SimpleEstimator's
-// heuristic) which matches what compress.Compress uses for budget math.
-func computeHeadBudget(a *Agent) int {
+// The resulting budget scales with the context window so that larger
+// models get larger previews, but absolute floor/ceiling bounds keep the
+// value sane at extreme context sizes.
+//
+// This is exported as a pure function of the context size so that tests in
+// other packages (e.g. toolcache) can call the same helper the production
+// path uses, rather than duplicating the derived value as a magic number.
+//
+// Returns bytes. Conversion uses compress.CharsPerToken (the same
+// heuristic as SimpleEstimator) so the budget math stays in sync
+// with the estimator used for context compression.
+func HeadBudgetForContext(nCtx int) int {
 	const (
-		bytesPerToken    = 4
-		responseReserve  = 1024 // tokens reserved for response
-		nonDroppableEst  = 1500 // tokens for system prompt + last K turns
-		estimatorMargin  = 0.15
-		headShare        = 0.5
-		safetyFloorRatio = 0.5
+		responseReserve = 1024 // tokens reserved for response
+		nonDroppableEst = 1500 // tokens for system prompt + last K turns
+		estimatorMargin = 0.15
+		// headShare is the fraction of the usable context window a single
+		// tool result may occupy before it spills. Lowered from 0.50 (50%
+		// of the window ≈ 213 KB at the default 128K-token context — which
+		// never engaged in production because no real tool result is that
+		// large) to 0.02 (2%) so realistic results — fetched web pages,
+		// file reads, search output — spill while small inline results
+		// stay inline. The fraction is fixed; the absolute budget scales
+		// with the context window via the formula below.
+		headShare = 0.02
 	)
 
-	nCtx := 0
-	if a != nil && a.cfg != nil {
-		nCtx = a.cfg.LLM.MaxContextTokens
-	}
 	if nCtx <= 0 {
 		nCtx = 4096
 	}
@@ -35,14 +61,26 @@ func computeHeadBudget(a *Agent) int {
 		usableTokens = float64(nCtx) * 0.1
 	}
 	budgetTokens := int(usableTokens * headShare)
-	budgetBytes := budgetTokens * bytesPerToken
+	budgetBytes := budgetTokens * compress.CharsPerToken
 
-	floorBytes := int(safetyFloorRatio * float64(nCtx) * bytesPerToken)
-	if budgetBytes > floorBytes {
-		budgetBytes = floorBytes
+	// Floor: ensure a minimally useful preview even on tiny contexts.
+	if budgetBytes < minHeadBytes {
+		budgetBytes = minHeadBytes
 	}
-	if budgetBytes < 512 {
-		budgetBytes = 512 // never starve the model
+	// Ceiling: cap the head regardless of context size so it stays a
+	// preview, not a context-dump.
+	if budgetBytes > maxHeadBytes {
+		budgetBytes = maxHeadBytes
 	}
 	return budgetBytes
+}
+
+// computeHeadBudget returns the head budget for the agent's configured
+// context window. Delegates to the exported HeadBudgetForContext.
+func computeHeadBudget(a *Agent) int {
+	nCtx := 0
+	if a != nil && a.cfg != nil {
+		nCtx = a.cfg.LLM.MaxContextTokens
+	}
+	return HeadBudgetForContext(nCtx)
 }
