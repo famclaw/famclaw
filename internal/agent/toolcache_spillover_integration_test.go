@@ -209,8 +209,11 @@ func TestWebFetchSpilloverIntegration(t *testing.T) {
 		t.Fatalf("Cache.More tail: %v", err)
 	}
 	if len(tail.Data) == 0 {
-		t.Fatal("Cache.More tail returned 0 bytes")
+		t.Fatal("Cache.More returned empty tail data")
 	}
+	// Clamp to the actual bytes returned — More may return fewer than 8192
+	// bytes if the cache file is shorter than the requested length (short
+	// read near EOF). Without this clamp, the slice expression can panic.
 	wantLen := min(len(tail.Data), len(payload)-headBudget)
 	wantTail := payload[headBudget : headBudget+wantLen]
 	if !bytes.Equal(tail.Data, wantTail) {
