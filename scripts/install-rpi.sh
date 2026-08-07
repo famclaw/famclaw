@@ -51,12 +51,12 @@ chown -R "$FAMCLAW_USER:$FAMCLAW_USER" "$FAMCLAW_DIR"
 
 # Download binary
 echo "→ Downloading famclaw ($BINARY)…"
-FAMCLAW_TMP="/usr/local/bin/.famclaw.tmp.$$"
-if curl -fsSL "$RELEASE_BASE/$BINARY" -o "$FAMCLAW_TMP"; then
+TMP_PATH=$(mktemp -p "/usr/local/bin" -t ".famclaw.tmp.XXXXXX")
+if curl -fsSL --fail "$RELEASE_BASE/$BINARY" -o "$FAMCLAW_TMP"; then
   chmod +x "$FAMCLAW_TMP"
   # Use atomic rename to avoid SIGKILL (exit 137) when binary is running
   TMP_PATH="/usr/local/bin/.famclaw.tmp.$$"
-  mv -f "$FAMCLAW_TMP" "$TMP_PATH"
+  mv -f "$TMP_PATH" /usr/local/bin/famclaw
   mv -f "$TMP_PATH" /usr/local/bin/famclaw
 else
   rm -f "$FAMCLAW_TMP"
@@ -76,12 +76,12 @@ esac
 
 if [ -n "$HB_BINARY" ]; then
   echo "→ Downloading HoneyBadger ($HB_BINARY)…"
-  HB_TMP="/usr/local/bin/.honeybadger.tmp.$$"
-  if curl -fsSL "$HB_RELEASE_BASE/$HB_BINARY" -o "$HB_TMP" 2>/dev/null; then
+  HB_TMP_PATH=$(mktemp -p "/usr/local/bin" -t ".honeybadger.tmp.XXXXXX")
+  if curl -fsSL --fail "$HB_RELEASE_BASE/$HB_BINARY" -o "$HB_TMP" 2>/dev/null; then
     chmod +x "$HB_TMP"
     # Use atomic rename to avoid SIGKILL (exit 137) when binary is running
     HB_TMP_PATH="/usr/local/bin/.honeybadger.tmp.$$"
-    mv -f "$HB_TMP" "$HB_TMP_PATH"
+    mv -f "$HB_TMP_PATH" /usr/local/bin/honeybadger
     mv -f "$HB_TMP_PATH" /usr/local/bin/honeybadger
     HB_INSTALLED=1
     echo "  HoneyBadger installed ✅"
