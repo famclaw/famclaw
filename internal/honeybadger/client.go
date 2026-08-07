@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -23,7 +25,38 @@ func (c *Client) Available() bool {
 	return err == nil
 }
 
-// Scan runs honeybadger on a repo URL and returns the result.
+// EnsureScanner makes famclaw self-sufficient: if the honeybadger binary is
+// already in PATH it is a no-op. Otherwise it attempts to fetch and install it
+// via `go install` (the famclaw install/update path must not leave a fresh
+// machine with a scanner that "looks armed but cannot scan"). If the go
+// toolchain is missing or the install fails, it returns a clear error so the
+// caller can fail closed instead of silently pretending to scan.
+func (c *Client) EnsureScanner(ctx context.Context, version string) error {
+	if c.Available() {
+		return nil
+	}
+	if version == "" {
+		version = HoneyBadgerVersion
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		return fmt.Errorf("honeybadger binary not in PATH and go toolchain unavailable to fetch it "+
+			"(install manually: go install github.com/famclaw/honeybadger/cmd/honeybadger@%s)", version)
+	}
+	log.Printf("[honeybadger] fetching scanner %s via go install...", version)
+	cmd := exec.CommandContext(ctx, "go", "install", fmt.Sprintf("github.com/famclaw/honeybadger/cmd/honeybadger@%s", version))
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("fetching honeybadger %s: %w", version, err)
+	}
+	if !c.Available() {
+		return fmt.Errorf("honeybadger %s installed but not found in PATH after go install", version)
+	}
+	log.Printf("[honeybadger] scanner installed ✅")
+	return nil
+}
+
+// Scan runs honeybadger on a repo URL / local path and returns the result.
 // If the binary is not available, returns an error.
 func (c *Client) Scan(ctx context.Context, repoURL string, opts ScanOptions) (*ScanResult, error) {
 	if opts.Force {
@@ -38,7 +71,11 @@ func (c *Client) Scan(ctx context.Context, repoURL string, opts ScanOptions) (*S
 		return nil, fmt.Errorf("honeybadger binary not found in PATH — install with: go install github.com/famclaw/honeybadger/cmd/honeybadger@latest")
 	}
 
-	args := []string{"scan", repoURL, "--format", "ndjson"}
+	args := []string{"scan", repoURL, "--format", "ndjson", "--offline"}
+	if !opts.Offline {
+		// drop the offline flag we pre-pended; online mode re-enables network checks
+		args = []string{"scan", repoURL, "--format", "ndjson"}
+	}
 	if opts.Paranoia != "" {
 		args = append(args, "--paranoia", opts.Paranoia)
 	}
@@ -62,37 +99,46 @@ func (c *Client) Scan(ctx context.Context, repoURL string, opts ScanOptions) (*S
 		return nil, fmt.Errorf("starting honeybadger: %w", err)
 	}
 
-	// Read ndjson stream — last line is the summary result
+	// Read ndjson stream — dispatch on the "type" field.
 	var result ScanResult
+	foundResult := false
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
-		var line json.RawMessage
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			continue
+		var env struct {
+			Type string `json:"type"`
 		}
-		// Try to parse as ScanResult (summary line)
-		var candidate ScanResult
-		if json.Unmarshal(scanner.Bytes(), &candidate) == nil && candidate.Verdict != "" {
-			result = candidate
+		if err := json.Unmarshal(scanner.Bytes(), &env); err != nil {
+			continue // not JSON — ignore
 		}
-		// Try to parse as Finding (detail line)
-		var finding Finding
-		if json.Unmarshal(scanner.Bytes(), &finding) == nil && finding.Severity != "" {
-			result.Findings = append(result.Findings, finding)
+		switch env.Type {
+		case "result":
+			var r ScanResult
+			if json.Unmarshal(scanner.Bytes(), &r) == nil && r.Verdict != "" {
+				result = r
+				foundResult = true
+			}
+		case "finding":
+			var f Finding
+			if json.Unmarshal(scanner.Bytes(), &f) == nil && f.Severity != "" {
+				result.Findings = append(result.Findings, f)
+			}
 		}
 	}
 
 	if err := cmd.Wait(); err != nil {
-		// honeybadger exits 1 on FAIL verdict — that's expected
-		if result.Verdict == "FAIL" {
+		// honeybadger exits non-zero on FAIL verdict — that's expected.
+		if foundResult && result.Verdict == "FAIL" {
 			return &result, nil
 		}
 		return nil, fmt.Errorf("honeybadger exited with error: %w", err)
 	}
 
+	if !foundResult {
+		return nil, fmt.Errorf("honeybadger produced no result line for %q", repoURL)
+	}
+
 	if result.ScannedAt.IsZero() {
 		result.ScannedAt = time.Now()
 	}
-
 	return &result, nil
 }
