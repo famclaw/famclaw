@@ -9,7 +9,10 @@ package sendmsg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
@@ -54,7 +57,7 @@ func Tool() agentcore.Tool {
 // DB provides the store lookups and audit needed for cross-chat delivery.
 // Implemented by *store.DB.
 type DB interface {
-	MostRecentGatewayAndExternalIDForUser(ctx context.Context, userName string) (gateway, externalID string, err error)
+	GatewayAccountsByUserWithLastMsg(ctx context.Context, userName string) ([]store.GatewayAccount, error)
 	LogAudit(ctx context.Context, actorName, gateway, toolName string, args []byte) error
 	SaveMessage(convID, userName, role, content, category, policyAction, gateway string) error
 }
@@ -81,13 +84,16 @@ func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[s
 		return "", fmt.Errorf("%q is not a configured family member", to)
 	}
 
-	// Resolve the target's most recent gateway + external_id.
-	gatewayName, externalID, err := db.MostRecentGatewayAndExternalIDForUser(ctx, to)
+	// Resolve a gateway that can actually be INITIATED for a proactive
+	// delivery to `to`. Being linked on a gateway (a row in gateway_accounts)
+	// is necessary but not sufficient: a bot cannot start a Telegram
+	// conversation with a user who has never messaged it. ResolveDestination
+	// encodes those platform rules and returns a clear, actionable error when
+	// no linked gateway can be initiated (instead of failing opaquely inside
+	// the platform Send call).
+	gatewayName, externalID, err := ResolveDestination(ctx, db, to)
 	if err != nil {
-		return "", fmt.Errorf("resolving gateway for %s: %w", to, err)
-	}
-	if gatewayName == "" || externalID == "" {
-		return "", fmt.Errorf("%s has no linked gateway account to send through, so I don't know how to reach them on any gateway", to)
+		return "", err
 	}
 
 	// Look up the sender for that gateway.
@@ -119,4 +125,149 @@ func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[s
 	_ = db.SaveMessage(convID, to, "assistant", message, "send_message", "allow", gatewayName)
 
 	return fmt.Sprintf("Message sent to %s via %s", to, gatewayName), nil
+}
+
+// ResolveDestination chooses a linked gateway that can actually be INITIATED
+// for a proactive delivery to to, returning its name and platform external_id.
+//
+// A family member being "linked" (a row in gateway_accounts) is necessary but
+// not sufficient for proactive delivery: not every linked gateway can be
+// started on demand. The platform rules are:
+//
+//   - discord: a bot can open a DM to a shared-guild member who has never
+//     messaged it (subject to their privacy settings), so any linked Discord
+//     account is initiable.
+//   - telegram: a bot CANNOT start a conversation; the user must have sent the
+//     bot at least one message. Once that route exists it stays open
+//     permanently. So a linked Telegram account is initiable only when our
+//     messages table shows prior inbound activity on that gateway.
+//
+// Resolution prefers an initiable gateway; among several initiable ones it
+// keeps the existing most-recent-message preference (NULL last-message time
+// sorts oldest, so a never-messaged-but-always-initiable Discord loses to a
+// used Telegram).
+//
+// When no linked gateway can be initiated, the returned error names the person,
+// lists the gateways they ARE linked on, explains why each cannot be
+// initiated, and says what would unblock it. This replaces the opaque
+// "X has not sent any messages yet" failure with something actionable.
+//
+// To add a third gateway, extend canInitiate / cannotInitiateReason below.
+func ResolveDestination(ctx context.Context, db DB, to string) (gateway, externalID string, err error) {
+	linked, err := db.GatewayAccountsByUserWithLastMsg(ctx, to)
+	if err != nil {
+		return "", "", fmt.Errorf("resolving reachable gateway for %s: %w", to, err)
+	}
+	if len(linked) == 0 {
+		return "", "", fmt.Errorf("%s has no linked gateway account to send through, so I don't know how to reach them on any gateway", to)
+	}
+
+	// Partition into initiable / not. hasMsg is derived from lastMsgAt, which
+	// is the messages-table lookup that decides Telegram iniability.
+	initable := make([]candidate, 0, len(linked))
+	not := make([]candidate, 0, len(linked))
+	for _, acc := range linked {
+		hasMsg := acc.LastMsgAt != nil
+		c := candidate{gw: acc.Gateway, ext: acc.ExternalID, lastMsg: acc.LastMsgAt}
+		if canInitiate(acc.Gateway, hasMsg) {
+			initable = append(initable, c)
+		} else {
+			not = append(not, c)
+		}
+	}
+
+	if len(initable) == 0 {
+		return "", "", unresolvableError(to, not)
+	}
+
+	// Prefer most-recent; NULL lastMsg sorts oldest (stable tiebreak on name).
+	sort.Slice(initable, func(i, j int) bool {
+		return candidateIsNewer(initable[i], initable[j])
+	})
+	best := initable[0]
+	return best.gw, best.ext, nil
+}
+
+// candidateIsNewer reports whether a is more recently messaged than b, for
+// preferring the gateway the user last used. NULL lastMsg is treated as the
+// oldest possible time.
+func candidateIsNewer(a, b candidate) bool {
+	if a.lastMsg == nil && b.lastMsg == nil {
+		return a.gw < b.gw // stable tiebreak
+	}
+	if a.lastMsg == nil {
+		return false // a is older
+	}
+	if b.lastMsg == nil {
+		return true // b is older
+	}
+	if !a.lastMsg.Equal(*b.lastMsg) {
+		return a.lastMsg.After(*b.lastMsg)
+	}
+	return a.gw < b.gw // stable tiebreak
+}
+
+// candidate is a linked gateway being evaluated for proactive delivery.
+type candidate struct {
+	gw      string
+	ext     string
+	lastMsg *time.Time
+}
+
+// canInitiate reports whether a bot can proactively open a conversation on
+// gateway to a user. hasMsg is whether the user has ever messaged the bot on
+// that gateway (the messages-table signal).
+func canInitiate(gateway string, hasMsg bool) bool {
+	switch gateway {
+	case "discord":
+		return true
+	case "telegram":
+		return hasMsg
+	default:
+		// Unknown / placeholder gateways (e.g. whatsapp stubs) cannot be
+		// initiated until a driver with a start-chat capability is added.
+		return false
+	}
+}
+
+// cannotInitiateReason explains, for a non-initiable gateway, why a bot cannot
+// start a conversation there. (discord never reaches this for a non-initiable
+// gateway, so its case documents the invariant.)
+func cannotInitiateReason(gateway string) string {
+	switch gateway {
+	case "telegram":
+		return "Telegram does not let a bot start a conversation — they must send the bot one message first"
+	case "discord":
+		return "always initiable"
+	default:
+		return "no bot can start a conversation on this gateway"
+	}
+}
+
+// unresolvableError builds the actionable "I can't reach X" message for the
+// case where the user is linked on one or more gateways but none can be
+// initiated right now.
+func unresolvableError(to string, not []candidate) error {
+	reasons := make([]string, 0, len(not))
+	for _, c := range not {
+		reasons = append(reasons, fmt.Sprintf("%s — %s", c.gw, cannotInitiateReason(c.gw)))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "I can't reach %s with a proactive message right now. ", to)
+	fmt.Fprintf(&b, "%s is linked on %s, and a bot cannot start a conversation on any of them at the moment. ",
+		to, strings.Join(reasons, ", "))
+	if hasGateway(not, "telegram") {
+		fmt.Fprintf(&b, "To start the Telegram route, ask %s to send one message to the FamClaw bot on Telegram — after that the route stays open permanently. ", to)
+	}
+	fmt.Fprintf(&b, "Linking %s on Discord would also let me open a DM there directly, since Discord allows bots to start DMs with shared-guild members. ", to)
+	return errors.New(b.String())
+}
+
+func hasGateway(cands []candidate, gateway string) bool {
+	for _, c := range cands {
+		if c.gw == gateway {
+			return true
+		}
+	}
+	return false
 }
