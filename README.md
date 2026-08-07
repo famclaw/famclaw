@@ -263,6 +263,23 @@ FamClaw uses [HoneyBadger](https://github.com/famclaw/honeybadger) to scan skill
 
 **Runtime, asynchronously.** Tools used during a conversation are scanned in the background after the turn completes. If a scan fails, the tool is quarantined and filtered out of the next turn. This never adds latency — scanning runs in parallel with or after the response.
 
+The master switch is `seccheck.enabled: true` in `config.yaml` (it is **not** auto-enabled from `auto_seccheck`/`runtime_scan` alone — a gate that reads as "armed" while the scanner binary is absent is the exact false promise FamClaw avoids).
+
+### Scanner availability (famclaw owns its scanner dependency)
+
+HoneyBadger is a dependency of famclaw, not a manual step. FamClaw fetches and installs it for you:
+
+- `make install` pulls the pinned `honeybadger` binary via `go install` before copying the famclaw binary (so a fresh machine ends up with a working gate).
+- At startup, if `seccheck.enabled` is true and the binary is missing, famclaw runs `EnsureScanner` (`go install github.com/famclaw/honeybadger/cmd/honeybadger@<seccheck.scanner_version>`) so `go install` users get it automatically too.
+
+**When the scanner genuinely cannot be made available** (no `go` toolchain, no network, pull failure), FamClaw fails **closed**, never waving a skill through unscanned:
+
+- A skill install is **refused** with a clear error (no file is written).
+- Boot-load scanning of pre-installed skills logs a per-skill visible warning and the state is surfaced.
+- A `seccheck_reports` row is never written for an unscanned skill, so operators can audit "did this actually scan?"
+
+All of this is verified live: installing famclaw and enabling `seccheck.enabled: true` ends with a `seccheck_reports` row for every scanned skill.
+
 All behavior is configurable in `config.yaml` under the `seccheck:` section.
 
 ---
