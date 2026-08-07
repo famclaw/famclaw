@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -42,17 +44,63 @@ func (c *Client) EnsureScanner(ctx context.Context, version string) error {
 		return fmt.Errorf("honeybadger binary not in PATH and go toolchain unavailable to fetch it "+
 			"(install manually: go install github.com/famclaw/honeybadger/cmd/honeybadger@%s)", version)
 	}
+	// Primary path: go install (works on a machine with proxy/network access).
 	log.Printf("[honeybadger] fetching scanner %s via go install...", version)
-	cmd := exec.CommandContext(ctx, "go", "install", fmt.Sprintf("github.com/famclaw/honeybadger/cmd/honeybadger@%s", version))
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("fetching honeybadger %s: %w", version, err)
+	installCmd := exec.CommandContext(ctx, "go", "install",
+		fmt.Sprintf("github.com/famclaw/honeybadger/cmd/honeybadger@%s", version))
+	installCmd.Stdout = os.Stderr
+	installCmd.Stderr = os.Stderr
+	if err := installCmd.Run(); err != nil {
+		// Fallback: build from the module cache (works on networks where the
+		// Go proxy is intercepted, as long as the module was previously
+		// fetched/cached). Mirrors `make install-scanner` without the download.
+		if cacheErr := c.buildFromCache(ctx, version); cacheErr != nil {
+			return fmt.Errorf("fetching honeybadger %s: go install failed (%v); cache build also failed: %w",
+				version, err, cacheErr)
+		}
+		log.Printf("[honeybadger] scanner installed from module cache ✅")
 	}
 	if !c.Available() {
-		return fmt.Errorf("honeybadger %s installed but not found in PATH after go install", version)
+		return fmt.Errorf("honeybadger %s installed but not found in PATH after fetch", version)
 	}
 	log.Printf("[honeybadger] scanner installed ✅")
+	return nil
+}
+
+// buildFromCache compiles the honeybadger binary from the module cache
+// (GOMODCACHE/github.com/famclaw/honeybadger@<version>/cmd/honeybadger) into
+// GOBIN. Used when `go install pkg@version` fails (e.g. intercepted proxy) but
+// the module is already cached.
+func (c *Client) buildFromCache(ctx context.Context, version string) error {
+	gomodcache, err := exec.CommandContext(ctx, "go", "env", "GOMODCACHE").Output()
+	if err != nil {
+		return fmt.Errorf("reading GOMODCACHE: %w", err)
+	}
+	gobin, err := exec.CommandContext(ctx, "go", "env", "GOBIN").Output()
+	if err != nil {
+		return fmt.Errorf("reading GOBIN: %w", err)
+	}
+	cacheDir := filepath.Join(strings.TrimSpace(string(gomodcache)),
+		"github.com/famclaw/honeybadger@"+version)
+	pkg := filepath.Join(cacheDir, "cmd", "honeybadger")
+	if _, err := os.Stat(pkg); err != nil {
+		return fmt.Errorf("honeybadger %s not in module cache at %s: %w", version, pkg, err)
+	}
+	out := strings.TrimSpace(string(gobin))
+	if out == "" {
+		gopath, _ := exec.CommandContext(ctx, "go", "env", "GOPATH").Output()
+		out = filepath.Join(strings.TrimSpace(string(gopath)), "bin")
+	}
+	out = filepath.Join(out, "honeybadger")
+	// Build from inside the cached module so Go uses honeybadger's own
+	// go.mod (it is not a dependency of the famclaw module).
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", out, "./cmd/honeybadger")
+	buildCmd.Dir = cacheDir
+	buildCmd.Stdout = os.Stderr
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		return fmt.Errorf("building honeybadger from cache: %w", err)
+	}
 	return nil
 }
 
