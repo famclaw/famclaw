@@ -30,6 +30,7 @@ import (
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/gateway"
+	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/policy"
@@ -520,6 +521,28 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 			deps.ScanTimeout = d
 		} else if a.cfg.SecCheck.AsyncScanTimeout != "" {
 			log.Printf("[agent] invalid seccheck.async_scan_timeout %q: %v (using default 60s)", a.cfg.SecCheck.AsyncScanTimeout, err)
+		}
+		// Persist runtime tool-scan results to seccheck_reports and gate
+		// re-scans with the stale-check so a tool is not re-scanned every turn.
+		if a.db != nil && deps.Scanner != nil && deps.Scanner.Available() {
+			deps.SaveScanFunc = func(scanTarget string, result *honeybadger.ScanResult) {
+				reportJSON, jerr := json.Marshal(result)
+				if jerr != nil {
+					log.Printf("[agent] seccheck: failed to encode report for %q: %v", scanTarget, jerr)
+					return
+				}
+				if err := a.db.SaveSecCheckReport("", scanTarget, "", result.Score(), result.Verdict, result.Reasoning, string(reportJSON)); err != nil {
+					log.Printf("[agent] seccheck: failed to persist report for %q: %v", scanTarget, err)
+				}
+			}
+			deps.LastScanFunc = func(scanTarget string) (time.Time, bool) {
+				ts, ok, err := a.db.LastSecCheckReport(scanTarget)
+				if err != nil {
+					log.Printf("[agent] seccheck: last-scan query error for %q: %v", scanTarget, err)
+					return time.Time{}, false
+				}
+				return ts, ok
+			}
 		}
 	}
 

@@ -290,7 +290,7 @@ type SecCheckConfig struct {
 	NotifyOnQuarantine bool   `yaml:"notify_on_quarantine"` // send parent notification
 	// ScannerVersion pins the honeybadger binary that EnsureScanner fetches when
 	// the binary is missing. Empty defaults to honeybadger.HoneyBadgerVersion.
-	ScannerVersion     string `yaml:"scanner_version"`
+	ScannerVersion string `yaml:"scanner_version"`
 }
 
 type NotificationsConfig struct {
