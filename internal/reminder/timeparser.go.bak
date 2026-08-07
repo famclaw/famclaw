@@ -160,26 +160,19 @@ func parseDayOfWeek(s string) time.Weekday {
 	}
 }
 
-// halfHourRegex matches "in half an hour" / "in half hour" (-> 30 minutes).
-var halfHourRegex = regexp.MustCompile(`^in\s+half(?:\s+an)?\s+hour$`)
-
 func parseRelative(input string, now time.Time, loc *time.Location) (time.Time, bool) {
 	// "in half an hour" / "in half hour" -> 30 minutes
+	halfHourRegex := regexp.MustCompile(`^in\s+half(?:\s+an)?\s+hour$`)
 	if halfHourRegex.MatchString(input) {
 		return now.Add(30 * time.Minute), true
 	}
 
-	// "in hour" is retained as a shorthand for "in an hour"; no other bare unit
-	// form (e.g. "in minute", "in day") is accepted.
-	if input == "in hour" {
-		return now.Add(time.Hour), true
-	}
-
-	// "in <n> <unit>" or "in a/an <unit>": the leading token is REQUIRED and must
-	// be either a number or an a/an article, so bare units such as "in minute",
-	// "in second", "in day" are rejected. Units accept common abbreviations
-	// (min, mins, sec, secs, hr, hrs, m, h) as well as full words.
-	inRegex := regexp.MustCompile(`^in\s+(?:(\d+)\s+|an?\s+)(minute|minutes|min|mins|second|seconds|sec|secs|hour|hours|hr|hrs|day|days|m|h|s|d)$`)
+	// "in <n> <unit>", "in a/an <unit>", or "in <unit>" (the leading amount is
+	// optional and independent of the a/an form, so all of these parse:
+	// "in 1 hour", "in an hour", "in 1 min", "in half an hour"). Units accept
+	// common abbreviations (min, mins, sec, secs, hr, hrs, m, h) as well as
+	// full words.
+	inRegex := regexp.MustCompile(`^in\s+(?:(\d+)\s+)?(?:an?\s+)?(minute|minutes|min|mins|second|seconds|sec|secs|hour|hours|hr|hrs|day|days|m|h)$`)
 	if m := inRegex.FindStringSubmatch(input); m != nil {
 		amount := 1
 		if m[1] != "" {
@@ -219,11 +212,11 @@ func unitToDuration(unit string) time.Duration {
 	switch unit {
 	case "minute", "minutes", "min", "mins", "m":
 		return time.Minute
-	case "second", "seconds", "sec", "secs", "s":
+	case "second", "seconds", "sec", "secs":
 		return time.Second
 	case "hour", "hours", "hr", "hrs", "h":
 		return time.Hour
-	case "day", "days", "d":
+	case "day", "days":
 		return 24 * time.Hour
 	}
 	return 0

@@ -3,6 +3,11 @@
 All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.11.1 — 2026-08-05
+
+### Fixed
+- **Conversation memory is restored.** v0.11.0 introduced a regression that broke conversation continuity: every user message was treated as the start of a brand-new conversation, so the assistant forgot everything between turns and the family lost their chat history mid-conversation (measured at roughly 2 messages per conversation on affected databases, down from the normal 30+). FamClaw now reuses the existing conversation ID verbatim for the life of a conversation, so messages keep landing in the same conversation as long as the gap between the user's last message and now is under the 6-hour `ConversationIdleTimeout`; only a longer idle gap or a cold start begins a fresh conversation. Existing conversations and their history are preserved.
+
 ## v0.11.0 — 2026-08-04
 
 ### Added
