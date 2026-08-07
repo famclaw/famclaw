@@ -463,7 +463,13 @@ func main() {
 
 	// Notifications — approval requests are delivered through the parent's
 	// linked gateway accounts (Telegram, Discord) via the senderRegistry.
+	// sendFn honours ctx: it checks ctx.Err() before looking up the sender
+	// and passes ctx through to sender.Send so a cancelled context can
+	// interrupt in-flight network calls (e.g. a slow HTTP POST to Telegram).
 	senderFn := func(ctx context.Context, gw, chatID, text string) error {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("notification aborted: %w", err)
+		}
 		sender, ok := senderRegistry[gw]
 		if !ok {
 			return fmt.Errorf("%w: %q", notify.ErrNoSender, gw)

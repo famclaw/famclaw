@@ -49,6 +49,10 @@ type MultiNotifier struct {
 // to parent users via their linked gateway accounts. The sendFn closure
 // resolves a gateway name to its Sender (e.g. from the shared
 // senderRegistry) and sends the text to the given chat ID.
+//
+// The sendFn receives the request context so the underlying sender can
+// honour cancellation and deadlines mid-send. sendToParents also checks
+// ctx.Done() at both the per-parent and per-account loop levels.
 func NewMultiNotifier(cfg *config.Config, identStore *identity.Store, sendFn func(ctx context.Context, gateway, chatID, text string) error) *MultiNotifier {
 	return &MultiNotifier{
 		cfg:        cfg,
