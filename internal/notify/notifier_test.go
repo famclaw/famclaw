@@ -266,7 +266,9 @@ func TestMultiNotifierSendErrorIsHandled(t *testing.T) {
 	})
 
 	// Should not panic — the error is logged, not returned.
-	notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
+	if err := notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny"); err == nil {
+		t.Error("expected error from Notify when sendFn fails, got nil")
+	}
 }
 
 // TestMultiNotifierNoParentAccounts verifies that Notify is a no-op when no
@@ -322,7 +324,12 @@ func TestMultiNotifierMissingSenderSurfacesError(t *testing.T) {
 	}
 
 	notifier := NewMultiNotifier(cfg, identStore, sendFn)
-	notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
+
+	// Assert: Notify returns an error (not silently dropped).
+	notifyErr := notifier.Notify(context.Background(), testApproval, "http://approve", "http://deny")
+	if notifyErr == nil {
+		t.Error("expected error from Notify when sender is missing, got nil")
+	}
 
 	// Assert: the error was produced (not a silent nil).
 	if errFromSendFn == nil {

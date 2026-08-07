@@ -59,33 +59,43 @@ func NewMultiNotifier(cfg *config.Config, identStore *identity.Store, sendFn fun
 
 // Notify sends an approval request to all parent users via their linked
 // gateway accounts. Each parent's message is delivered through every gateway
-// they have linked (Telegram, Discord, …).
-func (m *MultiNotifier) Notify(ctx context.Context, a *store.Approval, approveURL, denyURL string) {
-	m.sendToParents(ctx, formatApprovalMessage(a, approveURL, denyURL))
+// they have linked (Telegram, Discord, …). Returns an aggregated error if
+// any deliveries fail.
+func (m *MultiNotifier) Notify(ctx context.Context, a *store.Approval, approveURL, denyURL string) error {
+	return m.sendToParents(ctx, formatApprovalMessage(a, approveURL, denyURL))
 }
 
 // NotifyDecision sends an approval decision to all parent users via their
-// linked gateway accounts.
-func (m *MultiNotifier) NotifyDecision(ctx context.Context, a *store.Approval) {
-	m.sendToParents(ctx, formatDecisionMessage(a))
+// linked gateway accounts. Returns an aggregated error if any deliveries fail.
+func (m *MultiNotifier) NotifyDecision(ctx context.Context, a *store.Approval) error {
+	return m.sendToParents(ctx, formatDecisionMessage(a))
 }
 
 // sendToParents iterates parent users in the config, resolves each parent's
 // linked gateway accounts, and sends text through the matching gateway Sender.
-func (m *MultiNotifier) sendToParents(ctx context.Context, text string) {
+// Honours context cancellation at every loop level and returns an aggregated
+// error for any failed deliveries.
+func (m *MultiNotifier) sendToParents(ctx context.Context, text string) error {
+	var errs []error
 	for _, user := range m.cfg.Users {
 		if user.Role != "parent" {
 			continue
 		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("notifications aborted: %w", ctx.Err())
+		default:
+		}
 		accounts, err := m.identStore.ListGatewayAccountsByUser(ctx, user.Name)
 		if err != nil {
 			log.Printf("[notify] listing accounts for %s: %v", user.Name, err)
+			errs = append(errs, fmt.Errorf("listing accounts for %s: %w", user.Name, err))
 			continue
 		}
 		for _, acct := range accounts {
 			select {
 			case <-ctx.Done():
-				return
+				return fmt.Errorf("notifications aborted: %w", ctx.Err())
 			default:
 			}
 			if err := m.sendFn(ctx, acct.Gateway, acct.ExternalID, text); err != nil {
@@ -96,9 +106,11 @@ func (m *MultiNotifier) sendToParents(ctx context.Context, text string) {
 					log.Printf("[notify] sending to %s/%s: %v",
 						acct.Gateway, acct.ExternalID, redactWebhookURLInError(err))
 				}
+				errs = append(errs, fmt.Errorf("sending to %s/%s: %w", acct.Gateway, acct.ExternalID, err))
 			}
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // GenerateToken creates a time-limited HMAC token for one-click approve/deny links.
