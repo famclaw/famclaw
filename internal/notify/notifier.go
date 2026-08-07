@@ -98,6 +98,8 @@ func (m *MultiNotifier) sendToParents(ctx context.Context, text string) error {
 				return fmt.Errorf("notifications aborted: %w", ctx.Err())
 			default:
 			}
+			// sendFn receives ctx so the underlying gateway sender can honour
+			// cancellation mid-send (e.g., abort a slow HTTP POST to Telegram).
 			if err := m.sendFn(ctx, acct.Gateway, acct.ExternalID, text); err != nil {
 				if errors.Is(err, ErrNoSender) {
 					log.Printf("[notify] WARNING: no sender registered for gateway %q; notification for %s/%s dropped",
