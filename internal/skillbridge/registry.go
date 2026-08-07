@@ -104,9 +104,14 @@ func (r *Registry) Install(ctx context.Context, nameOrPath string) (*Skill, erro
 
 	// Security scan before writing anything to disk. Scanning happens against
 	// the ORIGINAL source (nameOrPath), not the installed copy, so a malicious
-	// skill is caught before it ever lands on disk. A missing or unavailable
-	// scanner is a hard refusal — never an install of an unscanned skill.
-	if r.cfg.Enabled && r.cfg.AutoSecCheck {
+	// skill is caught before it ever lands on disk.
+	//
+	// The master switch is `seccheck.enabled: true` alone — when it is set,
+	// every install is scanned. A missing or unavailable scanner is a hard
+	// refusal (fail-closed) — never an install of an unscanned skill.
+	// `auto_seccheck` is a legacy alias; once `Enabled` is true, install-time
+	// scanning is always required.
+	if r.cfg.Enabled {
 		scanTarget, online := resolveScanTarget(nameOrPath)
 		result, err := r.scan(ctx, skill, scanTarget, online)
 		if err != nil {
@@ -320,7 +325,13 @@ func (r *Registry) ScanSkill(ctx context.Context, skill *Skill, target string) (
 	_, online := resolveScanTarget(target)
 	result, err := r.scan(ctx, skill, target, online)
 	if err != nil {
-		return nil, err
+		// Surface the unavailable-scanner condition explicitly so callers
+		// cannot silently treat it as a pass. This is a fail-closed gate.
+		if errors.Is(err, ErrScannerUnavailable) {
+			log.Printf("[skillbridge] seccheck: %q scan refused — scanner unavailable (fail-closed)", skill.Name)
+			return nil, fmt.Errorf("scanning %q: %w", skill.Name, err)
+		}
+		return nil, fmt.Errorf("scanning %q: %w", skill.Name, err)
 	}
 	r.persistReport(ctx, skill.Name, target, result)
 	return result, nil
@@ -355,7 +366,11 @@ func (r *Registry) ScanAll(ctx context.Context, stale time.Duration) error {
 		result, err := r.ScanSkill(ctx, sk, target)
 		if err != nil {
 			// Visible, not silent: the gate is armed but cannot scan.
-			log.Printf("[skillbridge] seccheck: %q NOT scanned: %v", sk.Name, err)
+			if errors.Is(err, ErrScannerUnavailable) {
+				log.Printf("[skillbridge] seccheck: %q NOT scanned — scanner unavailable (fail-closed)", sk.Name)
+			} else {
+				log.Printf("[skillbridge] seccheck: %q NOT scanned: %v", sk.Name, err)
+			}
 			errs = append(errs, fmt.Errorf("%s: %w", sk.Name, err))
 			continue
 		}
