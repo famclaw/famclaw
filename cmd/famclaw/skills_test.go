@@ -122,9 +122,10 @@ func TestDefaultSkillsDir(t *testing.T) {
 // be made available, FamClaw fails closed, never waving a skill through
 // unscanned."
 //
-// We make the scanner unavailable deterministically by stripping the Go
-// toolchain from PATH — EnsureScanner checks exec.LookPath("go") first and
-// returns an error when it is absent, so no network call is attempted.
+// We make the scanner unavailable deterministically by emptying PATH to an
+// empty directory — both honeybadger and go become un-findable, so
+// EnsureScanner returns an error immediately at the exec.LookPath("go")
+// check with no network call or binary fetch attempted.
 func TestSkillInstallRefusesWhenScannerUnavailable(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -153,10 +154,12 @@ func TestSkillInstallRefusesWhenScannerUnavailable(t *testing.T) {
 
 	// Point HOME at our temp dir so findConfigFile discovers the config.
 	t.Setenv("HOME", homeDir)
-	// Strip the Go toolchain (and honeybadger) from PATH so EnsureScanner
-	// cannot fetch or build the scanner — it fails immediately at the
-	// exec.LookPath("go") check.
-	t.Setenv("PATH", "/usr/bin:/bin")
+	// Empty PATH — point at a fresh temp dir with no binaries. This makes
+	// exec.LookPath("go") and exec.LookPath("honeybadger") both fail, so
+	// EnsureScanner returns an error immediately without attempting any
+	// network fetch or binary build (which would require a specific Go
+	// toolchain version).
+	t.Setenv("PATH", t.TempDir())
 
 	err := skillInstall(skillsDir, srcDir)
 	if err == nil {
