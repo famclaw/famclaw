@@ -45,9 +45,9 @@ type InstallConfig struct {
 // Registry manages installed skills on disk.
 type Registry struct {
 	dir            string
-	scanner        Scanner        // may be nil if scanning is disabled
+	scanner        Scanner // may be nil if scanning is disabled
 	cfg            InstallConfig
-	reporter       SecCheckReporter // may be nil (e.g. CLI)
+	reporter       SecCheckReporter           // may be nil (e.g. CLI)
 	roleEnablement map[string]map[string]bool // role -> skillName -> enabled
 }
 
@@ -376,45 +376,12 @@ func (r *Registry) persistReport(_ context.Context, skillID, target string, resu
 		log.Printf("[skillbridge] WARNING: failed to encode seccheck report for %q: %v", skillID, err)
 		return
 	}
-	score := computeScore(result)
+	score := result.Score()
 	if err := r.reporter.SaveSecCheckReport(skillID, target, "", score, result.Verdict, result.Reasoning, string(reportJSON)); err != nil {
 		log.Printf("[skillbridge] WARNING: failed to persist seccheck report for %q: %v", skillID, err)
 		return
 	}
 	log.Printf("[skillbridge] seccheck report saved: %q verdict=%s score=%d", skillID, result.Verdict, score)
-}
-
-// computeScore maps a verdict/findings to a 0–100 score for the seccheck_reports
-// table. PASS/SKIP = 100, FAIL = 0, WARN degrades by finding severity.
-func computeScore(result *honeybadger.ScanResult) int {
-	switch result.Verdict {
-	case "PASS", "SKIP":
-		return 100
-	case "FAIL":
-		return 0
-	case "WARN":
-		score := 100
-		for _, f := range result.Findings {
-			switch f.Severity {
-			case "critical":
-				score -= 40
-			case "high":
-				score -= 20
-			case "medium":
-				score -= 10
-			case "low":
-				score -= 5
-			case "info":
-				score -= 1
-			}
-		}
-		if score < 1 {
-			return 1
-		}
-		return score
-	default:
-		return 0
-	}
 }
 
 // resolveScanTarget decides whether an install reference is a local path or a

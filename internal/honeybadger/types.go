@@ -43,3 +43,38 @@ type Finding struct {
 	Line        int    `json:"line,omitempty"`
 	Scanner     string `json:"scanner"`
 }
+
+// Score maps the scan verdict to a 0-100 integer for the seccheck_reports
+// table. PASS/SKIP = 100, FAIL = 0, WARN degrades by finding severity.
+// Shared by every call site that persists a report so the scoring is
+// consistent between skill scans and runtime tool scans.
+func (r *ScanResult) Score() int {
+	switch r.Verdict {
+	case "PASS", "SKIP":
+		return 100
+	case "FAIL":
+		return 0
+	case "WARN":
+		score := 100
+		for _, f := range r.Findings {
+			switch f.Severity {
+			case "critical":
+				score -= 40
+			case "high":
+				score -= 20
+			case "medium":
+				score -= 10
+			case "low":
+				score -= 5
+			case "info":
+				score -= 1
+			}
+		}
+		if score < 1 {
+			return 1
+		}
+		return score
+	default:
+		return 0
+	}
+}
