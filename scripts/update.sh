@@ -83,7 +83,7 @@ fi
 
 # ── Download artifact + checksums ────────────────────────────────────────────
 TMP=$(mktemp -d)
-trap "rm -rf '$TMP'" EXIT
+trap 'rm -rf "$TMP"' EXIT
 
 echo "  Downloading ${ARTIFACT_ARCHIVE}..."
 curl -fsSL "${RELEASE_BASE}/${ARTIFACT_ARCHIVE}" -o "${TMP}/${ARTIFACT_ARCHIVE}"
@@ -137,7 +137,10 @@ service_stop
 
 echo "  Installing new binary to ${BINARY}..."
 $SUDO mkdir -p "$(dirname "$BINARY")"
-$SUDO cp "$NEW_BIN" "$BINARY"
+# Use atomic rename to avoid SIGKILL (exit 137) when binary is running
+  TMP_PATH="$(dirname "$BINARY")/.famclaw.tmp.$$"
+  $SUDO cp "$NEW_BIN" "$TMP_PATH"
+  $SUDO mv -f "$TMP_PATH" "$BINARY"
 $SUDO chmod +x "$BINARY"
 
 echo "  Starting service..."
