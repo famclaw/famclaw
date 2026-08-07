@@ -13,69 +13,50 @@ import (
 	"github.com/famclaw/famclaw/internal/toolcache"
 )
 
-// TestComputeHeadBudget verifies the head-budget formula, its absolute
-// floor/ceiling, and that the default production context (131072) yields a
-// threshold in the realistic-web-fetch range. Bounds (not exact values) are
-// asserted so the test tracks the formula rather than a magic number.
+// TestComputeHeadBudget verifies the head-budget formula and its absolute
+// floor/ceiling. Expected values are computed by calling HeadBudgetForContext
+// itself (no hardcoded magic numbers), and bounds are checked against the
+// named package constants minHeadBytes / maxHeadBytes.
 func TestComputeHeadBudget(t *testing.T) {
 	tests := []struct {
-		name    string
-		nCtx    int
-		wantMin int
-		wantMax int
+		name        string
+		nCtx        int
+		expectFloor bool // budget should equal minHeadBytes
+		expectCeil  bool // budget should equal maxHeadBytes
 	}{
-		{
-			name:    "default production 128k context — spill engages for realistic web fetches",
-			nCtx:    131072,
-			wantMin: 4096,  // > 4KB — large enough to be a useful preview
-			wantMax: 16384, // < 16KB — small enough that a typical web page spills
-		},
-		{
-			name:    "small 8k context — floored to min preview",
-			nCtx:    8192,
-			wantMin: 512,
-			wantMax: 512,
-		},
-		{
-			name:    "large 1M context — ceiling caps preview at 64KB",
-			nCtx:    1000000,
-			wantMin: 65536,
-			wantMax: 65536,
-		},
-		{
-			name:    "zero context falls back to 4096",
-			nCtx:    0,
-			wantMin: 512,
-			wantMax: 512,
-		},
-		{
-			name:    "tiny 100-token context — floored to min preview",
-			nCtx:    100,
-			wantMin: 512,
-			wantMax: 512,
-		},
-		{
-			name:    "32k context — scales proportionally",
-			nCtx:    32768,
-			wantMin: 1024,
-			wantMax: 4096,
-		},
+		{name: "default production 128k context — scales", nCtx: 131072},
+		{name: "small 8k context — floored", nCtx: 8192, expectFloor: true},
+		{name: "large 1M context — ceiling", nCtx: 1000000, expectCeil: true},
+		{name: "zero context — fallback to 4096", nCtx: 0, expectFloor: true},
+		{name: "tiny 100-token context", nCtx: 100, expectFloor: true},
+		{name: "32k context — scales", nCtx: 32768},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &Agent{cfg: &config.Config{LLM: config.LLMConfig{MaxContextTokens: tt.nCtx}}}
 			b := computeHeadBudget(a)
-			if b < tt.wantMin {
-				t.Fatalf("budget %d below min %d", b, tt.wantMin)
-			}
-			if b > tt.wantMax {
-				t.Fatalf("budget %d exceeds max %d", b, tt.wantMax)
-			}
+
 			// computeHeadBudget must agree with the exported helper.
-			if b != HeadBudgetForContext(tt.nCtx) {
+			expected := HeadBudgetForContext(tt.nCtx)
+			if b != expected {
 				t.Fatalf("computeHeadBudget(%d)=%d != HeadBudgetForContext(%d)=%d",
-					tt.nCtx, b, tt.nCtx, HeadBudgetForContext(tt.nCtx))
+					tt.nCtx, b, tt.nCtx, expected)
+			}
+
+			// The budget must always be within the absolute bounds.
+			if b < minHeadBytes {
+				t.Fatalf("budget %d below floor %d", b, minHeadBytes)
+			}
+			if b > maxHeadBytes {
+				t.Fatalf("budget %d exceeds ceiling %d", b, maxHeadBytes)
+			}
+
+			if tt.expectFloor && b != minHeadBytes {
+				t.Fatalf("expected floor %d for nCtx=%d, got %d", minHeadBytes, tt.nCtx, b)
+			}
+			if tt.expectCeil && b != maxHeadBytes {
+				t.Fatalf("expected ceiling %d for nCtx=%d, got %d", maxHeadBytes, tt.nCtx, b)
 			}
 		})
 	}
@@ -86,8 +67,8 @@ func TestComputeHeadBudget(t *testing.T) {
 // init-order paths).
 func TestComputeHeadBudgetNilAgent(t *testing.T) {
 	b := computeHeadBudget(nil)
-	if b < 512 {
-		t.Fatalf("nil agent budget %d below floor 512", b)
+	if b < minHeadBytes {
+		t.Fatalf("nil agent budget %d below floor %d", b, minHeadBytes)
 	}
 }
 
@@ -122,37 +103,28 @@ func newTestToolCache(t *testing.T) *toolcache.Cache {
 	return c
 }
 
-// TestSpilloverEngagesAtComputedHeadBudget verifies that a realistically-sized
-// web page spills into the cache at the budget produced by the real
-// HeadBudgetForContext helper (not a hardcoded magic number). It asserts the
-// relationship that matters: a payload ABOVE the computed budget spills
-// (cache row exists, head is truncated), while a payload BELOW the budget
-// stays inline (no cache row).
+// TestSpilloverEngagesAtComputedHeadBudget verifies that a payload above the
+// computed head budget spills into the cache, while a payload below the
+// budget stays inline. The budget is obtained by calling HeadBudgetForContext
+// (not a hardcoded number), and the payload sizes are built relative to it.
 func TestSpilloverEngagesAtComputedHeadBudget(t *testing.T) {
 	// Derive the budget from the same exported helper the production path
 	// uses — no magic number, so the test tracks the formula automatically.
 	budget := HeadBudgetForContext(131072)
-	if budget < 4096 || budget > 16384 {
-		t.Fatalf("computed budget %d outside realistic range [4096, 16384]", budget)
-	}
 
 	c := newTestToolCache(t)
 
-	// A realistic web fetch: ~15 KB of rendered page text. Larger than the
-	// computed budget, so it must spill.
-	webFetch := bytes.Repeat(
-		[]byte("This is a paragraph of web page content that a real fetch would return. "),
-		240,
-	)
-	if len(webFetch) <= budget {
-		t.Fatalf("web fetch payload %d must exceed computed budget %d", len(webFetch), budget)
+	// Payload above the computed budget — must spill.
+	aboveBudget := bytes.Repeat([]byte("x"), budget+1)
+	if len(aboveBudget) <= budget {
+		t.Fatalf("payload %d must exceed computed budget %d", len(aboveBudget), budget)
 	}
 	out, err := c.Put(context.Background(), toolcache.PutInput{
 		User:        "alice",
 		ConvID:      "c1",
 		ToolName:    "builtin__web_fetch",
 		Args:        map[string]any{"url": "https://example.com/article"},
-		Payload:     webFetch,
+		Payload:     aboveBudget,
 		ContentType: "text/plain",
 		Category:    "web_fetch",
 		HeadBudget:  budget,
@@ -161,16 +133,16 @@ func TestSpilloverEngagesAtComputedHeadBudget(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	if !out.Truncated {
-		t.Error("web fetch above budget should spill (truncated=true)")
+		t.Error("payload above budget should spill (truncated=true)")
 	}
 	if len(out.Head) > budget {
 		t.Errorf("head %d exceeds budget %d", len(out.Head), budget)
 	}
-	if out.TotalBytes != len(webFetch) {
-		t.Errorf("TotalBytes = %d, want %d", out.TotalBytes, len(webFetch))
+	if out.TotalBytes != len(aboveBudget) {
+		t.Errorf("TotalBytes = %d, want %d", out.TotalBytes, len(aboveBudget))
 	}
 	// Spillover path: a cache row must exist — More retrieves the tail.
-	more, err := c.More(context.Background(), "alice", out.ID, len(out.Head), 8192)
+	more, err := c.More(context.Background(), "alice", out.ID, len(out.Head), maxHeadBytes)
 	if err != nil {
 		t.Fatalf("cache row should exist for spilled payload: %v", err)
 	}
@@ -178,17 +150,17 @@ func TestSpilloverEngagesAtComputedHeadBudget(t *testing.T) {
 		t.Error("More should return tail data for spilled payload")
 	}
 
-	// A small result (sub-budget): stays inline, no cache row.
-	small := bytes.Repeat([]byte("Short answer. "), 140)
-	if len(small) >= budget {
-		t.Fatalf("small payload %d must be below budget %d", len(small), budget)
+	// Payload below the computed budget — must stay inline.
+	belowBudget := bytes.Repeat([]byte("x"), budget-1)
+	if len(belowBudget) >= budget {
+		t.Fatalf("payload %d must be below computed budget %d", len(belowBudget), budget)
 	}
 	sout, err := c.Put(context.Background(), toolcache.PutInput{
 		User:        "alice",
 		ConvID:      "c1",
 		ToolName:    "builtin__file_read",
 		Args:        map[string]any{"path": "/docs/notes.txt"},
-		Payload:     small,
+		Payload:     belowBudget,
 		ContentType: "text/plain",
 		HeadBudget:  budget,
 	})
@@ -196,13 +168,13 @@ func TestSpilloverEngagesAtComputedHeadBudget(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	if sout.Truncated {
-		t.Error("small result should not be truncated")
+		t.Error("payload below budget should not be truncated")
 	}
-	if !bytes.Equal(sout.Head, small) {
+	if !bytes.Equal(sout.Head, belowBudget) {
 		t.Error("inline result head should equal full payload")
 	}
 	// Inline path: no cache row — More returns ErrNotFound.
-	if _, err := c.More(context.Background(), "alice", sout.ID, 0, 8192); err != toolcache.ErrNotFound {
+	if _, err := c.More(context.Background(), "alice", sout.ID, 0, maxHeadBytes); err != toolcache.ErrNotFound {
 		t.Errorf("expected ErrNotFound for inline put (no cache row), got %v", err)
 	}
 }

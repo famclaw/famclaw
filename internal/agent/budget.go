@@ -1,7 +1,19 @@
 package agent
 
-// HeadBudgetForContext returns the maximum bytes a single tool result's
-// head slice may occupy before it spills into the toolcache. It is the spill
+// Absolute bounds for the head budget. Extracted to package-level so that
+// tests can reference them by name rather than restating literal byte values.
+const (
+	// minHeadBytes is the absolute floor: even on the smallest supported
+	// context the model gets at least this many bytes of preview.
+	minHeadBytes = 512
+	// maxHeadBytes is the absolute ceiling: the head is a preview, not a
+	// dump, so it never exceeds 64 KB regardless of how large the
+	// configured context window is.
+	maxHeadBytes = 64 * 1024
+)
+
+// HeadBudgetForContext returns the maximum bytes a single tool result's head
+// slice may occupy before it spills into the toolcache. It is the spill
 // threshold AND the preview size the LLM receives inline.
 // See spec §6.
 //
@@ -30,14 +42,8 @@ func HeadBudgetForContext(nCtx int) int {
 		// never engaged in production because no real tool result is that
 		// large) to 0.02 (2%) so realistic results — fetched web pages,
 		// file reads, search output — spill while small inline results
+		// stay inline.
 		headShare = 0.02
-		// minHeadBytes is an absolute floor: even on the smallest supported
-		// context the model gets at least this many bytes of preview.
-		minHeadBytes = 512
-		// maxHeadBytes is an absolute ceiling: the head is a preview, not a
-		// dump, so it never exceeds 64 KB regardless of how large the
-		// configured context window is.
-		maxHeadBytes = 64 * 1024
 	)
 
 	if nCtx <= 0 {
