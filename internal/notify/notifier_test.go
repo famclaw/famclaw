@@ -484,6 +484,57 @@ func TestMultiNotifierContextLive(t *testing.T) {
 	}
 }
 
+// TestMultiNotifierSendFnReceivesContext verifies that sendFn is called
+// with the same context passed to Notify, so the underlying sender can
+// honour cancellation and deadlines mid-send.
+func TestMultiNotifierSendFnReceivesContext(t *testing.T) {
+	db := testDB(t)
+	identStore := identity.NewStore(db)
+
+	cfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+		},
+	}
+
+	if err := identStore.LinkAccount("parent", "telegram", "parent-tg"); err != nil {
+		t.Fatalf("link account: %v", err)
+	}
+
+	type received struct {
+		ctx    context.Context
+		gw     string
+		chatID string
+	}
+	var got received
+	var mu sync.Mutex
+
+	notifier := NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error {
+		mu.Lock()
+		got = received{ctx: ctx, gw: gw, chatID: chatID}
+		mu.Unlock()
+		return nil
+	})
+
+	ctx := context.Background()
+	if err := notifier.Notify(ctx, testApproval, "http://approve", "http://deny"); err != nil {
+		t.Fatalf("Notify returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if got.ctx != ctx {
+		t.Error("sendFn did not receive the same context passed to Notify")
+	}
+	if got.gw != "telegram" {
+		t.Errorf("gateway = %q, want telegram", got.gw)
+	}
+	if got.chatID != "parent-tg" {
+		t.Errorf("chatID = %q, want parent-tg", got.chatID)
+	}
+}
+
 // --- helpers ---
 
 func testDB(t *testing.T) *store.DB {
