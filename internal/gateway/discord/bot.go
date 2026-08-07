@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -65,6 +66,12 @@ type Bot struct {
 	token       string
 	session     *discordgo.Session
 	sandboxRoot string
+	// dmCache caches resolved DM channel IDs by recipient user ID so that
+	// proactive deliveries (e.g. reminder retries) don't re-open a DM channel
+	// — and burn a rate-limit slot — on every attempt. DM channels are stable
+	// for the bot's lifetime; a stale entry (bot removed from the user's DMs)
+	// is detected on send failure and invalidated with one retry (see Send).
+	dmCache sync.Map
 }
 
 // New creates a Discord bot with the given token.
@@ -281,18 +288,54 @@ func (b *Bot) processAttachments(ctx context.Context, discordAttachments []*disc
 	return attachments, fileAttachmentNotes
 }
 
-// Send implements gateway.Sender for outbound messages (e.g., reminders).
+// Send delivers a message to a Discord user proactively. The channelID passed
+// in is the recipient's Discord user ID (the external_id stored in
+// gateway_accounts), not a channel ID. Proactive delivery to a user requires
+// opening (or reusing) a DM channel — ChannelMessageSend needs a channel ID and
+// a bare user ID yields a permanent 404 "Unknown Channel". The resolved DM
+// channel ID is cached per user so repeated deliveries (e.g. reminder retries)
+// don't re-open the channel each time. A stale cache entry (bot removed from
+// the user's DMs) is detected on send failure and retried once with a freshly
+// opened channel before giving up.
 func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
 	if b.session == nil {
 		return fmt.Errorf("discord session not initialized")
 	}
-	// Chunk at Discord's 2000-character message limit
-	for _, chunk := range gateway.ChunkMessage(text, 2000) {
-		if _, err := b.session.ChannelMessageSend(channelID, chunk); err != nil {
-			return fmt.Errorf("sending discord message: %w", err)
+	dmChannelID, err := b.dmChannelID(channelID)
+	if err != nil {
+		return fmt.Errorf("opening discord DM for %s: %w", channelID, err)
+	}
+	if err := SendChunked(b.session, dmChannelID, text); err != nil {
+		// Cached DM channel may be stale (bot removed from the user's DMs).
+		// Invalidate and retry once with a fresh channel.
+		b.dmCache.Delete(channelID)
+		dmChannelID, err = b.dmChannelID(channelID)
+		if err != nil {
+			return fmt.Errorf("reopening discord DM for %s: %w", channelID, err)
+		}
+		if err := SendChunked(b.session, dmChannelID, text); err != nil {
+			return fmt.Errorf("sending discord message to %s: %w", channelID, err)
 		}
 	}
 	return nil
+}
+
+// dmChannelID returns the DM channel ID for the given recipient user ID,
+// opening (via UserChannelCreate) and caching it on first use. Caching avoids
+// repeated DM-channel creation API calls (and rate-limit slots) across
+// reminder retries for the same recipient.
+func (b *Bot) dmChannelID(userID string) (string, error) {
+	if cached, ok := b.dmCache.Load(userID); ok {
+		if id, ok := cached.(string); ok {
+			return id, nil
+		}
+	}
+	ch, err := b.session.UserChannelCreate(userID)
+	if err != nil {
+		return "", fmt.Errorf("creating DM channel for %s: %w", userID, err)
+	}
+	b.dmCache.Store(userID, ch.ID)
+	return ch.ID, nil
 }
 
 // downloadImage downloads image data from a URL.

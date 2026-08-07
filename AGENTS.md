@@ -128,6 +128,8 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 - The `notify.GenerateToken` function creates time-limited HMAC tokens.
 - The `toolcache` cache tool is only attached when it already exists (auto-created when `cfg.Tools.ToolCache.Enabled` or `cfg.Tools.WebFetch.Enabled` is true).
 - The `subagent` scheduler has a concurrency cap of 2.
+- Proactive delivery to a family member resolves its destination from `gateway_accounts` (the authoritative reach record), using inbound message activity only to PREFER one gateway when several are linked. A linked-but-silent user is always reachable. See `store.DB.MostRecentGatewayAndExternalIDForUser`.
+- The reminder scheduler retries a failed proactive delivery up to `reminder.MaxDeliveryAttempts` (3); after that it marks the reminder dispatched to stop the retry loop against a permanently-failing destination (e.g. a Discord 404). The counter persists in `reminders.delivery_attempts`.
 - The `inference` sidecar only starts if `cfg.Inference.Backend == "llama-server"`.
 - The `mcp` pool is always constructed; server registration (`RegisterFromConfig`) only runs when `cfg.Skills.MCPServers` is non-empty.
 - The `web` server has a `vaultMismatch` flag that triggers the unlock page.

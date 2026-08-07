@@ -211,6 +211,13 @@ func TestConversationID(t *testing.T) {
 	userA := "emma"
 	userB := "lucas"
 
+	// Continuation cases chain: id2 reuses id1 as its lastConvID so the
+	// stored ID is reused verbatim within the idle window. (The old
+	// derivation re-seeded from the last message's timestamp, which
+	// advanced on every message and broke stability.)
+	midnightID := ConversationID(userA, time.Time{}, false, "", preMidnight)
+	sameDayID := ConversationID(userA, time.Time{}, false, "", tenAM)
+
 	tests := []struct {
 		name     string
 		id1      string
@@ -219,32 +226,32 @@ func TestConversationID(t *testing.T) {
 	}{
 		{
 			name:     "midnight gap under 6h continues conversation",
-			id1:      ConversationID(userA, time.Time{}, false, preMidnight),
-			id2:      ConversationID(userA, preMidnight, true, postMidnight),
+			id1:      midnightID,
+			id2:      ConversationID(userA, preMidnight, true, midnightID, postMidnight),
 			wantSame: true,
 		},
 		{
 			name:     "7h gap starts new conversation",
-			id1:      ConversationID(userA, postMidnight, true, postMidnight),
-			id2:      ConversationID(userA, postMidnight, true, sevenHoursLater),
+			id1:      ConversationID(userA, postMidnight, true, "", postMidnight),
+			id2:      ConversationID(userA, postMidnight, true, "", sevenHoursLater),
 			wantSame: false,
 		},
 		{
 			name:     "5min gap continues conversation",
-			id1:      ConversationID(userA, time.Time{}, false, tenAM),
-			id2:      ConversationID(userA, tenAM, true, fiveMinLaterSameDay),
+			id1:      sameDayID,
+			id2:      ConversationID(userA, tenAM, true, sameDayID, fiveMinLaterSameDay),
 			wantSame: true,
 		},
 		{
 			name:     "different users never share id",
-			id1:      ConversationID(userA, preMidnight, true, postMidnight),
-			id2:      ConversationID(userB, preMidnight, true, postMidnight),
+			id1:      ConversationID(userA, preMidnight, true, "", postMidnight),
+			id2:      ConversationID(userB, preMidnight, true, "", postMidnight),
 			wantSame: false,
 		},
 		{
 			name:     "cold start produces fresh id",
-			id1:      ConversationID(userA, time.Time{}, false, preMidnight),
-			id2:      ConversationID(userA, time.Time{}, false, postMidnight),
+			id1:      ConversationID(userA, time.Time{}, false, "", preMidnight),
+			id2:      ConversationID(userA, time.Time{}, false, "", postMidnight),
 			wantSame: false,
 		},
 	}
@@ -264,13 +271,103 @@ func TestConversationID(t *testing.T) {
 	}
 }
 
-func TestLastMessageTime(t *testing.T) {
+// TestConversationIDStableAcrossMessages is the regression test for the
+// idle-gap derivation: three user messages a few seconds apart must all
+// share ONE conversation id. On the unfixed code (which re-seeded from the
+// last message's advancing timestamp) this fails on the third message.
+func TestConversationIDStableAcrossMessages(t *testing.T) {
+	cases := []struct {
+		name  string
+		times []time.Time
+	}{
+		{
+			name: "three messages 5s apart share one id",
+			times: []time.Time{
+				time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+				time.Date(2024, 1, 15, 10, 0, 5, 0, time.UTC),
+				time.Date(2024, 1, 15, 10, 0, 10, 0, time.UTC),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, cleanup := newTestDB(t)
+			defer cleanup()
+			ctx := context.Background()
+			user := "emma"
+
+			ids := make([]string, len(tc.times))
+			for i, now := range tc.times {
+				convID, lastMsg, hasLast, err := db.LastMessage(ctx, user)
+				if err != nil {
+					t.Fatalf("LastMessage: %v", err)
+				}
+				ids[i] = ConversationID(user, lastMsg, hasLast, convID, now)
+				if _, err := db.SQL().Exec(`INSERT OR IGNORE INTO conversations (id, user_name) VALUES (?, ?)`, ids[i], user); err != nil {
+					t.Fatalf("insert conversation: %v", err)
+				}
+				if _, err := db.SQL().Exec(`INSERT INTO messages (conversation_id, role, content, category, policy_action, created_at) VALUES (?, 'user', 'msg', 'safe', 'allow', ?)`, ids[i], now.Format("2006-01-02 15:04:05")); err != nil {
+					t.Fatalf("insert message: %v", err)
+				}
+			}
+			for i := 1; i < len(ids); i++ {
+				if ids[i] != ids[0] {
+					t.Errorf("message %d convID = %q, want %q (stable across messages)", i+1, ids[i], ids[0])
+				}
+			}
+		})
+	}
+}
+
+// TestConversationIDTimeoutStartsNewConversation pins the other half of the
+// contract: once ConversationIdleTimeout has elapsed, the next message MUST
+// start a new conversation.
+func TestConversationIDTimeoutStartsNewConversation(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	user := "emma"
+
+	now := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+	// Cold start: no prior message.
+	convID, lastMsg, hasLast, err := db.LastMessage(ctx, user)
+	if err != nil {
+		t.Fatalf("LastMessage (cold): %v", err)
+	}
+	if hasLast {
+		t.Fatalf("expected cold start, got hasLast=true lastMsg=%v", lastMsg)
+	}
+	id1 := ConversationID(user, lastMsg, hasLast, convID, now)
+	if _, err := db.SQL().Exec(`INSERT OR IGNORE INTO conversations (id, user_name) VALUES (?, ?)`, id1, user); err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+	if _, err := db.SQL().Exec(`INSERT INTO messages (conversation_id, role, content, category, policy_action, created_at) VALUES (?, 'user', 'msg', 'safe', 'allow', ?)`, id1, now.Format("2006-01-02 15:04:05")); err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+
+	// After the idle timeout has elapsed, the next message starts fresh.
+	now2 := now.Add(ConversationIdleTimeout + time.Second)
+	convID2, lastMsg2, hasLast2, err := db.LastMessage(ctx, user)
+	if err != nil {
+		t.Fatalf("LastMessage (warm): %v", err)
+	}
+	if !hasLast2 {
+		t.Fatalf("expected prior message, got cold start")
+	}
+	id2 := ConversationID(user, lastMsg2, hasLast2, convID2, now2)
+	if id1 == id2 {
+		t.Errorf("expected new conversation id after idle timeout, both %q", id1)
+	}
+}
+
+func TestLastMessage(t *testing.T) {
 	tests := []struct {
 		name     string
 		setup    func(*DB) error
 		userName string
 		wantOk   bool
 		wantTime time.Time // only checked when wantOk is true
+		wantConv string    // only checked when wantOk is true
 	}{
 		{
 			name:     "cold start no messages",
@@ -285,6 +382,7 @@ func TestLastMessageTime(t *testing.T) {
 			},
 			userName: "emma",
 			wantOk:   true,
+			wantConv: "conv-abc",
 		},
 		{
 			name: "different user no messages",
@@ -295,10 +393,10 @@ func TestLastMessageTime(t *testing.T) {
 			wantOk:   false,
 		},
 		{
-			// Pins the cross-conversation semantics: LastMessageTime
+			// Pins the cross-conversation semantics: LastMessage
 			// returns the most recent message across ALL of the user's
-			// conversations, not just one. This is intentional — see the
-			// doc comment on LastMessageTime.
+			// conversations, including its conversation ID, not just
+			// one. This is intentional — see the doc comment.
 			name: "returns most recent across all conversations",
 			setup: func(db *DB) error {
 				sql := db.SQL()
@@ -317,6 +415,7 @@ func TestLastMessageTime(t *testing.T) {
 			userName: "emma",
 			wantOk:   true,
 			wantTime: time.Date(2024, 1, 15, 11, 0, 0, 0, time.UTC),
+			wantConv: "conv-b",
 		},
 		{
 			// Pins the role='user' filter: only user-initiated
@@ -338,6 +437,7 @@ func TestLastMessageTime(t *testing.T) {
 			userName: "emma",
 			wantOk:   true,
 			wantTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+			wantConv: "conv-x",
 		},
 	}
 
@@ -349,9 +449,9 @@ func TestLastMessageTime(t *testing.T) {
 			if err := tc.setup(db); err != nil {
 				t.Fatalf("setup: %v", err)
 			}
-			got, ok, err := db.LastMessageTime(ctx, tc.userName)
+			gotConv, got, ok, err := db.LastMessage(ctx, tc.userName)
 			if err != nil {
-				t.Fatalf("LastMessageTime: %v", err)
+				t.Fatalf("LastMessage: %v", err)
 			}
 			if ok != tc.wantOk {
 				t.Errorf("ok = %v, want %v", ok, tc.wantOk)
@@ -361,6 +461,9 @@ func TestLastMessageTime(t *testing.T) {
 			}
 			if tc.wantOk && !tc.wantTime.IsZero() && !got.Equal(tc.wantTime) {
 				t.Errorf("timestamp = %v, want %v", got, tc.wantTime)
+			}
+			if tc.wantOk && tc.wantConv != "" && gotConv != tc.wantConv {
+				t.Errorf("convID = %q, want %q", gotConv, tc.wantConv)
 			}
 		})
 	}

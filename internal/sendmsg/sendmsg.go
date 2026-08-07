@@ -87,7 +87,7 @@ func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[s
 		return "", fmt.Errorf("resolving gateway for %s: %w", to, err)
 	}
 	if gatewayName == "" || externalID == "" {
-		return "", fmt.Errorf("%s has not sent any messages yet, so I don't know how to reach them on any gateway", to)
+		return "", fmt.Errorf("%s has no linked gateway account to send through, so I don't know how to reach them on any gateway", to)
 	}
 
 	// Look up the sender for that gateway.
@@ -115,7 +115,7 @@ func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[s
 
 	// Save to the target user's conversation history so the web
 	// dashboard shows what the assistant sent.
-	convID := store.ConversationID(to, time.Time{}, false, time.Now())
+	convID := store.ConversationID(to, time.Time{}, false, "", time.Now())
 	_ = db.SaveMessage(convID, to, "assistant", message, "send_message", "allow", gatewayName)
 
 	return fmt.Sprintf("Message sent to %s via %s", to, gatewayName), nil

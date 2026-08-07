@@ -19,7 +19,7 @@ import (
 type mockSender struct {
 	mu     sync.Mutex
 	sent   []struct{ chatID, text string }
-	failOn int  // 0 = never fail; n>0 fails on the nth call
+	failOn int // 0 = never fail; n>0 fails on the nth call
 	callN  int
 }
 
@@ -104,18 +104,18 @@ func TestHandle(t *testing.T) {
 		wantErrSub string
 	}{
 		{
-			name:     "deliver to telegram user",
-			to:       "julia",
-			message:  "hi from mom",
-			setupDB:  func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "telegram", "julia-chat") },
-			wantErr:  false,
+			name:    "deliver to telegram user",
+			to:      "julia",
+			message: "hi from mom",
+			setupDB: func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "telegram", "julia-chat") },
+			wantErr: false,
 		},
 		{
-			name:     "deliver to discord user",
-			to:       "julia",
-			message:  "hello via discord",
-			setupDB:  func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "discord", "julia-disc") },
-			wantErr:  false,
+			name:    "deliver to discord user",
+			to:      "julia",
+			message: "hello via discord",
+			setupDB: func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "discord", "julia-disc") },
+			wantErr: false,
 		},
 		{
 			name:       "unknown target",
@@ -131,7 +131,7 @@ func TestHandle(t *testing.T) {
 			message:    "hi",
 			setupDB:    func(t *testing.T, db *store.DB) {},
 			wantErr:    true,
-			wantErrSub: "has not sent any messages yet",
+			wantErrSub: "no linked gateway account",
 		},
 		{
 			name:       "empty to",
@@ -142,11 +142,11 @@ func TestHandle(t *testing.T) {
 			wantErrSub: "requires both",
 		},
 		{
-			name:      "empty message",
-			to:        "julia",
-			message:   "",
-			setupDB:   func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "telegram", "julia-chat") },
-			wantErr:   true,
+			name:       "empty message",
+			to:         "julia",
+			message:    "",
+			setupDB:    func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "telegram", "julia-chat") },
+			wantErr:    true,
 			wantErrSub: "requires both",
 		},
 		{
@@ -158,11 +158,11 @@ func TestHandle(t *testing.T) {
 			wantErrSub: "no sender available for gateway",
 		},
 		{
-			name:      "sender fails",
-			to:        "julia",
-			message:   "hi",
-			setupDB:   func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "telegram", "julia-chat") },
-			wantErr:   true,
+			name:       "sender fails",
+			to:         "julia",
+			message:    "hi",
+			setupDB:    func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "telegram", "julia-chat") },
+			wantErr:    true,
 			wantErrSub: "mock send failure",
 		},
 	}

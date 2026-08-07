@@ -259,7 +259,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	// Compute conversation ID. The router passes a convID computed via the
 	// idle-gap rule; reuse it for consistency. When ConvID is not set
 	// (e.g., tests), start a fresh conversation. We deliberately do NOT
-	// call db.LastMessageTime here — NewAgent has no request context and
+	// call db.LastMessage here — NewAgent has no request context and
 	// a DB query could produce a stale ID if the agent is reused. Using
 	// time.Now() means each fallback invocation gets a unique convID,
 	// which is safe: no stale IDs, no mixing of messages across sessions.
@@ -268,7 +268,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	if deps.MsgContext.ConvID != "" {
 		convID = deps.MsgContext.ConvID
 	} else {
-		convID = store.ConversationID(user.Name, time.Time{}, false, time.Now().UTC())
+		convID = store.ConversationID(user.Name, time.Time{}, false, "", time.Now().UTC())
 	}
 
 	// Append admin tools for parent users so they are always available
