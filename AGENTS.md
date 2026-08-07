@@ -108,6 +108,7 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 - Where is the current date injected into the system prompt? → `internal/prompt/components.go:dateComponent` (clock via `BuildContext.Now`, falls back to `time.Now()`; snapshot fixtures use a fixed clock in `internal/prompt/snapshot_test.go`)
 - Where is web_search's "backend unavailable" sentinel? → `internal/websearch/search.go` (`ErrUnavailable`, detected via `errors.Is`); `internal/agent/agent.go` (`webSearchError`) translates it into an honest "I could not search right now" message.
 - Where is the search endpoint startup reachability check? → `cmd/famclaw/main.go` (`checkSearchEndpointReachable`)
+- Where is skill security scanning? → install-time gate in `internal/skillbridge/registry.go:Install` (fails closed if HoneyBadger is unavailable); boot-load scan in `reg.ScanAll` (called from `cmd/famclaw/main.go`); runtime tool quarantine in `internal/agentcore/stage_async_scan.go` + `stage_quarantine_filter.go`. Scan results persist to `seccheck_reports` (`internal/store/db.go:SaveSecCheckReport`). HoneyBadger is fetched automatically by `make install` (`Makefile: install-scanner`) and at runtime via `honeybadger.Client.EnsureScanner`.
 
 ### Notable sharp edges
 
