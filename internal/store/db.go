@@ -1211,6 +1211,44 @@ func (d *DB) SaveSecCheckReport(skillID, repoURL, commitSHA string, score int, v
 	return err
 }
 
+// HasFreshSecCheckReport reports whether a seccheck report exists for the skill
+// (matched on repo_url, which is the scan target) that is newer than stale.
+// A non-positive stale means "always rescan". Used by the boot-load path to
+// avoid re-scanning skills every startup.
+func (d *DB) HasFreshSecCheckReport(repoURL string, stale time.Duration) (bool, error) {
+	if stale <= 0 {
+		return false, nil
+	}
+	cutoff := time.Now().Add(-stale).UTC().Format("2006-01-02 15:04:05")
+	var exists bool
+	err := d.sql.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM seccheck_reports
+			WHERE repo_url = ? AND created_at > ? LIMIT 1)`,
+		repoURL, cutoff).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("checking fresh seccheck report: %w", err)
+	}
+	return exists, nil
+}
+
+// LastSecCheckReport returns the created_at time of the most recent seccheck
+// report for the given scan target (repo_url), plus whether any row exists.
+// Used by the runtime async-scan stage to implement the stale-scan gate.
+func (d *DB) LastSecCheckReport(repoURL string) (time.Time, bool, error) {
+	var ts time.Time
+	err := d.sql.QueryRow(`
+		SELECT created_at FROM seccheck_reports
+		WHERE repo_url = ? ORDER BY created_at DESC LIMIT 1`,
+		repoURL).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("querying last seccheck report: %w", err)
+	}
+	return ts, true, nil
+}
+
 // ── Audit Log ─────────────────────────────────────────────────────────────────
 
 // AuditLog is one row from the audit_log table.
