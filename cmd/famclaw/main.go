@@ -529,6 +529,7 @@ func main() {
 	// working gate. If it cannot be made available, the gate fails CLOSED
 	// rather than silently pretending to scan.
 	var hbScanner skillbridge.Scanner
+	var secCheckErr error // captured so /api/health can surface it unambiguously
 	var quarantine *skillbridge.Quarantine
 	// Ensure the scanner is available whenever seccheck is enabled — the master
 	// switch is `seccheck.enabled: true` alone. Install-time scanning always
@@ -542,6 +543,7 @@ func main() {
 			fetchCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			if err := hb.EnsureScanner(fetchCtx, cfg.SecCheck.ScannerVersion); err != nil {
 				log.Printf("⚠️  [seccheck] ENABLED but honeybadger scanner could not be made available: %v", err)
+				secCheckErr = err
 				log.Printf("   Install-time scanning will REFUSE unscanned skills; runtime tool scanning is disabled.")
 			}
 			cancel()
@@ -874,6 +876,23 @@ func main() {
 	srv := web.NewServer(cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
 	srv.SetVaultMismatch(vaultMismatch)
 	srv.SetMCPSkipped(skippedMCPs)
+	// Surface the scanner state through /api/health so the outcome is
+	// unambiguous: when seccheck is enabled but the scanner could not be
+	// fetched, the error is no longer only in the log — it is queryable.
+	scannerVersion := cfg.SecCheck.ScannerVersion
+	if scannerVersion == "" {
+		scannerVersion = honeybadger.HoneyBadgerVersion
+	}
+	var secCheckErrStr string
+	if secCheckErr != nil {
+		secCheckErrStr = secCheckErr.Error()
+	}
+	srv.SetSecCheckStatus(web.SecCheckStatus{
+		Enabled:   cfg.SecCheck.Enabled,
+		Available: hbScanner != nil,
+		Version:   scannerVersion,
+		Error:     secCheckErrStr,
+	})
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),
