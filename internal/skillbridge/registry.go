@@ -2,20 +2,36 @@ package skillbridge
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/skilladapt"
 )
 
+// ErrScannerUnavailable is returned when a security scan is required but the
+// honeybadger binary is not installed and could not be fetched. Callers MUST
+// treat this as a hard refusal (fail-closed) — never as silent success.
+var ErrScannerUnavailable = errors.New("honeybadger scanner is not available")
+
 // Scanner is the minimal interface Registry needs from HoneyBadger.
 type Scanner interface {
 	Available() bool
 	Scan(ctx context.Context, target string, opts honeybadger.ScanOptions) (*honeybadger.ScanResult, error)
+}
+
+// SecCheckReporter persists security scan results. It is implemented by
+// internal/store.DB. nil is allowed (scanning runs but reports are not
+// persisted — used by the CLI and tests).
+type SecCheckReporter interface {
+	SaveSecCheckReport(skillID, repoURL, commitSHA string, score int, verdict, summary, reportJSON string) error
+	HasFreshSecCheckReport(repoURL string, stale time.Duration) (bool, error)
 }
 
 // InstallConfig controls security scanning during skill installation.
@@ -31,6 +47,7 @@ type Registry struct {
 	dir            string
 	scanner        Scanner // may be nil if scanning is disabled
 	cfg            InstallConfig
+	reporter       SecCheckReporter           // may be nil (e.g. CLI)
 	roleEnablement map[string]map[string]bool // role -> skillName -> enabled
 }
 
@@ -51,6 +68,14 @@ func NewRegistry(dir string, scanner Scanner, cfg InstallConfig, roleEnablement 
 		}
 	}
 	return &Registry{dir: dir, scanner: scanner, cfg: cfg, roleEnablement: re}
+}
+
+// WithReporter attaches a SecCheckReporter so that scans persist a row to the
+// seccheck_reports table. Safe to omit (the CLI and tests pass nil); in that
+// case scanning still runs but no report row is written.
+func (r *Registry) WithReporter(reporter SecCheckReporter) *Registry {
+	r.reporter = reporter
+	return r
 }
 
 // Install parses, scans (if configured), and installs a skill.
@@ -77,21 +102,27 @@ func (r *Registry) Install(ctx context.Context, nameOrPath string) (*Skill, erro
 		}
 	}
 
-	// Security scan before writing anything to disk
-	if r.cfg.Enabled && r.cfg.AutoSecCheck {
-		if r.scanner == nil || !r.scanner.Available() {
-			return nil, fmt.Errorf(
-				"honeybadger is required for skill installation but is not available\n" +
-					"install: go install github.com/famclaw/honeybadger/cmd/honeybadger@latest\n" +
-					"or disable in config.yaml: seccheck.auto_seccheck: false (not recommended)")
-		}
-
-		result, err := r.scanner.Scan(ctx, nameOrPath, honeybadger.ScanOptions{
-			Paranoia: r.cfg.Paranoia,
-		})
+	// Security scan before writing anything to disk. Scanning happens against
+	// the ORIGINAL source (nameOrPath), not the installed copy, so a malicious
+	// skill is caught before it ever lands on disk.
+	//
+	// The master switch is `seccheck.enabled: true` alone — when it is set,
+	// every install is scanned. A missing or unavailable scanner is a hard
+	// refusal (fail-closed) — never an install of an unscanned skill.
+	// `auto_seccheck` is a legacy alias; once `Enabled` is true, install-time
+	// scanning is always required.
+	if r.cfg.Enabled {
+		scanTarget, online := resolveScanTarget(nameOrPath)
+		result, err := r.scan(ctx, skill, scanTarget, online)
 		if err != nil {
+			if errors.Is(err, ErrScannerUnavailable) {
+				return nil, fmt.Errorf("skill install refused: %w\n"+
+					"  install manually: go install github.com/famclaw/honeybadger/cmd/honeybadger@latest\n"+
+					"  or set seccheck.enabled: false in config.yaml to disable the security gate", err)
+			}
 			return nil, fmt.Errorf("security scan failed: %w", err)
 		}
+		r.persistReport(ctx, skill.Name, scanTarget, result)
 
 		switch result.Verdict {
 		case "FAIL":
@@ -266,4 +297,121 @@ func (r *Registry) ListForRole(role string) ([]*Skill, error) {
 		}
 	}
 	return enabled, nil
+}
+
+// scan runs the honeybadger scanner against a skill source. It returns
+// ErrScannerUnavailable when the scanner is nil or not in PATH — the caller
+// MUST treat that as a refusal, not as a pass.
+func (r *Registry) scan(ctx context.Context, skill *Skill, target string, online bool) (*honeybadger.ScanResult, error) {
+	if r.scanner == nil {
+		return nil, ErrScannerUnavailable
+	}
+	if !r.scanner.Available() {
+		return nil, ErrScannerUnavailable
+	}
+	opts := honeybadger.ScanOptions{
+		Paranoia: r.cfg.Paranoia,
+		Offline:  !online,
+	}
+	return r.scanner.Scan(ctx, target, opts)
+}
+
+// ScanSkill scans an already-loaded skill and persists the report (when a
+// reporter is configured). It is the single entry point used by the boot-load
+// path; Install routes through scan()+persistReport directly so it can refuse
+// before writing to disk. On a missing/unavailable scanner it returns
+// ErrScannerUnavailable — never a fabricated PASS.
+func (r *Registry) ScanSkill(ctx context.Context, skill *Skill, target string) (*honeybadger.ScanResult, error) {
+	_, online := resolveScanTarget(target)
+	result, err := r.scan(ctx, skill, target, online)
+	if err != nil {
+		// Surface the unavailable-scanner condition explicitly so callers
+		// cannot silently treat it as a pass. This is a fail-closed gate.
+		if errors.Is(err, ErrScannerUnavailable) {
+			log.Printf("[skillbridge] seccheck: %q scan refused — scanner unavailable (fail-closed)", skill.Name)
+			return nil, fmt.Errorf("scanning %q: %w", skill.Name, err)
+		}
+		return nil, fmt.Errorf("scanning %q: %w", skill.Name, err)
+	}
+	r.persistReport(ctx, skill.Name, target, result)
+	return result, nil
+}
+
+// ScanAll scans every loaded skill, skipping ones with a fresh report when a
+// reporter is configured. A missing/unavailable scanner is logged loudly per
+// skill and aggregated into the returned error — it never silently succeeds.
+// Used by main.go after List() so pre-installed skills (e.g. family-knowledge)
+// are actually scanned on first boot.
+func (r *Registry) ScanAll(ctx context.Context, stale time.Duration) error {
+	skills, err := r.List()
+	if err != nil {
+		return fmt.Errorf("listing skills for scan: %w", err)
+	}
+	var errs []error
+	for _, sk := range skills {
+		if !r.IsEnabled(sk.Name) {
+			continue
+		}
+		// Scan the skill's installed directory, not the SKILL.md path.
+		target := filepath.Join(r.dir, sk.Name)
+		if sk.Path != "" {
+			target = filepath.Dir(sk.Path)
+		}
+		if r.reporter != nil {
+			if fresh, _ := r.reporter.HasFreshSecCheckReport(target, stale); fresh {
+				log.Printf("[skillbridge] seccheck: %q has a fresh report, skipping", sk.Name)
+				continue
+			}
+		}
+		result, err := r.ScanSkill(ctx, sk, target)
+		if err != nil {
+			// Visible, not silent: the gate is armed but cannot scan.
+			if errors.Is(err, ErrScannerUnavailable) {
+				log.Printf("[skillbridge] seccheck: %q NOT scanned — scanner unavailable (fail-closed)", sk.Name)
+			} else {
+				log.Printf("[skillbridge] seccheck: %q NOT scanned: %v", sk.Name, err)
+			}
+			errs = append(errs, fmt.Errorf("%s: %w", sk.Name, err))
+			continue
+		}
+		log.Printf("[skillbridge] seccheck: %q verdict=%s findings=%d", sk.Name, result.Verdict, len(result.Findings))
+	}
+	return errors.Join(errs...)
+}
+
+// persistReport writes a scan result to the seccheck_reports table if a
+// reporter is configured. A persistence failure is logged but never blocks the
+// scan result itself (the result is returned to the caller regardless).
+func (r *Registry) persistReport(_ context.Context, skillID, target string, result *honeybadger.ScanResult) {
+	if r.reporter == nil {
+		return
+	}
+	reportJSON, err := json.Marshal(result)
+	if err != nil {
+		log.Printf("[skillbridge] WARNING: failed to encode seccheck report for %q: %v", skillID, err)
+		return
+	}
+	score := result.Score()
+	if err := r.reporter.SaveSecCheckReport(skillID, target, "", score, result.Verdict, result.Reasoning, string(reportJSON)); err != nil {
+		log.Printf("[skillbridge] WARNING: failed to persist seccheck report for %q: %v", skillID, err)
+		return
+	}
+	log.Printf("[skillbridge] seccheck report saved: %q verdict=%s score=%d", skillID, result.Verdict, score)
+}
+
+// resolveScanTarget decides whether an install reference is a local path or a
+// remote repository (URL or org/repo shorthand), and normalises it. Online
+// scans keep network checks; local scans run offline (deterministic, no auth).
+func resolveScanTarget(nameOrPath string) (target string, online bool) {
+	if strings.Contains(nameOrPath, "://") || strings.HasPrefix(nameOrPath, "git@") {
+		return nameOrPath, true
+	}
+	if _, err := os.Stat(nameOrPath); err == nil {
+		return nameOrPath, false
+	}
+	// Org/repo shorthand (e.g. "famclaw/seccheck") — expand to a GitHub URL.
+	if strings.Count(nameOrPath, "/") == 1 && !strings.HasPrefix(nameOrPath, ".") {
+		return "https://github.com/" + nameOrPath, true
+	}
+	return nameOrPath, false
 }

@@ -5,7 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -23,7 +27,143 @@ func (c *Client) Available() bool {
 	return err == nil
 }
 
-// Scan runs honeybadger on a repo URL and returns the result.
+// EnsureScanner makes famclaw self-sufficient: if the honeybadger binary is
+// already in PATH and verifiable it is a no-op. Otherwise it attempts to
+// fetch and install it via `go install` (the famclaw install/update path must
+// not leave a fresh machine with a scanner that "looks armed but cannot
+// scan").
+//
+// Failure modes are audited and each ends in a clear error, never a
+// half-installed scanner that later looks available:
+//   - Partial download: the post-install verifyScanner runs the binary; a
+//     corrupt/truncated executable fails to execute and is rejected.
+//   - Non-zero exit during install: go install failure triggers the cache
+//     build fallback; if that also fails the combined error is returned.
+//   - Binary present but not executable: exec.LookPath rejects non-executable
+//     files, and verifyScanner's exec confirms it actually runs.
+//   - Wrong version: verifyScanner checks the --version output against the
+//     requested pin, so a stale or mismatched binary is rejected.
+//
+// If the go toolchain is missing or the install fails, it returns a clear error
+// so the caller can fail closed instead of silently pretending to scan.
+func (c *Client) EnsureScanner(ctx context.Context, version string) error {
+	if version == "" {
+		version = HoneyBadgerVersion
+	}
+	if c.Available() {
+		if err := c.verifyScanner(ctx, version); err != nil {
+			return fmt.Errorf("honeybadger present in PATH but verification failed: %w", err)
+		}
+		return nil
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		return fmt.Errorf("honeybadger binary not in PATH and go toolchain unavailable to fetch it "+
+			"(install manually: go install github.com/famclaw/honeybadger/cmd/honeybadger@%s)", version)
+	}
+	// Primary path: go install (works on a machine with proxy/network access).
+	log.Printf("[honeybadger] fetching scanner %s via go install...", version)
+	installCmd := exec.CommandContext(ctx, "go", "install",
+		fmt.Sprintf("github.com/famclaw/honeybadger/cmd/honeybadger@%s", version))
+	installCmd.Stdout = os.Stderr
+	installCmd.Stderr = os.Stderr
+	if err := installCmd.Run(); err != nil {
+		// Fallback: build from the module cache (works on networks where the
+		// Go proxy is intercepted, as long as the module was previously
+		// fetched/cached). Mirrors `make install-scanner` without the download.
+		if cacheErr := c.buildFromCache(ctx, version); cacheErr != nil {
+			return fmt.Errorf("fetching honeybadger %s: go install failed (%v); cache build also failed: %w",
+				version, err, cacheErr)
+		}
+		log.Printf("[honeybadger] scanner installed from module cache ✅")
+	}
+	// Instead of a bare Available() check, run the binary to confirm it is
+	// not a corrupt or partial install and that it reports the expected
+	// version. This is the fail-closed gate: a half-installed scanner is
+	// caught here rather than looking armed downstream.
+	if err := c.verifyScanner(ctx, version); err != nil {
+		return fmt.Errorf("honeybadger %s installed but verification failed: %w", version, err)
+	}
+	log.Printf("[honeybadger] scanner installed ✅")
+	return nil
+}
+
+// verifyScanner confirms the honeybadger binary is in PATH, actually runs,
+// and reports the expected version. It replaces the previous bare
+// exec.LookPath check, adding two layers of validation:
+//   - Execution: a corrupt or partially-downloaded binary may appear in PATH
+//     but will fail to execute. Running --version exercises the entry point
+//     with zero side effects.
+//   - Version: the binary output must contain the requested version (with the
+//     leading 'v' stripped, since the binary reports e.g. "honeybadger 0.6.2"
+//     for pin "v0.6.2"). A stale or wrong-version binary is rejected so the
+//     wrong rule set cannot silently gate skill installation.
+func (c *Client) verifyScanner(ctx context.Context, version string) error {
+	if version == "" {
+		version = HoneyBadgerVersion
+	}
+	// exec.LookPath rejects binaries that lack the executable bit.
+	path, err := exec.LookPath("honeybadger")
+	if err != nil {
+		return fmt.Errorf("honeybadger not found in PATH: %w", err)
+	}
+	// Run the binary to confirm it is not corrupt/truncated. --version is
+	// a no-op side-effect entry point that exits immediately without scanning.
+	cmd := exec.CommandContext(ctx, path, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("honeybadger binary at %q failed to run (possible corrupt/partial install): %w", path, err)
+	}
+	out := strings.TrimSpace(string(output))
+	if out == "" {
+		return fmt.Errorf("honeybadger binary produced no version output")
+	}
+	// The binary reports "honeybadger <version>" (no 'v' prefix). Normalize
+	// the requested pin by stripping the leading 'v' for comparison.
+	wantVersion := strings.TrimPrefix(version, "v")
+	if !strings.Contains(out, wantVersion) {
+		return fmt.Errorf("honeybadger version mismatch: wanted %q, binary reports %q", version, out)
+	}
+	return nil
+}
+
+// buildFromCache compiles the honeybadger binary from the module cache
+// (GOMODCACHE/github.com/famclaw/honeybadger@<version>/cmd/honeybadger) into
+// GOBIN. Used when `go install pkg@version` fails (e.g. intercepted proxy) but
+// the module is already cached.
+func (c *Client) buildFromCache(ctx context.Context, version string) error {
+	gomodcache, err := exec.CommandContext(ctx, "go", "env", "GOMODCACHE").Output()
+	if err != nil {
+		return fmt.Errorf("reading GOMODCACHE: %w", err)
+	}
+	gobin, err := exec.CommandContext(ctx, "go", "env", "GOBIN").Output()
+	if err != nil {
+		return fmt.Errorf("reading GOBIN: %w", err)
+	}
+	cacheDir := filepath.Join(strings.TrimSpace(string(gomodcache)),
+		"github.com/famclaw/honeybadger@"+version)
+	pkg := filepath.Join(cacheDir, "cmd", "honeybadger")
+	if _, err := os.Stat(pkg); err != nil {
+		return fmt.Errorf("honeybadger %s not in module cache at %s: %w", version, pkg, err)
+	}
+	out := strings.TrimSpace(string(gobin))
+	if out == "" {
+		gopath, _ := exec.CommandContext(ctx, "go", "env", "GOPATH").Output()
+		out = filepath.Join(strings.TrimSpace(string(gopath)), "bin")
+	}
+	out = filepath.Join(out, "honeybadger")
+	// Build from inside the cached module so Go uses honeybadger's own
+	// go.mod (it is not a dependency of the famclaw module).
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", out, "./cmd/honeybadger")
+	buildCmd.Dir = cacheDir
+	buildCmd.Stdout = os.Stderr
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		return fmt.Errorf("building honeybadger from cache: %w", err)
+	}
+	return nil
+}
+
+// Scan runs honeybadger on a repo URL / local path and returns the result.
 // If the binary is not available, returns an error.
 func (c *Client) Scan(ctx context.Context, repoURL string, opts ScanOptions) (*ScanResult, error) {
 	if opts.Force {
@@ -38,7 +178,11 @@ func (c *Client) Scan(ctx context.Context, repoURL string, opts ScanOptions) (*S
 		return nil, fmt.Errorf("honeybadger binary not found in PATH — install with: go install github.com/famclaw/honeybadger/cmd/honeybadger@latest")
 	}
 
-	args := []string{"scan", repoURL, "--format", "ndjson"}
+	args := []string{"scan", repoURL, "--format", "ndjson", "--offline"}
+	if !opts.Offline {
+		// drop the offline flag we pre-pended; online mode re-enables network checks
+		args = []string{"scan", repoURL, "--format", "ndjson"}
+	}
 	if opts.Paranoia != "" {
 		args = append(args, "--paranoia", opts.Paranoia)
 	}
@@ -62,37 +206,53 @@ func (c *Client) Scan(ctx context.Context, repoURL string, opts ScanOptions) (*S
 		return nil, fmt.Errorf("starting honeybadger: %w", err)
 	}
 
-	// Read ndjson stream — last line is the summary result
+	// Read ndjson stream — dispatch on the "type" field.
 	var result ScanResult
+	foundResult := false
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
-		var line json.RawMessage
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			continue
+		var env struct {
+			Type string `json:"type"`
 		}
-		// Try to parse as ScanResult (summary line)
-		var candidate ScanResult
-		if json.Unmarshal(scanner.Bytes(), &candidate) == nil && candidate.Verdict != "" {
-			result = candidate
+		if err := json.Unmarshal(scanner.Bytes(), &env); err != nil {
+			continue // not JSON — ignore
 		}
-		// Try to parse as Finding (detail line)
-		var finding Finding
-		if json.Unmarshal(scanner.Bytes(), &finding) == nil && finding.Severity != "" {
-			result.Findings = append(result.Findings, finding)
+		switch env.Type {
+		case "result":
+			var r ScanResult
+			if json.Unmarshal(scanner.Bytes(), &r) == nil && r.Verdict != "" {
+				// The result line does not embed individual findings (those
+				// arrive as separate "finding" lines), so merge rather than
+				// overwrite the findings accumulated so far.
+				r.Findings = append(r.Findings, result.Findings...)
+				result = r
+				foundResult = true
+			}
+		case "finding":
+			var f Finding
+			if json.Unmarshal(scanner.Bytes(), &f) == nil && f.Severity != "" {
+				result.Findings = append(result.Findings, f)
+			}
 		}
 	}
 
 	if err := cmd.Wait(); err != nil {
-		// honeybadger exits 1 on FAIL verdict — that's expected
-		if result.Verdict == "FAIL" {
+		// honeybadger exits non-zero when findings exist (WARN=1, FAIL=2) and
+		// only exits 0 on a clean PASS. The "result" line is authoritative,
+		// so return it whenever we captured one rather than treating the exit
+		// status as an error.
+		if foundResult {
 			return &result, nil
 		}
 		return nil, fmt.Errorf("honeybadger exited with error: %w", err)
 	}
 
+	if !foundResult {
+		return nil, fmt.Errorf("honeybadger produced no result line for %q", repoURL)
+	}
+
 	if result.ScannedAt.IsZero() {
 		result.ScannedAt = time.Now()
 	}
-
 	return &result, nil
 }
