@@ -28,17 +28,33 @@ func (c *Client) Available() bool {
 }
 
 // EnsureScanner makes famclaw self-sufficient: if the honeybadger binary is
-// already in PATH it is a no-op. Otherwise it attempts to fetch and install it
-// via `go install` (the famclaw install/update path must not leave a fresh
-// machine with a scanner that "looks armed but cannot scan"). If the go
-// toolchain is missing or the install fails, it returns a clear error so the
-// caller can fail closed instead of silently pretending to scan.
+// already in PATH and verifiable it is a no-op. Otherwise it attempts to
+// fetch and install it via `go install` (the famclaw install/update path must
+// not leave a fresh machine with a scanner that "looks armed but cannot
+// scan").
+//
+// Failure modes are audited and each ends in a clear error, never a
+// half-installed scanner that later looks available:
+//   - Partial download: the post-install verifyScanner runs the binary; a
+//     corrupt/truncated executable fails to execute and is rejected.
+//   - Non-zero exit during install: go install failure triggers the cache
+//     build fallback; if that also fails the combined error is returned.
+//   - Binary present but not executable: exec.LookPath rejects non-executable
+//     files, and verifyScanner's exec confirms it actually runs.
+//   - Wrong version: verifyScanner checks the --version output against the
+//     requested pin, so a stale or mismatched binary is rejected.
+//
+// If the go toolchain is missing or the install fails, it returns a clear error
+// so the caller can fail closed instead of silently pretending to scan.
 func (c *Client) EnsureScanner(ctx context.Context, version string) error {
-	if c.Available() {
-		return nil
-	}
 	if version == "" {
 		version = HoneyBadgerVersion
+	}
+	if c.Available() {
+		if err := c.verifyScanner(ctx, version); err != nil {
+			return fmt.Errorf("honeybadger present in PATH but verification failed: %w", err)
+		}
+		return nil
 	}
 	if _, err := exec.LookPath("go"); err != nil {
 		return fmt.Errorf("honeybadger binary not in PATH and go toolchain unavailable to fetch it "+
@@ -60,10 +76,53 @@ func (c *Client) EnsureScanner(ctx context.Context, version string) error {
 		}
 		log.Printf("[honeybadger] scanner installed from module cache ✅")
 	}
-	if !c.Available() {
-		return fmt.Errorf("honeybadger %s installed but not found in PATH after fetch", version)
+	// Instead of a bare Available() check, run the binary to confirm it is
+	// not a corrupt or partial install and that it reports the expected
+	// version. This is the fail-closed gate: a half-installed scanner is
+	// caught here rather than looking armed downstream.
+	if err := c.verifyScanner(ctx, version); err != nil {
+		return fmt.Errorf("honeybadger %s installed but verification failed: %w", version, err)
 	}
 	log.Printf("[honeybadger] scanner installed ✅")
+	return nil
+}
+
+// verifyScanner confirms the honeybadger binary is in PATH, actually runs,
+// and reports the expected version. It replaces the previous bare
+// exec.LookPath check, adding two layers of validation:
+//   - Execution: a corrupt or partially-downloaded binary may appear in PATH
+//     but will fail to execute. Running --version exercises the entry point
+//     with zero side effects.
+//   - Version: the binary output must contain the requested version (with the
+//     leading 'v' stripped, since the binary reports e.g. "honeybadger 0.6.2"
+//     for pin "v0.6.2"). A stale or wrong-version binary is rejected so the
+//     wrong rule set cannot silently gate skill installation.
+func (c *Client) verifyScanner(ctx context.Context, version string) error {
+	if version == "" {
+		version = HoneyBadgerVersion
+	}
+	// exec.LookPath rejects binaries that lack the executable bit.
+	path, err := exec.LookPath("honeybadger")
+	if err != nil {
+		return fmt.Errorf("honeybadger not found in PATH: %w", err)
+	}
+	// Run the binary to confirm it is not corrupt/truncated. --version is
+	// a no-op side-effect entry point that exits immediately without scanning.
+	cmd := exec.CommandContext(ctx, path, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("honeybadger binary at %q failed to run (possible corrupt/partial install): %w", path, err)
+	}
+	out := strings.TrimSpace(string(output))
+	if out == "" {
+		return fmt.Errorf("honeybadger binary produced no version output")
+	}
+	// The binary reports "honeybadger <version>" (no 'v' prefix). Normalize
+	// the requested pin by stripping the leading 'v' for comparison.
+	wantVersion := strings.TrimPrefix(version, "v")
+	if !strings.Contains(out, wantVersion) {
+		return fmt.Errorf("honeybadger version mismatch: wanted %q, binary reports %q", version, out)
+	}
 	return nil
 }
 

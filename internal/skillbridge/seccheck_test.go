@@ -3,6 +3,7 @@ package skillbridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -412,5 +413,106 @@ func TestScanE2EFamilyKnowledgeAndBadSkill(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Logf("seccheck_reports row: skill_id=%q verdict=%q score=%d", id, verdict, score)
+	}
+}
+
+// ── Benchmarks: measuring ScanAll loop overhead (Finding 3) ─────────────────
+
+// seedSkills creates n installed skill directories under reg.dir so ScanAll
+// has something to iterate over. Each gets a minimal SKILL.md.
+func seedSkills(t *testing.B, dir string, n int) {
+	for i := 0; i < n; i++ {
+		skillDir := filepath.Join(dir, fmt.Sprintf("skill-%d", i))
+		if err := os.MkdirAll(skillDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(minimalSKILLMD), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkScanAllColdBoot measures ScanAll when every skill must be scanned
+// (no fresh reports). The fake scanner returns instantly, isolating the
+// registry loop overhead from the actual honeybadger execution time.
+// If this is linear and cheap, no concurrency optimisation is needed.
+func BenchmarkScanAllColdBoot(b *testing.B) {
+	for _, n := range []int{10, 50, 100, 500} {
+		b.Run(fmt.Sprintf("skills=%d", n), func(b *testing.B) {
+			dir := b.TempDir()
+			seedSkills(b, dir, n)
+			reporter := &fakeReporter{fresh: false}
+			scanner := &fakeScanner{available: true, result: &honeybadger.ScanResult{Verdict: "PASS"}}
+			reg := NewRegistry(dir, scanner,
+				InstallConfig{Enabled: true, AutoSecCheck: true}, nil).WithReporter(reporter)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := reg.ScanAll(context.Background(), 24*time.Hour); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkScanAllWarmBoot measures ScanAll when all skills have fresh reports
+// (staleness gate skips them). This isolates the pure loop + staleness-check
+// overhead without any scan execution.
+func BenchmarkScanAllWarmBoot(b *testing.B) {
+	for _, n := range []int{10, 50, 100, 500} {
+		b.Run(fmt.Sprintf("skills=%d", n), func(b *testing.B) {
+			dir := b.TempDir()
+			seedSkills(b, dir, n)
+			reporter := &fakeReporter{fresh: true}
+			scanner := &fakeScanner{available: true, result: &honeybadger.ScanResult{Verdict: "PASS"}}
+			reg := NewRegistry(dir, scanner,
+				InstallConfig{Enabled: true, AutoSecCheck: true}, nil).WithReporter(reporter)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := reg.ScanAll(context.Background(), 24*time.Hour); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkScanAllRealHoneybadger measures the true per-skill scan cost with
+// the real honeybadger binary against the shipped family-knowledge skill.
+// Skipped when the binary is not in PATH. This shows where the real time goes
+// — the honeybadger subprocess invocation, not the ScanAll loop.
+func BenchmarkScanAllRealHoneybadger(b *testing.B) {
+	if !honeybadger.New().Available() {
+		b.Skip("honeybadger binary not in PATH")
+	}
+	for _, n := range []int{5, 10, 25} {
+		b.Run(fmt.Sprintf("skills=%d", n), func(b *testing.B) {
+			dir := b.TempDir()
+			fkPath := "../../skills/family-knowledge"
+			for i := 0; i < n; i++ {
+				dst := filepath.Join(dir, fmt.Sprintf("fk-%d", i))
+				if err := os.MkdirAll(dst, 0755); err != nil {
+					b.Fatal(err)
+				}
+				src, err := os.ReadFile(filepath.Join(fkPath, "SKILL.md"))
+				if err != nil {
+					b.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), src, 0644); err != nil {
+					b.Fatal(err)
+				}
+			}
+			reg := NewRegistry(dir, honeybadger.New(),
+				InstallConfig{Enabled: true, AutoSecCheck: true}, nil)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := reg.ScanAll(context.Background(), 24*time.Hour); err != nil {
+					// real scans may report WARN/FAIL, which is non-fatal
+				}
+				// Clear reports between iterations so the staleness gate
+				// doesn't skip everything after the first run.
+				reg.reporter = nil
+			}
+		})
 	}
 }
