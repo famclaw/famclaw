@@ -60,6 +60,13 @@ func (r *Router) UpdateConfig(newCfg *config.Config) {
 	r.cfg = newCfg
 }
 
+// ReloadConfig implements reload.Reloader. It delegates to UpdateConfig
+// so the registry can drive a uniform reload loop.
+func (r *Router) ReloadConfig(newCfg *config.Config) error {
+	r.UpdateConfig(newCfg)
+	return nil
+}
+
 // NewRouter creates a Router with all required dependencies.
 // The ctx is used as the parent for the session pool's shutdown context;
 // passing the application lifecycle context lets session goroutines exit
