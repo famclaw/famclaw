@@ -240,4 +240,8 @@ seccheck:
 #     allowed_roles: [parent]
 #     endpoint: "http://localhost:8888"  # SearXNG JSON search URL
 #     max_results: 8                     # default 8, hard-capped at 16
-#     timeout_seconds: 10
+#     timeout_seconds: 30                # default 30s — a self-hosted SearXNG
+#                                        # fans out to external engines that can
+#                                        # exceed 10s; 30s avoids intermittent
+#                                        # "deadline exceeded" failures (see
+#                                        # fc-websearch-honest-failure)

@@ -276,7 +276,7 @@ func TestCheckSearchEndpointReachable_EndpointWithPath(t *testing.T) {
 
 	// Endpoint with a sub-path — the probe should hit /searx/search.
 	endpoint := server.URL + "/searx"
-	err := checkSearchEndpointReachable(endpoint)
+	err := checkSearchEndpointReachable(endpoint, probeTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestCheckSearchEndpointReachable_EndpointWithPath(t *testing.T) {
 // TestCheckSearchEndpointReachable_Unreachable verifies that a connection
 // refused produces an error (not nil), so the startup WARNING fires.
 func TestCheckSearchEndpointReachable_Unreachable(t *testing.T) {
-	err := checkSearchEndpointReachable("http://127.0.0.1:1")
+	err := checkSearchEndpointReachable("http://127.0.0.1:1", probeTimeout)
 	if err == nil {
 		t.Fatal("expected error for unreachable endpoint, got nil")
 	}
@@ -316,7 +316,7 @@ func TestCheckSearchEndpointReachable_StripsCredentials(t *testing.T) {
 	parsed.User = url.UserPassword("user", "secret")
 	endpoint := parsed.String()
 
-	err = checkSearchEndpointReachable(endpoint)
+	err = checkSearchEndpointReachable(endpoint, probeTimeout)
 	if err != nil {
 		t.Fatalf("expected nil error for reachable endpoint, got %v", err)
 	}
@@ -329,7 +329,7 @@ func TestCheckSearchEndpointReachable_StripsCredentials(t *testing.T) {
 // a credentialed endpoint is logged via SanitizeEndpoint (no credentials in
 // the warning/error message).
 func TestCheckSearchEndpointReachable_CredentialedEndpointNoLeak(t *testing.T) {
-	err := checkSearchEndpointReachable("http://user:pass@127.0.0.1:1")
+	err := checkSearchEndpointReachable("http://user:pass@127.0.0.1:1", probeTimeout)
 	if err == nil {
 		t.Fatal("expected error for unreachable endpoint, got nil")
 	}
@@ -354,11 +354,40 @@ func TestCheckSearchEndpointReachable_FullSearchURL(t *testing.T) {
 	// Full search URL — the probe should hit /searx/search, not
 	// /searx/search/search.
 	endpoint := server.URL + "/searx/search"
-	err := checkSearchEndpointReachable(endpoint)
+	err := checkSearchEndpointReachable(endpoint, probeTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if capturedPath != "/searx/search" {
 		t.Errorf("probe path = %q, want /searx/search (double-path would warn)", capturedPath)
+	}
+}
+
+// TestCheckSearchEndpointReachable_Timeout verifies that when the search
+// endpoint is slow (responds only after the probe timeout), the probe returns
+// an honest "timed out" error — NOT a misleading "unreachable" claim. The
+// endpoint was listening but slow, which is exactly the false "unreachable"
+// diagnosis operators relied on before fc-websearch-honest-failure showed the
+// backend was merely slow, not down.
+func TestCheckSearchEndpointReachable_Timeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	err := checkSearchEndpointReachable(server.URL, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected error for slow endpoint, got nil")
+	}
+	// The error must honestly label this as a timeout. Before the fix the
+	// probe folded every failure into "unreachable", which is false for a
+	// slow-but-listening endpoint.
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected error to mention 'timed out', got: %v", err)
+	}
+	if strings.Contains(err.Error(), "unreachable") {
+		t.Errorf("timeout must not be labeled 'unreachable' (endpoint was slow, not down), got: %v", err)
 	}
 }
