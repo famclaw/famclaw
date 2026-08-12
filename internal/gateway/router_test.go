@@ -1559,6 +1559,128 @@ func TestRouterImageAttachmentForwarded(t *testing.T) {
 	}
 }
 
+// TestRouterVoiceAttachmentNeverSilent proves that a voice message — an audio
+// attachment with NO text (the exact shape Telegram/Discord voice notes arrive
+// in) — is never silently dropped. The router must forward the attachment to the
+// chatFn and return a non-empty Reply (an allow / transcription path or a
+// visible refusal), in every case.
+//
+// This is the router-level half of the guarantee that the agent-level tests in
+// internal/agent/voice_transcribe_test.go prove in isolation. Together they
+// close issue #310: "voice messages are silently dropped — no reply, no error."
+//
+// The chatFn here is a stand-in for agent.Chat which, in production, transcribes
+// the audio attachment into text before calling the LLM. We use a mock that
+// returns a transcript-like string so we can assert the full forward-and-reply
+// path end to end.
+func TestRouterVoiceAttachmentNeverSilent(t *testing.T) {
+	type captured struct {
+		text        string
+		attachments []Attachment
+		called      bool
+	}
+
+	cases := []struct {
+		name        string
+		userName    string
+		externalID  string
+		text        string
+		attachments []Attachment
+		wantAction  string
+	}{
+		{
+			name:       "parent voice note no text",
+			userName:   "parent",
+			externalID: "parent-voice",
+			text:       "",
+			attachments: []Attachment{{
+				Type:     "audio",
+				Data:     "ZmFrZS1vZ2ctYnl0ZXM=", // base64 of "fake-ogg-bytes"
+				MIMEType: "audio/ogg",
+			}},
+			wantAction: "allow",
+		},
+		{
+			name:       "child voice note no text",
+			userName:   "emma",
+			externalID: "emma-voice",
+			text:       "",
+			attachments: []Attachment{{
+				Type:     "audio",
+				Data:     "ZmFrZS1vZ2ctYnl0ZXM=",
+				MIMEType: "audio/ogg",
+			}},
+			wantAction: "allow",
+		},
+		{
+			name:       "child voice note with caption text",
+			userName:   "lucas",
+			externalID: "lucas-voice",
+			text:       "what is my homework",
+			attachments: []Attachment{{
+				Type:     "audio",
+				Data:     "ZmFrZS1vZ2ctYnl0ZXM=",
+				MIMEType: "audio/ogg",
+			}},
+			wantAction: "allow",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got captured
+			chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
+				got.text = text
+				got.attachments = msgCtx.Attachments
+				got.called = true
+				return "transcript: what time is it", nil
+			}
+			router, identStore := setupRouter(t, chatFn)
+			identStore.LinkAccount(tc.userName, "telegram", tc.externalID)
+
+			reply := router.Handle(context.Background(), Message{
+				Gateway:     "telegram",
+				ExternalID:  tc.externalID,
+				Text:        tc.text,
+				Attachments: tc.attachments,
+			})
+
+			// The chatFn MUST have been reached — proving the voice message
+			// was not silently dropped before reaching the agent.
+			if !got.called {
+				t.Fatal("chatFn was never called — voice message was silently dropped")
+			}
+
+			// The chatFn must have received the audio attachment.
+			if len(got.attachments) != 1 {
+				t.Fatalf("expected 1 attachment forwarded to chatFn, got %d", len(got.attachments))
+			}
+			att := got.attachments[0]
+			if att.Type != "audio" {
+				t.Errorf("attachment type = %q, want audio", att.Type)
+			}
+			if att.MIMEType != "audio/ogg" {
+				t.Errorf("attachment mime = %q, want audio/ogg", att.MIMEType)
+			}
+
+			// The text passed to chatFn must be the original text (empty for
+			// voice notes), so the agent's transcribeAttachments can detect
+			// that it needs to transcribe the audio.
+			if got.text != tc.text {
+				t.Errorf("text forwarded to chatFn = %q, want %q", got.text, tc.text)
+			}
+
+			// The router must return a non-empty reply — never silence.
+			if reply.PolicyAction != tc.wantAction {
+				t.Errorf("PolicyAction = %q, want %q", reply.PolicyAction, tc.wantAction)
+			}
+			if strings.TrimSpace(reply.Text) == "" {
+				t.Error("reply text is empty — voice message produced silence")
+			}
+		})
+	}
+}
+
 // TestRouterSavesGatewayOnMessage verifies that the real gateway name from the
 // inbound Message is persisted by the router's SaveMessage calls — proving the
 // gateway value originates from the gateway layer, not a store-layer default.
