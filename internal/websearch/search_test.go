@@ -240,6 +240,36 @@ func TestSearch_BackendUnreachable_ConnectionRefused(t *testing.T) {
 	}
 }
 
+// TestSearch_TimeoutReturnsErrUnavailable verifies that when the search
+// backend is slow and exceeds the configured timeout, Search returns
+// ErrUnavailable (an honest failure) rather than a silent empty result or a
+// misleading "unreachable" claim. This is the exact failure mode observed in
+// production (SearXNG's external-engine fan-out occasionally exceeds the
+// request timeout), and ErrUnavailable is what the agent translates into an
+// honest "I could not search right now" reply to the family.
+func TestSearch_TimeoutReturnsErrUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate SearXNG's external search-engine fan-out taking longer
+		// than the request timeout to respond.
+		time.Sleep(500 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	_, err := Search(context.Background(), "x", Options{
+		Endpoint:             server.URL,
+		Timeout:              100 * time.Millisecond,
+		AllowPrivateNetworks: true,
+	})
+	if err == nil {
+		t.Fatal("expected error for a slow backend exceeding the request timeout, got nil — a nil error with empty results would invite the model to fabricate results")
+	}
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("expected ErrUnavailable for a timed-out search, got: %v", err)
+	}
+}
+
 // TestSearch_ZeroResultsReturnsEmptySlice verifies that a backend returning
 // zero hits is a normal "no results" outcome — NOT an error, and distinct
 // from ErrUnavailable. This prevents the LLM from conflating "nothing found"
