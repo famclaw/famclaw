@@ -330,20 +330,64 @@ func TestStageLLMCall_VisionDescribeErrorFallback(t *testing.T) {
 	if hasImageParts(second.msgs) {
 		t.Error("tool-step messages must NOT contain the image after describe failure")
 	}
-	// The tool-step messages must contain the fallback note.
+	// The tool-step messages must contain the updated fallback note that's more honest.
 	found := false
 	for _, m := range second.msgs {
-		if strings.Contains(m.Content, "could not read the image") {
+		if strings.Contains(m.Content, "couldn't process the image") && 
+		   strings.Contains(m.Content, "vision system is not configured or the describe step failed") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("tool-step messages must contain the fallback note about unreadable image")
+		t.Error("tool-step messages must contain the updated honest fallback note")
 	}
 	// The stage must not have returned an error.
 	if turn.Output == "" {
 		t.Error("turn.Output should not be empty (model should still respond)")
+	}
+}
+
+// TestStageLLMCall_HonestVisionError provides a specific test for the
+// fix to issue #282 - ensuring the error message is more honest about
+// the actual reason for not processing the image.
+func TestStageLLMCall_HonestVisionError(t *testing.T) {
+	describeErr := errors.New("vision model timeout")
+	mock := &mockStageChatter{
+		describeErr: describeErr,
+		toolResp: &llm.Message{
+			Role:    "assistant",
+			Content: "I'll need you to describe the image then.",
+		},
+	}
+	turn := &Turn{
+		User:     &config.UserConfig{Name: "parent", Role: "parent"},
+		Tools:    []Tool{{Name: "builtin__echo", Description: "echo", InputSchema: map[string]any{"type": "object"}}},
+		Messages: []Message{{Role: "system", Content: "sys"}, imageMsg("add this to my inventory")},
+	}
+	stage := NewStageLLMCall(LLMCallDeps{
+		ClientFactory: func(*Turn) llm.Chatter { return mock },
+		Temperature:   0.7,
+		MaxTokens:     512,
+	})
+	err := stage(context.Background(), turn)
+	if err != nil {
+		t.Fatalf("stage should not fail when describe step errors: %v", err)
+	}
+	
+	// Verify the error message is now more honest about the actual cause
+	// rather than just saying "I can't see images"
+	second := mock.withToolsCalls[1]
+	found := false
+	for _, m := range second.msgs {
+		if strings.Contains(m.Content, "couldn't process the image") && 
+		   strings.Contains(m.Content, "vision system is not configured or the describe step failed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("tool-step messages must contain the honest fallback note about vision system not configured or describe step failed")
 	}
 }
 
