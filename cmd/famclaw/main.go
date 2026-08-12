@@ -641,8 +641,8 @@ func main() {
 		// an operator never sees web_search "configured but dead." This is a
 		// best-effort warning — a unreachable endpoint does NOT prevent
 		// startup (the tool will fail honestly at call time via ErrUnavailable).
-		if wsErr := checkSearchEndpointReachable(cfg.Tools.WebSearch.Endpoint); wsErr != nil {
-			log.Printf("WARNING: web_search endpoint %s is unreachable at startup: %v — web_search will return honest failures until it comes back", websearch.SanitizeEndpoint(cfg.Tools.WebSearch.Endpoint), wsErr)
+		if wsErr := checkSearchEndpointReachable(cfg.Tools.WebSearch.Endpoint, probeTimeout); wsErr != nil {
+			log.Printf("WARNING: web_search endpoint %s did not respond at startup: %v — web_search is enabled and will still attempt searches at runtime, reporting any failure honestly", websearch.SanitizeEndpoint(cfg.Tools.WebSearch.Endpoint), wsErr)
 		} else {
 			log.Printf("web_search: endpoint %s reachable at startup", websearch.SanitizeEndpoint(cfg.Tools.WebSearch.Endpoint))
 		}
@@ -1078,13 +1078,27 @@ func parseTTLByRole(in map[string]string) map[string]time.Duration {
 	return out
 }
 
+// probeTimeout is the deadline for the startup reachability probe. It matches
+// the web_search request timeout (config.WebSearchTimeoutDefault, 30s) because
+// a self-hosted SearXNG fans out to external engines that can take longer than
+// a short health-check window — a too-short probe falsely reports the endpoint
+// as "unreachable" when it is merely slow. The probe is best-effort and does
+// NOT gate startup.
+const probeTimeout = 30 * time.Second
+
 // checkSearchEndpointReachable does a best-effort HTTP probe against the
 // configured search endpoint at startup. It returns nil if the host responds
 // with any HTTP status (even an error status — the point is that the service
 // is up and listening). It returns an error only on connection-level failures
 // (refused, timeout, DNS failure), so the operator gets early warning when
 // web_search is "configured but dead." This check does NOT gate startup.
-func checkSearchEndpointReachable(endpoint string) error {
+//
+// The returned error distinguishes a timeout (the endpoint is slow, not
+// necessarily down — common for SearXNG fanning out to external engines) from a
+// genuine connection failure ("unreachable"). Callers must not fold both into
+// an "unreachable" claim: doing so misled operators into believing web_search
+// was offline when it was merely slow (see fc-websearch-honest-failure).
+func checkSearchEndpointReachable(endpoint string, timeout time.Duration) error {
 	if endpoint == "" {
 		return fmt.Errorf("endpoint not configured")
 	}
@@ -1107,7 +1121,7 @@ func checkSearchEndpointReachable(endpoint string) error {
 	parsed.Path = websearch.JoinSearchPath(parsed.Path)
 	parsed.RawQuery = "q=__famclaw_startup_probe__&format=json"
 	probeURL := parsed.String()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 	if err != nil {
@@ -1116,9 +1130,12 @@ func checkSearchEndpointReachable(endpoint string) error {
 	req.Header.Set("User-Agent", "famclaw-startup-check/1")
 	// A bare client — no allowlist enforcement here. This is a diagnostic
 	// only; the actual tool enforces the allowlist at call time.
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("timed out after %s (endpoint is slow, not necessarily down): %w", timeout, err)
+		}
 		return fmt.Errorf("unreachable: %w", err)
 	}
 	resp.Body.Close()
