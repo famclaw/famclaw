@@ -140,7 +140,8 @@ const visionDescInstruction = "Describe the image above factually and concisely:
 // describe step fails. Dropping the image content parts without a note
 // would let the model answer as if no picture were attached; the note
 // ensures the user knows the image was ignored and can describe it.
-const visionDescribeFallback = "Note: I could not read the image you attached. Please describe what you'd like me to do with it."
+// This message is now more honest about why the image wasn't processed.
+const visionDescribeFallback = "Note: I couldn't process the image you attached because the vision system is not configured or the describe step failed. Please describe what you'd like me to do with it."
 
 // hasImageParts reports whether any message carries an image_url content
 // part.
