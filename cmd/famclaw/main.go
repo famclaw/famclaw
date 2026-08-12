@@ -1028,8 +1028,8 @@ func main() {
 	case <-time.After(15 * time.Second):
 		log.Println("gateway shutdown timed out after 15s")
 	}
-	router.Shutdown()      // cancel in-flight session processing
-	sessionCleanupCancel() // stop session-cleanup goroutine
+	router.Shutdown()        // cancel in-flight session processing
+	sessionCleanupCancel()   // stop session-cleanup goroutine
 	reminderScheduler.Stop() // stop reminder scheduler goroutine
 
 	ctx, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)

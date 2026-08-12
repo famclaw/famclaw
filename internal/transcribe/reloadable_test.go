@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,9 +17,12 @@ import (
 // to the transcriber.
 func endpointRecorder(t *testing.T, transcript string) (string, *httptest.Server, *string) {
 	t.Helper()
+	var mu sync.Mutex
 	var capturedPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		capturedPath = r.URL.Path
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"text":"` + transcript + `"}`))
 	}))
