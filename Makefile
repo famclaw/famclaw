@@ -4,7 +4,7 @@ CMD       := ./cmd/famclaw
 VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS   := -ldflags "-s -w -X main.Version=$(VERSION)"
 
-.PHONY: all build run dev test opa-test behavioral cross clean install install-service install-rpi install-systemd install-launchd build-seccheck cross-rpi3 cross-rpi4 cross-rpi5 cross-android cross-mac-intel cross-mac-arm cross-linux64
+.PHONY: all build run dev test test-scripts opa-test behavioral cross clean install install-service install-rpi install-systemd install-launchd build-seccheck cross-rpi3 cross-rpi4 cross-rpi5 cross-android cross-mac-intel cross-mac-arm cross-linux64
 
 ## build: Build for current machine
 build:
@@ -23,6 +23,11 @@ dev:
 ## test: Run all tests
 test:
 	go test ./... -v
+
+## test-scripts: Shellcheck and exercise install-rpi.sh atomic binary install
+test-scripts:
+	shellcheck -x scripts/install-rpi.sh scripts/test-install-rpi.sh
+	./scripts/test-install-rpi.sh
 
 ## opa-test: Run OPA policy unit tests
 opa-test:

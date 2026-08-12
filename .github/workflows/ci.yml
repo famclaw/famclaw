@@ -71,6 +71,13 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Shell scripts (shellcheck + install-rpi.sh atomic install)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck -x scripts/install-rpi.sh scripts/test-install-rpi.sh
+          ./scripts/test-install-rpi.sh
+
       - name: Unit tests
         run: go test ./... -v -coverprofile=coverage.out
         env:
