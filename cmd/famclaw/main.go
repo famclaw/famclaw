@@ -44,6 +44,7 @@ import (
 	"github.com/famclaw/famclaw/internal/mcp"
 	"github.com/famclaw/famclaw/internal/notify"
 	"github.com/famclaw/famclaw/internal/policy"
+	"github.com/famclaw/famclaw/internal/reload"
 	"github.com/famclaw/famclaw/internal/reminder"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
@@ -682,16 +683,15 @@ func main() {
 	// voice notes, Discord audio clips) are transcribed into text at the top
 	// of Agent.Chat() — before SaveMessage and before the policy gates read
 	// Turn.Input — so a spoken request gets exactly the same age/approval
-	// gating as a typed one. When disabled (nil), audio attachments produce
-	// a visible "voice isn't available" reply rather than a silent drop.
-	var voiceTranscriber transcribe.Transcriber
-	if cfg.Tools.Transcription.Enabled {
-		voiceTranscriber = transcribe.New(
-			cfg.Tools.Transcription.Endpoint,
-			cfg.Tools.Transcription.Model,
-			cfg.Tools.Transcription.MaxBytes,
-			time.Duration(cfg.Tools.Transcription.TimeoutSec)*time.Second,
-		)
+	// gating as a typed one. When disabled (nil inner), audio attachments
+	// produce a visible "voice isn't available" reply rather than a silent drop.
+	//
+	// The ReloadableTranscriber is hot-reloadable: the config-watcher calls
+	// its ReloadConfig on file change (registered in the reload registry
+	// below), so enabling tools.transcription.* takes effect without a restart.
+	voiceTranscriber := transcribe.NewReloadable()
+	if err := voiceTranscriber.ReloadConfig(cfg); err != nil {
+		log.Printf("voice transcription: %v", err)
 	}
 
 	// Chat function for gateway router - combining incoming changes with our multimodal support
@@ -847,6 +847,46 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
+	// ── Config hot-reload registry ────────────────────────────────────────────
+	// The registry replaces the old hand-listed UpdateConfig calls. Each
+	// component that can be safely rebuilt at runtime is registered as a
+	// Reloader; components that cannot are declared via RequireRestart.
+	// When the config file changes, Reload walks every entry and logs the
+	// outcome of each — so the operator never sees a blanket "success"
+	// for work that was not actually done. See issue #326.
+	reloadRegistry := reload.NewRegistry()
+	reloadRegistry.Register("router", router)
+	reloadRegistry.Register("web-server", srv)
+	reloadRegistry.Register("mcp-pool", mcpPool)
+	reloadRegistry.Register("transcriber", voiceTranscriber)
+	// Components that are built once at startup and cannot be hot-rebuilt
+	// are declared as requiring a restart. This is honest reporting: instead
+	// of silently skipping them, the reload log says exactly what needs a
+	// restart.
+	reloadRegistry.RequireRestart("database", "SQLite connection opened once at startup")
+	reloadRegistry.RequireRestart("policy-evaluator", "OPA policies loaded once at startup")
+	reloadRegistry.RequireRestart("session-store", "session store opened once at startup")
+	reloadRegistry.RequireRestart("credential-vault", "vault bound to machine ID at startup")
+	reloadRegistry.RequireRestart("builtin-tools", "tool list snapshot from config; requires restart")
+	reloadRegistry.RequireRestart("skill-registry", "enabled skills snapshot from config; requires restart")
+	reloadRegistry.RequireRestart("reminder-scheduler", "polling interval fixed at startup")
+	reloadRegistry.RequireRestart("agent-scheduler", "subagent concurrency cap fixed at startup")
+	if cfg.Gateways.Telegram.Enabled && cfg.Gateways.Telegram.Token != "" {
+		reloadRegistry.RequireRestart("telegram-gateway", "bots are started once at startup")
+	}
+	if cfg.Gateways.Discord.Enabled && cfg.Gateways.Discord.Token != "" {
+		reloadRegistry.RequireRestart("discord-gateway", "bots are started once at startup")
+	}
+	if sidecar != nil {
+		reloadRegistry.RequireRestart("inference-sidecar", "llama-server started once at startup")
+	}
+	if browserPool != nil {
+		reloadRegistry.RequireRestart("browser-pool", "browser pool sweeper started once at startup")
+	}
+	if toolCache != nil {
+		reloadRegistry.RequireRestart("tool-cache", "cache sweeper started once at startup")
+	}
+
 	// Set up config file watcher for hot-reload
 	configWatcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -883,17 +923,37 @@ func main() {
 								log.Printf("Invalid LLM provider in config change (keeping current config): %v", err)
 								continue
 							}
-							// Config is valid, update the router and server
+							// Config is valid, run the registry reload loop.
+							// The registry walks every registered component and
+							// reports the outcome of each. LLM config (endpoints,
+							// model, temperature) is read per-message by chatFn
+							// from the cfg variable, which we update here so new
+							// agents pick up the change.
 							log.Printf("Config file changed, reloading configuration...")
-							router.UpdateConfig(newCfg)
-							srv.UpdateConfig(newCfg)
-
-							// Update MCP pool with new server configuration
-							mcpPool.UpdateFromConfig(newCfg.Skills.MCPServers, newCfg.Skills.Credentials)
-
-							// Update the config variable used for new agent creations
+							statuses := reloadRegistry.Reload(newCfg)
 							cfg = newCfg
-							log.Printf("Configuration reloaded successfully")
+
+							// Summarize outcomes
+							var reloaded, failed, needsRestart []string
+							for _, s := range statuses {
+								switch s.Outcome {
+								case reload.OutcomeReloaded:
+									reloaded = append(reloaded, s.Name)
+								case reload.OutcomeFailed:
+									failed = append(failed, s.Name)
+								case reload.OutcomeRequiresRestart:
+									needsRestart = append(needsRestart, s.Name)
+								}
+							}
+							log.Printf("Reload summary: %d reloaded, %d failed, %d requires restart",
+								len(reloaded), len(failed), len(needsRestart))
+							if len(failed) > 0 {
+								log.Printf("  FAILED: %s — config change not applied for these components",
+									strings.Join(failed, ", "))
+							}
+							if len(needsRestart) > 0 {
+								log.Printf("  Requires restart: %s", strings.Join(needsRestart, ", "))
+							}
 						}
 					case err, ok := <-configWatcher.Errors:
 						if !ok {
