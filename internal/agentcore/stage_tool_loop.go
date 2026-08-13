@@ -547,18 +547,21 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		// construction. The discriminator is structural (not lexical),
 		// making it language-agnostic by design.
 		modelStopped := len(pendingCalls) == 0
-		// Neutralize false success claims: if no tool succeeded this turn
-		// but the output claims success, prepend a prominent correction.
-		// The failure is led with, not buried — for a parent researching a
-		// child's condition, a trailing parenthetical masquerading as
-		// verified research is the worst possible failure mode.
-		var anySuccess bool
-		for _, tr := range turn.ToolCalls {
-			if tr.Error == nil {
-				anySuccess = true
-				break
-			}
-		}
+		// Neutralize false success claims: when every tool call in the turn
+		// failed and the model produced a final answer, prepend a prominent
+		// correction so the user sees the failure up front. The failure is
+		// led with, not buried — for a parent researching a child's
+		// condition, a trailing parenthetical masquerading as verified
+		// research is the worst possible failure mode.
+		//
+		// The decision is structural, not lexical — it never inspects the
+		// output text, so it is language-agnostic by design.
+		// shouldPrependFailureNote fires whenever the model stopped with
+		// every tool failed, regardless of the language the model used to
+		// claim success. This is the fix for #242: a phrase list per
+		// language never ends and always has gaps, but a structural check
+		// has no language to miss.
+		//
 		// toolFailureNote is prepended (not appended) so the user sees the
 		// failure up front. Deliberate bias: ALWAYS warn when every tool
 		// call in the turn failed and the model produced a final answer.
@@ -570,7 +573,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		// is the exact failure mode we must never repeat.
 		const toolFailureNote = "No action was completed — every tool call failed. " +
 			"Nothing below was looked up; it comes from training data, not live results."
-		if len(turn.ToolCalls) > 0 && !anySuccess && modelStopped {
+		if shouldPrependFailureNote(turn.ToolCalls, modelStopped) {
 			if turn.Output == "" {
 				turn.Output = toolFailureNote
 			} else {
@@ -746,4 +749,30 @@ func rebuildResultLine(tr ToolResult) string {
 // the line-per-result contract of the rebuilt prompt block.
 func sanitizeHistoryText(s string) string {
 	return strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(s)
+}
+
+// shouldPrependFailureNote reports whether the false-completion correction
+// note should be prepended to the model's output.
+//
+// The decision is purely structural — it never inspects the output text —
+// so it is language-agnostic by construction: a false completion is
+// detected when the model produced a final answer (modelStopped) but
+// every tool call in the turn failed. Because the check has no language
+// to match, a success claim in any language (English, Spanish, Japanese,
+// Arabic, etc.) is caught exactly when the tools actually failed, and
+// genuine completions (where at least one tool succeeded) are never
+// flagged.
+//
+// The caller owns the note wording and the prepend/append decision; this
+// function only answers whether this turn is a false completion.
+func shouldPrependFailureNote(toolCalls []ToolResult, modelStopped bool) bool {
+	if !modelStopped || len(toolCalls) == 0 {
+		return false
+	}
+	for _, tr := range toolCalls {
+		if tr.Error == nil {
+			return false
+		}
+	}
+	return true
 }

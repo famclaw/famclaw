@@ -53,6 +53,38 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 			wantOutputExact: "Task completed successfully!",
 		},
 		{
+			name: "genuine tool success in Spanish (not flagged)",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Builtin handler that succeeds
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "success", nil
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__ok"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__ok", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "¡Completado con éxito!"},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputExact: "¡Completado con éxito!",
+		},
+		{
 			name: "hallucinated success with no tool call",
 			setup: func(deps *ToolLoopDeps, turn *Turn) {
 				// Builtin handler that fails
@@ -529,3 +561,58 @@ func (m *mockChatter) ChatSync(ctx context.Context, messages []llm.Message, temp
 }
 
 func (m *mockChatter) Ping(context.Context) error { return nil }
+
+// TestShouldPrependFailureNote verifies the language-agnostic structural
+// discriminator that backs false-completion detection (#242). The function
+// never inspects the model's output text - it only looks at whether the
+// model stopped and whether every tool failed - so the same inputs
+// produce the same decision in every language. We enumerate a spread of
+// scripts to make that contract explicit and to guard against any future
+// regression toward phrase matching.
+func TestShouldPrependFailureNote(t *testing.T) {
+	failed := func(name string) ToolResult {
+		return ToolResult{ToolName: name, Error: errors.New("boom")}
+	}
+	succeeded := func(name string) ToolResult {
+		return ToolResult{ToolName: name, Output: "ok"}
+	}
+
+	cases := []struct {
+		name         string
+		toolCalls    []ToolResult
+		modelStopped bool
+		want         bool
+	}{
+		// False completions: all tools failed, model stopped. The decision
+		// is identical across scripts - no phrase list, no language gate.
+		{name: "English claim, all failed, stopped", toolCalls: []ToolResult{failed("web_fetch")}, modelStopped: true, want: true},
+		{name: "Spanish claim, all failed, stopped", toolCalls: []ToolResult{failed("web_fetch")}, modelStopped: true, want: true},
+		{name: "German claim, all failed, stopped", toolCalls: []ToolResult{failed("web_fetch")}, modelStopped: true, want: true},
+		{name: "Japanese claim, all failed, stopped", toolCalls: []ToolResult{failed("web_fetch")}, modelStopped: true, want: true},
+		{name: "Chinese claim, all failed, stopped", toolCalls: []ToolResult{failed("web_fetch")}, modelStopped: true, want: true},
+		{name: "Arabic claim, all failed, stopped", toolCalls: []ToolResult{failed("web_fetch")}, modelStopped: true, want: true},
+		{name: "French claim, all failed, stopped", toolCalls: []ToolResult{failed("web_fetch")}, modelStopped: true, want: true},
+		{name: "Russian claim, all failed, stopped", toolCalls: []ToolResult{failed("web_fetch")}, modelStopped: true, want: true},
+		{name: "Korean claim, all failed, stopped", toolCalls: []ToolResult{failed("web_fetch")}, modelStopped: true, want: true},
+
+		// Genuine completions: at least one tool succeeded, never flagged.
+		{name: "English genuine, one tool ok, stopped", toolCalls: []ToolResult{failed("web_fetch"), succeeded("file_write")}, modelStopped: true, want: false},
+		{name: "Spanish genuine, one tool ok, stopped", toolCalls: []ToolResult{failed("busqueda"), succeeded("escritura")}, modelStopped: true, want: false},
+		{name: "Japanese genuine, one tool ok, stopped", toolCalls: []ToolResult{failed("kensaku"), succeeded("kijutsu")}, modelStopped: true, want: false},
+
+		// No tools attempted - conversational, never flagged.
+		{name: "no tools attempted, stopped", toolCalls: nil, modelStopped: true, want: false},
+
+		// Cap exhausted: model never stopped, never flagged.
+		{name: "all failed, cap exhausted (not stopped)", toolCalls: []ToolResult{failed("web_fetch")}, modelStopped: false, want: false},
+		{name: "no tools, cap exhausted (not stopped)", toolCalls: nil, modelStopped: false, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldPrependFailureNote(tc.toolCalls, tc.modelStopped); got != tc.want {
+				t.Errorf("shouldPrependFailureNote(_, %v) = %v, want %v", tc.modelStopped, got, tc.want)
+			}
+		})
+	}
+}
