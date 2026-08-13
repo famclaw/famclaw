@@ -118,6 +118,10 @@ type Agent struct {
 	// nowFn returns the current time. Defaults to time.Now; injectable in tests
 	// to make research-status timestamps (incl. timeout recording) deterministic.
 	nowFn func() time.Time
+
+	// configPath is the on-disk path to config.yaml, used by mcp_add to
+	// persist new MCP server entries. Empty string = no persistence.
+	configPath string
 }
 
 // Transcriber converts audio attachments into text. The concrete
@@ -322,6 +326,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		effectiveSandboxRoot: effectiveSandboxRoot,
 		senderRegistry:       deps.SenderRegistry,
 		nowFn:                deps.NowFn,
+		configPath:           deps.ConfigPath,
 	}, nil
 }
 
