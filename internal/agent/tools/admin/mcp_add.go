@@ -120,13 +120,19 @@ func HandleMCPAdd(ctx context.Context, deps Deps, args map[string]any) (string, 
 	}
 
 	// Reload the MCP pool so the new server is registered and its tools
-	// become available on the next turn.
+	// become available on the next turn. The server is already saved to
+	// config (and that persists regardless of reload outcome) — but if the
+	// pool can't load it, the user needs to know so they aren't surprised
+	// that the tools are missing. See issue #312 / honest-failure work.
+	poolNote := ""
 	if deps.MCP != nil {
 		if err := deps.MCP.ReloadConfig(deps.Cfg); err != nil {
 			log.Printf("[admin] mcp_add: pool reload warning for %q: %v", name, err)
+			poolNote = fmt.Sprintf(" However, the running MCP pool could not load it: %v. The server is saved to config and will be available after a restart or once the issue is fixed.", err)
 		}
 	} else {
 		log.Printf("[admin] mcp_add: no MCP pool configured, server added to config only")
+		poolNote = " No MCP pool is running; the server will be loaded on next startup."
 	}
 
 	// Audit log.
@@ -141,5 +147,5 @@ func HandleMCPAdd(ctx context.Context, deps Deps, args map[string]any) (string, 
 		log.Printf("[admin] audit log failed for %s: %v", toolNameMCPAdd, err)
 	}
 
-	return fmt.Sprintf("✅ MCP server %q registered (transport=%s). Its tools will be available on the next turn.", name, mcpCfg.Transport), nil
+	return fmt.Sprintf("✅ MCP server %q registered (transport=%s). Its tools will be available on the next turn.%s", name, mcpCfg.Transport, poolNote), nil
 }

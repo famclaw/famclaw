@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -252,6 +253,35 @@ func TestHandleMCPAdd_NilPoolSkipsReload(t *testing.T) {
 	}
 	if _, ok := deps.Cfg.Skills.MCPServers["testsrv"]; !ok {
 		t.Error("server not added to config when pool was nil")
+	}
+}
+
+func TestHandleMCPAdd_PoolReloadFailureSurfacesToUser(t *testing.T) {
+	deps := newMCPTestDeps(t)
+	deps.ConfigPath = "/tmp/nonexistent-config.yaml" // won't be reached, pool fails first
+	mock := &mockMCPManager{reloadErr: fmt.Errorf("connection refused")}
+	deps.MCP = mock
+
+	out, err := HandleMCPAdd(context.Background(), deps, map[string]any{
+		"name":    "flaky",
+		"command": "npx",
+		"args":    "server",
+	})
+	if err != nil {
+		t.Fatalf("expected no error (config saved successfully), got: %v", err)
+	}
+	// Must tell the user the pool could not load it.
+	if !strings.Contains(out, "registered") {
+		t.Errorf("output %q missing 'registered'", out)
+	}
+	if !strings.Contains(out, "could not load it") {
+		t.Errorf("output %q missing pool reload failure notice", out)
+	}
+	if !strings.Contains(out, "saved to config") {
+		t.Errorf("output %q missing 'saved to config' reassurance", out)
+	}
+	if !strings.Contains(out, "connection refused") {
+		t.Errorf("output %q missing underlying error 'connection refused'", out)
 	}
 }
 
