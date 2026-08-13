@@ -66,12 +66,26 @@ type Server struct {
 	bgWG sync.WaitGroup
 
 	// Session-based auth wiring (Phase 6).
-	sessions      *store.SessionStore
-	vault         *credstore.Vault
-	auth          *AuthHandler
-	vaultMismatch bool // protected by vaultMu — true once a probe finds the on-disk vault was sealed by a different machine
-	vaultMu       sync.RWMutex
-	mcpSkipped    []string // MCP servers skipped at boot, surfaced by /api/health
+	sessions       *store.SessionStore
+	vault          *credstore.Vault
+	auth           *AuthHandler
+	vaultMismatch  bool // protected by vaultMu — true once a probe finds the on-disk vault was sealed by a different machine
+	vaultMu        sync.RWMutex
+	mcpSkipped     []string       // MCP servers skipped at boot, surfaced by /api/health
+	seccheckStatus SecCheckStatus // scanner availability, surfaced by /api/health
+}
+
+// SecCheckStatus captures the at-boot state of the honeybadger security
+// scanner so the health endpoint can report it unambiguously rather than
+// only via a log line. A non-empty Error means the scanner could not be
+// made available even though seccheck.enabled is true — installs will be
+// refused (fail-closed) and runtime tool scanning is disabled.
+
+type SecCheckStatus struct {
+	Enabled   bool   `json:"enabled"`           // seccheck.enabled from config
+	Available bool   `json:"available"`         // honeybadger binary runnable after EnsureScanner
+	Version   string `json:"version,omitempty"` // resolved scanner version pin
+	Error     string `json:"error,omitempty"`   // non-empty on failure
 }
 
 // wsClient is a connected web chat client. Its writeMu serializes all writes
@@ -314,6 +328,15 @@ func (s *Server) SetVaultMismatch(v bool) {
 // the skip is only written to the log at startup and then lost.
 func (s *Server) SetMCPSkipped(skipped []string) {
 	s.mcpSkipped = skipped
+}
+
+// SetSecCheckStatus records the scanner availability determined at boot so
+// /api/health can report it unambiguously. main.go calls this after probing
+// the honeybadger binary, so operators can see via the health endpoint
+// whether the security gate is armed, available, or failed — instead of
+// discovering it only in the server log.
+func (s *Server) SetSecCheckStatus(status SecCheckStatus) {
+	s.seccheckStatus = status
 }
 
 // ── WebSocket chat ─────────────────────────────────────────────────────────────
@@ -739,6 +762,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"time":        time.Now().UTC(),
 		"needs_setup": s.NeedsSetup(),
 		"mcp_skipped": skipped,
+		"seccheck":    s.seccheckStatus,
 	})
 }
 

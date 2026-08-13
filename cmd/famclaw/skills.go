@@ -31,7 +31,10 @@ func runSkillCommand(args []string) {
 			fmt.Fprintf(os.Stderr, "Usage: famclaw skill install <path-or-url>\n")
 			os.Exit(2)
 		}
-		skillInstall(skillsDir, args[1])
+		if err := skillInstall(skillsDir, args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
 	case "list":
 		skillList(skillsDir)
 	case "remove":
@@ -74,36 +77,53 @@ func runSkillCommand(args []string) {
 	}
 }
 
-func skillInstall(dir, nameOrPath string) {
+func skillInstall(dir, nameOrPath string) error {
 	// Try to load config for seccheck settings
 	cfgPath := findConfigFile()
 	installCfg := skillbridge.InstallConfig{}
 	if cfgPath != "" {
-		if cfg, err := config.Load(cfgPath); err == nil {
-			installCfg = skillbridge.InstallConfig{
-				Enabled:      cfg.SecCheck.Enabled,
-				AutoSecCheck: cfg.SecCheck.AutoSecCheck,
-				BlockOnFail:  cfg.SecCheck.BlockOnFail,
-				Paranoia:     cfg.SecCheck.Paranoia,
-			}
+		loaded, err := config.Load(cfgPath)
+		if err != nil {
+			// Fail-closed: a config file that exists but cannot be parsed means
+			// we cannot trust the seccheck settings. Refuse rather than silently
+			// falling back to defaults that may disable the gate.
+			return fmt.Errorf("loading config %q: %w", cfgPath, err)
+		}
+		installCfg = skillbridge.InstallConfig{
+			Enabled:      loaded.SecCheck.Enabled,
+			AutoSecCheck: loaded.SecCheck.AutoSecCheck,
+			BlockOnFail:  loaded.SecCheck.BlockOnFail,
+			Paranoia:     loaded.SecCheck.Paranoia,
 		}
 	}
 
+	// The master switch is seccheck.enabled: true alone. Once Enabled is true,
+	// install-time scanning is always required — we must ensure the scanner is
+	// available and refuse (fail-closed) if it cannot be made available.
 	var scanner skillbridge.Scanner
-	if installCfg.Enabled && installCfg.AutoSecCheck {
-		scanner = honeybadger.New()
+	if installCfg.Enabled {
+		hb := honeybadger.New()
+		if !hb.Available() {
+			fmt.Fprintf(os.Stderr, "[seccheck] honeybadger not in PATH; fetching %s via go install...\n", honeybadger.HoneyBadgerVersion)
+			if err := hb.EnsureScanner(context.Background(), honeybadger.HoneyBadgerVersion); err != nil {
+				return fmt.Errorf("seccheck enabled but honeybadger scanner could not be made available: %w\n"+
+					"  install manually: go install github.com/famclaw/honeybadger/cmd/honeybadger@latest\n"+
+					"  or set seccheck.enabled: false in config.yaml to disable the security gate", err)
+			}
+		}
+		scanner = hb
 	}
 
 	reg := skillbridge.NewRegistry(dir, scanner, installCfg, nil)
 	skill, err := reg.Install(context.Background(), nameOrPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "install failed: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("install failed: %w", err)
 	}
 	fmt.Printf("Installed: %s v%s\n", skill.Name, skill.Version)
 	if skill.Description != "" {
 		fmt.Printf("  %s\n", skill.Description)
 	}
+	return nil
 }
 
 func skillList(dir string) {

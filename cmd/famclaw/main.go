@@ -524,24 +524,43 @@ func main() {
 	mcpPool, skippedMCPs, _ := initMCPPool(context.Background(), cfg, sandboxRoot)
 	defer mcpPool.StopAll()
 
-	// HoneyBadger client + quarantine for runtime scanning
+	// HoneyBadger client + quarantine for runtime scanning. famclaw owns its
+	// scanner dependency: when seccheck is enabled and the binary is missing,
+	// famclaw fetches it (EnsureScanner) so a fresh machine ends up with a
+	// working gate. If it cannot be made available, the gate fails CLOSED
+	// rather than silently pretending to scan.
 	var hbScanner skillbridge.Scanner
+	var secCheckErr error // captured so /api/health can surface it unambiguously
 	var quarantine *skillbridge.Quarantine
-	if cfg.SecCheck.Enabled && cfg.SecCheck.RuntimeScan {
+	// Ensure the scanner is available whenever seccheck is enabled — the master
+	// switch is `seccheck.enabled: true` alone. Install-time scanning always
+	// runs when Enabled is true, so the scanner must be present. If it cannot
+	// be made available, installs are refused (fail-closed) and runtime tool
+	// scanning is disabled.
+	if cfg.SecCheck.Enabled {
 		hb := honeybadger.New()
+		if !hb.Available() {
+			log.Printf("[seccheck] honeybadger not in PATH; fetching %s via go install...", cfg.SecCheck.ScannerVersion)
+			fetchCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			if err := hb.EnsureScanner(fetchCtx, cfg.SecCheck.ScannerVersion); err != nil {
+				log.Printf("⚠️  [seccheck] ENABLED but honeybadger scanner could not be made available: %v", err)
+				secCheckErr = err
+				log.Printf("   Install-time scanning will REFUSE unscanned skills; runtime tool scanning is disabled.")
+			}
+			cancel()
+		}
 		if hb.Available() {
 			hbScanner = hb
+			log.Printf("Security: honeybadger scanner available (%s) ✅", cfg.SecCheck.ScannerVersion)
+		}
+		if cfg.SecCheck.RuntimeScan && hbScanner != nil {
 			quarantine = skillbridge.NewQuarantine(db)
 			if err := quarantine.Load(context.Background()); err != nil {
 				log.Printf("⚠️  Failed to load quarantine: %v", err)
 			} else {
 				log.Printf("Security: quarantine loaded (%d blocked)", quarantine.Len())
 			}
-			log.Printf("Security: runtime scanning enabled (honeybadger available) ✅")
-		} else {
-			log.Printf("⚠️  Runtime scanning enabled in config but honeybadger binary not in PATH")
-			log.Printf("   Install: go install github.com/famclaw/honeybadger/cmd/honeybadger@latest")
-			log.Printf("   Or disable: seccheck.runtime_scan: false in config.yaml")
+			log.Printf("Security: runtime scanning enabled ✅")
 		}
 	}
 
@@ -551,7 +570,7 @@ func main() {
 		AutoSecCheck: cfg.SecCheck.AutoSecCheck,
 		BlockOnFail:  cfg.SecCheck.BlockOnFail,
 		Paranoia:     cfg.SecCheck.Paranoia,
-	}, cfg.Skills.RoleEnablement)
+	}, cfg.Skills.RoleEnablement).WithReporter(db)
 	var enabledSkills []*skillbridge.Skill
 	// Fallback to global enabled skills (no user context at startup).
 	if skills, err := reg.List(); err == nil {
@@ -561,6 +580,24 @@ func main() {
 				log.Printf("Skill: %s v%s", sk.Name, sk.Version)
 			}
 		}
+	}
+
+	// Scan pre-installed skills at boot so the README claim "scans every skill
+	// before installation" holds for skills that shipped already installed (e.g.
+	// family-knowledge). A missing/unavailable scanner is logged per-skill and
+	// never silently treated as a pass. Skipped when a scanner is configured
+	// (staleness gate avoids re-scanning every boot).
+	if hbScanner != nil {
+		rescanInterval, perr := time.ParseDuration(cfg.SecCheck.RescanInterval)
+		if perr != nil {
+			log.Printf("[seccheck] invalid rescan_interval %q: %v (defaulting to 168h)", cfg.SecCheck.RescanInterval, perr)
+			rescanInterval = 168 * time.Hour
+		}
+		if serr := reg.ScanAll(context.Background(), rescanInterval); serr != nil {
+			log.Printf("⚠️  [seccheck] some skills could not be scanned: %v", serr)
+		}
+	} else if cfg.SecCheck.Enabled {
+		log.Printf("⚠️  [seccheck] scanning enabled but no scanner available; pre-installed skills NOT scanned (installs of new skills will be refused)")
 	}
 
 	// Subagent scheduler for spawn_agent dispatching (max 2 concurrent)
@@ -839,6 +876,23 @@ func main() {
 	srv := web.NewServer(cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
 	srv.SetVaultMismatch(vaultMismatch)
 	srv.SetMCPSkipped(skippedMCPs)
+	// Surface the scanner state through /api/health so the outcome is
+	// unambiguous: when seccheck is enabled but the scanner could not be
+	// fetched, the error is no longer only in the log — it is queryable.
+	scannerVersion := cfg.SecCheck.ScannerVersion
+	if scannerVersion == "" {
+		scannerVersion = honeybadger.HoneyBadgerVersion
+	}
+	var secCheckErrStr string
+	if secCheckErr != nil {
+		secCheckErrStr = secCheckErr.Error()
+	}
+	srv.SetSecCheckStatus(web.SecCheckStatus{
+		Enabled:   cfg.SecCheck.Enabled,
+		Available: hbScanner != nil,
+		Version:   scannerVersion,
+		Error:     secCheckErrStr,
+	})
 	httpSrv := &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      srv.Handler(),
