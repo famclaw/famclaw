@@ -131,6 +131,13 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 	}
 }
 
+// ReloadConfig implements reload.Reloader. It synchronizes the pool's
+// MCP servers with the provided configuration.
+func (p *Pool) ReloadConfig(cfg *config.Config) error {
+	p.UpdateFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
+	return nil
+}
+
 // sliceEqual compares two slices for equality.
 func sliceEqual(a, b []string) bool {
 	if len(a) != len(b) {

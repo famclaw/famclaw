@@ -98,6 +98,13 @@ func (s *Server) UpdateConfig(newCfg *config.Config) {
 	s.cfg = newCfg
 }
 
+// ReloadConfig implements reload.Reloader. It delegates to UpdateConfig
+// so the registry can drive a uniform reload loop.
+func (s *Server) ReloadConfig(newCfg *config.Config) error {
+	s.UpdateConfig(newCfg)
+	return nil
+}
+
 func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store.SessionStore, vault *credstore.Vault,
 	identStore *identity.Store, evaluator *policy.Evaluator, clf *classifier.Classifier, notifier *notify.MultiNotifier,
 	skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool) *Server {
