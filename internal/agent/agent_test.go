@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -1520,6 +1522,39 @@ func TestHandleWebFetch_BrowserFallbackGracefulDegrade(t *testing.T) {
 	}
 	if !strings.Contains(out, "thin") {
 		t.Errorf("expected original thin text returned, got %q", out)
+	}
+}
+
+// TestHandleWebFetch_BrowserFallbackWantedButPoolUnavailableLogs verifies
+// that when browser fallback is enabled but the browser pool is unavailable
+// (nil), handleWebFetch still degrades gracefully to the thin HTTP text AND
+// emits a log line naming the missed fallback — so the degradation is
+// visible to operators instead of a silent downgrade. See issue #246.
+func TestHandleWebFetch_BrowserFallbackWantedButPoolUnavailableLogs(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prevOut)
+
+	a := &Agent{
+		user: &config.UserConfig{Name: "u", Role: "parent"},
+		cfg: &config.Config{Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+			Enabled: true, URLAllowlist: []string{"example.com"}, MaxBytes: 256 * 1024, TimeoutSec: 5,
+			FallbackToBrowser: true, FallbackMinTextLength: 10,
+		}}},
+		webFetcher: func(context.Context, string, webfetch.Options) (*webfetch.Result, error) {
+			return &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "thin"}, nil
+		},
+	}
+	out, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+	if err != nil {
+		t.Fatalf("expected graceful degradation, got error: %v", err)
+	}
+	if !strings.Contains(out, "thin") {
+		t.Errorf("expected original thin text returned, got %q", out)
+	}
+	if !strings.Contains(logBuf.String(), "browser fallback is enabled but no browser pool is configured") {
+		t.Errorf("expected a log about the missing browser pool, got log: %q", logBuf.String())
 	}
 }
 
