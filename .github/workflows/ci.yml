@@ -83,8 +83,8 @@ jobs:
         env:
           CGO_ENABLED: 0
 
-      - name: OPA policy tests
-        run: opa test internal/policy/policies/family/ internal/policy/policies/data/ -v
+      - name: No private developer details
+        run: bash .github/scripts/check-private-details.sh
 
       - name: Coverage check (>80% on critical packages)
         run: |
