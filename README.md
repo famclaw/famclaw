@@ -321,7 +321,7 @@ Enable in `config.yaml`:
 tools:
   transcription:
     enabled: true
-    endpoint: "http://192.168.1.243:8092"   # base URL of your /v1/audio/transcriptions service
+    endpoint: "http://192.168.1.10:8092"   # base URL of your /v1/audio/transcriptions service
     model: "whisper-1"                       # model name sent to the service
     max_bytes: 26214400                      # cap on downloaded audio; default 25 MB
     timeout_seconds: 30                      # per-request timeout; default 30
