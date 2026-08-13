@@ -31,10 +31,10 @@ func MCPAddDefinition() agentcore.Tool {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name": map[string]any{"type": "string", "description": "Unique name for the server (e.g. 'playwright')."},
-				"command": map[string]any{"type": "string", "description": "Command to run for stdio transport (e.g. 'npx')."},
-				"args": map[string]any{"type": "string", "description": "Space-separated arguments for the command (e.g. '-y @modelcontextprotocol/server-playwright')."},
-				"url": map[string]any{"type": "string", "description": "URL for http/sse transport."},
+				"name":      map[string]any{"type": "string", "description": "Unique name for the server (e.g. 'playwright')."},
+				"command":   map[string]any{"type": "string", "description": "Command to run for stdio transport (e.g. 'npx')."},
+				"args":      map[string]any{"type": "string", "description": "Space-separated arguments for the command (e.g. '-y @modelcontextprotocol/server-playwright')."},
+				"url":       map[string]any{"type": "string", "description": "URL for http/sse transport."},
 				"transport": map[string]any{"type": "string", "description": "Optional: 'stdio', 'http', or 'sse'. Auto-detected from command/url if omitted."},
 			},
 			"required": []string{"name"},

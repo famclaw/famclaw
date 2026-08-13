@@ -20,9 +20,9 @@ func MCPListDefinition() agentcore.Tool {
 			"added via mcp_add or the dashboard. Use this to check which " +
 			"servers are available before trying to use their tools.",
 		InputSchema: map[string]any{
-			"type": "object",
+			"type":       "object",
 			"properties": map[string]any{},
-			"required": []string{},
+			"required":   []string{},
 		},
 		Source: "builtin",
 		Roles:  []string{"parent"},
