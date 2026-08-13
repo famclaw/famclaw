@@ -30,6 +30,23 @@ type Deps struct {
 	Gateway     string                   // the gateway they're calling from (telegram, discord, web, etc.)
 	Gateways    map[string]GatewaySender // keyed by gateway name; may be nil
 	FamilyState *familystate.Store       // Phase 3.3 — required for family_* admin tools; nil disables them
+
+	// MCP is the pool that manages MCP server lifecycle. When non-nil,
+	// mcp_add / mcp_list tools are enabled. The agent injects its
+	// *mcp.Pool which satisfies this interface.
+	MCP MCPManager
+
+	// ConfigPath is the on-disk path to config.yaml, used by mcp_add
+	// to persist new MCP server entries so they survive restarts.
+	ConfigPath string
+}
+
+// MCPManager abstracts MCP server lifecycle management needed by the
+// mcp_add / mcp_list admin tools. The agent's *mcp.Pool satisfies this.
+type MCPManager interface {
+	// ReloadConfig synchronizes the pool's MCP servers with the given
+	// config. Called after mcp_add mutates the config in-memory.
+	ReloadConfig(cfg *config.Config) error
 }
 
 // isKnownSubject reports whether subject is one of the configured user
@@ -66,6 +83,7 @@ func AllReadOnlyDefinitions() []agentcore.Tool {
 		ListPendingApprovalsDefinition(),
 		ListUsersDefinition(),
 		ListUnknownAccountsDefinition(),
+		MCPListDefinition(),
 	}
 }
 
@@ -82,6 +100,7 @@ func AllMutatingDefinitions() []agentcore.Tool {
 		DeleteFamilyFactDefinition(),
 		AddFamilyCategoryDefinition(),
 		DeleteFamilyCategoryDefinition(),
+		MCPAddDefinition(),
 	}
 }
 
