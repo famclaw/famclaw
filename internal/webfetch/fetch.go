@@ -68,9 +68,14 @@ type Result struct {
 	URL         string `json:"url"`
 	StatusCode  int    `json:"status_code"`
 	ContentType string `json:"content_type"`
-	Bytes       int64  `json:"bytes"`
-	Truncated   bool   `json:"truncated"`
-	Text        string `json:"text"`
+	// Bytes is the size of the fetched content. It is path-dependent and
+	// intended for operator logging only — not for cache or quota accounting:
+	// on the HTTP fetch path it is the response-body (wire) byte count; on the
+	// browser-fallback path it is the byte length of the extracted text, which
+	// is all the browser.extract tool returns. See issue #246.
+	Bytes     int64  `json:"bytes"`
+	Truncated bool   `json:"truncated"`
+	Text      string `json:"text"`
 }
 
 // Fetch retrieves rawURL with the given options. Initial scheme is checked

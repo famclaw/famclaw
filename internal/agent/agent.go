@@ -1323,26 +1323,37 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		if minLength == 0 {
 			minLength = 10
 		}
-		if len(text) < minLength && a.browserPool != nil && a.cfg.Tools.WebFetch.FallbackToBrowser {
-			// Attempt browser fallback for JS-heavy sites. fetchWithBrowser
-			// guarantees a non-empty result on success — every failure mode
-			// (pool unavailable, browser error, empty render) returns a
-			// distinct error rather than an empty success, so there is no
-			// separate empty-render check for the fallback here.
-			browserResult, err := a.fetchWithBrowser(ctx, a.browserPool, rawURL, hostAllowed)
-			if err != nil {
-				log.Printf("[agent][%s] web_fetch browser fallback failed for %s, using original result: %v", a.user.Name, rawURL, err)
-			} else {
-				result = &webfetch.Result{
-					URL:         browserResult.URL,
-					StatusCode:  browserResult.StatusCode,
-					ContentType: browserResult.ContentType,
-					Bytes:       browserResult.Bytes,
-					Truncated:   browserResult.Truncated,
-					Text:        browserResult.Text,
+		if len(text) < minLength && a.cfg.Tools.WebFetch.FallbackToBrowser {
+			if a.browserPool != nil {
+				// Attempt browser fallback for JS-heavy sites. fetchWithBrowser
+				// guarantees a non-empty result on success — every failure mode
+				// (browser error, empty render) returns a distinct error rather
+				// than an empty success, so there is no separate empty-render
+				// check for the fallback here. A nil/unavailable pool is handled
+				// by the else-branch below, not passed into fetchWithBrowser.
+				browserResult, err := a.fetchWithBrowser(ctx, a.browserPool, rawURL, hostAllowed)
+				if err != nil {
+					log.Printf("[agent][%s] web_fetch browser fallback failed for %s, using original result: %v", a.user.Name, rawURL, err)
+				} else {
+					result = &webfetch.Result{
+						URL:         browserResult.URL,
+						StatusCode:  browserResult.StatusCode,
+						ContentType: browserResult.ContentType,
+						Bytes:       browserResult.Bytes,
+						Truncated:   browserResult.Truncated,
+						Text:        browserResult.Text,
+					}
+					log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback)",
+						a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
 				}
-				log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback)",
-					a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+			} else {
+				// Browser fallback is enabled but no browser pool is available
+				// to service it (no tools.browser.endpoint configured, or the pool
+				// failed to initialize). This is a degraded state, not a crash:
+				// return the thin HTTP text as-is, but log the missed fallback so
+				// the operator can see the degradation rather than silent thin text.
+				log.Printf("[agent][%s] web_fetch: browser fallback is enabled but no browser pool is configured; cannot fall back for %s (plain fetch returned %d chars, threshold %d)",
+					a.user.Name, rawURL, len(text), minLength)
 			}
 		}
 		if strings.TrimSpace(result.Text) == "" {
