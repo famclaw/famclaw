@@ -146,7 +146,7 @@ This feature is **optional but recommended** for a family assistant to help ensu
 - **Parent notifications:** Configure alert channels under `notifications:` in `config.yaml` (email, Slack, Discord, SMS, ntfy) to receive alerts about quarantined tools, approval requests, etc.
 - **MCP servers:** Enable multi-tool servers by configuring `skills.mcp_servers` in `config.yaml` (see the example in the default config).
 - **Web tools:** The built-in web tools (`web_fetch`, `web_search`, `browser`) can be enabled under `tools:` in `config.yaml`. Note: `web_fetch` requires a non-empty `url_allowlist` to prevent SSRF attacks; an empty list denies all fetches. `web_search` requires `tools.web_fetch.enabled=true`.
-- **MCP runtime management:** List, add, and remove MCP servers at runtime via the `.mcp list/add/remove` chat commands or the `/api/mcp` endpoints (session-authenticated, parent role) — no config edit or restart required. See [SKILLS.md](./SKILLS.md).
+- **MCP runtime management:** List and add MCP servers conversationally via the parent-only `mcp_list` and `mcp_add` built-in tools, or add/remove via the `/api/mcp` endpoints (session-authenticated, parent role) — no config edit or restart required. The running MCP pool is reloaded in place. See [SKILLS.md](./SKILLS.md) and the MCP section of the README.
 - **Config hot-reload:** FamClaw watches `config.yaml` and reloads non-destructive changes in place — including MCP server add/remove, gateway toggles, and tool config — without a restart. Each component reports its actual reload outcome (success, failure, or "requires restart" for non-reloadable components); false success is no longer reported. The voice transcriber is hot-reloadable. The file watcher stops cleanly on shutdown.
 ## Next Steps
 
