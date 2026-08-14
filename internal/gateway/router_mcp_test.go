@@ -35,7 +35,7 @@ func TestHandleMCPCommand(t *testing.T) {
 	identStore := &identity.Store{}
 	db := &store.DB{}
 	notifier := &notify.MultiNotifier{}
-	router := NewRouter(context.TODO(), cfg, identStore, nil, nil, db, notifier, nil, nil, configPath)
+	router := NewRouter(context.TODO(), cfg, identStore, nil, nil, db, notifier, nil, nil, configPath, nil)
 
 	// Helper to create an adjustedUser from a user name
 	getUser := func(name string) *config.UserConfig {
@@ -163,7 +163,7 @@ func TestHandleMCPCommand_Persistence(t *testing.T) {
 	identStore := &identity.Store{}
 	db := &store.DB{}
 	notifier := &notify.MultiNotifier{}
-	router := NewRouter(context.TODO(), cfg, identStore, nil, nil, db, notifier, nil, nil, configPath)
+	router := NewRouter(context.TODO(), cfg, identStore, nil, nil, db, notifier, nil, nil, configPath, nil)
 
 	parent := getUser(t, cfg, "parent")
 

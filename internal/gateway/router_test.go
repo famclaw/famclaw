@@ -77,7 +77,7 @@ func setupRouter(t *testing.T, chatFn ChatFunc) (*Router, *identity.Store) {
 	notifier := notify.NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error { return nil })
 	reg := skillbridge.NewRegistry(t.TempDir(), nil, skillbridge.InstallConfig{}, nil)
 
-	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "")
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "", nil)
 	return router, identStore
 }
 
@@ -1080,7 +1080,7 @@ func TestHandleSkillCommand(t *testing.T) {
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 		return "stub", nil
 	}
-	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "")
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "", nil)
 
 	// Link parent and child accounts
 	identStore.LinkAccount("parent", "telegram", "parent-123")
@@ -1347,7 +1347,7 @@ func TestHandleSkillCommandInstallEnableDisable(t *testing.T) {
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 		return "stub", nil
 	}
-	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "")
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "", nil)
 	identStore.LinkAccount("parent", "telegram", "parent-123")
 
 	// 1. Install a skill from a pre-placed SKILL.md file.
@@ -1469,7 +1469,7 @@ func TestHandleSkillCommandEmptyList(t *testing.T) {
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 		return "stub", nil
 	}
-	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "")
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "", nil)
 	identStore.LinkAccount("parent", "telegram", "parent-123")
 
 	reply := router.Handle(context.Background(), Message{
@@ -1559,20 +1559,77 @@ func TestRouterImageAttachmentForwarded(t *testing.T) {
 	}
 }
 
+// mockTranscriber is a test double for the Transcriber interface.
+type mockTranscriber struct {
+	transcript string
+	err        error
+	calls      int
+}
+
+func (m *mockTranscriber) TranscribeAudio(_ context.Context, _ []byte, _ string) (string, error) {
+	m.calls++
+	if m.err != nil {
+		return "", m.err
+	}
+	return m.transcript, nil
+}
+
+// setupRouterWithTranscriber is like setupRouter but injects a Transcriber
+// so the router's pre-classifier transcription step runs.
+func setupRouterWithTranscriber(t *testing.T, chatFn ChatFunc, transcriber Transcriber) (*Router, *identity.Store) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	db, err := store.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ev, err := policy.NewEvaluator("", "", "")
+	if err != nil {
+		t.Fatalf("NewEvaluator: %v", err)
+	}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:     "localhost",
+			Port:     8080,
+			Secret:   "test-secret",
+			MDNSName: "famclaw",
+		},
+		LLM: config.LLMConfig{
+			Temperature:       0.7,
+			MaxResponseTokens: 512,
+		},
+		Users: []config.UserConfig{
+			{Name: "parent", DisplayName: "Parent", Role: "parent", PIN: "1234"},
+			{Name: "emma", DisplayName: "Emma", Role: "child", AgeGroup: "age_8_12"},
+			{Name: "lucas", DisplayName: "Lucas", Role: "child", AgeGroup: "under_8"},
+		},
+	}
+
+	identStore := identity.NewStore(db)
+	clf := classifier.New()
+	notifier := notify.NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error { return nil })
+	reg := skillbridge.NewRegistry(t.TempDir(), nil, skillbridge.InstallConfig{}, nil)
+
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "", transcriber)
+	return router, identStore
+}
+
 // TestRouterVoiceAttachmentNeverSilent proves that a voice message — an audio
 // attachment with NO text (the exact shape Telegram/Discord voice notes arrive
-// in) — is never silently dropped. The router must forward the attachment to the
-// chatFn and return a non-empty Reply (an allow / transcription path or a
-// visible refusal), in every case.
+// in) — is never silently dropped. The router must transcribe the audio BEFORE
+// its classifier and policy gates, then forward the transcript (not the raw
+// attachment) to the chatFn and return a non-empty Reply.
+//
+// When transcription is unavailable (nil transcriber) or fails, the router
+// must return a visible "voice isn't available" reply — never silence.
 //
 // This is the router-level half of the guarantee that the agent-level tests in
 // internal/agent/voice_transcribe_test.go prove in isolation. Together they
 // close issue #310: "voice messages are silently dropped — no reply, no error."
-//
-// The chatFn here is a stand-in for agent.Chat which, in production, transcribes
-// the audio attachment into text before calling the LLM. We use a mock that
-// returns a transcript-like string so we can assert the full forward-and-reply
-// path end to end.
 func TestRouterVoiceAttachmentNeverSilent(t *testing.T) {
 	type captured struct {
 		text        string
@@ -1587,6 +1644,7 @@ func TestRouterVoiceAttachmentNeverSilent(t *testing.T) {
 		text        string
 		attachments []Attachment
 		wantAction  string
+		wantText    string // expected text forwarded to chatFn
 	}{
 		{
 			name:       "parent voice note no text",
@@ -1599,6 +1657,7 @@ func TestRouterVoiceAttachmentNeverSilent(t *testing.T) {
 				MIMEType: "audio/ogg",
 			}},
 			wantAction: "allow",
+			wantText:   "what time is it",
 		},
 		{
 			name:       "child voice note no text",
@@ -1611,6 +1670,7 @@ func TestRouterVoiceAttachmentNeverSilent(t *testing.T) {
 				MIMEType: "audio/ogg",
 			}},
 			wantAction: "allow",
+			wantText:   "what time is it",
 		},
 		{
 			name:       "child voice note with caption text",
@@ -1623,6 +1683,7 @@ func TestRouterVoiceAttachmentNeverSilent(t *testing.T) {
 				MIMEType: "audio/ogg",
 			}},
 			wantAction: "allow",
+			wantText:   "what is my homework\nwhat time is it",
 		},
 	}
 
@@ -1635,7 +1696,8 @@ func TestRouterVoiceAttachmentNeverSilent(t *testing.T) {
 				got.called = true
 				return "transcript: what time is it", nil
 			}
-			router, identStore := setupRouter(t, chatFn)
+			transcriber := &mockTranscriber{transcript: "what time is it"}
+			router, identStore := setupRouterWithTranscriber(t, chatFn, transcriber)
 			identStore.LinkAccount(tc.userName, "telegram", tc.externalID)
 
 			reply := router.Handle(context.Background(), Message{
@@ -1651,23 +1713,22 @@ func TestRouterVoiceAttachmentNeverSilent(t *testing.T) {
 				t.Fatal("chatFn was never called — voice message was silently dropped")
 			}
 
-			// The chatFn must have received the audio attachment.
-			if len(got.attachments) != 1 {
-				t.Fatalf("expected 1 attachment forwarded to chatFn, got %d", len(got.attachments))
-			}
-			att := got.attachments[0]
-			if att.Type != "audio" {
-				t.Errorf("attachment type = %q, want audio", att.Type)
-			}
-			if att.MIMEType != "audio/ogg" {
-				t.Errorf("attachment mime = %q, want audio/ogg", att.MIMEType)
+			// The chatFn must NOT receive the audio attachment — it was
+			// transcribed and stripped by the router before the chatFn.
+			if len(got.attachments) != 0 {
+				t.Errorf("expected 0 attachments forwarded to chatFn (audio should be stripped), got %d", len(got.attachments))
 			}
 
-			// The text passed to chatFn must be the original text (empty for
-			// voice notes), so the agent's transcribeAttachments can detect
-			// that it needs to transcribe the audio.
-			if got.text != tc.text {
-				t.Errorf("text forwarded to chatFn = %q, want %q", got.text, tc.text)
+			// The text forwarded to chatFn must be the transcript (combined
+			// with any caption), proving transcription happened before the
+			// chatFn/policy path.
+			if got.text != tc.wantText {
+				t.Errorf("text forwarded to chatFn = %q, want %q", got.text, tc.wantText)
+			}
+
+			// The transcriber must have been called exactly once.
+			if transcriber.calls != 1 {
+				t.Errorf("transcriber called %d times, want 1", transcriber.calls)
 			}
 
 			// The router must return a non-empty reply — never silence.
@@ -1678,6 +1739,248 @@ func TestRouterVoiceAttachmentNeverSilent(t *testing.T) {
 				t.Error("reply text is empty — voice message produced silence")
 			}
 		})
+	}
+}
+
+// TestRouterVoiceTranscriptionFailureVisible proves that when transcription
+// fails (transcriber returns an error), the router returns a visible
+// "voice isn't available" reply — never silence. The chatFn must NOT be
+// called.
+func TestRouterVoiceTranscriptionFailureVisible(t *testing.T) {
+	var called bool
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
+		called = true
+		return "should not reach LLM", nil
+	}
+	transcriber := &mockTranscriber{err: fmt.Errorf("transcription service down")}
+	router, identStore := setupRouterWithTranscriber(t, chatFn, transcriber)
+	identStore.LinkAccount("emma", "telegram", "emma-err")
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway:    "telegram",
+		ExternalID: "emma-err",
+		Text:       "",
+		Attachments: []Attachment{{
+			Type:     "audio",
+			Data:     "ZmFrZS1vZ2ctYnl0ZXM=",
+			MIMEType: "audio/ogg",
+		}},
+	})
+
+	if called {
+		t.Fatal("chatFn was called despite transcription failure — LLM must never see un-gated voice")
+	}
+	if reply.PolicyAction != "error" {
+		t.Errorf("PolicyAction = %q, want error", reply.PolicyAction)
+	}
+	if !strings.Contains(reply.Text, "voice isn't available") {
+		t.Errorf("reply = %q, want it to contain %q", reply.Text, "voice isn't available")
+	}
+	if transcriber.calls != 1 {
+		t.Errorf("transcriber called %d times, want 1", transcriber.calls)
+	}
+}
+
+// TestRouterVoiceDisabledTranscriberVisible proves that when no transcriber is
+// configured (nil), an audio attachment produces a visible "voice isn't
+// available" reply — never silence. This is the interim behaviour for
+// deployments that have not enabled tools.transcription.
+func TestRouterVoiceDisabledTranscriberVisible(t *testing.T) {
+	var called bool
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
+		called = true
+		return "should not reach LLM", nil
+	}
+	// nil transcriber → transcription disabled
+	router, identStore := setupRouterWithTranscriber(t, chatFn, nil)
+	identStore.LinkAccount("emma", "telegram", "emma-nil")
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway:    "telegram",
+		ExternalID: "emma-nil",
+		Text:       "",
+		Attachments: []Attachment{{
+			Type:     "audio",
+			Data:     "ZmFrZS1vZ2ctYnl0ZXM=",
+			MIMEType: "audio/ogg",
+		}},
+	})
+
+	if called {
+		t.Fatal("chatFn was called despite disabled transcription")
+	}
+	if reply.PolicyAction != "error" {
+		t.Errorf("PolicyAction = %q, want error", reply.PolicyAction)
+	}
+	if !strings.Contains(reply.Text, "voice isn't available") {
+		t.Errorf("reply = %q, want it to contain %q", reply.Text, "voice isn't available")
+	}
+}
+
+// TestRouterVoiceSamePolicyPathAsTyped proves the core correctness property of
+// issue #310: a transcribed voice message goes through the SAME policy path as
+// the same request typed. The router transcribes the audio BEFORE its
+// classifier and policy evaluation, so a blocked category (sexual_content)
+// blocks both the voice and the typed version — and a request_approval category
+// (politics for age_8_12) triggers the approval flow for both.
+//
+// This test uses a child user (emma, age_8_12) and a mock transcriber that
+// returns a sensitive transcript. We then send the same text directly (typed)
+// and compare the PolicyAction.
+func TestRouterVoiceSamePolicyPathAsTyped(t *testing.T) {
+	cases := []struct {
+		name       string
+		text       string // the transcript / typed text
+		ageGroup   string
+		userName   string
+		externalID string
+		wantAction string
+	}{
+		{
+			// "show me porn" → sexual_content → hard block
+			name:       "child voice blocked same as typed (porn)",
+			text:       "show me porn",
+			ageGroup:   "age_8_12",
+			userName:   "emma",
+			externalID: "emma-block-voice",
+			wantAction: "block",
+		},
+		{
+			// "what is politics" → politics → medium risk → request_approval for age_8_12
+			name:       "child voice approval same as typed (politics)",
+			text:       "what is politics",
+			ageGroup:   "age_8_12",
+			userName:   "emma",
+			externalID: "emma-approval-voice",
+			wantAction: "request_approval",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// --- Voice path: mock transcriber returns tc.text as the transcript ---
+			var voiceReply Reply
+			var voiceCalled bool
+			voiceChat := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
+				voiceCalled = true
+				return "llm", nil
+			}
+			voiceTranscriber := &mockTranscriber{transcript: tc.text}
+			voiceRouter, voiceIdent := setupRouterWithTranscriber(t, voiceChat, voiceTranscriber)
+			voiceIdent.LinkAccount(tc.userName, "telegram", tc.externalID)
+
+			voiceReply = voiceRouter.Handle(context.Background(), Message{
+				Gateway:    "telegram",
+				ExternalID: tc.externalID,
+				Text:       "", // pure voice — no text
+				Attachments: []Attachment{{
+					Type:     "audio",
+					Data:     "ZmFrZS1vZ2ctYnl0ZXM=",
+					MIMEType: "audio/ogg",
+				}},
+			})
+
+			// --- Typed path: same text, no attachments ---
+			var typedReply Reply
+			var typedCalled bool
+			typedChat := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
+				typedCalled = true
+				return "llm", nil
+			}
+			typedRouter, typedIdent := setupRouterWithTranscriber(t, typedChat, nil)
+			typedIdent.LinkAccount(tc.userName, "telegram", tc.externalID+"-typed")
+
+			typedReply = typedRouter.Handle(context.Background(), Message{
+				Gateway:    "telegram",
+				ExternalID: tc.externalID + "-typed",
+				Text:       tc.text, // typed directly
+			})
+
+			// Both paths must produce the SAME PolicyAction.
+			if voiceReply.PolicyAction != typedReply.PolicyAction {
+				t.Errorf("voice PolicyAction = %q, typed PolicyAction = %q — voice must go through the same policy path as typed",
+					voiceReply.PolicyAction, typedReply.PolicyAction)
+			}
+
+			// The voice path must match the expected action.
+			if voiceReply.PolicyAction != tc.wantAction {
+				t.Errorf("voice PolicyAction = %q, want %q", voiceReply.PolicyAction, tc.wantAction)
+			}
+
+			// On block: the LLM must never be called on EITHER path.
+			if voiceReply.PolicyAction == "block" {
+				if voiceCalled {
+					t.Error("LLM was called for a voice block — policy bypassed")
+				}
+				if typedCalled {
+					t.Error("LLM was called for a typed block — baseline wrong")
+				}
+			}
+
+			// On request_approval: the LLM must never be called on EITHER path,
+			// but an approval must be created in the DB.
+			if voiceReply.PolicyAction == "request_approval" {
+				if voiceCalled {
+					t.Error("LLM was called for a voice approval — policy bypassed")
+				}
+				if typedCalled {
+					t.Error("LLM was called for a typed approval — baseline wrong")
+				}
+				// Verify the approval was persisted for the voice path.
+				approvals, err := voiceRouter.db.AllApprovals()
+				if err != nil {
+					t.Fatalf("AllApprovals: %v", err)
+				}
+				if len(approvals) == 0 {
+					t.Error("no approval was created for voice request — approval flow bypassed")
+				}
+			}
+		})
+	}
+}
+
+// TestRouterVoiceApprovalPersisted proves that a transcribed voice message
+// requiring approval creates an approval record in the DB and that the
+// approval's QueryText is the transcript (not empty), so the parent sees what
+// the child actually asked.
+func TestRouterVoiceApprovalPersisted(t *testing.T) {
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
+		t.Fatal("LLM should not be called for a request_approval path")
+		return "", nil
+	}
+	transcriber := &mockTranscriber{transcript: "what is politics"}
+	router, identStore := setupRouterWithTranscriber(t, chatFn, transcriber)
+	identStore.LinkAccount("emma", "telegram", "emma-approval")
+
+	reply := router.Handle(context.Background(), Message{
+		Gateway:    "telegram",
+		ExternalID: "emma-approval",
+		Text:       "",
+		Attachments: []Attachment{{
+			Type:     "audio",
+			Data:     "ZmFrZS1vZ2ctYnl0ZXM=",
+			MIMEType: "audio/ogg",
+		}},
+	})
+
+	if reply.PolicyAction != "request_approval" {
+		t.Fatalf("PolicyAction = %q, want request_approval", reply.PolicyAction)
+	}
+
+	// The approval must be persisted with the transcript as the query text.
+	approvals, err := router.db.AllApprovals()
+	if err != nil {
+		t.Fatalf("AllApprovals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("expected 1 approval, got %d", len(approvals))
+	}
+	if approvals[0].QueryText != "what is politics" {
+		t.Errorf("approval QueryText = %q, want %q (must be the transcript, not empty)",
+			approvals[0].QueryText, "what is politics")
+	}
+	if approvals[0].UserName != "emma" {
+		t.Errorf("approval UserName = %q, want emma", approvals[0].UserName)
 	}
 }
 
