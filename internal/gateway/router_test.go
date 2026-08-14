@@ -77,7 +77,7 @@ func setupRouter(t *testing.T, chatFn ChatFunc) (*Router, *identity.Store) {
 	notifier := notify.NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error { return nil })
 	reg := skillbridge.NewRegistry(t.TempDir(), nil, skillbridge.InstallConfig{}, nil)
 
-	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "")
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "", nil)
 	return router, identStore
 }
 
@@ -1080,7 +1080,7 @@ func TestHandleSkillCommand(t *testing.T) {
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 		return "stub", nil
 	}
-	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "")
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "", nil)
 
 	// Link parent and child accounts
 	identStore.LinkAccount("parent", "telegram", "parent-123")
@@ -1347,7 +1347,7 @@ func TestHandleSkillCommandInstallEnableDisable(t *testing.T) {
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 		return "stub", nil
 	}
-	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "")
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "", nil)
 	identStore.LinkAccount("parent", "telegram", "parent-123")
 
 	// 1. Install a skill from a pre-placed SKILL.md file.
@@ -1469,7 +1469,7 @@ func TestHandleSkillCommandEmptyList(t *testing.T) {
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
 		return "stub", nil
 	}
-	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "")
+	router := NewRouter(context.Background(), cfg, identStore, clf, ev, db, notifier, chatFn, reg, "", nil)
 	identStore.LinkAccount("parent", "telegram", "parent-123")
 
 	reply := router.Handle(context.Background(), Message{

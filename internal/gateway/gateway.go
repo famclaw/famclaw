@@ -61,6 +61,26 @@ type MsgContext struct {
 // Matches the shape of agent.Chat but decoupled for testability.
 type ChatFunc func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error)
 
+// Transcriber converts raw audio bytes into a transcript string.
+// The concrete implementation lives in the internal/transcribe package;
+// the gateway depends only on this interface for testability and to
+// avoid an import on the agent package.
+// Implementations must not retain the audio data after returning.
+
+type Transcriber interface {
+	// TranscribeAudio transcribes the given audio data. mimeType is the
+	// media type of the audio (e.g. "audio/ogg", "audio/mpeg") used as a
+	// hint to the transcription service. Returns the transcript text
+	// or an error if transcription fails.
+	TranscribeAudio(ctx context.Context, audioData []byte, mimeType string) (string, error)
+}
+
+// VoiceUnavailableMsg is returned to the user when an audio attachment
+// cannot be transcribed (transcriber unconfigured or errored). Never a
+// silent drop — issue #310. The agent package references the same string
+// via this exported constant so both code paths speak identically.
+const VoiceUnavailableMsg = "voice isn't available. Please ask a grown-up to configure voice transcription, or try again later."
+
 // Gateway is the interface that each messaging platform implements.
 type Gateway interface {
 	// Start begins listening for messages. Blocks until ctx is cancelled.

@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -44,9 +45,10 @@ type Router struct {
 	notifier   *notify.MultiNotifier
 	chatFn     ChatFunc
 	pool       *SessionPool
-	registry   *skillbridge.Registry
-	configPath string
-	cfgMu      sync.RWMutex
+	registry    *skillbridge.Registry
+	configPath  string
+	cfgMu       sync.RWMutex
+	transcriber Transcriber // converts audio attachments to text before policy gates; nil = disabled
 
 	pendingMu   sync.Mutex
 	pendingRegs map[string]*pendingRegistration
@@ -71,6 +73,10 @@ func (r *Router) ReloadConfig(newCfg *config.Config) error {
 // The ctx is used as the parent for the session pool's shutdown context;
 // passing the application lifecycle context lets session goroutines exit
 // cleanly on graceful shutdown.
+// transcriber converts inbound audio attachments into text before the
+// router's classifier and policy evaluation so the transcript receives
+// exactly the same age/approval gating as typed text; nil disables voice
+// transcription (audio attachments then produce a visible error reply).
 func NewRouter(
 	ctx context.Context,
 	cfg *config.Config,
@@ -82,6 +88,7 @@ func NewRouter(
 	chatFn ChatFunc,
 	registry *skillbridge.Registry,
 	configPath string,
+	transcriber Transcriber,
 ) *Router {
 	r := &Router{
 		cfg:         cfg,
@@ -93,6 +100,7 @@ func NewRouter(
 		chatFn:      chatFn,
 		registry:    registry,
 		configPath:  configPath,
+		transcriber: transcriber,
 		pendingRegs: make(map[string]*pendingRegistration),
 	}
 	// Session pool dispatches heavy work (classify → policy → LLM) per-user
@@ -146,6 +154,58 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		return Reply{Text: identity.UnknownAccountMessage(), PolicyAction: "onboarding"}
 	}
 
+	// ── Compute stable conversation ID via idle-gap rule ────────────────
+	// Computed before the classifier so that a transcription failure (which
+	// returns early) can still persist the user's voice message to the
+	// conversation history — never silently drop it. The conversation
+	// continues as long as the gap since the user's last message is under
+	// ConversationIdleTimeout (6h). This replaces the old day-bucketing
+	// that silently reset every conversation at midnight.
+	now := time.Now().UTC()
+	lastConvID, lastMsg, hasLast, convErr := r.db.LastMessage(ctx, user.Name)
+	if convErr != nil {
+		// A DB error here means we can't determine the conversation
+		// boundary. We do NOT return an error to the caller because a
+		// transient DB issue should not block the user from interacting.
+		// Instead, treat as a cold start (hasLast=false → mint fresh).
+		// The error is logged for observability. If the DB recovers on
+		// the next message, LastMessage will succeed and the
+		// conversation will re-anchor from that point.
+		log.Printf("[router] %s: LastMessage error: %v — treating as cold start", user.Name, convErr)
+	}
+	convID := store.ConversationID(user.Name, lastMsg, hasLast, lastConvID, now)
+
+	// ── Transcribe audio attachments BEFORE classify/policy ──────────────
+	// Transcription MUST happen before the classifier and policy evaluation
+	// so the transcript receives exactly the same age/approval gating as a
+	// typed message. If a voice message reached the agent after the router's
+	// policy gate, a child's spoken request could bypass the approval flow
+	// (the agent's pipeline blocks the text but never creates the approval
+	// or notifies a parent — that logic lives in this router).
+	if hasAudioAttachment(msg.Attachments) {
+		transcript, err := r.transcribeAttachments(ctx, msg.Attachments, msg.Text)
+		if err != nil {
+			// Never silent: persist the voice message and a visible
+			// error reply, then return. The original msg.Text (likely
+			// empty for a pure voice note) is saved as the user turn.
+			log.Printf("[router] %s: voice transcription failed: %v", user.Name, err)
+			if err := r.db.SaveMessage(convID, user.Name, "user", msg.Text, "", "error", msg.Gateway); err != nil {
+				log.Printf("[gateway][%s] save voice-fail user message: %v", user.Name, err)
+			}
+			if err := r.db.SaveMessage(convID, user.Name, "assistant", VoiceUnavailableMsg, "", "error", msg.Gateway); err != nil {
+				log.Printf("[gateway][%s] save voice-fail assistant response: %v", user.Name, err)
+			}
+			return Reply{Text: VoiceUnavailableMsg, PolicyAction: "error"}
+		}
+		if transcript != "" {
+			msg.Text = transcript
+			// Strip audio attachments so the agent's fallback
+			// transcribeAttachments is a no-op (no double transcription).
+			// Image attachments are preserved for the multimodal path.
+			msg.Attachments = filterImageAttachments(msg.Attachments)
+		}
+	}
+
 	// ── Classify ─────────────────────────────────────────────────────────
 	cat := r.clf.Classify(msg.Text)
 	log.Printf("[router] %s/%s user=%s cat=%s", msg.Gateway, msg.ExternalID, user.Name, cat)
@@ -183,24 +243,6 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 		log.Printf("[router] policy error: %v", err)
 		return Reply{Text: "Policy evaluation error. Please try again.", PolicyAction: "error"}
 	}
-
-	// ── Compute stable conversation ID via idle-gap rule ────────────────
-	// The conversation continues as long as the gap since the user's last
-	// message is under ConversationIdleTimeout (6h). This replaces the old
-	// day-bucketing that silently reset every conversation at midnight.
-	now := time.Now().UTC()
-	lastConvID, lastMsg, hasLast, err := r.db.LastMessage(ctx, user.Name)
-	if err != nil {
-		// A DB error here means we can't determine the conversation
-		// boundary. We do NOT return an error to the caller because a
-		// transient DB issue should not block the user from interacting.
-		// Instead, treat as a cold start (hasLast=false → mint fresh).
-		// The error is logged for observability. If the DB recovers on
-		// the next message, LastMessage will succeed and the
-		// conversation will re-anchor from that point.
-		log.Printf("[router] %s: LastMessage error: %v — treating as cold start", user.Name, err)
-	}
-	convID := store.ConversationID(user.Name, lastMsg, hasLast, lastConvID, now)
 
 	// ── Step 4: Handle non-allow decisions (LLM is NEVER called) ─────────
 	switch decision.Action {
@@ -273,6 +315,75 @@ func (r *Router) process(ctx context.Context, msg Message) Reply {
 	}
 
 	return Reply{Text: response, PolicyAction: "allow"}
+}
+
+// hasAudioAttachment reports whether any attachment in the slice is audio.
+func hasAudioAttachment(attachments []Attachment) bool {
+	for _, att := range attachments {
+		if att.Type == "audio" {
+			return true
+		}
+	}
+	return false
+}
+
+// filterImageAttachments returns a new slice containing only non-audio
+// attachments (images, etc.). Audio attachments are stripped so the agent
+// does not double-transcribe.
+func filterImageAttachments(attachments []Attachment) []Attachment {
+	result := make([]Attachment, 0, len(attachments))
+	for _, att := range attachments {
+		if att.Type != "audio" {
+			result = append(result, att)
+		}
+	}
+	return result
+}
+
+// transcribeAttachments transcribes every audio attachment in the message
+// context into text, combining the result with any existing caption text.
+// This runs BEFORE the router's classifier and policy evaluation so the
+// transcript receives exactly the same age/approval gating as a typed
+// message. Non-audio attachments (images) are ignored — they follow the
+// multimodal path.
+//
+// Returns ("", nil) when there are no audio attachments so text-only
+// messages are unaffected. Returns a wrapped error when transcription
+// fails; the caller surface it as a visible reply (never a silent drop).
+func (r *Router) transcribeAttachments(ctx context.Context, attachments []Attachment, userMessage string) (string, error) {
+	var audioAtts []Attachment
+	for _, att := range attachments {
+		if att.Type == "audio" {
+			audioAtts = append(audioAtts, att)
+		}
+	}
+	if len(audioAtts) == 0 {
+		return "", nil
+	}
+	if r.transcriber == nil {
+		return "", fmt.Errorf("voice transcription is not configured")
+	}
+
+	parts := make([]string, 0, len(audioAtts)+1)
+	if userMessage != "" {
+		parts = append(parts, userMessage)
+	}
+	for _, att := range audioAtts {
+		raw, err := base64.StdEncoding.DecodeString(att.Data)
+		if err != nil {
+			return "", fmt.Errorf("decoding audio attachment: %w", err)
+		}
+		transcript, err := r.transcriber.TranscribeAudio(ctx, raw, att.MIMEType)
+		if err != nil {
+			return "", fmt.Errorf("transcribing voice: %w", err)
+		}
+		transcript = strings.TrimSpace(transcript)
+		if transcript == "" {
+			return "", fmt.Errorf("transcription returned empty text")
+		}
+		parts = append(parts, transcript)
+	}
+	return strings.Join(parts, "\n"), nil
 }
 
 func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, category, queryText, requestID string) error {

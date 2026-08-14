@@ -133,7 +133,10 @@ type Transcriber interface {
 
 // voiceUnavailableMsg is returned to the user when an audio attachment
 // cannot be transcribed (unconfigured or failed). Never a silent drop.
-const voiceUnavailableMsg = "voice isn't available. Please ask a grown-up to configure voice transcription, or try again later."
+// This is a thin alias of gateway.VoiceUnavailableMsg so the router and
+// agent speak the same message; the router is the primary owner of
+// voice transcription (it runs before the policy gates).
+const voiceUnavailableMsg = gateway.VoiceUnavailableMsg
 
 // AgentDeps holds optional dependencies for an Agent. All fields are
 // safe to leave nil — the Agent degrades gracefully (no MCP tools,
