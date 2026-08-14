@@ -480,3 +480,101 @@ func TestResolveSubagentOutcome_FastFailureNotTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestShutdownCancelledSubagent_RecordedAsFailed is the regression test for
+// the captain's feedback: when the server-lifetime context is cancelled at
+// shutdown, the subagent must be recorded as Failed with a truthful reason
+// (the actual cancellation error), NOT as a 300-second timeout. This covers
+// the full flow: resolveSubagentOutcome classifies the outcome, then
+// finalizeResearch persists it to the DB.
+func TestShutdownCancelledSubagent_RecordedAsFailed(t *testing.T) {
+	sender := &errSender{err: fmt.Errorf("delivery will fail")}
+	a := setupResearchAgent(t, sender)
+	a.nowFn = func() time.Time { return time.Date(2026, 7, 23, 18, 30, 0, 0, time.UTC) }
+
+	// Simulate the server-lifetime context that is cancelled at shutdown.
+	lifetimeCtx, lifetimeCancel := context.WithCancel(context.Background())
+	// Derive the subagent's timeout context from the lifetime context,
+	// exactly as handleSpawnAgent does after the fix.
+	subCtx, subCancel := context.WithTimeout(lifetimeCtx, 300*time.Second)
+	defer subCancel()
+
+	// Simulate graceful shutdown: cancel the lifetime context. This is
+	// context.Canceled (NOT DeadlineExceeded), because the deadline
+	// (300s) has not elapsed.
+	lifetimeCancel()
+	// Give the child context time to observe the cancellation.
+	time.Sleep(5 * time.Millisecond)
+
+	// No result arrived — the context was done first (shutdown).
+	resultCh := make(chan subagent.Result, 1)
+	state, resultText := resolveSubagentOutcome(resultCh, subCtx)
+
+	if state != store.ResearchStatusFailed {
+		t.Fatalf("state = %q, want %q — a shutdown cancellation must not be reported as a 300s timeout", state, store.ResearchStatusFailed)
+	}
+	if !strings.Contains(resultText, "context canceled") {
+		t.Errorf("resultText = %q, want it to contain the truthful cancellation reason 'context canceled'", resultText)
+	}
+	if strings.Contains(resultText, "deadline") {
+		t.Errorf("resultText = %q, must NOT claim a deadline — the shutdown happened in ~0s, not 300s", resultText)
+	}
+
+	// Now persist it through finalizeResearch (using a bounded finalization
+	// context, as handleSpawnAgent does).
+	finalCtx, finalCancel := context.WithTimeout(context.Background(), finalizeTimeout)
+	defer finalCancel()
+	a.finalizeResearch(finalCtx, "agent-shutdown", state, resultText, 300, "find hvac", a.msgContext)
+
+	// Verify the DB record is truthful.
+	s, err := a.db.GetResearchStatus(context.Background(), a.user.Name, "agent-shutdown")
+	if err != nil {
+		t.Fatalf("GetResearchStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("expected a status record; got nil")
+	}
+	if s.Status != store.ResearchStatusFailed {
+		t.Errorf("DB status = %q, want %q", s.Status, store.ResearchStatusFailed)
+	}
+	if strings.Contains(s.Deliverable, "timed out after 300 seconds") {
+		t.Errorf("deliverable = %q, must NOT contain 'timed out after 300 seconds'", s.Deliverable)
+	}
+	if !strings.Contains(s.Deliverable, "context canceled") {
+		t.Errorf("deliverable = %q, should contain the truthful reason", s.Deliverable)
+	}
+	if !strings.Contains(s.Deliverable, "agent-shutdown") {
+		t.Errorf("deliverable = %q, should mention the agent ID", s.Deliverable)
+	}
+}
+
+// TestResolveSubagentOutcome_LifetimeContextShutdown verifies that a subagent
+// whose parent lifetime context was cancelled (shutdown) — with the deadline
+// still far in the future — is classified as Failed, not TimedOut. This is a
+// table-driven case complementing the full flow test above.
+func TestResolveSubagentOutcome_LifetimeContextShutdown(t *testing.T) {
+	lifetimeCtx, lifetimeCancel := context.WithCancel(context.Background())
+	subCtx, subCancel := context.WithTimeout(lifetimeCtx, 300*time.Second)
+	defer subCancel()
+
+	// Cancel the lifetime context to simulate shutdown.
+	lifetimeCancel()
+	time.Sleep(5 * time.Millisecond)
+
+	// No result arrives; the subCtx is done due to parent cancellation.
+	resultCh := make(chan subagent.Result, 1)
+	state, resultText := resolveSubagentOutcome(resultCh, subCtx)
+
+	// Must be Failed, never TimedOut.
+	if state != store.ResearchStatusFailed {
+		t.Errorf("state = %q, want %q (shutdown cancellation must not be a timeout)", state, store.ResearchStatusFailed)
+	}
+	// Must carry the truthful reason.
+	if !strings.Contains(resultText, "context canceled") {
+		t.Errorf("resultText = %q, want 'context canceled'", resultText)
+	}
+	// Must NOT claim a deadline.
+	if strings.Contains(resultText, "deadline") {
+		t.Errorf("resultText = %q, must not claim deadline exceeded", resultText)
+	}
+}
