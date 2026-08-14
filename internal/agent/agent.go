@@ -349,9 +349,12 @@ func (a *Agent) now() time.Time {
 // ("", nil) when there are no audio attachments, so text-only messages
 // are unaffected.
 //
-// Security: this runs before SaveMessage and before the pipeline gates
-// read Turn.Input. A spoken request therefore gets exactly the same
-// age/approval gating as a typed one.
+// In production the router transcribes audio BEFORE its classifier and
+// policy evaluation and strips the audio attachments, so this method is
+// a no-op when called through the router. It remains as a fallback for
+// direct Chat calls (tests, web API) and as defence in depth: it runs
+// before SaveMessage and before the pipeline gates read Turn.Input, so a
+// spoken request always gets the same age/approval gating as a typed one.
 func (a *Agent) transcribeAttachments(ctx context.Context, attachments []gateway.Attachment, userMessage string) (string, error) {
 	var audioAtts []gateway.Attachment
 	for _, att := range attachments {

@@ -717,11 +717,13 @@ func main() {
 	log.Printf("Builtin tools: %d registered (%s)", len(builtinTools), strings.Join(registered, ", "))
 
 	// Voice transcription: when enabled, inbound audio attachments (Telegram
-	// voice notes, Discord audio clips) are transcribed into text at the top
-	// of Agent.Chat() — before SaveMessage and before the policy gates read
-	// Turn.Input — so a spoken request gets exactly the same age/approval
-	// gating as a typed one. When disabled (nil inner), audio attachments
-	// produce a visible "voice isn't available" reply rather than a silent drop.
+	// voice notes, Discord audio clips) are transcribed into text in the
+	// router's process() method — BEFORE the router's classifier and policy
+	// evaluation — so a spoken request gets exactly the same age/approval
+	// gating as a typed one. The router strips the audio attachments after
+	// transcribing, so the agent's fallback transcribeAttachments is a no-op
+	// in production. When disabled (nil inner), audio attachments produce a
+	// visible "voice isn't available" reply — never a silent drop (issue #310).
 	//
 	// The ReloadableTranscriber is hot-reloadable: the config-watcher calls
 	// its ReloadConfig on file change (registered in the reload registry

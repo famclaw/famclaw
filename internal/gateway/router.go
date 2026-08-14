@@ -37,14 +37,14 @@ type pendingRegistration struct {
 // Router routes inbound gateway messages through the policy pipeline.
 // Uses a SessionPool for per-user serial, cross-user concurrent processing.
 type Router struct {
-	cfg        *config.Config
-	identStore *identity.Store
-	clf        *classifier.Classifier
-	evaluator  *policy.Evaluator
-	db         *store.DB
-	notifier   *notify.MultiNotifier
-	chatFn     ChatFunc
-	pool       *SessionPool
+	cfg         *config.Config
+	identStore  *identity.Store
+	clf         *classifier.Classifier
+	evaluator   *policy.Evaluator
+	db          *store.DB
+	notifier    *notify.MultiNotifier
+	chatFn      ChatFunc
+	pool        *SessionPool
 	registry    *skillbridge.Registry
 	configPath  string
 	cfgMu       sync.RWMutex
