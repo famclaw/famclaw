@@ -373,6 +373,9 @@ func (r *Router) transcribeAttachments(ctx context.Context, attachments []Attach
 		if err != nil {
 			return "", fmt.Errorf("decoding audio attachment: %w", err)
 		}
+		if len(raw) == 0 {
+			return "", fmt.Errorf("audio attachment is empty after decoding")
+		}
 		transcript, err := r.transcriber.TranscribeAudio(ctx, raw, att.MIMEType)
 		if err != nil {
 			return "", fmt.Errorf("transcribing voice: %w", err)
