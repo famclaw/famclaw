@@ -70,6 +70,9 @@ func TestClassifySubagentResult(t *testing.T) {
 	defer cancel()
 	time.Sleep(5 * time.Millisecond)
 
+	cancelCtx, cancelCtxCancel := context.WithCancel(context.Background())
+	cancelCtxCancel()
+
 	tests := []struct {
 		name      string
 		result    subagent.Result
@@ -79,6 +82,7 @@ func TestClassifySubagentResult(t *testing.T) {
 		{name: "success", result: subagent.Result{Output: "ok"}, ctx: context.Background(), wantState: store.ResearchStatusCompleted},
 		{name: "error not timeout", result: subagent.Result{Error: fmt.Errorf("boom")}, ctx: context.Background(), wantState: store.ResearchStatusFailed},
 		{name: "timeout takes precedence", result: subagent.Result{Error: fmt.Errorf("deadline exceeded")}, ctx: deadlineCtx, wantState: store.ResearchStatusTimedOut},
+		{name: "cancelled context is failed not timeout", result: subagent.Result{Error: fmt.Errorf("context canceled")}, ctx: cancelCtx, wantState: store.ResearchStatusFailed},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -380,5 +384,99 @@ func TestResearchStatusToolDef(t *testing.T) {
 	props, _ := tool.InputSchema["properties"].(map[string]any)
 	if _, ok := props["agent_id"]; !ok {
 		t.Error("expected agent_id property in input schema")
+	}
+}
+
+// TestResolveSubagentOutcome_FastFailureNotTimeout is the core regression for
+// the phantom-timeout bug. When the subagent's context is cancelled by the
+// parent chat turn ending (context.Canceled, NOT a 300s deadline) before a
+// result arrives, the outcome must be Failed -- never TimedOut. The old
+// inline code in handleSpawnAgent unconditionally returned ResearchStatusTimedOut
+// on the ctx.Done() branch regardless of subCtx.Err(), so a one-second
+// failure became "timed out after 300 seconds."
+func TestResolveSubagentOutcome_FastFailureNotTimeout(t *testing.T) {
+	tests := []struct {
+		name       string
+		resultCh   chan subagent.Result
+		subCtx     context.Context
+		wantState  store.ResearchStatusState
+		wantSubstr string
+	}{
+		{
+			name: "cancelled context no result is failed not timeout",
+			// Parent chat turn cancelled the context -- NOT a deadline.
+			// No result arrived on the channel before context was done.
+			resultCh: func() chan subagent.Result {
+				return make(chan subagent.Result, 1) // never sent
+			}(),
+			subCtx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			}(),
+			wantState:  store.ResearchStatusFailed,
+			wantSubstr: "context canceled",
+		},
+		{
+			name: "deadline exceeded is still timeout",
+			resultCh: func() chan subagent.Result {
+				return make(chan subagent.Result, 1) // never sent
+			}(),
+			subCtx: func() context.Context {
+				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+				time.Sleep(5 * time.Millisecond)
+				cancel()
+				return ctx
+			}(),
+			wantState:  store.ResearchStatusTimedOut,
+			wantSubstr: "deadline",
+		},
+		{
+			name: "result with error and live context is failed",
+			resultCh: func() chan subagent.Result {
+				ch := make(chan subagent.Result, 1)
+				ch <- subagent.Result{Error: fmt.Errorf("subagent LLM call: connection refused")}
+				return ch
+			}(),
+			subCtx:     context.Background(),
+			wantState:  store.ResearchStatusFailed,
+			wantSubstr: "connection refused",
+		},
+		{
+			name: "result with success is completed",
+			resultCh: func() chan subagent.Result {
+				ch := make(chan subagent.Result, 1)
+				ch <- subagent.Result{Output: "HVAC companies found"}
+				return ch
+			}(),
+			subCtx:     context.Background(),
+			wantState:  store.ResearchStatusCompleted,
+			wantSubstr: "HVAC companies found",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state, resultText := resolveSubagentOutcome(tc.resultCh, tc.subCtx)
+			if state != tc.wantState {
+				t.Errorf("state = %q, want %q", state, tc.wantState)
+			}
+			if !strings.Contains(resultText, tc.wantSubstr) {
+				t.Errorf("resultText = %q, want substring %q", resultText, tc.wantSubstr)
+			}
+			// CRITICAL REGRESSION ASSERTION: a Failed state must NEVER be
+			// rendered as the fabricated 300-second timeout deliverable.
+			if state == store.ResearchStatusFailed {
+				deliverable := buildResearchDeliverable("agent-1", state, resultText, 300)
+				if strings.Contains(deliverable, "timed out after 300 seconds") {
+					t.Errorf("Failed deliverable = %q, must NOT contain 'timed out after 300 seconds' -- a fast failure must not be fabricating a 300s timeout", deliverable)
+				}
+			}
+			// A genuine TimedOut state SHOULD carry the real deadline error.
+			if state == store.ResearchStatusTimedOut {
+				if !strings.Contains(resultText, "exceeded") {
+					t.Errorf("TimedOut resultText = %q, want it to contain the actual deadline error", resultText)
+				}
+			}
+		})
 	}
 }

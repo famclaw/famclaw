@@ -1139,9 +1139,13 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 		BuiltinHandler: a.makeBuiltinHandler(),
 	}
 
-	subCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
-	// Remove the defer cancel() since we need to keep the outer context alive for the subagent lifetime
-	// The outer cancel() will be called by the defer in the goroutine below
+	// The subagent runs independently of the originating chat turn: its
+	// context is rooted at context.Background() (NOT the inbound ctx) so
+	// that the chat-turn context being cancelled when this handler returns
+	// does not kill the subagent mid-flight. The only deadline is the
+	// subagent's own timeout. The cancel function is deferred in the
+	// background goroutine below.
+	subCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 
 	agentID, resultCh, err := a.scheduler.Submit(subCtx, cfg, func(ctx context.Context, cfg subagent.Config) (string, error) {
 		return subagent.Execute(ctx, cfg, execDeps)
@@ -1162,24 +1166,20 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	// Return immediately with an acknowledgment instead of waiting for result
 	ackMsg := fmt.Sprintf("Started your research (task %s). I'll post the result here when it's done; if I can't deliver it, the result is saved and you can check it with: research status %s.", agentID, agentID)
 
-	// Launch background goroutine to handle result delivery
+	// Launch background goroutine to handle result delivery. The goroutine
+	// uses a detached context for finalization so the result is persisted and
+	// delivered even if the inbound chat-turn context is gone (which it will
+	// be, since handleRequest cancels it when this handler returns).
 	go func() {
-		// Capture the msgContext for later use in result delivery
 		msgCtx := a.msgContext
 		prompt := cfg.Prompt
 
-		// Add defer cancel to ensure the outer context is properly cleaned up
+		// cancel the subagent's context when the goroutine exits.
 		defer cancel()
 
-		select {
-		case result := <-resultCh:
-			// Subagent completed (success, error, or timeout).
-			state, resultText := classifySubagentResult(result, subCtx)
-			a.finalizeResearch(ctx, agentID, state, resultText, timeoutSec, prompt, msgCtx)
-		case <-subCtx.Done():
-			// Timeout
-			a.finalizeResearch(ctx, agentID, store.ResearchStatusTimedOut, subCtx.Err().Error(), timeoutSec, prompt, msgCtx)
-		}
+		finalCtx := context.Background()
+		state, resultText := resolveSubagentOutcome(resultCh, subCtx)
+		a.finalizeResearch(finalCtx, agentID, state, resultText, timeoutSec, prompt, msgCtx)
 	}()
 
 	return ackMsg, nil

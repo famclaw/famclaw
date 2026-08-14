@@ -133,6 +133,34 @@ func classifySubagentResult(result subagent.Result, subCtx context.Context) (sto
 	return store.ResearchStatusFailed, result.Error.Error()
 }
 
+// resolveSubagentOutcome decides the terminal research status from whichever
+// path the background goroutine reached: either the subagent posted a result
+// on its channel, or the subagent's context was done first. Both paths are
+// classified through classifySubagentResult so that a fast failure (e.g. a
+// blocked-domain tool error or the parent chat-turn context being cancelled)
+// is reported as Failed, never re-labelled as a 300-second timeout.
+//
+// This is the single funnel for the select{} in handleSpawnAgent. The old
+// inline ctx.Done() branch unconditionally returned ResearchStatusTimedOut
+// regardless of whether subCtx.Err() was DeadlineExceeded (a real timeout)
+// or Canceled (parent context cancelled when the chat turn ended), so a
+// one-second failure became "timed out after 300 seconds".
+func resolveSubagentOutcome(resultCh <-chan subagent.Result, subCtx context.Context) (store.ResearchStatusState, string) {
+	select {
+	case result := <-resultCh:
+		// Subagent completed (success, error, or deadline).
+		return classifySubagentResult(result, subCtx)
+	case <-subCtx.Done():
+		// No result arrived before the context was done. This fires on a
+		// genuine timeout (DeadlineExceeded) OR on an external cancellation
+		// such as the parent chat-turn context being cancelled when the
+		// handler returns. Synthesize a Result and route it through the
+		// same classifier so a cancellation is reported as Failed, NOT
+		// re-rendered as a fabricated 300-second timeout.
+		return classifySubagentResult(subagent.Result{Error: subCtx.Err()}, subCtx)
+	}
+}
+
 // finalizeResearch persists the terminal status of a research task, attempts
 // to deliver the result to the originating conversation, records the delivery
 // outcome, and surfaces the result into the conversation history so the user
