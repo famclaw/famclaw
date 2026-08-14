@@ -103,6 +103,7 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 - Where is the tool result audited? → `internal/store/db.go:LogAudit` (line 1071)
 - Where is the parent PIN stored? → `internal/credstore/vault.go` (`Vault`, AES-256-GCM); the ciphertext row lives in `vault_secrets` (`internal/store/db.go`, line 243). `cmd/famclaw/main.go` runs the vault-mismatch probe.
 - Where is the LLM client created? → `cmd/famclaw/main.go` (line 442)
+- Where is voice transcription done? → `internal/gateway/router.go:process` (transcribes audio attachments BEFORE the classifier and policy gates, so the transcript gets the same age/approval gating as typed text; `internal/transcribe/transcribe.go` for the OpenAI-compatible client, `internal/transcribe/reloadable.go` for the hot-reloadable wrapper). The `gateway.Transcriber` interface is defined in `internal/gateway/gateway.go`.
 - Where is the gateway account linked? → `internal/gateway/router.go:handleUnknownAccount` (line 373)
 - Where is the current date injected into the system prompt? → `internal/prompt/components.go:dateComponent` (clock via `BuildContext.Now`, falls back to `time.Now()`; snapshot fixtures use a fixed clock in `internal/prompt/snapshot_test.go`)
 - Where is web_search's "backend unavailable" sentinel? → `internal/websearch/search.go` (`ErrUnavailable`, detected via `errors.Is`); `internal/agent/agent.go` (`webSearchError`) translates it into an honest "I could not search right now" message.
