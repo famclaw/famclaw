@@ -118,6 +118,10 @@ type Agent struct {
 	// nowFn returns the current time. Defaults to time.Now; injectable in tests
 	// to make research-status timestamps (incl. timeout recording) deterministic.
 	nowFn func() time.Time
+
+	// configPath is the on-disk path to config.yaml, used by mcp_add to
+	// persist new MCP server entries. Empty string = no persistence.
+	configPath string
 }
 
 // Transcriber converts audio attachments into text. The concrete
@@ -147,6 +151,7 @@ type AgentDeps struct {
 	MsgContext     gateway.MsgContext        // gateway-specific context for outbound tools (reminders, etc.)
 	SenderRegistry map[string]gateway.Sender // map of gateway name (e.g., "telegram", "discord") to Sender implementation
 	Transcriber    Transcriber               // transcribes audio attachments into text; nil disables voice transcription
+	ConfigPath     string                    // on-disk path to config.yaml for mcp_add persistence
 
 	// NowFn, when non-nil, is used to timestamp research status records.
 	// Optional — defaults to time.Now.
@@ -321,6 +326,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		effectiveSandboxRoot: effectiveSandboxRoot,
 		senderRegistry:       deps.SenderRegistry,
 		nowFn:                deps.NowFn,
+		configPath:           deps.ConfigPath,
 	}, nil
 }
 
@@ -748,6 +754,12 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			}
 			a.senderRegistryMu.RUnlock()
 			return sendmsg.Handle(ctx, a.db, a.cfg, senders, a.user.Name, a.gatewayForSave(), to, msg)
+		case "builtin__mcp_list":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath}
+			return admin.HandleMCPList(ctx, deps, args)
+		case "builtin__mcp_add":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath}
+			return admin.HandleMCPAdd(ctx, deps, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}

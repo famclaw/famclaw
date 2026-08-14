@@ -769,6 +769,7 @@ func main() {
 			MsgContext:     msgCtx,
 			SenderRegistry: senderRegistry,
 			Transcriber:    voiceTranscriber,
+			ConfigPath:     *cfgPath,
 		})
 		if err != nil {
 			return "", err
