@@ -146,7 +146,10 @@ type WebFetchConfig struct {
 	// addresses even when they appear in url_allowlist.
 	BlockPrivateNetworks bool `yaml:"block_private_networks,omitempty"`
 	// FallbackToBrowser enables using the browser pool as a fallback for JS-heavy
-	// sites when the plain fetch returns insufficient text.
+	// sites when the plain fetch returns insufficient text. Requires
+	// tools.browser.enabled=true with a reachable Playwright browser endpoint;
+	// enabling this flag alone does NOT suffice — if the browser pool is nil or
+	// the endpoint is unreachable, the fallback never fires and a warning is logged.
 	FallbackToBrowser bool `yaml:"fallback_to_browser,omitempty"`
 	// FallbackMinTextLength is the minimum plain-fetch text length (chars) to treat
 	// as sufficient; below it, and with FallbackToBrowser, the browser fallback runs.
