@@ -733,6 +733,13 @@ func main() {
 		log.Printf("voice transcription: %v", err)
 	}
 
+	// Gateway lifecycle context — shared between the session pool, bots, and
+	// agents (for subagent lifetime). Cancelled during graceful shutdown so
+	// in-flight research subagents exit cleanly rather than outliving the
+	// process. Rooted here, ahead of chatFn, so the closure can capture it.
+	gwCtx, gwCancel := context.WithCancel(context.Background())
+	defer gwCancel()
+
 	// Chat function for gateway router - combining incoming changes with our multimodal support
 	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx gateway.MsgContext) (string, error) {
 		var llmClient llm.Chatter
@@ -772,6 +779,7 @@ func main() {
 			SenderRegistry: senderRegistry,
 			Transcriber:    voiceTranscriber,
 			ConfigPath:     *cfgPath,
+			LifetimeCtx:     gwCtx,
 		})
 		if err != nil {
 			return "", err
@@ -782,11 +790,6 @@ func main() {
 		}
 		return resp.Content, nil
 	}
-
-	// Gateway lifecycle context — shared between the session pool and bots.
-	// Cancelled during graceful shutdown so session goroutines exit cleanly.
-	gwCtx, gwCancel := context.WithCancel(context.Background())
-	defer gwCancel()
 
 	// Gateway router
 	router := gateway.NewRouter(gwCtx, cfg, identStore, clf, evaluator, db, notifier, chatFn, reg, *cfgPath, voiceTranscriber)
