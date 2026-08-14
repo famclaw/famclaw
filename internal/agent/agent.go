@@ -122,6 +122,13 @@ type Agent struct {
 	// configPath is the on-disk path to config.yaml, used by mcp_add to
 	// persist new MCP server entries. Empty string = no persistence.
 	configPath string
+
+	// lifetimeCtx is the server-lifetime context the subagent's timeout
+	// context is derived from. It is cancelled on graceful shutdown so
+	// in-flight research subagents are terminated deterministically rather
+	// than outliving the process and losing their result. When nil
+	// (tests), context.Background() is used as the root.
+	lifetimeCtx context.Context
 }
 
 // Transcriber converts audio attachments into text. The concrete
@@ -159,6 +166,12 @@ type AgentDeps struct {
 	// NowFn, when non-nil, is used to timestamp research status records.
 	// Optional — defaults to time.Now.
 	NowFn func() time.Time
+
+	// LifetimeCtx is the server-lifetime context. The subagent's timeout
+	// context is derived from it so that graceful shutdown cancels in-flight
+	// research deterministically (the result is then recorded as Failed).
+	// When nil, context.Background() is used as the root.
+	LifetimeCtx context.Context
 }
 
 // NewAgent creates an Agent for the given user. Optional dependencies
@@ -330,6 +343,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		senderRegistry:       deps.SenderRegistry,
 		nowFn:                deps.NowFn,
 		configPath:           deps.ConfigPath,
+		lifetimeCtx:          deps.LifetimeCtx,
 	}, nil
 }
 
@@ -1139,9 +1153,18 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 		BuiltinHandler: a.makeBuiltinHandler(),
 	}
 
-	subCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
-	// Remove the defer cancel() since we need to keep the outer context alive for the subagent lifetime
-	// The outer cancel() will be called by the defer in the goroutine below
+	// The subagent's timeout context is rooted at the server-lifetime context
+	// (not the inbound chat-turn ctx, which is cancelled when this handler
+	// returns, and not context.Background(), which would ignore shutdown).
+	// This means: the chat turn ending does NOT kill the subagent, and
+	// graceful shutdown cancels the subagent deterministically — whose
+	// result resolveSubagentOutcome then records as Failed with a truthful
+	// reason rather than letting the process exit and lose it silently.
+	lifetimeCtx := a.lifetimeCtx
+	if lifetimeCtx == nil {
+		lifetimeCtx = context.Background() // tests
+	}
+	subCtx, cancel := context.WithTimeout(lifetimeCtx, time.Duration(timeoutSec)*time.Second)
 
 	agentID, resultCh, err := a.scheduler.Submit(subCtx, cfg, func(ctx context.Context, cfg subagent.Config) (string, error) {
 		return subagent.Execute(ctx, cfg, execDeps)
@@ -1162,24 +1185,21 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	// Return immediately with an acknowledgment instead of waiting for result
 	ackMsg := fmt.Sprintf("Started your research (task %s). I'll post the result here when it's done; if I can't deliver it, the result is saved and you can check it with: research status %s.", agentID, agentID)
 
-	// Launch background goroutine to handle result delivery
+	// Launch background goroutine to handle result delivery. The goroutine
+	// uses a bounded finalization context (derived from the lifetime context)
+	// so the result is persisted and delivered even after the inbound chat-turn
+	// context is gone, but never blocks forever on a wedged DB or gateway.
 	go func() {
-		// Capture the msgContext for later use in result delivery
 		msgCtx := a.msgContext
 		prompt := cfg.Prompt
 
-		// Add defer cancel to ensure the outer context is properly cleaned up
+		// cancel the subagent's context when the goroutine exits.
 		defer cancel()
 
-		select {
-		case result := <-resultCh:
-			// Subagent completed (success, error, or timeout).
-			state, resultText := classifySubagentResult(result, subCtx)
-			a.finalizeResearch(ctx, agentID, state, resultText, timeoutSec, prompt, msgCtx)
-		case <-subCtx.Done():
-			// Timeout
-			a.finalizeResearch(ctx, agentID, store.ResearchStatusTimedOut, subCtx.Err().Error(), timeoutSec, prompt, msgCtx)
-		}
+		finalCtx, finalCancel := context.WithTimeout(lifetimeCtx, finalizeTimeout)
+		defer finalCancel()
+		state, resultText := resolveSubagentOutcome(resultCh, subCtx)
+		a.finalizeResearch(finalCtx, agentID, state, resultText, timeoutSec, prompt, msgCtx)
 	}()
 
 	return ackMsg, nil
@@ -1188,6 +1208,12 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 // deliverySendTimeout bounds how long a single async-result delivery Send may
 // block before it is abandoned, so a stuck gateway cannot hang the goroutine.
 const deliverySendTimeout = 30 * time.Second
+
+// finalizeTimeout bounds how long the research finalizer may take to persist
+// the status record and attempt delivery. Long enough for a DB write plus a
+// delivery attempt; never unbounded, so a wedged store/gateway cannot block
+// the finalizer goroutine indefinitely.
+const finalizeTimeout = 30 * time.Second
 
 // deliverResultToOrigin sends a message to the originating conversation.
 // It returns whether the message was delivered and any error. A missing sender
