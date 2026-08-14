@@ -1817,6 +1817,46 @@ func TestRouterVoiceDisabledTranscriberVisible(t *testing.T) {
 	}
 }
 
+// TestRouterVoiceEmptyAudioRejected proves that an audio attachment whose
+// base64-decoded data is empty is rejected BEFORE the transcriber is called —
+// the transcriber must never see zero bytes. The router returns a visible
+// error reply instead of silently dropping the message.
+func TestRouterVoiceEmptyAudioRejected(t *testing.T) {
+	var called bool
+	chatFn := func(ctx context.Context, user *config.UserConfig, text string, msgCtx MsgContext) (string, error) {
+		called = true
+		return "should not reach LLM", nil
+	}
+	transcriber := &mockTranscriber{transcript: "should not be called"}
+	router, identStore := setupRouterWithTranscriber(t, chatFn, transcriber)
+	identStore.LinkAccount("emma", "telegram", "emma-empty")
+
+	// base64 of empty string → empty decoded bytes
+	reply := router.Handle(context.Background(), Message{
+		Gateway:    "telegram",
+		ExternalID: "emma-empty",
+		Text:       "",
+		Attachments: []Attachment{{
+			Type:     "audio",
+			Data:     "", // empty base64 → empty decoded bytes
+			MIMEType: "audio/ogg",
+		}},
+	})
+
+	if called {
+		t.Fatal("chatFn was called despite empty audio — LLM must never see it")
+	}
+	if transcriber.calls != 0 {
+		t.Errorf("transcriber called %d times, want 0 (empty audio must be rejected before transcription)", transcriber.calls)
+	}
+	if reply.PolicyAction != "error" {
+		t.Errorf("PolicyAction = %q, want error", reply.PolicyAction)
+	}
+	if !strings.Contains(reply.Text, "voice isn't available") {
+		t.Errorf("reply = %q, want it to contain %q", reply.Text, "voice isn't available")
+	}
+}
+
 // TestRouterVoiceSamePolicyPathAsTyped proves the core correctness property of
 // issue #310: a transcribed voice message goes through the SAME policy path as
 // the same request typed. The router transcribes the audio BEFORE its
