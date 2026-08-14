@@ -149,7 +149,14 @@ FamClaw uses the [AgentSkills](https://docs.openclaw.ai/tools/skills) spec — t
 
 Skills are installed from the parent dashboard (Skills tab) via `/api/skills/install`, or manually by placing the `SKILL.md` in the skills directory. The `famclaw skill` CLI is not yet implemented.
 
-MCP tool servers (stdio, HTTP, or SSE) can be added and removed from the parent dashboard (MCP Servers panel) via `/api/mcp/add` and `/api/mcp/remove`, or manually in `config.yaml` under `skills.mcp_servers`. The panel lets you specify a name, transport, and transport-specific fields (command and args for stdio, URL for HTTP/SSE), with client-side validation before the server is saved. Configured servers are registered with the MCP tool pool on the next startup.
+MCP tool servers (stdio, HTTP, or SSE) can be added and removed from the parent dashboard (MCP Servers panel) via `/api/mcp/add` and `/api/mcp/remove`, or manually in `config.yaml` under `skills.mcp_servers`. The panel lets you specify a name, transport, and transport-specific fields (command and args for stdio, URL for HTTP/SSE), with client-side validation before the server is saved. Configured servers are registered with the MCP tool pool on the next startup. The running pool is reloaded in place on config change (see *Configuration hot-reload* in `docs/AGENT_SETUP.md`).
+
+Parents can also manage MCP servers **conversationally** from within a chat, using two parent-only built-in tools:
+
+- **`mcp_list`** — lists every configured MCP server with its transport (stdio/HTTP/SSE) and live load status (loaded, error, or not-yet-loaded).
+- **`mcp_add`** — registers a new MCP server: validates the configuration, saves it to `config.yaml` under `skills.mcp_servers`, reloads the running MCP pool, and reports the resulting status. If the new server cannot be loaded by the running pool (e.g. the command does not exist), `mcp_add` reports the error and reassures you that the server is saved and will load on restart.
+
+Both tools are **parent-only** — a child cannot add or inspect MCP servers. These complement the dashboard panel; use whichever is more convenient.
 
 ### First-party Skills
 
@@ -210,7 +217,7 @@ tools:
     max_bytes: 262144         # 256 KB response cap
     timeout_seconds: 15
     block_private_networks: false  # opt-in: block loopback/RFC1918/ULA at the dialer
-    fallback_to_browser: false  # opt-in: fall back to headless browser for JS-heavy sites; requires tools.browser.enabled
+    fallback_to_browser: false  # opt-in: fall back to headless browser for JS-heavy sites. REQUIRES both tools.browser.enabled=true AND a reachable Playwright browser pool — enabling the flag alone is NOT sufficient; if the browser pool is nil or unreachable, the fallback never fires and web_fetch silently returns the plain fetch text (a warning is logged).
     fallback_min_text_length: 10 # below this many chars of extracted text, attempt the browser fallback
 ```
 
@@ -224,7 +231,11 @@ Defense in depth:
 
 The fetcher itself is in `internal/webfetch/`; the agent handler lives in `internal/agent/agent.go` (`handleWebFetch`).
 
-For JS-heavy sites where HTML→text extraction yields too little content, `web_fetch` can fall back to a headless browser (the built-in `browser` tool), reusing the same host allowlist. This fallback is **off by default** (`tools.web_fetch.fallback_to_browser: false`); enable it only alongside `tools.browser.enabled`. When enabled and the plain fetch returns fewer than `fallback_min_text_length` chars, the browser navigates and extracts rendered text. Every failure path returns a distinct, honest error — a nil/unavailable browser pool, a browser fetch failure, or an empty rendered result — so an empty page is never silently returned as a successful fetch. Integration tests for the live browser path live behind the `integration` build tag (`go test -tags integration ./internal/agent/ -run TestFetchWithBrowser_Integration`), skipped cleanly where no Playwright server is available.
+For JS-heavy sites where HTML→text extraction yields too little content, `web_fetch` can fall back to a headless browser (the built-in `browser` tool), reusing the same host allowlist. This fallback is **off by default** (`tools.web_fetch.fallback_to_browser: false`).
+
+**The browser pool must be configured and reachable.** Enabling `fallback_to_browser` is not sufficient on its own — you must also set `tools.browser.enabled: true` with a working `tools.browser.endpoint` (a Playwright browser server, e.g. `ws://localhost:3000/`). If the browser pool is nil or unreachable (no endpoint configured, or Playwright server down), the fallback **never fires**: `web_fetch` returns the plain fetch text and emits a visible log line so you can see the degradation rather than silently getting thin content. Check the logs if fetch results look unexpectedly short after enabling the fallback.
+
+When the fallback is active and the plain fetch returns fewer than `fallback_min_text_length` chars, the browser navigates and extracts rendered text. Every failure path returns a distinct, honest error — a nil/unavailable browser pool, a browser fetch failure, or an empty rendered result — so an empty page is never silently returned as a successful fetch. Integration tests for the live browser path live behind the `integration` build tag (`go test -tags integration ./internal/agent/ -run TestFetchWithBrowser_Integration`), skipped cleanly where no Playwright server is available.
 
 ## Web search (`web_search`)
 
@@ -336,7 +347,7 @@ When `enabled` is not set (or `false`), a voice message is **not** silently drop
 
 ## Status
 
-**v0.7.0** — current release. Phase 3.3 family state (foundational PR #149; prompt auto-injection completed in #296) — ships in the upcoming release.
+**v0.11.2** — current release. **v0.12.0** — upcoming.
 
 ### What works
 
@@ -347,9 +358,9 @@ When `enabled` is not set (or `false`), a voice message is **not** silently drop
 | **Multi-backend LLM** | OpenAI-compatible: Ollama, llama.cpp, Groq, OpenAI, OpenRouter |
 | **Smart tool selection** | Token-budget-aware filtering, role+skill scoping |
 | **Context compression** | Tiered truncation keeping system prompt + pinned messages |
-| **Tool-result spillover cache** | Large tool results (>head budget, ~213 KB at 128k ctx) spill to a per-user file cache with TTL + LRU eviction; smaller results stay inline. `builtin__tool_result_more` reads the tail | **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
-| **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps. Optional headless-browser fallback for JS-heavy sites (`fallback_to_browser`, off by default; requires `tools.browser.enabled`) |
-| **Web search** | `web_search` builtin tool (off by default) — query a SearXNG JSON endpoint; requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate |
+| **Tool-result spillover cache** | Large tool results (>head budget, ~8.5 KB at 128k ctx — 2% of the context window, floored at 512 B and capped at 64 KB) spill to a per-user file cache with TTL + LRU eviction; smaller results stay inline. `builtin__tool_result_more` reads the tail | **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
+| **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps. Optional headless-browser fallback for JS-heavy sites (`fallback_to_browser`, off by default; requires `tools.browser.enabled` AND a reachable browser pool) |
+| **Web search** | `web_search` builtin tool (off by default) — query a SearXNG JSON endpoint; requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate; default 30s timeout |
 | **Voice transcription** | `transcription` builtin (off by default) — transcribes Telegram/Discord voice notes via a local `/v1/audio/transcriptions` service; default 25 MB cap, 30s timeout. See [docs/GATEWAYS.md](./docs/GATEWAYS.md) |
 | **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
 | **Skill install** | From parent dashboard Skills tab; HoneyBadger-scanned at install time |
