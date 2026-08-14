@@ -125,6 +125,7 @@ The process starts with `cmd/famclaw/main.go`, which loads configuration from th
 - The `tools.web_fetch.enabled` flag is optional (default off). When enabled, `url_allowlist` is required — an empty list denies all fetches (SSRF guard).
 - The `tools.browser` tool reuses the `tools.web_fetch.url_allowlist` as its host gate.
 - The `tools.web_search` tool has its own `enabled` flag, but it requires `tools.web_fetch.enabled=true` (it reuses web_fetch's `url_allowlist` as its host gate and won't start otherwise).
+- **Background work spawned from a builtin handler must NOT derive its context from the inbound `ctx`.** The inbound context is the chat-turn context from `session.go:handleRequest`, which is cancelled via `defer cancel()` when the handler returns (~1s after the ack is sent). The research subagent (`spawn_agent`) derives its timeout context from `context.Background()` for exactly this reason; any background goroutine that needs to outlive the chat turn must do the same — otherwise the subagent is killed immediately and the failure is mis-reported as a 300s timeout. The `resolveSubagentOutcome` helper in `internal/agent/research.go` centralizes the result-vs-done classification so `context.Canceled` is never re-labelled as `ResearchStatusTimedOut`.
 - The `approvalID` function uses `sha256` hashing for uniqueness.
 - The `notify.GenerateToken` function creates time-limited HMAC tokens.
 - The `toolcache` cache tool is only attached when it already exists (auto-created when `cfg.Tools.ToolCache.Enabled` or `cfg.Tools.WebFetch.Enabled` is true).
