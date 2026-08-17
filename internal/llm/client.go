@@ -118,14 +118,41 @@ func (m Message) MarshalJSON() ([]byte, error) {
 // - Tool-call planning language ("I need to use the...", "Formulate the...")
 func (m *Message) mergeReasoning() {
 	if strings.TrimSpace(m.Content) == "" {
-		if m.ReasoningContent != "" && !isChainOfThought(m.ReasoningContent) {
-			m.Content = strings.TrimSpace(stripControlTokens(m.ReasoningContent))
-		} else if m.Reasoning != "" && !isChainOfThought(m.Reasoning) {
-			m.Content = strings.TrimSpace(stripControlTokens(m.Reasoning))
+		if m.ReasoningContent != "" {
+			m.Content = mergeReasoningField(m.ReasoningContent)
+		} else if m.Reasoning != "" {
+			m.Content = mergeReasoningField(m.Reasoning)
 		}
 	}
 	m.ReasoningContent = ""
 	m.Reasoning = ""
+}
+
+// mergeReasoningField strips Gemma control tokens and hoists the
+// reasoning field into Content when Content is empty. When the reasoning
+// field contains Gemma control tokens (e.g. <|channel>thought...<|channel|>),
+// the model is using a thinking format where the answer lives in the
+// reasoning field — the stripped text is the actual answer, not
+// chain-of-thought deliberation. For reasoning fields without control
+// tokens we check isChainOfThought to avoid showing deliberation to users.
+func mergeReasoningField(raw string) string {
+	stripped := strings.TrimSpace(stripControlTokens(raw))
+	if stripped == "" {
+		return ""
+	}
+	if hasControlTokens(raw) || !isChainOfThought(raw) {
+		return stripped
+	}
+	return ""
+}
+
+// hasControlTokens reports whether the text contains any Gemma control
+// token fragments (tool_call_begin, tool_call_end, tool_call, tool_split,
+// channel, the <"|"|> value delimiter, or bare/slash closing variants).
+// This is a lightweight presence check — callers that need the actual
+// stripped text should use stripControlTokens.
+func hasControlTokens(s string) bool {
+	return reControlToken.MatchString(s)
 }
 
 // isChainOfThought returns true when the text looks like structured
