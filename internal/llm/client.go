@@ -3,7 +3,6 @@
 package llm
 
 import (
-	"regexp"
 	"bufio"
 	"bytes"
 	"context"
@@ -142,7 +141,7 @@ func isChainOfThought(s string) bool {
 	// Pattern 1: Starts with deliberation markers
 	deliberationPrefixes := []string{
 		"thinking process:", "let me think", "step 1:", "step 2:", "step 3:",
-		"first,", "second,", "third,", "next,", "then,", "after that,",
+		"next,", "then,", "after that,",
 	}
 	lower := strings.ToLower(trimmed)
 	for _, prefix := range deliberationPrefixes {
@@ -168,7 +167,7 @@ func isChainOfThought(s string) bool {
 		"i need to use the", "i need to call", "i need to run",
 		"i will use the", "i will call", "i will run",
 		"formulate the", "execute the", "perform the",
-		"search for", "look up", "find",
+		"search for", "look up",
 	}
 	for _, pattern := range toolPlanning {
 		if strings.Contains(lower, pattern) {
@@ -177,7 +176,7 @@ func isChainOfThought(s string) bool {
 	}
 
 	// Pattern 4: Numbered list with deliberation markers
-	if matched, _ := regexp.MatchString(`^1\.\s+\*\*`, trimmed); matched {
+	if strings.HasPrefix(trimmed, "1. **") {
 		return true
 	}
 
