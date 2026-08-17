@@ -3,6 +3,7 @@
 package llm
 
 import (
+	"regexp"
 	"bufio"
 	"bytes"
 	"context"
@@ -107,16 +108,80 @@ func (m Message) MarshalJSON() ([]byte, error) {
 // Some Ollama/LiteLLM gateways (Gemma-4-26b, qwen3.6-27b) go further and
 // use the plain "reasoning" field for the same purpose. Consumers reading
 // only .Content would see empty replies otherwise.
+//
+// The function distinguishes between:
+// - Genuine answers: direct, factual responses that should be shown to the user
+// - Chain-of-thought: structured deliberation that should NOT be shown
+//
+// Chain-of-thought is detected by patterns like:
+// - Starting with "Thinking Process:", "Let me think", numbered steps
+// - First-person future-tense deliberation ("I need to...", "I should...")
+// - Tool-call planning language ("I need to use the...", "Formulate the...")
 func (m *Message) mergeReasoning() {
 	if strings.TrimSpace(m.Content) == "" {
-		if m.ReasoningContent != "" {
+		if m.ReasoningContent != "" && !isChainOfThought(m.ReasoningContent) {
 			m.Content = strings.TrimSpace(stripControlTokens(m.ReasoningContent))
-		} else if m.Reasoning != "" {
+		} else if m.Reasoning != "" && !isChainOfThought(m.Reasoning) {
 			m.Content = strings.TrimSpace(stripControlTokens(m.Reasoning))
 		}
 	}
 	m.ReasoningContent = ""
 	m.Reasoning = ""
+}
+
+// isChainOfThought returns true when the text looks like structured
+// deliberation rather than a final answer. Thinking models (qwen3, nemotron)
+// put chain-of-thought in reasoning_content; showing it to the user reveals
+// their internal monologue instead of an answer.
+func isChainOfThought(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return false
+	}
+
+	// Pattern 1: Starts with deliberation markers
+	deliberationPrefixes := []string{
+		"thinking process:", "let me think", "step 1:", "step 2:", "step 3:",
+		"first,", "second,", "third,", "next,", "then,", "after that,",
+	}
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range deliberationPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+
+	// Pattern 2: First-person future-tense deliberation
+	deliberationPatterns := []string{
+		"i need to", "i should", "i will", "i have to", "i ought to",
+		"i'm going to", "i'm going", "i计划",  // Chinese planning markers
+		"i need use", "i need call", "i need run",  // tool planning
+	}
+	for _, pattern := range deliberationPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+
+	// Pattern 3: Tool-call planning language
+	toolPlanning := []string{
+		"i need to use the", "i need to call", "i need to run",
+		"i will use the", "i will call", "i will run",
+		"formulate the", "execute the", "perform the",
+		"search for", "look up", "find",
+	}
+	for _, pattern := range toolPlanning {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+
+	// Pattern 4: Numbered list with deliberation markers
+	if matched, _ := regexp.MatchString(`^1\.\s+\*\*`, trimmed); matched {
+		return true
+	}
+
+	return false
 }
 
 // ToolCall represents a tool invocation requested by the LLM.
