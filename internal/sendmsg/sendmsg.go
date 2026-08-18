@@ -79,10 +79,16 @@ func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[s
 		return "", fmt.Errorf("send_message requires both 'to' and 'message'")
 	}
 
-	// Only configured family members are addressable.
-	if cfg.GetUser(to) == nil {
+	// Only configured family members are addressable. Resolve to the
+	// canonical configured name: the model may pass a display name or any
+	// case variant ("Julia"), but gateway_accounts and conversations store
+	// the lowercase config Name ("julia"). Normalizing here keeps the
+	// destination lookup, audit trail, and conversation history consistent.
+	canonicalTo, ok := cfg.CanonicalName(to)
+	if !ok {
 		return "", fmt.Errorf("%q is not a configured family member", to)
 	}
+	to = canonicalTo
 
 	// Resolve a gateway that can actually be INITIATED for a proactive
 	// delivery to `to`. Being linked on a gateway (a row in gateway_accounts)

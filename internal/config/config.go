@@ -15,17 +15,17 @@ import (
 )
 
 type Config struct {
-	Server        ServerConfig        `yaml:"server"`
-	LLM           LLMConfig           `yaml:"llm"`
-	Inference     InferenceConfig     `yaml:"inference"`
-	Users         []UserConfig        `yaml:"users"`
-	Gateways      GatewaysConfig      `yaml:"gateways"`
-	Policies      PoliciesConfig      `yaml:"policies"`
-	Approval      ApprovalConfig      `yaml:"approval"`
-	Skills        SkillsConfig        `yaml:"skills"`
-	Storage       StorageConfig       `yaml:"storage"`
-	SecCheck      SecCheckConfig      `yaml:"seccheck"` // deprecated — use honeybadger instead
-	Tools         ToolsConfig         `yaml:"tools,omitempty"`
+	Server    ServerConfig    `yaml:"server"`
+	LLM       LLMConfig       `yaml:"llm"`
+	Inference InferenceConfig `yaml:"inference"`
+	Users     []UserConfig    `yaml:"users"`
+	Gateways  GatewaysConfig  `yaml:"gateways"`
+	Policies  PoliciesConfig  `yaml:"policies"`
+	Approval  ApprovalConfig  `yaml:"approval"`
+	Skills    SkillsConfig    `yaml:"skills"`
+	Storage   StorageConfig   `yaml:"storage"`
+	SecCheck  SecCheckConfig  `yaml:"seccheck"` // deprecated — use honeybadger instead
+	Tools     ToolsConfig     `yaml:"tools,omitempty"`
 }
 
 // ToolsConfig groups configuration for built-in tools registered with the LLM.
@@ -673,6 +673,42 @@ func (c *Config) GetUser(name string) *UserConfig {
 		}
 	}
 	return nil
+}
+
+// CanonicalName resolves a human-supplied user reference to the configured
+// user's canonical Name, the identifier every persistence layer stores
+// (gateway_accounts, conversations, todos, user_memories, ...). The LLM
+// addresses family members by whatever it has seen in context — usually the
+// display name ("Julia") or an arbitrary case variant ("DEP") — while the
+// database holds the lowercase config Name ("julia"). A case-sensitive
+// lookup with the raw string silently misses, so tool boundaries must
+// normalize through this helper first.
+//
+// Matching is case-insensitive: exact Name first (fast path, also fixes
+// display-name collisions), then Name EqualFold, then DisplayName EqualFold.
+// First match wins, mirroring GetUser. Returns ok=false when no configured
+// user matches, so callers keep their "not a configured family member"
+// errors instead of degrading to opaque "no linked gateway account" ones.
+func (c *Config) CanonicalName(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	for i := range c.Users {
+		if c.Users[i].Name == name {
+			return c.Users[i].Name, true
+		}
+	}
+	for i := range c.Users {
+		if strings.EqualFold(c.Users[i].Name, name) {
+			return c.Users[i].Name, true
+		}
+	}
+	for i := range c.Users {
+		if c.Users[i].DisplayName != "" && strings.EqualFold(c.Users[i].DisplayName, name) {
+			return c.Users[i].Name, true
+		}
+	}
+	return "", false
 }
 
 func (c *Config) ModelFor(user *UserConfig) string {

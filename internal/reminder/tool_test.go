@@ -116,6 +116,19 @@ func TestHandleAddReminder(t *testing.T) {
 			wantErr:     false,
 		},
 		{
+			name:        "parent sets reminder with display-name case variant",
+			user:        parentUser(),
+			cfg:         parentCfg(),
+			forUser:     "Julia",
+			linkTarget:  true,
+			targetGW:    "telegram",
+			targetID:    "julia-chat-123",
+			when:        "in 2 hours",
+			message:     "ping me",
+			wantForUser: "julia",
+			wantErr:     false,
+		},
+		{
 			name:       "child sets reminder for parent — blocked by role",
 			user:       childUser(),
 			cfg:        childCfg(),
@@ -241,6 +254,43 @@ func TestHandleAddReminderCrossUserResolvesGateway(t *testing.T) {
 	// Verify the result JSON mentions the target user
 	if !strings.Contains(result, "julia") {
 		t.Errorf("result should mention target user: %s", result)
+	}
+}
+
+// TestHandleAddReminderDisplayNameTarget verifies that a target passed as a
+// display name / case variant ("Julia") resolves to the canonical configured
+// name ("julia") for destination lookup and storage. Regression test: before
+// the fix the case-sensitive user_name lookup missed every gateway_accounts
+// row and failed with "no linked gateway account".
+func TestHandleAddReminderDisplayNameTarget(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	linkUser(t, db, "mom", "telegram", "mom-chat")
+	linkUser(t, db, "julia", "discord", "julia-disc")
+
+	// Model addresses the target by display name, not config name.
+	_, err := HandleAddReminder(ctx, db, parentCfg(), parentUser(),
+		"telegram", "mom-chat", "", false,
+		"in 1 hour", "display-name target", "Julia")
+	if err != nil {
+		t.Fatalf("HandleAddReminder(forUser=Julia): %v", err)
+	}
+
+	reminders, err := db.GetPendingReminders(ctx)
+	if err != nil {
+		t.Fatalf("GetPendingReminders: %v", err)
+	}
+	if len(reminders) != 1 {
+		t.Fatalf("expected 1 reminder, got %d", len(reminders))
+	}
+	r := reminders[0]
+	if r.UserName != "julia" {
+		t.Errorf("UserName = %q, want canonical %q", r.UserName, "julia")
+	}
+	if r.Gateway != "discord" || r.ExternalID != "julia-disc" {
+		t.Errorf("destination = %s/%s, want julia's linked gateway discord/julia-disc", r.Gateway, r.ExternalID)
 	}
 }
 
