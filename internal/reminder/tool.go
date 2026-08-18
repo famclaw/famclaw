@@ -78,12 +78,16 @@ func HandleAddReminder(ctx context.Context, db *store.DB, cfg *config.Config, us
 		if user.Role != "parent" {
 			return "", fmt.Errorf("only parents can set reminders for other users")
 		}
-		// Resolve the target against the configured family members.
-		// An unknown name is a clear error — never a silent no-op.
-		if cfg.GetUser(forUser) == nil {
+		// Resolve the target to its canonical configured name. The model may
+		// pass a display name or any case variant ("Julia", "DEP"); all
+		// persistence layers store the lowercase config Name ("julia"), so a
+		// case-sensitive lookup with the raw string would miss. An unknown
+		// name is a clear error — never a silent no-op.
+		canonicalTarget, ok := cfg.CanonicalName(forUser)
+		if !ok {
 			return "", fmt.Errorf("%q is not a configured family member", forUser)
 		}
-		targetUser = forUser
+		targetUser = canonicalTarget
 		// Look up the target user's most recent gateway + external_id so
 		// the scheduler can deliver proactively. If they have no recorded
 		// gateway, report it honestly rather than guessing a destination.

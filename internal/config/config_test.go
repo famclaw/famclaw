@@ -380,11 +380,11 @@ func TestValidate_SandboxRootErrors(t *testing.T) {
 				Tools: ToolsConfig{
 					SandboxRoot: sandboxRoot,
 				},
-				Server:        serverCfg,
-				LLM:           llmCfg,
-				Approval:      approvalCfg,
-				Skills:        skillsCfg,
-				Storage:       storageCfg,
+				Server:   serverCfg,
+				LLM:      llmCfg,
+				Approval: approvalCfg,
+				Skills:   skillsCfg,
+				Storage:  storageCfg,
 			}
 
 			err := c.Validate()
@@ -611,5 +611,76 @@ func TestWebSearchTimeoutDefault(t *testing.T) {
 func TestWebSearchTimeoutConstantIs30(t *testing.T) {
 	if WebSearchTimeoutDefault != 30 {
 		t.Errorf("WebSearchTimeoutDefault = %d, want 30", WebSearchTimeoutDefault)
+	}
+}
+
+func TestCanonicalName(t *testing.T) {
+	cfg := &Config{
+		Users: []UserConfig{
+			{Name: "dep", DisplayName: "Dep", Role: "parent"},
+			{Name: "julia", DisplayName: "Julia", Role: "parent"},
+			{Name: "teo", DisplayName: "Teo", Role: "child"},
+			// Display name differs from canonical name (not just case), so
+			// only the DisplayName match path can resolve "John Smith".
+			{Name: "j_smith", DisplayName: "John Smith", Role: "parent"},
+		},
+	}
+	cases := []struct {
+		name     string
+		input    string
+		wantName string
+		wantOK   bool
+	}{
+		{
+			name:     "exact canonical name",
+			input:    "julia",
+			wantName: "julia",
+			wantOK:   true,
+		},
+		{
+			name:     "case variant of canonical name",
+			input:    "JULIA",
+			wantName: "julia",
+			wantOK:   true,
+		},
+		{
+			name:     "display name resolves to canonical",
+			input:    "Dep",
+			wantName: "dep",
+			wantOK:   true,
+		},
+		{
+			name:     "display name differing from canonical name",
+			input:    "John Smith",
+			wantName: "j_smith",
+			wantOK:   true,
+		},
+		{
+			name:     "case variant of differing display name",
+			input:    "john smith",
+			wantName: "j_smith",
+			wantOK:   true,
+		},
+		{
+			name:   "unknown name",
+			input:  "stranger",
+			wantOK: false,
+		},
+		{
+			name:   "empty string",
+			input:  "",
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotName, gotOK := cfg.CanonicalName(tc.input)
+			if gotOK != tc.wantOK {
+				t.Fatalf("CanonicalName(%q) ok = %v, want %v", tc.input, gotOK, tc.wantOK)
+			}
+			if gotName != tc.wantName {
+				t.Errorf("CanonicalName(%q) = %q, want %q", tc.input, gotName, tc.wantName)
+			}
+		})
 	}
 }

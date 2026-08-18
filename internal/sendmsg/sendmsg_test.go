@@ -118,6 +118,13 @@ func TestHandle(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "deliver with display-name case variant",
+			to:      "Julia",
+			message: "hi by display name",
+			setupDB: func(t *testing.T, db *store.DB) { linkUser(t, db, "julia", "telegram", "julia-chat") },
+			wantErr: false,
+		},
+		{
 			name:       "unknown target",
 			to:         "stranger",
 			message:    "hi",
@@ -216,6 +223,60 @@ func TestHandle(t *testing.T) {
 				t.Error("message was not recorded by any mock sender")
 			}
 		})
+	}
+}
+
+// TestHandleDisplayNameTarget verifies that a target passed as a display
+// name / case variant ("Julia") is normalized to the canonical configured
+// name ("julia") before the gateway_accounts lookup and conversation save.
+// Regression test: before the fix the case-sensitive lookup found no linked
+// account and failed with "Julia has no linked gateway account" even though
+// list_users showed julia linked on both platforms.
+func TestHandleDisplayNameTarget(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	linkUser(t, db, "julia", "telegram", "julia-chat")
+
+	senders := map[string]gateway.Sender{
+		"telegram": &mockSender{},
+		"discord":  &mockSender{},
+	}
+
+	out, err := Handle(ctx, db, parentCfg(), senders, "mom", "telegram", "Julia", "hello julia")
+	if err != nil {
+		t.Fatalf("Handle(to=Julia): %v", err)
+	}
+	if !strings.Contains(out, "julia") {
+		t.Errorf("result = %q, want canonical name julia", out)
+	}
+
+	// Delivery must have reached julia's linked chat.
+	var found bool
+	for _, sent := range senders["telegram"].(*mockSender).getSent() {
+		if sent.chatID == "julia-chat" && sent.text == "hello julia" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("message not delivered to julia-chat: %+v", senders["telegram"].(*mockSender).getSent())
+	}
+
+	// Conversation history must be recorded under the canonical user name so
+	// the web dashboard does not fork a separate "Julia" conversation.
+	msgs, err := db.RecentMessagesByUser("julia", 10)
+	if err != nil {
+		t.Fatalf("RecentMessagesByUser(julia): %v", err)
+	}
+	var saved bool
+	for _, m := range msgs {
+		if m.Role == "assistant" && m.Content == "hello julia" {
+			saved = true
+		}
+	}
+	if !saved {
+		t.Error("outbound message not saved under canonical user julia")
 	}
 }
 
