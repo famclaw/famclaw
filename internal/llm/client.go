@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -33,18 +34,18 @@ type Message struct {
 	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`   // present when LLM requests tool use
 	ToolCallID   string     `json:"tool_call_id,omitempty"` // required on role=tool replies (OpenAI)
 
-	// ReasoningContent is the non-standard field reasoning models (qwen3,
-	// nemotron, gpt-oss harmony) sometimes use to ship the final response
-	// while leaving Content empty. We DO NOT include it when sending the
-	// message back (omitempty), and at receive time the client merges it
-	// into Content when Content is empty — see mergeReasoning() below.
+	// ReasoningContent is a non-standard field whose meaning is
+	// model-dependent: qwen3/nemotron/gpt-oss carry deliberation
+	// (chain-of-thought) here, while gemma-4-26b carries the final answer.
+	// We DO NOT include it when sending the message back (omitempty); at
+	// receive time mergeReasoning() reconciles it model-aware.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 	// Reasoning captures the plain "reasoning" field emitted by some
-	// Ollama/LiteLLM gateways (e.g. Gemma-4-26b, qwen3.6-27b) that ship the
-	// final answer there while leaving content empty. Like ReasoningContent,
-	// it is only used as a fallback when Content is empty and is cleared
-	// after merging — see mergeReasoning() below. It is not sent back in
-	// requests because MarshalJSON omits it.
+	// Ollama/LiteLLM gateways (e.g. Gemma-4-26b, qwen3.6-27b). Its meaning
+	// is model-dependent like ReasoningContent: mergeReasoning() hoists a
+	// genuine answer into Content or keeps deliberation private, and clears
+	// the field either way. It is not sent back in requests because
+	// MarshalJSON omits it.
 	Reasoning string `json:"reasoning,omitempty"`
 }
 
@@ -101,22 +102,129 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// mergeReasoning hoists reasoning fields into Content when Content is
-// empty (or whitespace). Local reasoning models (qwen3, nemotron, gpt-oss)
-// frequently emit the final answer in reasoning_content with content="".
-// Some Ollama/LiteLLM gateways (Gemma-4-26b, qwen3.6-27b) go further and
-// use the plain "reasoning" field for the same purpose. Consumers reading
-// only .Content would see empty replies otherwise.
-func (m *Message) mergeReasoning() {
+// reasoningClass classifies what a model's reasoning field means. The
+// classification drives mergeReasoning so CoT handling does not rely on
+// natural-language word patterns (which only cover English: they miss
+// non-English CoT while suppressing non-English legitimate answers).
+type reasoningClass int
+
+const (
+	// classDeliberation: known thinking models (qwen3.6/3.8 family,
+	// nemotron, gpt-oss) carry chain-of-thought in the reasoning field.
+	// Reasoning is never hoisted into an empty Content.
+	classDeliberation reasoningClass = iota
+	// classAnswerInReasoning: gemma-4-26b-family models carry the final
+	// answer in the reasoning field; unknown models default here. Hoist
+	// with control-token stripping, gated by the structural CoT check.
+	classAnswerInReasoning
+)
+
+// reasoningClassForModel maps a model name to a reasoningClass by
+// family-substring match (case-insensitive).
+func reasoningClassForModel(model string) reasoningClass {
+	m := strings.ToLower(model)
+	switch {
+	case strings.Contains(m, "qwen3"),
+		strings.Contains(m, "nemotron"),
+		strings.Contains(m, "gpt-oss"):
+		return classDeliberation
+	default:
+		return classAnswerInReasoning
+	}
+}
+
+// mergeReasoning reconciles the buffered reasoning fields into Content when
+// Content is empty. The model name decides the policy:
+//
+//   - Known thinking models (qwen3 family, nemotron, gpt-oss): the
+//     reasoning field is deliberation — never hoisted. An empty reply is
+//     preferable to leaking the model's internal monologue.
+//   - Answer-in-reasoning models (gemma-4-26b) and unknown models: hoist
+//     with control-token stripping, gated by the structural CoT check.
+//
+// The reasoning fields are cleared in all cases so the message round-trips
+// clean.
+func (m *Message) mergeReasoning(model string) {
+	class := reasoningClassForModel(model)
+	if class == classDeliberation {
+		m.ReasoningContent = ""
+		m.Reasoning = ""
+		return
+	}
 	if strings.TrimSpace(m.Content) == "" {
+		// Prefer ReasoningContent, but if it yields nothing (e.g. it was
+		// suppressed), fall through to Reasoning so a genuine answer held
+		// in either field still surfaces.
 		if m.ReasoningContent != "" {
-			m.Content = strings.TrimSpace(stripControlTokens(m.ReasoningContent))
-		} else if m.Reasoning != "" {
-			m.Content = strings.TrimSpace(stripControlTokens(m.Reasoning))
+			m.Content = mergeReasoningField(m.ReasoningContent, class)
+		}
+		if strings.TrimSpace(m.Content) == "" && m.Reasoning != "" {
+			m.Content = mergeReasoningField(m.Reasoning, class)
 		}
 	}
 	m.ReasoningContent = ""
 	m.Reasoning = ""
+}
+
+// mergeReasoningField returns the reasoning field's payload when it should
+// surface in Content. Control tokens mark a thinking format where the
+// stripped text IS the answer (gemma channel format), so it hoists
+// unconditionally; otherwise only language-agnostic structural CoT
+// markers suppress the payload.
+func mergeReasoningField(raw string, class reasoningClass) string {
+	if class == classDeliberation {
+		return ""
+	}
+	stripped := strings.TrimSpace(stripControlTokens(raw))
+	if stripped == "" {
+		return ""
+	}
+	if hasControlTokens(raw) {
+		return stripped
+	}
+	if isChainOfThought(stripped) {
+		return ""
+	}
+	return stripped
+}
+
+// hasControlTokens reports whether the text contains any Gemma control
+// token fragments (see reControlToken in inline_tool_calls.go). This is a
+// lightweight presence check — callers that need the actual stripped text
+// should use stripControlTokens.
+func hasControlTokens(s string) bool {
+	return reControlToken.MatchString(s)
+}
+
+// reThinkingTag matches <thinking> / </thinking> style
+// thinking blocks (gpt-oss harmony, deepseek, qwen thinking formats) and
+// plain think tags.
+var reThinkingTag = regexp.MustCompile(`(?i)<\s*/?\s*think(?:ing)?\s*>`)
+
+// reFinalAnswerSep matches parser final-answer separator lines such as
+// "FINAL ANSWER:" or "Final Answer -". These are format markers — the
+// parser's answer boundary — not natural-language deliberation.
+var reFinalAnswerSep = regexp.MustCompile(`(?mi)^[ \t]*(?:final[ \t_-]*answer)[ \t]*[:\-—]`)
+
+// isChainOfThought reports whether the text carries structural markers of
+// model deliberation. Deliberation-phrase heuristics ("let me think",
+// "step 1:", "i need to use the ...") are intentionally absent: word
+// patterns are language-specific. reasoningClassForModel is the primary
+// CoT defense; this check only contributes language-agnostic structural
+// signals.
+func isChainOfThought(s string) bool {
+	if reThinkingTag.MatchString(s) {
+		return true
+	}
+	// A final-answer separator with text BEFORE it: the field is a
+	// reasoning trace, not a bare answer. "FINAL ANSWER: 42" alone is the
+	// answer and is kept.
+	if loc := reFinalAnswerSep.FindAllStringIndex(s, -1); len(loc) > 0 {
+		if strings.TrimSpace(s[:loc[0][0]]) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ToolCall represents a tool invocation requested by the LLM.
@@ -374,10 +482,21 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 	return c.parseSSEStream(resp.Body, onToken)
 }
 
-// parseSSEStream reads an SSE stream (data: {...}\n) and extracts content tokens.
+// parseSSEStream reads an SSE stream (data: {...}\n) and extracts answer
+// tokens. Answer tokens (delta.content) are delivered to onToken live as they
+// arrive, with Gemma control-token stripping that survives chunk boundaries
+// (stripWithCarry). Reasoning tokens (delta.reasoning_content /
+// delta.reasoning) are accumulated, not streamed: for thinking models they
+// carry chain-of-thought, which must never reach the user mid-stream. The two
+// fields are kept in separate builders so the end-of-stream reconciliation
+// mirrors mergeReasoning's precedence (ReasoningContent over Reasoning)
+// instead of concatenating two distinct reasoning streams into one garbled
+// string.
 func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, error) {
 	var full strings.Builder
 	var carry string
+	var reasoningContent strings.Builder
+	var reasoning strings.Builder
 	scanner := bufio.NewScanner(body)
 
 	for scanner.Scan() {
@@ -399,22 +518,9 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, e
 		}
 
 		for _, choice := range chunk.Choices {
-			token := choice.Delta.Content
-			if token == "" {
-				// Reasoning-content fallback: qwen3/nemotron/gpt-oss stream
-				// some final answers via reasoning_content or the plain
-				// "reasoning" field (Gemma-4-26b, qwen3.6-27b via LiteLLM)
-				// with Content="".
-				token = choice.Delta.ReasoningContent
-				if token == "" {
-					token = choice.Delta.Reasoning
-				}
-			}
-			if token != "" {
-				// stripWithCarry handles control tokens that may be
-				// split across SSE chunks: it holds back a tail long
-				// enough to cover the longest known Gemma token and
-				// prepends it to the next chunk before stripping.
+			// Answer content (delta.content) is the reply — stream it live,
+			// stripping control tokens that may be split across chunks.
+			if token := choice.Delta.Content; token != "" {
 				emit, newCarry := stripWithCarry(carry, token)
 				carry = newCarry
 				if emit != "" {
@@ -424,11 +530,22 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, e
 					}
 				}
 			}
+			// Reasoning fields are buffered, not streamed live.
+			if choice.Delta.ReasoningContent != "" {
+				reasoningContent.WriteString(choice.Delta.ReasoningContent)
+			}
+			if choice.Delta.Reasoning != "" {
+				reasoning.WriteString(choice.Delta.Reasoning)
+			}
 		}
 	}
 
-	// Flush any remaining carry at stream end. A split token is now
-	// complete and will be stripped by stripControlTokens.
+	if err := scanner.Err(); err != nil {
+		return full.String(), err
+	}
+
+	// Flush any remaining carry at stream end. A split token is now complete
+	// and will be stripped by stripControlTokens.
 	if carry != "" {
 		cleaned := stripControlTokens(carry)
 		if cleaned != "" {
@@ -439,7 +556,26 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, e
 		}
 	}
 
-	return full.String(), scanner.Err()
+	// An answer already streamed live; any buffered reasoning was
+	// deliberation and is dropped (Content wins, matching mergeReasoning).
+	if strings.TrimSpace(full.String()) != "" {
+		return full.String(), nil
+	}
+
+	// No answer content: reconcile the buffered reasoning with the same
+	// model-aware policy as mergeReasoning — prefer reasoning_content, fall
+	// through to reasoning so a genuine answer in either field hoists.
+	// Known thinking models (classDeliberation) yield "" from both, so
+	// deliberation never reaches the user.
+	class := reasoningClassForModel(c.model)
+	hoisted := mergeReasoningField(reasoningContent.String(), class)
+	if strings.TrimSpace(hoisted) == "" {
+		hoisted = mergeReasoningField(reasoning.String(), class)
+	}
+	if hoisted != "" && onToken != nil {
+		onToken(hoisted)
+	}
+	return hoisted, nil
 }
 
 // ChatMessage sends a conversation and returns the full response Message including tool calls.
@@ -508,11 +644,11 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 	}
 
 	msg := &result.Choices[0].Message
-	// Reasoning models (qwen3, nemotron, gpt-oss harmony) sometimes ship
-	// the final answer in reasoning_content with content="". Merge before
-	// any further processing so the rest of the pipeline sees a populated
-	// Content field.
-	msg.mergeReasoning()
+	// Reconcile the reasoning fields model-aware before any further
+	// processing: thinking models (qwen3, nemotron, gpt-oss) keep their
+	// deliberation private; answer-in-reasoning models (gemma-4-26b) and
+	// unknown models hoist a genuine answer into Content.
+	msg.mergeReasoning(c.model)
 	// Rescue inline <tool_call> XML blocks that small local models emit
 	// when they violate the trained "tool call comes BEFORE prose, not
 	// after" instruction. Without this, the raw XML leaks to the user as
