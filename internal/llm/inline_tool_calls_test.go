@@ -352,7 +352,8 @@ func TestMergeReasoningStripsThinkingTokens(t *testing.T) {
 				Content:          tc.content,
 				ReasoningContent: tc.reasoning,
 			}
-			msg.mergeReasoning()
+			// gemma-4-26b: answer-in-reasoning model — hoist with control-token stripping.
+			msg.mergeReasoning("gemma-4-26b")
 			if msg.Content != tc.want {
 				t.Errorf("content = %q, want %q", msg.Content, tc.want)
 			}
