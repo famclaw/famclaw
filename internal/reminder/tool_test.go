@@ -168,6 +168,18 @@ func TestHandleAddReminder(t *testing.T) {
 			wantErr:    true,
 			wantErrSub: "invalid time",
 		},
+		{
+			// Issue #366: a day offset with an explicit time of day must be
+			// accepted (and honored exactly; see
+			// TestHandleAddReminderExplicitTimeDaysOut).
+			name:        "multi-day offset with explicit time",
+			user:        parentUser(),
+			cfg:         parentCfg(),
+			when:        "in 2 days at 17:00",
+			message:     "end of season show",
+			wantForUser: "mom",
+			wantErr:     false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -254,6 +266,40 @@ func TestHandleAddReminderCrossUserResolvesGateway(t *testing.T) {
 	// Verify the result JSON mentions the target user
 	if !strings.Contains(result, "julia") {
 		t.Errorf("result should mention target user: %s", result)
+	}
+}
+
+// TestHandleAddReminderExplicitTimeDaysOut verifies the issue #366
+// regression: add_reminder("in 2 days at 17:00") is scheduled at exactly
+// 17:00 on the day two calendar days out, not at the current time + 48h
+// (the old silent "late evening" default).
+func TestHandleAddReminderExplicitTimeDaysOut(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	linkUser(t, db, "mom", "telegram", "mom-chat")
+
+	now := time.Now()
+	target := now.AddDate(0, 0, 2)
+	want := time.Date(target.Year(), target.Month(), target.Day(), 17, 0, 0, 0, time.Local)
+
+	_, err := HandleAddReminder(ctx, db, parentCfg(), parentUser(),
+		"telegram", "mom-chat", "", false,
+		"in 2 days at 17:00", "end of season show at Ferg's", "")
+	if err != nil {
+		t.Fatalf("HandleAddReminder: %v", err)
+	}
+
+	reminders, err := db.GetPendingReminders(ctx)
+	if err != nil {
+		t.Fatalf("GetPendingReminders: %v", err)
+	}
+	if len(reminders) != 1 {
+		t.Fatalf("expected 1 reminder, got %d", len(reminders))
+	}
+	if !reminders[0].DueAt.Equal(want) {
+		t.Errorf("DueAt = %v, want %v (explicit time must be honored exactly)", reminders[0].DueAt, want)
 	}
 }
 

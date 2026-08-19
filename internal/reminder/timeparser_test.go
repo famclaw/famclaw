@@ -77,6 +77,80 @@ func TestParseTime(t *testing.T) {
 	}
 }
 
+// TestParseTimeDayOffsetWithTime covers issue #366: a day offset combined
+// with an explicit time of day must be honored exactly ("in 2 days at
+// 5:00 pm" -> two calendar days out at 17:00), while the ambiguous phrasings
+// (bare "in N days") keep their old behavior (current time N days from now).
+func TestParseTimeDayOffsetWithTime(t *testing.T) {
+	base := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC) // Thursday
+
+	tests := []struct {
+		name     string
+		input    string
+		expected time.Time
+		wantErr  bool
+	}{
+		// Explicit time, days out (the #366 case)
+		{"2 days out at 17:00", "in 2 days at 17:00", time.Date(2026, 1, 17, 17, 0, 0, 0, time.UTC), false},
+		{"2 days out without 'at'", "in 2 days 17:00", time.Date(2026, 1, 17, 17, 0, 0, 0, time.UTC), false},
+		{"2 days out 5:00 pm", "in 2 days at 5:00 pm", time.Date(2026, 1, 17, 17, 0, 0, 0, time.UTC), false},
+		{"2 days out bare '5 pm'", "in 2 days at 5 pm", time.Date(2026, 1, 17, 17, 0, 0, 0, time.UTC), false},
+		{"1 day out 8:30 am", "in 1 day at 8:30 am", time.Date(2026, 1, 16, 8, 30, 0, 0, time.UTC), false},
+		{"3 days out 06:15", "in 3 days at 06:15", time.Date(2026, 1, 18, 6, 15, 0, 0, time.UTC), false},
+		{"12:00 am midnight", "in 2 days at 12:00 am", time.Date(2026, 1, 17, 0, 0, 0, 0, time.UTC), false},
+		{"12:00 pm noon", "in 2 days at 12:00 pm", time.Date(2026, 1, 17, 12, 0, 0, 0, time.UTC), false},
+		// Zero-day offset behaves like today's "at HH:MM"
+		{"0 days future time", "in 0 days at 17:00", time.Date(2026, 1, 15, 17, 0, 0, 0, time.UTC), false},
+		{"0 days passed time rolls to tomorrow", "in 0 days at 9:00", time.Date(2026, 1, 16, 9, 0, 0, 0, time.UTC), false},
+
+		// Meridiem-aware hour validation (reviewer suggestion on #367):
+		// with am/pm the hour must be a 12-hour value (1-12), without it a
+		// 24-hour value (0-23).
+		{"12:xx pm still noon", "in 2 days at 12:30 pm", time.Date(2026, 1, 17, 12, 30, 0, 0, time.UTC), false},
+		{"1:xx am still early morning", "in 1 day at 1:30 am", time.Date(2026, 1, 16, 1, 30, 0, 0, time.UTC), false},
+		{"24h form without meridiem still parses", "in 2 days at 13:00", time.Date(2026, 1, 17, 13, 0, 0, 0, time.UTC), false},
+		{"24h midnight without meridiem still parses", "in 2 days at 0:00", time.Date(2026, 1, 17, 0, 0, 0, 0, time.UTC), false},
+		{"hour 13 with meridiem rejected", "in 2 days at 13:00 pm", time.Time{}, true},
+		{"hour 14 with meridiem rejected", "in 2 days at 14:00 am", time.Time{}, true},
+		{"hour 0 with meridiem rejected", "in 2 days at 0:00 pm", time.Time{}, true},
+
+		// Today with explicit time keeps working (unchanged)
+		{"today at 17:00", "at 17:00", time.Date(2026, 1, 15, 17, 0, 0, 0, time.UTC), false},
+		{"today at 15:00 keyword", "today at 15:00", time.Date(2026, 1, 15, 15, 0, 0, 0, time.UTC), false},
+
+		// Ambiguous phrasings keep their old behavior
+		{"bare in 2 days keeps current time", "in 2 days", base.Add(48 * time.Hour), false},
+		{"bare in 3 days keeps current time", "in 3 days", base.Add(72 * time.Hour), false},
+		{"in 2 hours unchanged", "in 2 hours", base.Add(2 * time.Hour), false},
+
+		// Errors
+		{"hour 25 rejected", "in 2 days at 25:00", time.Time{}, true},
+		{"minute 60 rejected", "in 2 days at 12:60", time.Time{}, true},
+		{"bare hour without meridiem rejected", "in 2 days at 5", time.Time{}, true},
+		{"trailing junk rejected", "in 2 days at 17:00 sharp", time.Time{}, true},
+		{"missing day count rejected", "in days at 17:00", time.Time{}, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseTime(tc.input, base, time.UTC)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			if !got.Equal(tc.expected) {
+				t.Errorf("got %v, want %v", got, tc.expected)
+			}
+		})
+	}
+}
+
 func TestParseDayOfWeek(t *testing.T) {
 	tests := []struct {
 		input    string
