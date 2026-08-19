@@ -227,6 +227,58 @@ func isChainOfThought(s string) bool {
 	return false
 }
 
+// mergeReasoningForce hoists the reasoning field into Content when Content
+// is empty, WITHOUT the chain-of-thought filter. Use it only when the
+// gateway's merge_reasoning_content_in_choices=true declares the reasoning
+// field to carry the model's final answer (gemma-4-26b, deepseek-r1 style)
+// — the operator's setting outranks the heuristic, so even CoT-looking
+// text is shown rather than dropped.
+func (m *Message) mergeReasoningForce() {
+	if strings.TrimSpace(m.Content) == "" {
+		raw := m.ReasoningContent
+		if raw == "" {
+			raw = m.Reasoning
+		}
+		if raw != "" {
+			m.Content = strings.TrimSpace(stripControlTokens(raw))
+		}
+	}
+	m.ReasoningContent = ""
+	m.Reasoning = ""
+}
+
+// mergeReasoningForModel reconciles the reasoning fields with the gateway's
+// authoritative setting when one is known, and with the model-aware
+// heuristic otherwise:
+//
+//   - merge=true: the reasoning field carries the answer — hoist it
+//     unconditionally (mergeReasoningForce).
+//   - merge=false: the reasoning field is deliberation — keep it private.
+//   - unknown (detection off, gateway unreachable, model not listed):
+//     fall through to the model-aware mergeReasoning.
+func (c *Client) mergeReasoningForModel(ctx context.Context, m *Message) {
+	flag := c.reasoningFlag(ctx)
+	switch {
+	case flag != nil && *flag:
+		m.mergeReasoningForce()
+	case flag != nil:
+		m.ReasoningContent = ""
+		m.Reasoning = ""
+	default:
+		m.mergeReasoning(c.model)
+	}
+}
+
+// reasoningFlag returns the gateway's authoritative
+// merge_reasoning_content_in_choices for this client's model, or nil when
+// the cache is absent or has no answer (model-aware heuristic decides).
+func (c *Client) reasoningFlag(ctx context.Context) *bool {
+	if c.reasoningCache == nil {
+		return nil
+	}
+	return c.reasoningCache.MergeSetting(ctx, c.model)
+}
+
 // ToolCall represents a tool invocation requested by the LLM.
 type ToolCall struct {
 	ID       string           `json:"id,omitempty"`
@@ -349,6 +401,10 @@ type Client struct {
 	http    *http.Client
 	// Default timeout for LLM calls (5 minutes is too long for many operations)
 	defaultTimeout time.Duration
+
+	// Shared gateway auto-detect cache (nil = detection off: every merge
+	// decision falls back to the model-aware heuristic).
+	reasoningCache *ReasoningCache
 }
 
 // NewClient creates a new LLM client with API key auth.
@@ -374,6 +430,14 @@ func (c *Client) WithTimeout(d time.Duration) *Client {
 	if d > 0 {
 		c.defaultTimeout = d
 	}
+	return c
+}
+
+// WithReasoningCache attaches the shared reasoning auto-detect cache. When
+// present, the gateway's authoritative merge_reasoning_content_in_choices
+// wins over the model-name heuristic for this client's merge decisions.
+func (c *Client) WithReasoningCache(rc *ReasoningCache) *Client {
+	c.reasoningCache = rc
 	return c
 }
 
@@ -479,7 +543,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 		return "", fmt.Errorf("LLM returned %d: %s", resp.StatusCode, string(b))
 	}
 
-	return c.parseSSEStream(resp.Body, onToken)
+	return c.parseSSEStream(resp.Body, onToken, c.reasoningFlag(ctx))
 }
 
 // parseSSEStream reads an SSE stream (data: {...}\n) and extracts answer
@@ -492,7 +556,17 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 // mirrors mergeReasoning's precedence (ReasoningContent over Reasoning)
 // instead of concatenating two distinct reasoning streams into one garbled
 // string.
-func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, error) {
+//
+// mergeFlag is the gateway's authoritative merge_reasoning_content_in_choices
+// for this model (nil when unknown, e.g. detection off or gateway
+// unreachable). It steers only the end-of-stream reconciliation, the same
+// way mergeReasoningForModel does for non-streaming responses:
+//   - true: hoist the buffered reasoning unconditionally — the gateway says
+//     the reasoning field carries the answer.
+//   - false: keep the buffered reasoning private — the gateway says it is
+//     deliberation.
+//   - nil: decide by the model-aware policy (reasoningClassForModel).
+func (c *Client) parseSSEStream(body io.Reader, onToken func(string), mergeFlag *bool) (string, error) {
 	var full strings.Builder
 	var carry string
 	var reasoningContent strings.Builder
@@ -563,14 +637,29 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string)) (string, e
 	}
 
 	// No answer content: reconcile the buffered reasoning with the same
-	// model-aware policy as mergeReasoning — prefer reasoning_content, fall
+	// policy as mergeReasoningForModel — prefer reasoning_content, fall
 	// through to reasoning so a genuine answer in either field hoists.
-	// Known thinking models (classDeliberation) yield "" from both, so
-	// deliberation never reaches the user.
-	class := reasoningClassForModel(c.model)
-	hoisted := mergeReasoningField(reasoningContent.String(), class)
-	if strings.TrimSpace(hoisted) == "" {
-		hoisted = mergeReasoningField(reasoning.String(), class)
+	var hoisted string
+	switch {
+	case mergeFlag != nil && *mergeFlag:
+		// The gateway says the reasoning field carries the answer: hoist
+		// with control-token stripping, no CoT gate.
+		hoisted = strings.TrimSpace(stripControlTokens(reasoningContent.String()))
+		if hoisted == "" {
+			hoisted = strings.TrimSpace(stripControlTokens(reasoning.String()))
+		}
+	case mergeFlag != nil:
+		// The gateway says the reasoning field is deliberation: keep it
+		// private even when the model name would hoist.
+	default:
+		// Unknown: the model-aware policy decides. Known thinking models
+		// (classDeliberation) yield "" from both, so deliberation never
+		// reaches the user.
+		class := reasoningClassForModel(c.model)
+		hoisted = mergeReasoningField(reasoningContent.String(), class)
+		if strings.TrimSpace(hoisted) == "" {
+			hoisted = mergeReasoningField(reasoning.String(), class)
+		}
 	}
 	if hoisted != "" && onToken != nil {
 		onToken(hoisted)
@@ -644,11 +733,12 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 	}
 
 	msg := &result.Choices[0].Message
-	// Reconcile the reasoning fields model-aware before any further
-	// processing: thinking models (qwen3, nemotron, gpt-oss) keep their
-	// deliberation private; answer-in-reasoning models (gemma-4-26b) and
-	// unknown models hoist a genuine answer into Content.
-	msg.mergeReasoning(c.model)
+	// Reconcile the reasoning fields before any further processing. The
+	// gateway's authoritative setting wins when known; otherwise the
+	// model-aware policy applies: thinking models (qwen3, nemotron,
+	// gpt-oss) keep their deliberation private; answer-in-reasoning models
+	// (gemma-4-26b) and unknown models hoist a genuine answer into Content.
+	c.mergeReasoningForModel(ctx, msg)
 	// Rescue inline <tool_call> XML blocks that small local models emit
 	// when they violate the trained "tool call comes BEFORE prose, not
 	// after" instruction. Without this, the raw XML leaks to the user as

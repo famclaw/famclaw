@@ -333,8 +333,8 @@ func TestStageLLMCall_VisionDescribeErrorFallback(t *testing.T) {
 	// The tool-step messages must contain the updated fallback note that's more honest.
 	found := false
 	for _, m := range second.msgs {
-		if strings.Contains(m.Content, "couldn't process the image") && 
-		   strings.Contains(m.Content, "vision system is not configured or the describe step failed") {
+		if strings.Contains(m.Content, "couldn't process the image") &&
+			strings.Contains(m.Content, "vision system is not configured or the describe step failed") {
 			found = true
 			break
 		}
@@ -374,14 +374,14 @@ func TestStageLLMCall_HonestVisionError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stage should not fail when describe step errors: %v", err)
 	}
-	
+
 	// Verify the error message is now more honest about the actual cause
 	// rather than just saying "I can't see images"
 	second := mock.withToolsCalls[1]
 	found := false
 	for _, m := range second.msgs {
-		if strings.Contains(m.Content, "couldn't process the image") && 
-		   strings.Contains(m.Content, "vision system is not configured or the describe step failed") {
+		if strings.Contains(m.Content, "couldn't process the image") &&
+			strings.Contains(m.Content, "vision system is not configured or the describe step failed") {
 			found = true
 			break
 		}

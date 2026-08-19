@@ -62,6 +62,26 @@ llm:
   max_response_tokens: 512
   temperature: 0.7
 
+  # Reasoning auto-detection — when the LLM endpoint is a LiteLLM
+  # (or OpenAI-compatible) gateway, FamClaw queries its model metadata at
+  # startup to learn each model's
+  # litellm_params.merge_reasoning_content_in_choices setting, so a final
+  # answer that ships in the reasoning field is shown and chain-of-thought
+  # is not. Works out of the box; the section below is opt-out/override only.
+  #
+  # reasoning:
+  #   # Set false to always use the built-in heuristic and skip the
+  #   # startup /v1/model/info probe (default: true).
+  #   enable_auto_detect: true
+  #   # Query a different gateway than llm.base_url (default: base_url).
+  #   # litellm_url: "http://192.168.1.223:4001"
+  #   # Use a dedicated key for the detection endpoint (default: api_key).
+  #   # litellm_api_key: ""
+  #   # Pin a model's behaviour regardless of what the gateway reports.
+  #   # per_model_override:
+  #   #   council: true   # gemma-4-26b: the reasoning field is the answer
+  #   #   smart: false    # qwen3.6: the reasoning field is chain-of-thought
+
 # ── Family profiles ───────────────────────────────────────────────────────────
 users:
   - name: "parent"
