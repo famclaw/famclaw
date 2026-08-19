@@ -1,6 +1,6 @@
 ---
 name: reminder
-description: Set reminders for yourself or family members. Natural language time parsing supports relative times ("in 2 hours"), absolute times ("tomorrow 9am", "at 14:30"), and shorthand ("30m", "2h").
+description: Set reminders for yourself or family members. Natural language time parsing supports relative times ("in 2 hours"), absolute times ("tomorrow 9:00 am", "at 14:30"), day offsets with an explicit time ("in 2 days at 17:00"), and shorthand ("30m", "2h").
 version: "1.0"
 author: famclaw
 license: AGPL-3.0-only
@@ -36,11 +36,12 @@ Call the builtin `add_reminder` tool with:
 |--------|---------|-------------|
 | Relative minutes | `in 30 minutes`, `in 5 min` | Minutes from now |
 | Relative hours | `in 2 hours`, `in 1h` | Hours from now |
-| Relative days | `in 3 days`, `in 1 day` | Days from now |
+| Relative days | `in 3 days`, `in 1 day` | Days from now, at the current time (to pin a time of day, use "Day offset with time") |
+| Day offset with time | `in 2 days at 17:00`, `in 2 days at 5:00 pm` | Exactly at that time on the calendar day N days out |
 | Shorthand | `30m`, `2h`, `1d` | Compact notation |
 | Absolute today | `at 14:30`, `at 2:30 pm` | Today at time (tomorrow if passed) |
-| Tomorrow | `tomorrow at 9am`, `tomorrow 09:00` | Tomorrow at time |
-| Day of week | `monday at 10:00`, `next friday 5pm` | Next occurrence of day |
+| Tomorrow | `tomorrow at 9:00 am`, `tomorrow 09:00` | Tomorrow at time |
+| Day of week | `monday at 10:00`, `next friday 5:00 pm` | Next occurrence of day |
 | Today | `today at 17:00` | Today at time |
 
 ## Output

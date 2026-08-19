@@ -54,15 +54,15 @@ func TestParseTimeBareUnits(t *testing.T) {
 
 	// Cases that SHOULD work (current valid cases)
 	validCases := []string{
-		"in 1 hour", 
-		"in an hour", 
-		"in a min", 
-		"in 1 min", 
-		"in 2 mins", 
-		"in 20 seconds", 
-		"in half an hour", 
-		"in 30 sec", 
-		"in 2 hrs", 
+		"in 1 hour",
+		"in an hour",
+		"in a min",
+		"in 1 min",
+		"in 2 mins",
+		"in 20 seconds",
+		"in half an hour",
+		"in 30 sec",
+		"in 2 hrs",
 		"in 3 days",
 		"in hour", // This is already accepted but should remain accepted
 		"in 30 s",
@@ -72,7 +72,7 @@ func TestParseTimeBareUnits(t *testing.T) {
 	// Cases that SHOULD NOT work (bare units that cause confusion)
 	invalidCases := []string{
 		"in minute",
-		"in second", 
+		"in second",
 		"in day",
 		"in s",
 		"in d",

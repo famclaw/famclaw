@@ -61,10 +61,11 @@ FamClaw can remind family members about things at the right time — it doesn't 
 
 Say something natural like:
 - "Remind me to take out the trash in 2 hours"
-- "Remind me tomorrow at 9am to call Grandma"
+- "Remind me tomorrow at 9:00 am to call Grandma"
 - "Remind me at 14:30 to pick up Emma from soccer"
+- "Remind me 2 days from now at 5:00 pm to prep for Sunday's show"
 
-The assistant parses the time (relative like "in 2 hours" or "30m", or absolute like "tomorrow 9am" / "monday 10:00") and the message, then stores the reminder. FamClaw's scheduler delivers due reminders proactively through the recipient's most recently used messaging app.
+The assistant parses the time (relative like "in 2 hours" or "30m", absolute like "tomorrow 9:00 am" / "monday 10:00", or a day offset with an explicit time like "in 2 days at 17:00", which is honored exactly on that calendar day) and the message, then stores the reminder. A bare "in N days" reminds at the current time N days from now — to pin a specific time of day, include it. FamClaw's scheduler delivers due reminders proactively through the recipient's most recently used messaging app.
 
 ### Reminding another family member
 
