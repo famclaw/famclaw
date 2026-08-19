@@ -18,13 +18,13 @@ const ToolName = "builtin__add_reminder"
 func Tool() agentcore.Tool {
 	return agentcore.Tool{
 		Name:        ToolName,
-		Description: "Set a reminder for yourself or another family member. Specify when (relative like 'in 2 hours', 'tomorrow 9am', or shorthand '30m') and the message to be reminded of.",
+		Description: "Set a reminder for yourself or another family member. Specify when (relative like 'in 2 hours' or 'in 2 days at 17:00', day-based like 'tomorrow 9:00 am' or 'monday 10:00', or shorthand '30m') and the message to be reminded of.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"when": map[string]any{
 					"type":        "string",
-					"description": "When to remind (e.g., 'in 2 hours', 'tomorrow 9am', '30m', 'at 14:30', 'monday 10:00')",
+					"description": "When to remind (e.g., 'in 2 hours', 'at 14:30', 'tomorrow 9:00 am', 'monday 10:00', 'in 3 days at 17:00'). For a date more than a day out, include the exact time of day (e.g., 'in 2 days at 5:00 pm'); a bare 'in N days' reminds at the current time N days from now.",
 				},
 				"message": map[string]any{
 					"type":        "string",

@@ -33,8 +33,17 @@ func ParseTime(input string, now time.Time, loc *time.Location) (time.Time, erro
 		return t.UTC(), nil
 	}
 
-	return time.Time{}, fmt.Errorf("could not parse time expression %q; try e.g. \"in 10 minutes\", \"in 2 hours\", \"tomorrow morning\", \"at 9am\"", input)
+	return time.Time{}, fmt.Errorf("could not parse time expression %q; try e.g. \"in 10 minutes\", \"in 2 hours\", \"in 3 days at 17:00\", \"at 9:00\"", input)
 }
+
+// inDaysColonRegex matches "in N days [at] HH:MM [am/pm]" — a multi-day
+// offset with an explicit time of day (e.g. "in 2 days at 5:00 pm").
+var inDaysColonRegex = regexp.MustCompile(`^in\s+(\d+)\s+days?\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?$`)
+
+// inDaysAPMRegex matches "in N days [at] H am/pm" without minutes
+// (e.g. "in 2 days at 5 pm"). Hours without a meridiem are ambiguous and
+// deliberately rejected.
+var inDaysAPMRegex = regexp.MustCompile(`^in\s+(\d+)\s+days?\s+(?:at\s+)?(\d{1,2})\s+(am|pm)$`)
 
 func parseAbsolute(input string, now time.Time, loc *time.Location) (time.Time, bool) {
 	// "at HH:MM" or "at H:MM am/pm"
@@ -45,14 +54,7 @@ func parseAbsolute(input string, now time.Time, loc *time.Location) (time.Time, 
 		if h < 0 || h > 23 || min < 0 || min > 59 {
 			return time.Time{}, false
 		}
-		if m[3] != "" {
-			if m[3] == "pm" && h < 12 {
-				h += 12
-			}
-			if m[3] == "am" && h == 12 {
-				h = 0
-			}
-		}
+		h = applyMeridiem(h, m[3])
 		t := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, loc)
 		if t.Before(now) {
 			t = t.Add(24 * time.Hour)
@@ -68,14 +70,7 @@ func parseAbsolute(input string, now time.Time, loc *time.Location) (time.Time, 
 		if h < 0 || h > 23 || min < 0 || min > 59 {
 			return time.Time{}, false
 		}
-		if m[3] != "" {
-			if m[3] == "pm" && h < 12 {
-				h += 12
-			}
-			if m[3] == "am" && h == 12 {
-				h = 0
-			}
-		}
+		h = applyMeridiem(h, m[3])
 		tomorrow := now.Add(24 * time.Hour)
 		return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), h, min, 0, 0, loc), true
 	}
@@ -88,14 +83,7 @@ func parseAbsolute(input string, now time.Time, loc *time.Location) (time.Time, 
 		if h < 0 || h > 23 || min < 0 || min > 59 {
 			return time.Time{}, false
 		}
-		if m[3] != "" {
-			if m[3] == "pm" && h < 12 {
-				h += 12
-			}
-			if m[3] == "am" && h == 12 {
-				h = 0
-			}
-		}
+		h = applyMeridiem(h, m[3])
 		t := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, loc)
 		if t.Before(now) {
 			t = t.Add(24 * time.Hour)
@@ -119,14 +107,7 @@ func parseAbsolute(input string, now time.Time, loc *time.Location) (time.Time, 
 		if h < 0 || h > 23 || min < 0 || min > 59 {
 			return time.Time{}, false
 		}
-		if m[4] != "" {
-			if m[4] == "pm" && h < 12 {
-				h += 12
-			}
-			if m[4] == "am" && h == 12 {
-				h = 0
-			}
-		}
+		h = applyMeridiem(h, m[4])
 		targetDOW := parseDayOfWeek(m[1])
 		daysAhead := (targetDOW - now.Weekday() + 7) % 7
 		if strings.HasPrefix(input, "next ") || daysAhead == 0 {
@@ -137,6 +118,18 @@ func parseAbsolute(input string, now time.Time, loc *time.Location) (time.Time, 
 	}
 
 	return time.Time{}, false
+}
+
+// applyMeridiem normalizes a 12-hour clock value with an optional am/pm
+// meridiem to a 24-hour value. An empty meridiem leaves h unchanged.
+func applyMeridiem(h int, meridiem string) int {
+	if meridiem == "pm" && h < 12 {
+		h += 12
+	}
+	if meridiem == "am" && h == 12 {
+		h = 0
+	}
+	return h
 }
 
 func parseDayOfWeek(s string) time.Weekday {
@@ -164,6 +157,41 @@ func parseDayOfWeek(s string) time.Weekday {
 var halfHourRegex = regexp.MustCompile(`^in\s+half(?:\s+an)?\s+hour$`)
 
 func parseRelative(input string, now time.Time, loc *time.Location) (time.Time, bool) {
+	// "in N days [at] HH:MM [am/pm]" or "in N days [at] H am/pm" — a day
+	// offset combined with an explicit time of day is honored exactly: the
+	// reminder lands at HH:MM on the calendar day N days from now. This is
+	// what makes "in 2 days at 5:00 pm" work (issue #366: the time used to
+	// be silently dropped for multi-day offsets).
+	if m := inDaysColonRegex.FindStringSubmatch(input); m != nil {
+		days, _ := strconv.Atoi(m[1])
+		h, _ := strconv.Atoi(m[2])
+		min, _ := strconv.Atoi(m[3])
+		if h > 23 || min > 59 {
+			return time.Time{}, false
+		}
+		h = applyMeridiem(h, m[4])
+		target := now.AddDate(0, 0, days)
+		t := time.Date(target.Year(), target.Month(), target.Day(), h, min, 0, 0, loc)
+		if t.Before(now) {
+			t = t.AddDate(0, 0, 1)
+		}
+		return t, true
+	}
+	if m := inDaysAPMRegex.FindStringSubmatch(input); m != nil {
+		days, _ := strconv.Atoi(m[1])
+		h, _ := strconv.Atoi(m[2])
+		if h < 1 || h > 12 {
+			return time.Time{}, false
+		}
+		h = applyMeridiem(h, m[3])
+		target := now.AddDate(0, 0, days)
+		t := time.Date(target.Year(), target.Month(), target.Day(), h, 0, 0, 0, loc)
+		if t.Before(now) {
+			t = t.AddDate(0, 0, 1)
+		}
+		return t, true
+	}
+
 	// "in half an hour" / "in half hour" -> 30 minutes
 	if halfHourRegex.MatchString(input) {
 		return now.Add(30 * time.Minute), true
