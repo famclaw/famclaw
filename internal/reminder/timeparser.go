@@ -166,7 +166,17 @@ func parseRelative(input string, now time.Time, loc *time.Location) (time.Time, 
 		days, _ := strconv.Atoi(m[1])
 		h, _ := strconv.Atoi(m[2])
 		min, _ := strconv.Atoi(m[3])
-		if h > 23 || min > 59 {
+		// A meridiem makes this a 12-hour clock value: hour must be 1-12
+		// (e.g. "in 2 days at 13:00 pm" is invalid and rejected rather than
+		// scheduled at 13:00). Without one it is a 24-hour value: 0-23.
+		if min > 59 {
+			return time.Time{}, false
+		}
+		if m[4] != "" {
+			if h < 1 || h > 12 {
+				return time.Time{}, false
+			}
+		} else if h > 23 {
 			return time.Time{}, false
 		}
 		h = applyMeridiem(h, m[4])
