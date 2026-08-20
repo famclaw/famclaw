@@ -48,9 +48,14 @@ check_credentials() {
   [ -n "${FAMCLAW_APPLE_TEAM_ID:-}" ] || missing+=("FAMCLAW_APPLE_TEAM_ID")
   if [ -z "${FAMCLAW_NOTARY_KEY:-}${FAMCLAW_APPLE_ID:-}" ]; then
     missing+=("FAMCLAW_NOTARY_KEY + FAMCLAW_NOTARY_KEY_ID + FAMCLAW_NOTARY_ISSUER_ID (or FAMCLAW_APPLE_ID + FAMCLAW_APPLE_PASSWORD)")
-  elif [ -n "${FAMCLAW_NOTARY_KEY:-}" ] && [ -z "${FAMCLAW_NOTARY_KEY_ID:-}${FAMCLAW_NOTARY_ISSUER_ID:-}" ]; then
-    missing+=("FAMCLAW_NOTARY_KEY_ID and FAMCLAW_NOTARY_ISSUER_ID (go with FAMCLAW_NOTARY_KEY)")
-  elif [ -z "${FAMCLAW_NOTARY_KEY:-}" ] && [ -z "${FAMCLAW_APPLE_PASSWORD:-}" ]; then
+  fi
+  # The notary key path is used whenever FAMCLAW_NOTARY_KEY is set, so its
+  # triple must be complete even if an Apple-ID fallback is also configured.
+  if [ -n "${FAMCLAW_NOTARY_KEY:-}" ]; then
+    [ -n "${FAMCLAW_NOTARY_KEY_ID:-}" ] || missing+=("FAMCLAW_NOTARY_KEY_ID (goes with FAMCLAW_NOTARY_KEY)")
+    [ -n "${FAMCLAW_NOTARY_ISSUER_ID:-}" ] || missing+=("FAMCLAW_NOTARY_ISSUER_ID (goes with FAMCLAW_NOTARY_KEY)")
+  fi
+  if [ -n "${FAMCLAW_APPLE_ID:-}" ] && [ -z "${FAMCLAW_NOTARY_KEY:-}" ] && [ -z "${FAMCLAW_APPLE_PASSWORD:-}" ]; then
     missing+=("FAMCLAW_APPLE_PASSWORD (goes with FAMCLAW_APPLE_ID)")
   fi
   if [ "${#missing[@]}" -gt 0 ]; then
