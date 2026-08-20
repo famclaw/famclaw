@@ -38,12 +38,15 @@ type Message struct {
 	// model-dependent: qwen3/nemotron/gpt-oss carry deliberation
 	// (chain-of-thought) here, while gemma-4-26b carries the final answer.
 	// We DO NOT include it when sending the message back (omitempty); at
-	// receive time mergeReasoning() reconciles it model-aware.
+	// receive time mergeReasoningForModel() reconciles it — the gateway's
+	// authoritative merge_reasoning_content_in_choices wins when known,
+	// otherwise the model-aware heuristic (mergeReasoning) applies.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 	// Reasoning captures the plain "reasoning" field emitted by some
 	// Ollama/LiteLLM gateways (e.g. Gemma-4-26b, qwen3.6-27b). Its meaning
-	// is model-dependent like ReasoningContent: mergeReasoning() hoists a
-	// genuine answer into Content or keeps deliberation private, and clears
+	// is model-dependent like ReasoningContent: mergeReasoningForModel()
+	// hoists a genuine answer into Content or keeps deliberation private
+	// (gateway flag first, model-aware heuristic otherwise), and clears
 	// the field either way. It is not sent back in requests because
 	// MarshalJSON omits it.
 	Reasoning string `json:"reasoning,omitempty"`
