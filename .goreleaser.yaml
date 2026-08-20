@@ -14,14 +14,18 @@ builds:
       - -s -w -X main.Version={{.Version}}
     hooks:
       post:
-        # Ad-hoc codesign every darwin binary in place, before archiving, so the
-        # published release runs on Apple Silicon + Intel Macs out of the box.
-        # Apple Silicon refuses to exec improperly-signed arm64 Mach-O binaries
-        # (instant SIGKILL). Ad-hoc signing (`codesign -s -`) is a no-op for the
-        # Gatekeeper "identified developer" check but satisfies the kernel's
-        # signature requirement. Requires the macos-latest runner (codesign is
+        # Sign every darwin binary with a Developer ID Application
+        # certificate, notarize it, and staple the Apple ticket — before
+        # archiving, so the published tarballs contain the final signed
+        # binary. This is a hard gate: with no signing credentials the hook
+        # fails loudly and the release publishes nothing (an unsigned/ad-hoc
+        # arm64 binary is SIGKILLed on launch, exit 137, #311; a
+        # non-notarized binary is blocked by Gatekeeper after a browser
+        # download, #214). Credentials come from the FAMCLAW_APPLE_* /
+        # FAMCLAW_NOTARY_* environment variables — see docs/RELEASE.md.
+        # Requires the macos-latest runner (codesign/notarytool are
         # macOS-only); linux targets are skipped via the OS guard below.
-        - cmd: sh -c 'if [ "{{.Os}}" = "darwin" ]; then codesign -s - --force "{{.Path}}"; fi'
+        - cmd: sh -c 'if [ "{{.Os}}" = "darwin" ]; then bash scripts/darwin-sign-notarize.sh "{{.Path}}"; fi'
     mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux

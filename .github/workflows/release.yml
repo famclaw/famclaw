@@ -9,11 +9,15 @@ on:
 
 jobs:
   # Runs on macos-latest (NOT ubuntu) so the goreleaser post-build hook can
-  # ad-hoc codesign darwin binaries. Apple Silicon refuses to execute
-  # improperly-signed arm64 Mach-O binaries (silent SIGKILL), so a released
-  # famclaw-darwin-* binary built on Linux would be killed on launch.
-  # `codesign` is macOS-only, hence the macOS runner. linux binaries are
-  # cross-compiled here (CGO_ENABLED=0) exactly as before.
+  # sign darwin binaries with a Developer ID Application certificate and
+  # notarize them (codesign / notarytool / stapler are macOS-only). Apple
+  # Silicon kills improperly-signed arm64 Mach-O binaries on launch (exit
+  # 137, silent), and Gatekeeper blocks non-notarized browser downloads for
+  # non-technical users — so darwin release binaries are a hard
+  # signing+notarization gate: with credentials missing the preflight step
+  # below fails the job before anything is built or published (issues #311,
+  # #214). linux binaries are cross-compiled here (CGO_ENABLED=0) exactly
+  # as before.
   goreleaser:
     name: Build & Publish
     runs-on: macos-latest
@@ -21,10 +25,29 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+    env:
+      # darwin signing + notarization credentials, injected at release time
+      # as repository secrets with these names (see docs/RELEASE.md). When
+      # they are absent the preflight step fails loudly; nothing is
+      # published unsigned.
+      FAMCLAW_APPLE_P12: ${{ secrets.FAMCLAW_APPLE_P12 }}
+      FAMCLAW_APPLE_PASSPHRASE: ${{ secrets.FAMCLAW_APPLE_PASSPHRASE }}
+      FAMCLAW_APPLE_TEAM_ID: ${{ secrets.FAMCLAW_APPLE_TEAM_ID }}
+      FAMCLAW_NOTARY_KEY: ${{ secrets.FAMCLAW_NOTARY_KEY }}
+      FAMCLAW_NOTARY_KEY_ID: ${{ secrets.FAMCLAW_NOTARY_KEY_ID }}
+      FAMCLAW_NOTARY_ISSUER_ID: ${{ secrets.FAMCLAW_NOTARY_ISSUER_ID }}
+      FAMCLAW_APPLE_ID: ${{ secrets.FAMCLAW_APPLE_ID }}
+      FAMCLAW_APPLE_PASSWORD: ${{ secrets.FAMCLAW_APPLE_PASSWORD }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      # Fail fast (before the multi-minute build) when darwin signing
+      # credentials are missing — the message lists exactly which
+      # FAMCLAW_* secrets to set.
+      - name: "Preflight: darwin signing credentials present (#311, #214)"
+        run: bash scripts/darwin-sign-notarize.sh --check
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
