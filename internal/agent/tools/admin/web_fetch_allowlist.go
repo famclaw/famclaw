@@ -27,9 +27,9 @@ func AllowlistListDefinition() agentcore.Tool {
 		Description: "List all hosts in the web_fetch URL allowlist (parent-only). " +
 			"Shows every host the assistant is permitted to fetch via web_fetch.",
 		InputSchema: map[string]any{
-			"type":     "object",
+			"type":       "object",
 			"properties": map[string]any{},
-			"required": []string{},
+			"required":   []string{},
 		},
 		Source: "builtin",
 		Roles:  []string{"parent"},
@@ -57,7 +57,7 @@ func AllowlistAddDefinition() agentcore.Tool {
 		Description: "Add a host to the web_fetch URL allowlist (parent-only). " +
 			"Example: allowlist_add(host=\"example.com\")",
 		InputSchema: map[string]any{
-			"type":     "object",
+			"type": "object",
 			"properties": map[string]any{
 				"host": map[string]any{
 					"type":        "string",
@@ -122,7 +122,7 @@ func AllowlistRemoveDefinition() agentcore.Tool {
 		Description: "Remove a host from the web_fetch URL allowlist (parent-only). " +
 			"Example: allowlist_remove(host=\"example.com\")",
 		InputSchema: map[string]any{
-			"type":     "object",
+			"type": "object",
 			"properties": map[string]any{
 				"host": map[string]any{
 					"type":        "string",
