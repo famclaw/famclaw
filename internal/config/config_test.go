@@ -717,7 +717,7 @@ func TestReasoningDefaultsAndParsing(t *testing.T) {
 	content := `server:
   port: 8080
 llm:
-  base_url: "http://192.168.1.223:4001"
+  base_url: "http://192.168.1.10:4001"
   model: "smart"
   reasoning:
     enable_auto_detect: true
