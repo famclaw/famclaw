@@ -41,11 +41,17 @@ llm:
   # vision_profile: "vision"
 
   # Named LLM endpoints — override per-user model selection.
+  # Each profile may carry a `label` — a display-only name shown in the
+  # web UI. Keep it accurate to what the profile actually routes to
+  # (where + which model): a family member reading the label should know
+  # which model answers.
   # profiles:
   #   vision:
+  #     label: "Local Ollama (RPi, qwen2.5-vl:7b)"
   #     base_url: "http://192.168.1.10:11434"
   #     model: "qwen2.5-vl:7b"
   #   cloud:
+  #     label: "OpenAI cloud (gpt-4o-mini)"
   #     base_url: "https://api.openai.com/v1"
   #     model: "gpt-4o-mini"
   #     api_key: "${OPENAI_API_KEY}"
