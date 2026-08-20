@@ -129,3 +129,4 @@ The notary key is preferred: it does not trigger Apple 2FA on release day.
   updater/installers use atomic rename — tell the user to re-run
   `scripts/update.sh`) and a genuine signing problem (probe with
   `codesign -dv` / `xcrun stapler verify`).
+# no-op
