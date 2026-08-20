@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/famclaw/famclaw/internal/config"
 	"gopkg.in/yaml.v3"
@@ -15,9 +16,10 @@ import (
 
 // settingsView is the JSON shape for GET/POST /api/settings.
 type settingsView struct {
-	LLM      llmSettingsView     `json:"llm"`
-	Users    []userSettingsView  `json:"users"`
-	Gateways gatewaySettingsView `json:"gateways"`
+	LLM      llmSettingsView      `json:"llm"`
+	Users    []userSettingsView   `json:"users"`
+	Gateways gatewaySettingsView  `json:"gateways"`
+	WebFetch webFetchSettingsView `json:"web_fetch"`
 }
 
 type llmProfileView struct {
@@ -54,6 +56,12 @@ type gatewaySettingsView struct {
 		Enabled bool   `json:"enabled"`
 		Token   string `json:"token,omitempty"`
 	} `json:"discord"`
+}
+
+// webFetchSettingsView carries the web_fetch allowlist and enable flag.
+type webFetchSettingsView struct {
+	Enabled      bool     `json:"enabled"`
+	URLAllowlist []string `json:"url_allowlist"`
 }
 
 // handleSettings handles GET (read config) and POST (update config).
@@ -116,6 +124,12 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 
 	view.Gateways.Telegram.Enabled = s.cfg.Gateways.Telegram.Enabled
 	view.Gateways.Discord.Enabled = s.cfg.Gateways.Discord.Enabled
+
+	// WebFetch settings
+	view.WebFetch.Enabled = s.cfg.Tools.WebFetch.Enabled
+	// Copy the allowlist so the view is stable against concurrent writes
+	view.WebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
+	copy(view.WebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
 
 	jsonOK(w, view)
 }
@@ -204,6 +218,35 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	s.cfg.Gateways.Discord.Enabled = update.Gateways.Discord.Enabled
 	if update.Gateways.Discord.Token != "" {
 		s.cfg.Gateways.Discord.Token = update.Gateways.Discord.Token
+	}
+
+	// WebFetch — allowlist and enable flag
+	// Empty update list is ignored (client didn't send it); non-empty replaces
+	// the allowlist entirely. Enabled flag can be toggled independently.
+	if update.WebFetch.Enabled != s.cfg.Tools.WebFetch.Enabled {
+		s.cfg.Tools.WebFetch.Enabled = update.WebFetch.Enabled
+	}
+	if len(update.WebFetch.URLAllowlist) > 0 {
+		// Deduplicate and trim whitespace
+		seen := make(map[string]struct{}, len(update.WebFetch.URLAllowlist))
+		deduped := make([]string, 0, len(update.WebFetch.URLAllowlist))
+		for _, host := range update.WebFetch.URLAllowlist {
+			trimmed := strings.TrimSpace(host)
+			if trimmed == "" {
+				continue
+			}
+			if _, ok := seen[trimmed]; !ok {
+				seen[trimmed] = struct{}{}
+				deduped = append(deduped, trimmed)
+			}
+		}
+		s.cfg.Tools.WebFetch.URLAllowlist = deduped
+	}
+
+	// Validate web_fetch config after mutation
+	if s.cfg.Tools.WebFetch.Enabled && len(s.cfg.Tools.WebFetch.URLAllowlist) == 0 {
+		jsonErr(w, fmt.Errorf("web_fetch is enabled but url_allowlist is empty — set at least one host or disable web_fetch"), http.StatusBadRequest)
+		return
 	}
 
 	// Write back to config.yaml

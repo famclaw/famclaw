@@ -19,7 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 
 	"github.com/elastic/go-seccomp-bpf"
 	landlock "github.com/landlock-lsm/go-landlock/landlock"
@@ -989,83 +988,74 @@ func main() {
 		reloadRegistry.RequireRestart("tool-cache", "cache sweeper started once at startup")
 	}
 
-	// Set up config file watcher for hot-reload
-	configWatcher, err := fsnotify.NewWatcher()
+	// Set up config file watcher for hot-reload. reloadConfigFromFile is
+	// invoked for every coalesced change event — in-place writes AND atomic
+	// replacements (temp + rename, which config.Save and most editors use).
+	// A raw fsnotify.Write-only loop missed atomic replacements entirely:
+	// the save landed on disk, but the running process kept the stale
+	// config until restart.
+	reloadConfigFromFile := func() {
+		newCfg, err := config.Load(*cfgPath)
+		if err != nil {
+			log.Printf("Error reloading config: %v", err)
+			return
+		}
+		// Validate the new config
+		if err := newCfg.Validate(); err != nil {
+			log.Printf("Invalid config change (could not resolve secret references, keeping current config); see the [vault] log lines above for which")
+			return
+		}
+		if err := newCfg.LLM.ValidateProvider(); err != nil {
+			log.Printf("Invalid LLM provider in config change (keeping current config): %v", err)
+			return
+		}
+		// Config is valid, run the registry reload loop.
+		// The registry walks every registered component and
+		// reports the outcome of each. LLM config (endpoints,
+		// model, temperature) is read per-message by chatFn
+		// from the cfg variable, which we update here so new
+		// agents pick up the change.
+		log.Printf("Config file changed, reloading configuration...")
+		statuses := reloadRegistry.Reload(newCfg)
+		cfg = newCfg
+
+		// Summarize outcomes
+		var reloaded, failed, needsRestart []string
+		for _, s := range statuses {
+			switch s.Outcome {
+			case reload.OutcomeReloaded:
+				reloaded = append(reloaded, s.Name)
+			case reload.OutcomeFailed:
+				failed = append(failed, s.Name)
+			case reload.OutcomeRequiresRestart:
+				needsRestart = append(needsRestart, s.Name)
+			}
+		}
+		log.Printf("Reload summary: %d reloaded, %d failed, %d requires restart",
+			len(reloaded), len(failed), len(needsRestart))
+		if len(failed) > 0 {
+			log.Printf("  FAILED: %s — config change not applied for these components",
+				strings.Join(failed, ", "))
+		}
+		if len(needsRestart) > 0 {
+			log.Printf("  Requires restart: %s", strings.Join(needsRestart, ", "))
+		}
+	}
+	configWatcher, err := reload.NewConfigWatcher(*cfgPath, reload.DefaultWatchDebounce)
 	if err != nil {
 		log.Printf("Failed to create config watcher: %v", err)
 	} else {
 		defer configWatcher.Close()
-		// Watch the config file for changes
-		if err := configWatcher.Add(*cfgPath); err != nil {
-			log.Printf("Failed to watch config file %s: %v", *cfgPath, err)
-		} else {
-			// Start goroutine to handle config events
-			go func() {
-				for {
-					select {
-					case <-gwCtx.Done():
-						return
-					case event, ok := <-configWatcher.Events:
-						if !ok {
-							return
-						}
-						if event.Op&fsnotify.Write == fsnotify.Write {
-							// Config file was written to, reload it
-							newCfg, err := config.Load(*cfgPath)
-							if err != nil {
-								log.Printf("Error reloading config: %v", err)
-								continue
-							}
-							// Validate the new config
-							if err := newCfg.Validate(); err != nil {
-								log.Printf("Invalid config change (could not resolve secret references, keeping current config); see the [vault] log lines above for which")
-								continue
-							}
-							if err := newCfg.LLM.ValidateProvider(); err != nil {
-								log.Printf("Invalid LLM provider in config change (keeping current config): %v", err)
-								continue
-							}
-							// Config is valid, run the registry reload loop.
-							// The registry walks every registered component and
-							// reports the outcome of each. LLM config (endpoints,
-							// model, temperature) is read per-message by chatFn
-							// from the cfg variable, which we update here so new
-							// agents pick up the change.
-							log.Printf("Config file changed, reloading configuration...")
-							statuses := reloadRegistry.Reload(newCfg)
-							cfg = newCfg
-
-							// Summarize outcomes
-							var reloaded, failed, needsRestart []string
-							for _, s := range statuses {
-								switch s.Outcome {
-								case reload.OutcomeReloaded:
-									reloaded = append(reloaded, s.Name)
-								case reload.OutcomeFailed:
-									failed = append(failed, s.Name)
-								case reload.OutcomeRequiresRestart:
-									needsRestart = append(needsRestart, s.Name)
-								}
-							}
-							log.Printf("Reload summary: %d reloaded, %d failed, %d requires restart",
-								len(reloaded), len(failed), len(needsRestart))
-							if len(failed) > 0 {
-								log.Printf("  FAILED: %s — config change not applied for these components",
-									strings.Join(failed, ", "))
-							}
-							if len(needsRestart) > 0 {
-								log.Printf("  Requires restart: %s", strings.Join(needsRestart, ", "))
-							}
-						}
-					case err, ok := <-configWatcher.Errors:
-						if !ok {
-							return
-						}
-						log.Printf("Config watcher error: %v", err)
-					}
+		go func() {
+			for {
+				select {
+				case <-gwCtx.Done():
+					return
+				case <-configWatcher.Events():
+					reloadConfigFromFile()
 				}
-			}()
-		}
+			}
+		}()
 	}
 
 	// mDNS removed in v0.5.x — see #110. Use the device IP address.

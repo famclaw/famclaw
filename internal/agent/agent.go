@@ -790,6 +790,15 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		case "builtin__mcp_add":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath}
 			return admin.HandleMCPAdd(ctx, deps, args)
+		case "builtin__allowlist_list":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			return admin.HandleAllowlistList(ctx, deps, args)
+		case "builtin__allowlist_add":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			return admin.HandleAllowlistAdd(ctx, deps, args)
+		case "builtin__allowlist_remove":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			return admin.HandleAllowlistRemove(ctx, deps, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
@@ -2186,7 +2195,11 @@ func isSubagentExcludedTool(name string) bool {
 		"builtin__approve_request",
 		"builtin__deny_request",
 		"builtin__set_user_role",
-		"builtin__link_account":
+		"builtin__link_account",
+		// URL allowlist management (parent-only):
+		"builtin__allowlist_list",
+		"builtin__allowlist_add",
+		"builtin__allowlist_remove":
 		return true
 	}
 	return false
