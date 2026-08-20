@@ -109,6 +109,7 @@ Download the binary for your platform from the [latest release](https://github.c
 | Intel Mac | `famclaw-darwin-amd64.tar.xz` |
 | Linux x86_64 | `famclaw-linux-amd64.tar.xz` |
 | Linux arm64 | `famclaw-linux-arm64.tar.xz` |
+| Linux arm (32-bit, e.g. RPi 3/Zero) | `famclaw-linux-armv7.tar.xz` |
 
 ```bash
 tar -xJf famclaw-darwin-arm64.tar.xz
