@@ -112,8 +112,12 @@ Download the binary for your platform from the [latest release](https://github.c
 
 ```bash
 tar -xJf famclaw-darwin-arm64.tar.xz
+touch config.yaml   # start empty — the web wizard fills it in
 ./famclaw --config config.yaml
 ```
+
+Then open `http://<host>:8080` and complete the setup wizard (it writes the
+rest of the config for you).
 
 Release darwin binaries are Developer ID-signed and notarized (the release
 fails loudly if signing credentials are missing — `docs/RELEASE.md`), and the

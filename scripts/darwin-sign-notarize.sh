@@ -132,7 +132,6 @@ if [ -n "${FAMCLAW_NOTARY_KEY:-}" ]; then
 else
   NOTARY_ARGS+=(--apple-id "$FAMCLAW_APPLE_ID" --password "$FAMCLAW_APPLE_PASSWORD")
 fi
-# shellcheck disable=SC2068  # NOTARY_ARGS is intentionally unquoted-expanded
 xcrun notarytool "${NOTARY_ARGS[@]}" \
   || die "notarization failed for $BIN — read the log URL notarytool printed (xcrun notarytool log <id>)"
 
