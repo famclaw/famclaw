@@ -42,13 +42,19 @@ ARTIFACT_ARCHIVE="${ARTIFACT_BASE}.tar.xz"
 
 # ── Platform-specific service control ────────────────────────────────────────
 if [ "$OS" = "darwin" ]; then
-    PLIST="${HOME}/Library/LaunchAgents/com.famclaw.famclaw.plist"
     SERVICE_LABEL="com.famclaw.famclaw"
     DOMAIN="gui/$(id -u)"
+    # The label-named plist is what `make install-launchd` installs; the
+    # bare com.famclaw.plist is what older installs have.
+    PLIST="${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist"
+    if [ ! -f "$PLIST" ] && [ -f "${HOME}/Library/LaunchAgents/com.famclaw.plist" ]; then
+        PLIST="${HOME}/Library/LaunchAgents/com.famclaw.plist"
+    fi
 
     if [ ! -f "$PLIST" ]; then
-        echo "ERROR: launchd plist not found at $PLIST" >&2
-        echo "       Install com.famclaw.plist (substituting FAMCLAW_DIR + CURRENT_USER) before running this updater." >&2
+        echo "ERROR: launchd plist not found at ${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist" >&2
+        echo "       Install it with 'make install-launchd' (substitutes FAMCLAW_DIR + CURRENT_USER in scripts/com.famclaw.plist)" >&2
+        echo "       or move an existing ~/Library/LaunchAgents/com.famclaw.plist to ${SERVICE_LABEL}.plist." >&2
         exit 3
     fi
 
