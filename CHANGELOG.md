@@ -3,6 +3,19 @@
 All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## v0.13.0 — 2026-08-20
+
+### Changed
+- **macOS release binaries are now Developer ID-signed and notarized (#311, #214).** Release darwin binaries are signed with a "Developer ID Application" certificate, submitted to Apple's notary service, and stapled during the release build (`scripts/darwin-sign-notarize.sh`, driven by `FAMCLAW_APPLE_*` / `FAMCLAW_NOTARY_*` credentials — see `docs/RELEASE.md`). The release fails loudly with an actionable message when those credentials are missing: an unsigned or ad-hoc signed arm64 binary is killed on launch (exit 137), and a non-notarized binary is blocked by Gatekeeper after a browser download. The previous ad-hoc-only signing is gone. Upgrades keep the atomic-rename install path.
+- **Reminders and cross-user messages resolve targets to canonical names (#365).** The model addresses family members by display name or any case variant ("Julia", "Dep"), while the store keys on the lowercase config `Name`. `add_reminder` and `send_message` now normalize the target at the tool boundary (`Config.CanonicalName`: exact `Name`, then case-insensitive `Name`, then case-insensitive `DisplayName`), so a linked account is found instead of failing with "X has no linked gateway account" even though `list_users` showed it linked.
+
+### Fixed
+- **`add_reminder` honors explicit times for multi-day offsets (#366).** "in 2 days at 17:00" (or "in 2 days at 5 pm") now lands exactly at that time of day on the calendar day two days out — previously the explicit time was silently dropped and the reminder fired at the *current* time N days later. A bare "in N days" still reminds at the current time N days from now, and inputs that could not mean the requested time ("in 2 days at 13:00 pm") are rejected rather than scheduled at the wrong hour. The `add_reminder` tool description and `docs/FAMILY.md` document the accepted forms.
+- **Reasoning vs. chain-of-thought handling is now model-aware and language-agnostic (#364).** FamClaw no longer decides "is this text the answer or internal reasoning?" by matching English deliberation phrases. Models are classified by their reasoning-field semantics: known thinking models (qwen3 family, nemotron, gpt-oss) never have reasoning hoisted into an empty `content`; answer-in-reasoning models (gemma-4-26b) and unknown models hoist with control-token stripping. During streaming, answer tokens stream live while reasoning fields are buffered in separate builders and reconciled at end of stream — no live CoT leak, no language bias (French/German/Chinese/Russian/Greek CoT is suppressed; legitimate non-English answers pass).
+
+### Dependencies
+- Bumped `github.com/mark3labs/mcp-go` from 0.57.0 to 0.58.0, `golang.org/x/crypto` from 0.54.0 to 0.55.0, `golang.org/x/net` from 0.57.0 to 0.58.0, `golang.org/x/image` from 0.44.0 to 0.45.0, and `golang.org/x/text` from 0.40.0 to 0.41.0 (go-minor-patch group).
+
 ## v0.12.0 — 2026-08-14
 
 ### Added

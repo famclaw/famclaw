@@ -29,7 +29,11 @@ process was still running. The new binary looks valid but exits immediately with
    cp <installed-binary> /tmp/famclaw-probe && /tmp/famclaw-probe --version
    ```
    - Works from the clean path → the **install method** is the problem.
-   - Still dies → genuine binary/signing problem (see #313).
+   - Still dies → genuine binary/signing problem (see #313). For release
+     binaries, `codesign -dv famclaw` should show a `Developer ID Application`
+     authority and `xcrun stapler verify famclaw` should confirm the
+     stapled notarization ticket; anything else is not a supported release
+     artifact.
 
 **Why it happens:** `cp` writes *through* the existing inode. The running process
 keeps its pages, but the path's content no longer matches what was validated, so
