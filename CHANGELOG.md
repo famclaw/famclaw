@@ -228,3 +228,4 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 Initial release with runtime security scanning, install-time skill
 gating, OPA content filtering, Telegram/Discord/WhatsApp gateways,
 multi-format skill adapters, and inference sidecar.
+# no-op
