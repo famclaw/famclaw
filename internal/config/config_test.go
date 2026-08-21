@@ -766,7 +766,7 @@ func TestLLMProfileLabelRoundTrip(t *testing.T) {
 			name: "label preserved through round trip",
 			profile: LLMProfile{
 				Label:   "gateway smart tier (Mac, qwen3.6-35b-a3b)",
-				BaseURL: "http://192.168.1.223:4001",
+				BaseURL: "http://192.168.1.10:4001",
 				Model:   "smart",
 			},
 		},
@@ -797,7 +797,7 @@ func TestLLMProfileLabelRoundTrip(t *testing.T) {
 	}
 
 	t.Run("literal label key unmarshals onto Label", func(t *testing.T) {
-		literal := "primary:\n  label: \"gateway smart tier (Mac, qwen3.6-35b-a3b)\"\n  base_url: \"http://192.168.1.223:4001\"\n  model: \"smart\"\n"
+		literal := "primary:\n  label: \"gateway smart tier (Mac, qwen3.6-35b-a3b)\"\n  base_url: \"http://192.168.1.10:4001\"\n  model: \"smart\"\n"
 		var got map[string]LLMProfile
 		if err := yaml.Unmarshal([]byte(literal), &got); err != nil {
 			t.Fatalf("unmarshaling literal YAML: %v", err)
