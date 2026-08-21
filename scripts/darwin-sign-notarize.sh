@@ -5,18 +5,25 @@
 # every darwin binary, and as `--check` by the release workflow preflight
 # step.
 #
-# Why this gate exists (issues #311, #214):
-#   - an unsigned / ad-hoc signed arm64 Mach-O binary is killed by the kernel
-#     on launch: exit 137, no output — indistinguishable from a corrupt
-#     binary to the user;
+# Why signing + notarization exists (issues #311, #214):
+#   - an *unsigned* arm64 Mach-O binary is killed by the kernel on launch:
+#     exit 137, no output — indistinguishable from a corrupt binary to the
+#     user;
 #   - a binary that is not signed with a Developer ID Application
 #     certificate and notarized is blocked by Gatekeeper after a browser
 #     download (com.apple.quarantine), so non-technical users cannot
 #     install it at all.
 #
-# The release therefore REFUSES to ship a darwin binary unless it can sign,
-# notarize, and staple it. Missing credentials fail the release LOUD with an
-# actionable message — there is no unsigned fallback.
+# Two release paths — the preflight `--check` step and this hook apply the
+# same credential decision, so they always agree:
+#   - credentials complete: the binary is signed with the Developer ID
+#     Application certificate, notarized, and stapled.
+#   - credentials missing or partial: a WARNING names each missing
+#     FAMCLAW_* credential and the release falls back to the pre-v0.13.0
+#     ad-hoc path: the binary ships ad-hoc-signed. It still runs on Apple
+#     Silicon (ad-hoc signing satisfies the kernel, #311), but a
+#     browser-downloaded copy is blocked by Gatekeeper on first run until
+#     the user right-clicks -> Open (#214).
 #
 # Credentials are injected at release time as environment variables (GitHub
 # repository secrets with the same names; see docs/RELEASE.md). Never commit
@@ -35,50 +42,70 @@
 #   FAMCLAW_APPLE_PASSWORD       app-specific password
 #
 # Usage:
-#   darwin-sign-notarize.sh <darwin-binary>   sign + notarize + staple + verify
-#   darwin-sign-notarize.sh --check           exit 0 iff credentials are complete
+#   darwin-sign-notarize.sh <darwin-binary>   sign + notarize + staple + verify;
+#                                             ad-hoc fallback when credentials
+#                                             are missing or partial
+#   darwin-sign-notarize.sh --check           warn when credentials are missing
+#                                             or partial, then exit 0 (the
+#                                             preflight never blocks the
+#                                             release on them)
 set -euo pipefail
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-check_credentials() {
-  local missing=()
-  [ -n "${FAMCLAW_APPLE_P12:-}" ] || missing+=("FAMCLAW_APPLE_P12")
-  [ -n "${FAMCLAW_APPLE_PASSPHRASE:-}" ] || missing+=("FAMCLAW_APPLE_PASSPHRASE")
-  [ -n "${FAMCLAW_APPLE_TEAM_ID:-}" ] || missing+=("FAMCLAW_APPLE_TEAM_ID")
+# Prints the missing darwin signing credentials, one per line (empty when the
+# set is complete). Never fails: absent credentials are the ad-hoc fallback,
+# not an error.
+list_missing_credentials() {
+  local missing_creds=()
+  [ -n "${FAMCLAW_APPLE_P12:-}" ] || missing_creds+=("FAMCLAW_APPLE_P12")
+  [ -n "${FAMCLAW_APPLE_PASSPHRASE:-}" ] || missing_creds+=("FAMCLAW_APPLE_PASSPHRASE")
+  [ -n "${FAMCLAW_APPLE_TEAM_ID:-}" ] || missing_creds+=("FAMCLAW_APPLE_TEAM_ID")
   if [ -z "${FAMCLAW_NOTARY_KEY:-}${FAMCLAW_APPLE_ID:-}" ]; then
-    missing+=("FAMCLAW_NOTARY_KEY + FAMCLAW_NOTARY_KEY_ID + FAMCLAW_NOTARY_ISSUER_ID (or FAMCLAW_APPLE_ID + FAMCLAW_APPLE_PASSWORD)")
+    missing_creds+=("FAMCLAW_NOTARY_KEY + FAMCLAW_NOTARY_KEY_ID + FAMCLAW_NOTARY_ISSUER_ID (or FAMCLAW_APPLE_ID + FAMCLAW_APPLE_PASSWORD)")
   fi
   # The notary key path is used whenever FAMCLAW_NOTARY_KEY is set, so its
   # triple must be complete even if an Apple-ID fallback is also configured.
   if [ -n "${FAMCLAW_NOTARY_KEY:-}" ]; then
-    [ -n "${FAMCLAW_NOTARY_KEY_ID:-}" ] || missing+=("FAMCLAW_NOTARY_KEY_ID (goes with FAMCLAW_NOTARY_KEY)")
-    [ -n "${FAMCLAW_NOTARY_ISSUER_ID:-}" ] || missing+=("FAMCLAW_NOTARY_ISSUER_ID (goes with FAMCLAW_NOTARY_KEY)")
+    [ -n "${FAMCLAW_NOTARY_KEY_ID:-}" ] || missing_creds+=("FAMCLAW_NOTARY_KEY_ID (goes with FAMCLAW_NOTARY_KEY)")
+    [ -n "${FAMCLAW_NOTARY_ISSUER_ID:-}" ] || missing_creds+=("FAMCLAW_NOTARY_ISSUER_ID (goes with FAMCLAW_NOTARY_KEY)")
   fi
   if [ -n "${FAMCLAW_APPLE_ID:-}" ] && [ -z "${FAMCLAW_NOTARY_KEY:-}" ] && [ -z "${FAMCLAW_APPLE_PASSWORD:-}" ]; then
-    missing+=("FAMCLAW_APPLE_PASSWORD (goes with FAMCLAW_APPLE_ID)")
+    missing_creds+=("FAMCLAW_APPLE_PASSWORD (goes with FAMCLAW_APPLE_ID)")
   fi
-  if [ "${#missing[@]}" -gt 0 ]; then
-    {
-      echo "ERROR: darwin signing credentials are missing or incomplete:"
-      for v in "${missing[@]}"; do echo "  - $v"; done
-      echo ""
-      echo "Refusing to build/publish an unsigned or ad-hoc signed macOS binary:"
-      echo "  * unsigned/ad-hoc arm64 binaries are killed on launch (exit 137, issue #311)"
-      echo "  * non-notarized binaries are blocked by Gatekeeper after a browser download (issue #214)"
-      echo ""
-      echo "Set the variables above as GitHub repository secrets (same names) and re-run"
-      echo "the release. One-time credential setup + the full release-day checklist:"
-      echo "docs/RELEASE.md"
-    } >&2
-    return 1
+  if [ "${#missing_creds[@]}" -gt 0 ]; then
+    printf '%s\n' "${missing_creds[@]}"
   fi
-  return 0
+}
+
+warn_adhoc_fallback() {
+  # $1 = newline-separated list of the missing credentials
+  {
+    echo "WARNING: darwin signing credentials are missing or incomplete:"
+    while IFS= read -r v; do
+      echo "  - $v"
+    done <<< "$1"
+    echo ""
+    echo "The darwin release binaries will ship AD-HOC SIGNED (the pre-v0.13.0 fallback):"
+    echo "  * ad-hoc signing satisfies the kernel, so the binaries still run on Apple"
+    echo "    Silicon (exit 137, issue #311, only hits *unsigned* binaries);"
+    echo "  * a browser-downloaded binary is blocked by Gatekeeper on first run"
+    echo "    (issue #214) — workaround: right-click the binary -> Open (-> Open again"
+    echo "    in the dialog), or 'xattr -d com.apple.quarantine <binary>'."
+    echo ""
+    echo "To ship Developer ID-signed + notarized binaries instead, set the missing"
+    echo "variables as GitHub repository secrets (same names) and re-run the release."
+    echo "One-time credential setup + the full release-day checklist: docs/RELEASE.md"
+  } >&2
 }
 
 if [ "${1:-}" = "--check" ]; then
-  check_credentials
-  echo "Darwin signing credentials present."
+  missing="$(list_missing_credentials)"
+  if [ -n "$missing" ]; then
+    warn_adhoc_fallback "$missing"
+  else
+    echo "Darwin signing credentials present."
+  fi
   exit 0
 fi
 
@@ -87,8 +114,19 @@ BIN="$1"
 [ -f "$BIN" ] || die "binary not found: $BIN"
 command -v codesign >/dev/null 2>&1 || die "codesign not available — this script must run on a macOS runner"
 
-# Fail loud before doing any work.
-check_credentials || exit 1
+# No usable Developer ID credentials: fall back to the pre-v0.13.0 ad-hoc
+# path instead of failing the release. The macOS linker already ad-hoc signs
+# the binary; the explicit re-sign mirrors the v0.12.0 hook and makes the
+# fallback visible in the release log.
+missing="$(list_missing_credentials)"
+if [ -n "$missing" ]; then
+  warn_adhoc_fallback "$missing"
+  echo "Ad-hoc signing $BIN (no Developer ID credentials configured)"
+  codesign --force -s - "$BIN" || die "ad-hoc codesign failed on $BIN"
+  codesign --verify --strict "$BIN" || die "ad-hoc codesign verification failed on $BIN"
+  echo "OK: $BIN is ad-hoc signed (no notarization)."
+  exit 0
+fi
 
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
