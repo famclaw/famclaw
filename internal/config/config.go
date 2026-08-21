@@ -214,6 +214,8 @@ func (s ServerConfig) BaseURL() string {
 
 // LLMProfile is a named LLM endpoint configuration.
 type LLMProfile struct {
+	// Label is a display-only name shown in the web UI; it is never used
+	// for routing, so it must stay accurate to the profile's endpoint.
 	Label   string `yaml:"label"`
 	BaseURL string `yaml:"base_url"`
 	Model   string `yaml:"model"`
