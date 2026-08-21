@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestResolveLLMAPIKey(t *testing.T) {
@@ -750,4 +752,58 @@ llm:
 	if !r.PerModelOverride["council"] || r.PerModelOverride["smart"] {
 		t.Errorf("PerModelOverride = %v", r.PerModelOverride)
 	}
+}
+
+// TestLLMProfileLabelRoundTrip pins `label` as a first-class YAML field on
+// named LLM profiles: the display name must survive marshal/unmarshal so
+// settings round-tripped through the web UI keep their labels.
+func TestLLMProfileLabelRoundTrip(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile LLMProfile
+	}{
+		{
+			name: "label preserved through round trip",
+			profile: LLMProfile{
+				Label:   "gateway smart tier (Mac, qwen3.6-35b-a3b)",
+				BaseURL: "http://192.168.1.10:4001",
+				Model:   "smart",
+			},
+		},
+		{
+			name:    "absent label stays empty",
+			profile: LLMProfile{BaseURL: "http://localhost:11434", Model: "qwen3:4b"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := yaml.Marshal(map[string]LLMProfile{"primary": tt.profile})
+			if err != nil {
+				t.Fatalf("marshaling profiles: %v", err)
+			}
+			// Pin the wire key too: a marshal round trip alone would still pass
+			// if the yaml tag were renamed, because both sides use the same type.
+			if tt.profile.Label != "" && !strings.Contains(string(data), "label:") {
+				t.Errorf("marshaled YAML missing the literal \"label:\" wire key:\n%s", data)
+			}
+			var got map[string]LLMProfile
+			if err := yaml.Unmarshal(data, &got); err != nil {
+				t.Fatalf("unmarshaling profiles: %v", err)
+			}
+			if want := got["primary"]; want != tt.profile {
+				t.Errorf("round trip = %+v, want %+v", want, tt.profile)
+			}
+		})
+	}
+
+	t.Run("literal label key unmarshals onto Label", func(t *testing.T) {
+		literal := "primary:\n  label: \"gateway smart tier (Mac, qwen3.6-35b-a3b)\"\n  base_url: \"http://192.168.1.10:4001\"\n  model: \"smart\"\n"
+		var got map[string]LLMProfile
+		if err := yaml.Unmarshal([]byte(literal), &got); err != nil {
+			t.Fatalf("unmarshaling literal YAML: %v", err)
+		}
+		if want := got["primary"]; want.Label == "" {
+			t.Errorf("literal \"label:\" key did not land on LLMProfile.Label: %+v", want)
+		}
+	})
 }

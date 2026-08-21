@@ -63,6 +63,7 @@ llm:
 
   profiles:
     cloud:
+      label: "OpenAI cloud (gpt-4o-mini)"  # display-only name shown in the web UI
       base_url: "https://api.openai.com/v1"
       model: "gpt-4o-mini"
       api_key: "${OPENAI_API_KEY}"
@@ -81,6 +82,12 @@ llm:
   # only when that endpoint is local.
   vision_profile: ""
 ```
+
+**Profile labels:** the optional `label` on each profile is a display-only name
+shown in the web UI. Keep it accurate to where the profile actually routes
+(host + model), so a family member reading the label knows which model answers —
+a stale label (e.g. naming a model the profile no longer serves) misdescribes
+the routing.
 
 **Security note:** `llm.api_key` is loaded from plaintext YAML by default.
 Set `FAMCLAW_LLM_API_KEY` environment variable to override — it takes precedence and avoids logging the plaintext warning.
