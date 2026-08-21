@@ -19,8 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
-
 	"github.com/elastic/go-seccomp-bpf"
 	landlock "github.com/landlock-lsm/go-landlock/landlock"
 	landlocksyscall "github.com/landlock-lsm/go-landlock/landlock/syscall"
@@ -439,12 +437,6 @@ func main() {
 		}
 	}
 
-	// reasoningCache is the shared gateway reasoning auto-detect cache: it
-	// learns each model's litellm_params.merge_reasoning_content_in_choices
-	// so LLM clients can hoist a genuine answer in the reasoning field while
-	// filtering chain-of-thought. Nil-safe everywhere (heuristic only).
-	var reasoningCache *llm.ReasoningCache
-
 	// LLM health check (skip for claude_cli — no HTTP endpoint to ping)
 	if cfg.LLM.Provider != "claude_cli" {
 		hcEP := cfg.LLMEndpointFor(nil)
@@ -457,32 +449,6 @@ func main() {
 			log.Printf("LLM: %s @ %s ✅", hcEP.Model, hcEP.BaseURL)
 		}
 		cancel()
-
-		// Query the gateway for per-model reasoning settings. The
-		// configured LLM endpoint IS the gateway; an explicit
-		// llm.reasoning.litellm_url / litellm_api_key override wins.
-		detBase, detKey := cfg.LLM.Reasoning.LiteLLMURL, cfg.LLM.Reasoning.LiteLLMAPIKey
-		if detBase == "" {
-			detBase = hcEP.BaseURL
-		}
-		if detKey == "" {
-			detKey = hcEP.APIKey
-		}
-		reasoningCache = llm.NewReasoningCache(llm.ReasoningAutoDetectConfig{
-			Enabled:          cfg.LLM.Reasoning.AutoDetectEnabled(),
-			GatewayBaseURL:   detBase,
-			GatewayAPIKey:    detKey,
-			PerModelOverride: cfg.LLM.Reasoning.PerModelOverride,
-		})
-		if reasoningCache.Enabled() {
-			warmCtx, warmCancel := context.WithTimeout(context.Background(), 15*time.Second)
-			if n, err := reasoningCache.Warm(warmCtx); err != nil {
-				log.Printf("⚠️  Auto-detect: LiteLLM at %s unreachable (%v) — using heuristic reasoning merge", detBase, err)
-			} else {
-				log.Printf("Auto-detect: %d models discovered", n)
-			}
-			warmCancel()
-		}
 	}
 
 	// Identity store (needed by the notifier to resolve parent gateway accounts)
@@ -791,10 +757,10 @@ func main() {
 				if textEP := cfg.LLMEndpointFor(user); ep.Model == textEP.Model {
 					log.Printf("[chatFn] WARNING: image attachment routed to model %q which may be text-only; set llm.vision_profile to a vision-capable model for image support", ep.Model)
 				}
-				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout).WithReasoningCache(reasoningCache)
+				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
 			} else {
 				ep := cfg.LLMEndpointFor(user)
-				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout).WithReasoningCache(reasoningCache)
+				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
 			}
 		}
 		a, err := agent.NewAgent(user, cfg, llmClient, evaluator, clf, db, agent.AgentDeps{
@@ -812,7 +778,6 @@ func main() {
 			Transcriber:    voiceTranscriber,
 			ConfigPath:     *cfgPath,
 			LifetimeCtx:    gwCtx,
-			ReasoningCache: reasoningCache,
 		})
 		if err != nil {
 			return "", err
@@ -915,7 +880,6 @@ func main() {
 	srv := web.NewServer(cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
 	srv.SetVaultMismatch(vaultMismatch)
 	srv.SetMCPSkipped(skippedMCPs)
-	srv.SetReasoningCache(reasoningCache)
 	// Surface the scanner state through /api/health so the outcome is
 	// unambiguous: when seccheck is enabled but the scanner could not be
 	// fetched, the error is no longer only in the log — it is queryable.
@@ -965,14 +929,6 @@ func main() {
 	reloadRegistry.RequireRestart("skill-registry", "enabled skills snapshot from config; requires restart")
 	reloadRegistry.RequireRestart("reminder-scheduler", "polling interval fixed at startup")
 	reloadRegistry.RequireRestart("agent-scheduler", "subagent concurrency cap fixed at startup")
-	if reasoningCache != nil {
-		// llm.reasoning (enable_auto_detect / litellm_url / litellm_api_key /
-		// per_model_override) is snapshotted into the reasoning cache at
-		// startup; a config edit needs a restart to apply. Declaring it keeps
-		// the reload log honest instead of reporting success for an inert
-		// section.
-		reloadRegistry.RequireRestart("reasoning-auto-detect", "gateway model settings loaded once at startup")
-	}
 	if cfg.Gateways.Telegram.Enabled && cfg.Gateways.Telegram.Token != "" {
 		reloadRegistry.RequireRestart("telegram-gateway", "bots are started once at startup")
 	}
@@ -989,83 +945,82 @@ func main() {
 		reloadRegistry.RequireRestart("tool-cache", "cache sweeper started once at startup")
 	}
 
-	// Set up config file watcher for hot-reload
-	configWatcher, err := fsnotify.NewWatcher()
+	// Set up config file watcher for hot-reload. reloadConfigFromFile is
+	// invoked for every coalesced change event — in-place writes AND atomic
+	// replacements (temp + rename, which config.Save and most editors use).
+	// A raw fsnotify.Write-only loop missed atomic replacements entirely:
+	// the save landed on disk, but the running process kept the stale
+	// config until restart.
+	reloadConfigFromFile := func() error {
+		newCfg, err := config.Load(*cfgPath)
+		if err != nil {
+			log.Printf("Error reloading config: %v", err)
+			return err
+		}
+		// Validate the new config
+		if err := newCfg.Validate(); err != nil {
+			log.Printf("Invalid config change (could not resolve secret references, keeping current config); see the [vault] log lines above for which")
+			return err
+		}
+		if err := newCfg.LLM.ValidateProvider(); err != nil {
+			log.Printf("Invalid LLM provider in config change (keeping current config): %v", err)
+			return err
+		}
+		// Config is valid, run the registry reload loop.
+		// The registry walks every registered component and
+		// reports the outcome of each. LLM config (endpoints,
+		// model, temperature) is read per-message by chatFn
+		// from the cfg variable, which we update here so new
+		// agents pick up the change.
+		log.Printf("Config file changed, reloading configuration...")
+		statuses := reloadRegistry.Reload(newCfg)
+		cfg = newCfg
+
+		// Summarize outcomes
+		var reloaded, failed, needsRestart []string
+		for _, s := range statuses {
+			switch s.Outcome {
+			case reload.OutcomeReloaded:
+				reloaded = append(reloaded, s.Name)
+			case reload.OutcomeFailed:
+				failed = append(failed, s.Name)
+			case reload.OutcomeRequiresRestart:
+				needsRestart = append(needsRestart, s.Name)
+			}
+		}
+		log.Printf("Reload summary: %d reloaded, %d failed, %d requires restart",
+			len(reloaded), len(failed), len(needsRestart))
+		if len(failed) > 0 {
+			log.Printf("  FAILED: %s — config change not applied for these components",
+				strings.Join(failed, ", "))
+		}
+		if len(needsRestart) > 0 {
+			log.Printf("  Requires restart: %s", strings.Join(needsRestart, ", "))
+		}
+		return nil
+	}
+	configWatcher, err := reload.NewConfigWatcher(*cfgPath, reload.DefaultWatchDebounce)
 	if err != nil {
 		log.Printf("Failed to create config watcher: %v", err)
 	} else {
 		defer configWatcher.Close()
-		// Watch the config file for changes
-		if err := configWatcher.Add(*cfgPath); err != nil {
-			log.Printf("Failed to watch config file %s: %v", *cfgPath, err)
-		} else {
-			// Start goroutine to handle config events
-			go func() {
-				for {
-					select {
-					case <-gwCtx.Done():
-						return
-					case event, ok := <-configWatcher.Events:
-						if !ok {
-							return
-						}
-						if event.Op&fsnotify.Write == fsnotify.Write {
-							// Config file was written to, reload it
-							newCfg, err := config.Load(*cfgPath)
-							if err != nil {
-								log.Printf("Error reloading config: %v", err)
-								continue
-							}
-							// Validate the new config
-							if err := newCfg.Validate(); err != nil {
-								log.Printf("Invalid config change (could not resolve secret references, keeping current config); see the [vault] log lines above for which")
-								continue
-							}
-							if err := newCfg.LLM.ValidateProvider(); err != nil {
-								log.Printf("Invalid LLM provider in config change (keeping current config): %v", err)
-								continue
-							}
-							// Config is valid, run the registry reload loop.
-							// The registry walks every registered component and
-							// reports the outcome of each. LLM config (endpoints,
-							// model, temperature) is read per-message by chatFn
-							// from the cfg variable, which we update here so new
-							// agents pick up the change.
-							log.Printf("Config file changed, reloading configuration...")
-							statuses := reloadRegistry.Reload(newCfg)
-							cfg = newCfg
-
-							// Summarize outcomes
-							var reloaded, failed, needsRestart []string
-							for _, s := range statuses {
-								switch s.Outcome {
-								case reload.OutcomeReloaded:
-									reloaded = append(reloaded, s.Name)
-								case reload.OutcomeFailed:
-									failed = append(failed, s.Name)
-								case reload.OutcomeRequiresRestart:
-									needsRestart = append(needsRestart, s.Name)
-								}
-							}
-							log.Printf("Reload summary: %d reloaded, %d failed, %d requires restart",
-								len(reloaded), len(failed), len(needsRestart))
-							if len(failed) > 0 {
-								log.Printf("  FAILED: %s — config change not applied for these components",
-									strings.Join(failed, ", "))
-							}
-							if len(needsRestart) > 0 {
-								log.Printf("  Requires restart: %s", strings.Join(needsRestart, ", "))
-							}
-						}
-					case err, ok := <-configWatcher.Errors:
-						if !ok {
-							return
-						}
-						log.Printf("Config watcher error: %v", err)
+		go func() {
+			for {
+				select {
+				case <-gwCtx.Done():
+					return
+				case <-configWatcher.Events():
+					if err := reloadConfigFromFile(); err != nil {
+						log.Printf("Error handling config change: %v", err)
 					}
+				case err, ok := <-configWatcher.Errors():
+					if !ok {
+						return
+					}
+					log.Printf("Config watcher error: %v", err)
 				}
-			}()
-		}
+			}
+		}()
 	}
 
 	// mDNS removed in v0.5.x — see #110. Use the device IP address.
