@@ -3,7 +3,7 @@
 All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## v0.13.0 — 2026-08-20
+## v0.13.0 — 2026-08-21
 
 ### Changed
 - **macOS release binaries are now Developer ID-signed and notarized (#311, #214).** Release darwin binaries are signed with a "Developer ID Application" certificate, submitted to Apple's notary service, and stapled during the release build (`scripts/darwin-sign-notarize.sh`, driven by `FAMCLAW_APPLE_*` / `FAMCLAW_NOTARY_*` credentials — see `docs/RELEASE.md`). The release fails loudly with an actionable message when those credentials are missing: an unsigned or ad-hoc signed arm64 binary is killed on launch (exit 137), and a non-notarized binary is blocked by Gatekeeper after a browser download. The previous ad-hoc-only signing is gone. Upgrades keep the atomic-rename install path.
