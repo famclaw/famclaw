@@ -77,16 +77,12 @@ func HandleAllowlistAdd(ctx context.Context, deps Deps, args map[string]any) (st
 	if host == "" {
 		return "", fmt.Errorf("allowlist_add requires a 'host' argument (e.g. allowlist_add(host=\"example.com\"))")
 	}
-	host = strings.TrimSpace(host)
 
-	// Strip scheme, path, port — we only store bare hostnames
-	host = strings.TrimPrefix(host, "http://")
-	host = strings.TrimPrefix(host, "https://")
-	host = strings.Split(host, "/")[0]
-	host = strings.Split(host, ":")[0] // strip port for now
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return "", fmt.Errorf("allowlist_add: host must be a valid hostname")
+	// Canonicalize: accepts bare host, full URL, or URL with scheme/port.
+	// Rejects anything that wouldn't match the web_fetch host gate.
+	host, err := config.NormalizeAllowlistHost(host)
+	if err != nil {
+		return "", fmt.Errorf("allowlist_add: %w", err)
 	}
 
 	// Check for duplicate (case-insensitive)
@@ -142,16 +138,12 @@ func HandleAllowlistRemove(ctx context.Context, deps Deps, args map[string]any) 
 	if host == "" {
 		return "", fmt.Errorf("allowlist_remove requires a 'host' argument (e.g. allowlist_remove(host=\"example.com\"))")
 	}
-	host = strings.TrimSpace(host)
 
-	// Strip scheme, path, port
-	host = strings.TrimPrefix(host, "http://")
-	host = strings.TrimPrefix(host, "https://")
-	host = strings.Split(host, "/")[0]
-	host = strings.Split(host, ":")[0]
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return "", fmt.Errorf("allowlist_remove: host must be a valid hostname")
+	// Canonicalize: accepts bare host, full URL, or URL with scheme/port.
+	// Rejects anything that wouldn't match the web_fetch host gate.
+	host, err := config.NormalizeAllowlistHost(host)
+	if err != nil {
+		return "", fmt.Errorf("allowlist_remove: %w", err)
 	}
 
 	found := false
