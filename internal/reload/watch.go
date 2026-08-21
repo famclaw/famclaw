@@ -30,6 +30,7 @@ type ConfigWatcher struct {
 	debounce time.Duration
 
 	notify    chan struct{}
+	errors    chan error
 	closed    chan struct{}
 	done      chan struct{} // closed when the internal loop has exited
 	closeOnce sync.Once
@@ -56,6 +57,7 @@ func NewConfigWatcher(path string, debounce time.Duration) (*ConfigWatcher, erro
 		path:     path,
 		debounce: debounce,
 		notify:   make(chan struct{}, 1),
+		errors:   make(chan error, 1),
 		closed:   make(chan struct{}),
 		done:     make(chan struct{}),
 		fw:       fw,
@@ -68,6 +70,11 @@ func NewConfigWatcher(path string, debounce time.Duration) (*ConfigWatcher, erro
 // closed by Close; consumers that must observe shutdown select on their
 // own lifecycle context alongside Events.
 func (w *ConfigWatcher) Events() <-chan struct{} { return w.notify }
+
+// Errors yields fsnotify errors (e.g. permission-denied, inode exhaustion).
+// It is not closed by Close; consumers that must observe shutdown select
+// on their own lifecycle context alongside Errors.
+func (w *ConfigWatcher) Errors() <-chan error { return w.errors }
 
 // Close stops the watcher and waits for its internal loop to exit.
 // Safe to call more than once.
@@ -105,6 +112,14 @@ func (w *ConfigWatcher) loop() {
 				timer.Stop()
 			}
 			return
+		case err, ok := <-w.errorCh():
+			if !ok {
+				return
+			}
+			select {
+			case w.errors <- err:
+			default: // drop to avoid blocking on full buffer
+			}
 		case ev, ok := <-w.eventCh():
 			if !ok {
 				return
@@ -130,6 +145,16 @@ func (w *ConfigWatcher) eventCh() <-chan fsnotify.Event {
 		return nil
 	}
 	return w.fw.Events
+}
+
+// errorCh returns the fsnotify error channel, or nil once closed.
+func (w *ConfigWatcher) errorCh() <-chan error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.fw == nil {
+		return nil
+	}
+	return w.fw.Errors
 }
 
 // fire is the debounced delivery. It re-adds the path first: the event

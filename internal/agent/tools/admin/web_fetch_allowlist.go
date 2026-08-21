@@ -193,7 +193,7 @@ func writeConfigInline(cfgPath string, cfg *config.Config) error {
 	}
 	header := "# FamClaw configuration (managed by web UI)\n# Edit via the Settings page in the web UI, or edit this file and restart.\n\n"
 	if err := os.WriteFile(cfgPath, append([]byte(header), data...), 0600); err != nil {
-		return fmt.Errorf("writing config: %w", err)
+		return fmt.Errorf("failed to write config file %s: %w", cfgPath, err)
 	}
 	return nil
 }

@@ -951,20 +951,20 @@ func main() {
 	// A raw fsnotify.Write-only loop missed atomic replacements entirely:
 	// the save landed on disk, but the running process kept the stale
 	// config until restart.
-	reloadConfigFromFile := func() {
+	reloadConfigFromFile := func() error {
 		newCfg, err := config.Load(*cfgPath)
 		if err != nil {
 			log.Printf("Error reloading config: %v", err)
-			return
+			return err
 		}
 		// Validate the new config
 		if err := newCfg.Validate(); err != nil {
 			log.Printf("Invalid config change (could not resolve secret references, keeping current config); see the [vault] log lines above for which")
-			return
+			return err
 		}
 		if err := newCfg.LLM.ValidateProvider(); err != nil {
 			log.Printf("Invalid LLM provider in config change (keeping current config): %v", err)
-			return
+			return err
 		}
 		// Config is valid, run the registry reload loop.
 		// The registry walks every registered component and
@@ -997,6 +997,7 @@ func main() {
 		if len(needsRestart) > 0 {
 			log.Printf("  Requires restart: %s", strings.Join(needsRestart, ", "))
 		}
+		return nil
 	}
 	configWatcher, err := reload.NewConfigWatcher(*cfgPath, reload.DefaultWatchDebounce)
 	if err != nil {
@@ -1009,7 +1010,14 @@ func main() {
 				case <-gwCtx.Done():
 					return
 				case <-configWatcher.Events():
-					reloadConfigFromFile()
+					if err := reloadConfigFromFile(); err != nil {
+						log.Printf("Error handling config change: %v", err)
+					}
+				case err, ok := <-configWatcher.Errors():
+					if !ok {
+						return
+					}
+					log.Printf("Config watcher error: %v", err)
 				}
 			}
 		}()

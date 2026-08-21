@@ -227,7 +227,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		s.cfg.Tools.WebFetch.Enabled = update.WebFetch.Enabled
 	}
 	if len(update.WebFetch.URLAllowlist) > 0 {
-		// Deduplicate and trim whitespace
+		// Deduplicate, trim whitespace, and validate hosts
 		seen := make(map[string]struct{}, len(update.WebFetch.URLAllowlist))
 		deduped := make([]string, 0, len(update.WebFetch.URLAllowlist))
 		for _, host := range update.WebFetch.URLAllowlist {
@@ -236,6 +236,10 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if _, ok := seen[trimmed]; !ok {
+				if _, err := config.NormalizeAllowlistHost(trimmed); err != nil {
+					jsonErr(w, fmt.Errorf("invalid host %q: %w", trimmed, err), http.StatusBadRequest)
+					return
+				}
 				seen[trimmed] = struct{}{}
 				deduped = append(deduped, trimmed)
 			}
