@@ -85,6 +85,8 @@ llm:
 **Security note:** `llm.api_key` is loaded from plaintext YAML by default.
 Set `FAMCLAW_LLM_API_KEY` environment variable to override — it takes precedence and avoids logging the plaintext warning.
 
+**Reasoning auto-detection.** When the endpoint is a LiteLLM (or OpenAI-compatible) gateway, FamClaw queries its model metadata at startup and learns each model's `litellm_params.merge_reasoning_content_in_choices` setting, so a final answer that ships in the reasoning field is shown to the family while chain-of-thought is filtered out — no per-model hand-configuration. Startup logs `Auto-detect: N models discovered`, or a warning when the gateway is unreachable (the built-in heuristic then applies, and later requests retry detection). Opt out or pin models with `llm.reasoning` (`enable_auto_detect: false`, `litellm_url`, `per_model_override`).
+
 ---
 
 ## Quick start

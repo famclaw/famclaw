@@ -439,6 +439,12 @@ func main() {
 		}
 	}
 
+	// reasoningCache is the shared gateway reasoning auto-detect cache: it
+	// learns each model's litellm_params.merge_reasoning_content_in_choices
+	// so LLM clients can hoist a genuine answer in the reasoning field while
+	// filtering chain-of-thought. Nil-safe everywhere (heuristic only).
+	var reasoningCache *llm.ReasoningCache
+
 	// LLM health check (skip for claude_cli — no HTTP endpoint to ping)
 	if cfg.LLM.Provider != "claude_cli" {
 		hcEP := cfg.LLMEndpointFor(nil)
@@ -451,6 +457,32 @@ func main() {
 			log.Printf("LLM: %s @ %s ✅", hcEP.Model, hcEP.BaseURL)
 		}
 		cancel()
+
+		// Query the gateway for per-model reasoning settings. The
+		// configured LLM endpoint IS the gateway; an explicit
+		// llm.reasoning.litellm_url / litellm_api_key override wins.
+		detBase, detKey := cfg.LLM.Reasoning.LiteLLMURL, cfg.LLM.Reasoning.LiteLLMAPIKey
+		if detBase == "" {
+			detBase = hcEP.BaseURL
+		}
+		if detKey == "" {
+			detKey = hcEP.APIKey
+		}
+		reasoningCache = llm.NewReasoningCache(llm.ReasoningAutoDetectConfig{
+			Enabled:          cfg.LLM.Reasoning.AutoDetectEnabled(),
+			GatewayBaseURL:   detBase,
+			GatewayAPIKey:    detKey,
+			PerModelOverride: cfg.LLM.Reasoning.PerModelOverride,
+		})
+		if reasoningCache.Enabled() {
+			warmCtx, warmCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			if n, err := reasoningCache.Warm(warmCtx); err != nil {
+				log.Printf("⚠️  Auto-detect: LiteLLM at %s unreachable (%v) — using heuristic reasoning merge", detBase, err)
+			} else {
+				log.Printf("Auto-detect: %d models discovered", n)
+			}
+			warmCancel()
+		}
 	}
 
 	// Identity store (needed by the notifier to resolve parent gateway accounts)
@@ -759,10 +791,10 @@ func main() {
 				if textEP := cfg.LLMEndpointFor(user); ep.Model == textEP.Model {
 					log.Printf("[chatFn] WARNING: image attachment routed to model %q which may be text-only; set llm.vision_profile to a vision-capable model for image support", ep.Model)
 				}
-				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
+				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout).WithReasoningCache(reasoningCache)
 			} else {
 				ep := cfg.LLMEndpointFor(user)
-				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
+				llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout).WithReasoningCache(reasoningCache)
 			}
 		}
 		a, err := agent.NewAgent(user, cfg, llmClient, evaluator, clf, db, agent.AgentDeps{
@@ -779,7 +811,8 @@ func main() {
 			SenderRegistry: senderRegistry,
 			Transcriber:    voiceTranscriber,
 			ConfigPath:     *cfgPath,
-			LifetimeCtx:     gwCtx,
+			LifetimeCtx:    gwCtx,
+			ReasoningCache: reasoningCache,
 		})
 		if err != nil {
 			return "", err
@@ -882,6 +915,7 @@ func main() {
 	srv := web.NewServer(cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
 	srv.SetVaultMismatch(vaultMismatch)
 	srv.SetMCPSkipped(skippedMCPs)
+	srv.SetReasoningCache(reasoningCache)
 	// Surface the scanner state through /api/health so the outcome is
 	// unambiguous: when seccheck is enabled but the scanner could not be
 	// fetched, the error is no longer only in the log — it is queryable.
@@ -931,6 +965,14 @@ func main() {
 	reloadRegistry.RequireRestart("skill-registry", "enabled skills snapshot from config; requires restart")
 	reloadRegistry.RequireRestart("reminder-scheduler", "polling interval fixed at startup")
 	reloadRegistry.RequireRestart("agent-scheduler", "subagent concurrency cap fixed at startup")
+	if reasoningCache != nil {
+		// llm.reasoning (enable_auto_detect / litellm_url / litellm_api_key /
+		// per_model_override) is snapshotted into the reasoning cache at
+		// startup; a config edit needs a restart to apply. Declaring it keeps
+		// the reload log honest instead of reporting success for an inert
+		// section.
+		reloadRegistry.RequireRestart("reasoning-auto-detect", "gateway model settings loaded once at startup")
+	}
 	if cfg.Gateways.Telegram.Enabled && cfg.Gateways.Telegram.Token != "" {
 		reloadRegistry.RequireRestart("telegram-gateway", "bots are started once at startup")
 	}

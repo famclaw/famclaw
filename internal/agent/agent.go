@@ -123,6 +123,10 @@ type Agent struct {
 	// persist new MCP server entries. Empty string = no persistence.
 	configPath string
 
+	// reasoningCache is the shared gateway reasoning auto-detect cache,
+	// attached to LLM clients this agent builds (nil = heuristic only).
+	reasoningCache *llm.ReasoningCache
+
 	// lifetimeCtx is the server-lifetime context the subagent's timeout
 	// context is derived from. It is cancelled on graceful shutdown so
 	// in-flight research subagents are terminated deterministically rather
@@ -162,6 +166,11 @@ type AgentDeps struct {
 	SenderRegistry map[string]gateway.Sender // map of gateway name (e.g., "telegram", "discord") to Sender implementation
 	Transcriber    Transcriber               // transcribes audio attachments into text; nil disables voice transcription
 	ConfigPath     string                    // on-disk path to config.yaml for mcp_add persistence
+
+	// ReasoningCache supplies the gateway's per-model
+	// merge_reasoning_content_in_choices to LLM clients this agent builds.
+	// Nil disables auto-detection (heuristic only).
+	ReasoningCache *llm.ReasoningCache
 
 	// NowFn, when non-nil, is used to timestamp research status records.
 	// Optional — defaults to time.Now.
@@ -344,6 +353,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		nowFn:                deps.NowFn,
 		configPath:           deps.ConfigPath,
 		lifetimeCtx:          deps.LifetimeCtx,
+		reasoningCache:       deps.ReasoningCache,
 	}, nil
 }
 
@@ -475,7 +485,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		if ep.BaseURL == "" || ep.Model == "" {
 			return nil
 		}
-		return llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
+		return llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout).WithReasoningCache(a.reasoningCache)
 	}
 
 	// Populate available tools on the Turn
@@ -1151,6 +1161,7 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 		MaxTokens:      a.cfg.LLM.MaxResponseTokens,
 		BuiltinDefs:    builtinDefs,
 		BuiltinHandler: a.makeBuiltinHandler(),
+		ReasoningCache: a.reasoningCache,
 	}
 
 	// The subagent's timeout context is rooted at the server-lifetime context

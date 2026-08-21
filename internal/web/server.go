@@ -73,6 +73,10 @@ type Server struct {
 	vaultMu        sync.RWMutex
 	mcpSkipped     []string       // MCP servers skipped at boot, surfaced by /api/health
 	seccheckStatus SecCheckStatus // scanner availability, surfaced by /api/health
+
+	// reasoningCache is the shared gateway reasoning auto-detect cache,
+	// attached to the web chat's LLM client (nil = heuristic only).
+	reasoningCache *llm.ReasoningCache
 }
 
 // SecCheckStatus captures the at-boot state of the honeybadger security
@@ -339,6 +343,14 @@ func (s *Server) SetSecCheckStatus(status SecCheckStatus) {
 	s.seccheckStatus = status
 }
 
+// SetReasoningCache records the shared gateway reasoning auto-detect cache
+// so the web chat's LLM client applies each model's
+// merge_reasoning_content_in_choices the same way the gateway routers do.
+// Nil is a valid value (auto-detection off, heuristic only).
+func (s *Server) SetReasoningCache(rc *llm.ReasoningCache) {
+	s.reasoningCache = rc
+}
+
 // ── WebSocket chat ─────────────────────────────────────────────────────────────
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -385,12 +397,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		llmClient = claudecli.New()
 	default:
 		ep := s.cfg.LLMEndpointFor(userCfg)
-		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
+		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout).WithReasoningCache(s.reasoningCache)
 	}
 	a, err := agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
-		Skills:     s.skills,
-		Pool:       s.pool,
-		MsgContext: gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
+		Skills:         s.skills,
+		Pool:           s.pool,
+		MsgContext:     gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
+		ReasoningCache: s.reasoningCache,
 	})
 	if err != nil {
 		log.Printf("[ws] failed to create agent for %s: %v", userCfg.DisplayName, err)
@@ -425,9 +438,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			copied.AgeGroup = currentAgeGroup
 			adjustedUser := &copied
 			a, err = agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
-				Skills:     s.skills,
-				Pool:       s.pool,
-				MsgContext: gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
+				Skills:         s.skills,
+				Pool:           s.pool,
+				MsgContext:     gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
+				ReasoningCache: s.reasoningCache,
 			})
 			lastRole = currentRole
 			if err != nil {

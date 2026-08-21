@@ -684,3 +684,70 @@ func TestCanonicalName(t *testing.T) {
 		})
 	}
 }
+
+func TestReasoningDefaultsAndParsing(t *testing.T) {
+	yes, no := true, false
+
+	tests := []struct {
+		name        string
+		reasoning   ReasoningConfig
+		wantEnabled bool
+		wantNil     bool
+	}{
+		{"unset defaults to enabled", ReasoningConfig{}, true, false},
+		{"explicit false", ReasoningConfig{EnableAutoDetect: &no}, false, false},
+		{"explicit true", ReasoningConfig{EnableAutoDetect: &yes}, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Config{LLM: LLMConfig{Reasoning: tt.reasoning}}
+			applyDefaults(c)
+			if got := c.LLM.Reasoning.AutoDetectEnabled(); got != tt.wantEnabled {
+				t.Fatalf("AutoDetectEnabled = %v, want %v", got, tt.wantEnabled)
+			}
+			if c.LLM.Reasoning.EnableAutoDetect == nil {
+				t.Fatal("applyDefaults must normalise EnableAutoDetect to a non-nil pointer")
+			}
+		})
+	}
+
+	// Full section parsing through Load.
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+	content := `server:
+  port: 8080
+llm:
+  base_url: "http://192.168.1.10:4001"
+  model: "smart"
+  reasoning:
+    enable_auto_detect: true
+    litellm_url: "http://10.0.0.5:4001"
+    litellm_api_key: "sk-detect"
+    per_model_override:
+      council: true
+      smart: false
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	r := cfg.LLM.Reasoning
+	if !r.AutoDetectEnabled() {
+		t.Error("enable_auto_detect: want enabled")
+	}
+	if r.LiteLLMURL != "http://10.0.0.5:4001" {
+		t.Errorf("LiteLLMURL = %q", r.LiteLLMURL)
+	}
+	if r.LiteLLMAPIKey != "sk-detect" {
+		t.Errorf("LiteLLMAPIKey = %q", r.LiteLLMAPIKey)
+	}
+	if len(r.PerModelOverride) != 2 {
+		t.Fatalf("PerModelOverride = %v, want 2 entries", r.PerModelOverride)
+	}
+	if !r.PerModelOverride["council"] || r.PerModelOverride["smart"] {
+		t.Errorf("PerModelOverride = %v", r.PerModelOverride)
+	}
+}
