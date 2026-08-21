@@ -29,7 +29,11 @@ process was still running. The new binary looks valid but exits immediately with
    cp <installed-binary> /tmp/famclaw-probe && /tmp/famclaw-probe --version
    ```
    - Works from the clean path → the **install method** is the problem.
-   - Still dies → genuine binary/signing problem (see #313).
+   - Still dies → genuine binary/signing problem (see #313). For release
+     binaries, `codesign -dv famclaw` should show a `Developer ID Application`
+     authority and `xcrun stapler verify famclaw` should confirm the
+     stapled notarization ticket; anything else is not a supported release
+     artifact.
 
 **Why it happens:** `cp` writes *through* the existing inode. The running process
 keeps its pages, but the path's content no longer matches what was validated, so
@@ -163,39 +167,3 @@ If you want to start fresh:
 3. Delete the config: `rm ~/.famclaw/config.yaml`
 4. Start FamClaw: `sudo systemctl start famclaw`
 5. The setup wizard will appear again
-
----
-
-## Binary exits with 137 and no output after an upgrade
-
-**What happened:** Upgrading FamClaw overwrote the installed binary while the old
-process was still running. The new binary looks valid but exits immediately with
-**137** (SIGKILL) and produces no output.
-
-**How to diagnose:** To distinguish this from a genuine signing failure, run a probe:
-```sh
-cp <installed-binary> /tmp/famclaw-probe && /tmp/famclaw-probe --version
-```
-- If it works from the clean path → the **install method** is the problem.
-- If it still dies → genuine binary/signing problem (see #313).
-
-**Why it happens:** `cp` writes *through* the existing inode. The running process
-keeps its pages, but the path's content no longer matches what was validated, so
-the kernel refuses to `exec` it (exit 137). The condition clears the moment the
-old process exits — which is why restarting the service "fixes" it and makes the
-symptom look intermittent.
-
-**What to do:** Replace, never overwrite. Download to a temporary file **in the
-same directory** as the destination, then `mv` it into place. A same-directory
-`mv` is a rename: it is atomic, leaves the running process on its old inode, and
-gives the path a fresh one.
-
-```sh
-curl -fsSL ... -o /usr/local/bin/.famclaw.tmp.$$
-chmod +x /usr/local/bin/.famclaw.tmp.$$
-mv -f /usr/local/bin/.famclaw.tmp.$$ /usr/local/bin/famclaw
-```
-
-**Time to fix:** About 1 minute — rerun the install/upgrade script (which now
-uses an atomic rename), or move the binary manually as above.
-

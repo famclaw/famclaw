@@ -103,8 +103,33 @@ http://<your-pi-ip>:8080
 > from your router's DHCP leases page or `ip addr` on the Pi.
 
 ### Mac / Linux
+Download the binary for your platform from the [latest release](https://github.com/famclaw/famclaw/releases/latest):
+
+| Platform | Artifact |
+|---|---|
+| Apple Silicon Mac | `famclaw-darwin-arm64.tar.xz` |
+| Intel Mac | `famclaw-darwin-amd64.tar.xz` |
+| Linux x86_64 | `famclaw-linux-amd64.tar.xz` |
+| Linux arm64 | `famclaw-linux-arm64.tar.xz` |
+| Linux arm (32-bit, e.g. RPi 3/Zero) | `famclaw-linux-armv7.tar.xz` |
+
 ```bash
-curl -fsSL https://github.com/famclaw/famclaw/releases/latest/download/install.sh | bash
+tar -xJf famclaw-darwin-arm64.tar.xz
+touch config.yaml   # start empty — the web wizard fills it in
+./famclaw --config config.yaml
+```
+
+Then open `http://<host>:8080` and complete the setup wizard (it writes the
+rest of the config for you).
+
+Release darwin binaries are Developer ID-signed and notarized (the release
+fails loudly if signing credentials are missing — `docs/RELEASE.md`), and the
+tarballs verify against `checksums.txt` plus a cosign signature bundle.
+Upgrading an existing installation (atomic swap + service restart, never an
+in-place overwrite):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/famclaw/famclaw/main/scripts/update.sh | bash
 ```
 
 ### Build from source
@@ -375,7 +400,7 @@ When `enabled` is not set (or `false`), a voice message is **not** silently drop
 | **Unknown-account backend** | Strangers messaging the bot are recorded against a parent-controlled queue, never auto-promoted to a user (issue #111 backend) |
 | **MCP tools** | Multi-transport (stdio/HTTP/SSE), unified tool registry |
 | **LLM profiles** | Multiple named endpoints, per-user assignment via wizard |
-| **CI/CD** | CodeQL, govulncheck, SBOM, cosign signature bundles, macOS ad-hoc codesign of darwin binaries (runs on macos-latest), TruffleHog, race detector on gateway+agent, schema-drift gate, Telegram/Discord integration tests |
+| **CI/CD** | CodeQL, govulncheck, SBOM, cosign signature bundles, Developer ID signing + notarization of darwin release binaries on macos-latest (fails loudly when signing credentials are missing — `docs/RELEASE.md`), TruffleHog, race detector on gateway+agent, schema-drift gate, Telegram/Discord integration tests |
 
 ### Recommended models
 

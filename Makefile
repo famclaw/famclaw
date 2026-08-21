@@ -122,11 +122,13 @@ install-systemd: install
 	@echo "✅ systemd service running. Logs: journalctl -u famclaw -f"
 
 install-launchd: install
-	cp scripts/com.famclaw.plist ~/Library/LaunchAgents/
-	sed -i '' "s|FAMCLAW_DIR|$(shell pwd)|g" ~/Library/LaunchAgents/com.famclaw.plist
-	sed -i '' "s|CURRENT_USER|$(shell whoami)|g" ~/Library/LaunchAgents/com.famclaw.plist
+	# Install under the launchd label name (com.famclaw.famclaw.plist) so
+	# scripts/update.sh finds it; launchd convention is filename == Label.
+	cp scripts/com.famclaw.plist ~/Library/LaunchAgents/com.famclaw.famclaw.plist
+	sed -i '' "s|FAMCLAW_DIR|$(shell pwd)|g" ~/Library/LaunchAgents/com.famclaw.famclaw.plist
+	sed -i '' "s|CURRENT_USER|$(shell whoami)|g" ~/Library/LaunchAgents/com.famclaw.famclaw.plist
 	mkdir -p $(shell pwd)/logs
-	launchctl load ~/Library/LaunchAgents/com.famclaw.plist
+	launchctl load ~/Library/LaunchAgents/com.famclaw.famclaw.plist
 	@echo "✅ launchd service running. Logs: tail -f $(shell pwd)/logs/famclaw.log"
 
 ## build-seccheck: Build seccheck binary for all targets
