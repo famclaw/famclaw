@@ -781,6 +781,11 @@ func TestLLMProfileLabelRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("marshaling profiles: %v", err)
 			}
+			// Pin the wire key too: a marshal round trip alone would still pass
+			// if the yaml tag were renamed, because both sides use the same type.
+			if tt.profile.Label != "" && !strings.Contains(string(data), "label:") {
+				t.Errorf("marshaled YAML missing the literal \"label:\" wire key:\n%s", data)
+			}
 			var got map[string]LLMProfile
 			if err := yaml.Unmarshal(data, &got); err != nil {
 				t.Fatalf("unmarshaling profiles: %v", err)
@@ -790,4 +795,15 @@ func TestLLMProfileLabelRoundTrip(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("literal label key unmarshals onto Label", func(t *testing.T) {
+		literal := "primary:\n  label: \"gateway smart tier (Mac, qwen3.6-35b-a3b)\"\n  base_url: \"http://192.168.1.223:4001\"\n  model: \"smart\"\n"
+		var got map[string]LLMProfile
+		if err := yaml.Unmarshal([]byte(literal), &got); err != nil {
+			t.Fatalf("unmarshaling literal YAML: %v", err)
+		}
+		if want := got["primary"]; want.Label == "" {
+			t.Errorf("literal \"label:\" key did not land on LLMProfile.Label: %+v", want)
+		}
+	})
 }
