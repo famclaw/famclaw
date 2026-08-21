@@ -113,7 +113,7 @@ data: [DONE]
 			c := NewClient("http://localhost:11434", tt.model, "")
 			var live []string
 			onToken := func(tok string) { live = append(live, tok) }
-			final, err := c.parseSSEStream(strings.NewReader(tt.sse), onToken)
+			final, err := c.parseSSEStream(strings.NewReader(tt.sse), onToken, nil) // nil = unknown flag: model-aware policy
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

@@ -19,6 +19,10 @@ type ExecutorDeps struct {
 	Temperature float64
 	MaxTokens   int
 
+	// ReasoningCache is the shared gateway reasoning auto-detect cache,
+	// attached to the subagent's LLM client (nil = heuristic only).
+	ReasoningCache *llm.ReasoningCache
+
 	// BuiltinDefs are the OpenAI-style tool definitions for parent
 	// builtins (web_fetch, spawn_agent, admin tools) that should be
 	// exposed to the subagent. Without these the subagent only has
@@ -126,7 +130,7 @@ func Execute(ctx context.Context, cfg Config, deps ExecutorDeps) (string, error)
 		return "", fmt.Errorf("LLM profile %q not found or incomplete", cfg.LLMProfile)
 	}
 
-	client := llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout)
+	client := llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout).WithReasoningCache(deps.ReasoningCache)
 
 	systemPrompt := buildSystemPrompt(cfg.Prompt)
 

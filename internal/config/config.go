@@ -246,6 +246,47 @@ type LLMConfig struct {
 	// Defaults to 300 (5 minutes). Operators on slow hardware or with
 	// large models may raise this; fast hardware may lower it.
 	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
+	// Reasoning controls reasoning-field handling when the LLM endpoint
+	// is a LiteLLM (or OpenAI-compatible) gateway.
+	Reasoning ReasoningConfig `yaml:"reasoning,omitempty"`
+}
+
+// ReasoningConfig controls how famclaw treats the non-standard
+// reasoning / reasoning_content response fields.
+//
+// When the endpoint is a LiteLLM gateway, famclaw auto-detects each
+// model's litellm_params.merge_reasoning_content_in_choices setting by
+// querying the gateway's model metadata at startup. A model flagged true
+// ships its FINAL ANSWER in the reasoning field (gemma-4-26b, deepseek-r1
+// style) and is hoisted unconditionally; everything else goes through the
+// built-in chain-of-thought heuristic.
+type ReasoningConfig struct {
+	// EnableAutoDetect turns gateway auto-detection on. Defaults to true;
+	// set to false to always rely on the built-in heuristic and to keep
+	// famclaw from issuing the startup /v1/model/info probe.
+	EnableAutoDetect *bool `yaml:"enable_auto_detect,omitempty"`
+
+	// LiteLLMURL overrides which gateway is queried for model metadata.
+	// Defaults to the LLM endpoint base URL (llm.base_url or the default
+	// profile) — that endpoint IS the gateway. Set when the models famclaw
+	// chats with are listed on a different gateway.
+	LiteLLMURL string `yaml:"litellm_url,omitempty"`
+
+	// LiteLLMAPIKey is an optional bearer key for the detection endpoint.
+	// Defaults to the LLM endpoint's API key.
+	LiteLLMAPIKey string `yaml:"litellm_api_key,omitempty"`
+
+	// PerModelOverride holds explicit per-model
+	// merge_reasoning_content_in_choices settings (model name → merge).
+	// These win over whatever the gateway reports — use them to pin a
+	// model's behaviour without touching the gateway config.
+	PerModelOverride map[string]bool `yaml:"per_model_override,omitempty"`
+}
+
+// AutoDetectEnabled reports whether reasoning auto-detection is on after
+// defaults are applied (nil → enabled).
+func (c ReasoningConfig) AutoDetectEnabled() bool {
+	return c.EnableAutoDetect == nil || *c.EnableAutoDetect
 }
 
 type UserConfig struct {
@@ -404,6 +445,10 @@ func applyDefaults(c *Config) {
 	}
 	if c.LLM.TimeoutSeconds == 0 {
 		c.LLM.TimeoutSeconds = 300
+	}
+	if c.LLM.Reasoning.EnableAutoDetect == nil {
+		enabled := true
+		c.LLM.Reasoning.EnableAutoDetect = &enabled
 	}
 	if c.Approval.ExpiryHours == 0 {
 		c.Approval.ExpiryHours = 24
