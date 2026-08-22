@@ -323,6 +323,15 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	if sbErr != nil {
 		log.Printf("computeEffectiveSandboxRoot: %v", sbErr)
 		effectiveSandboxRoot = ""
+	} else if err := os.MkdirAll(effectiveSandboxRoot, 0o700); err != nil {
+		// Under the default "conversation" scope the root is a partition
+		// (conversations/<gateway>/<id>) that does not exist yet on the
+		// first message of a conversation; confinePath's EvalSymlinks
+		// refuses a non-existent root, which would break every file_*
+		// tool. Creating it here keeps confinement fail-closed when the
+		// filesystem is actually unusable.
+		log.Printf("creating sandbox root %q: %v", effectiveSandboxRoot, err)
+		effectiveSandboxRoot = ""
 	}
 
 	return &Agent{
