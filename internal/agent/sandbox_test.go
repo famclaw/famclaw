@@ -761,3 +761,73 @@ func TestMigrateSandbox_RemoveFailureReturnsError(t *testing.T) {
 		t.Error("migration marker must not be written on partial failure")
 	}
 }
+
+// TestNewAgent_EnsuresConversationSandboxRoot is a regression test for the
+// 2026-08-22 production incident: under the default "conversation" scope
+// the effective sandbox root (conversations/<gateway>/<id>) is computed by
+// conversationSandboxRoot but never created on disk, so confinePath's
+// EvalSymlinks failed with "invalid sandbox root: lstat
+// .../conversations/<gateway>: no such file or directory" and every file_*
+// tool was broken for conversations whose partition did not exist yet —
+// i.e. all of them, since nothing ever wrote into the tree. NewAgent must
+// create the root so the first file_write of a conversation succeeds.
+func TestNewAgent_EnsuresConversationSandboxRoot(t *testing.T) {
+	tests := []struct {
+		name    string
+		scope   string
+		msgCtx  gateway.MsgContext
+		wantRel string // partition relative to the base root; "" = base itself
+	}{
+		{
+			name:    "conversation scope creates DM partition",
+			scope:   "conversation",
+			msgCtx:  gateway.MsgContext{Gateway: "discord", ExternalID: "856589938509217793"},
+			wantRel: filepath.Join("conversations", "discord", "856589938509217793"),
+		},
+		{
+			name:    "conversation scope creates group partition",
+			scope:   "conversation",
+			msgCtx:  gateway.MsgContext{Gateway: "telegram", GroupID: "1001234567", IsGroup: true},
+			wantRel: filepath.Join("conversations", "telegram", "1001234567"),
+		},
+		{
+			name:    "global scope keeps base root",
+			scope:   "global",
+			msgCtx:  gateway.MsgContext{Gateway: "discord", ExternalID: "42"},
+			wantRel: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// t.TempDir stands in for prepareSandboxRoot's startup MkdirAll:
+			// the base root exists, the partitions do not (production layout).
+			base := t.TempDir()
+			cfg := &config.Config{
+				Users: []config.UserConfig{{Name: "parent", DisplayName: "Parent", Role: "parent"}},
+				Tools: config.ToolsConfig{SandboxRoot: base, SandboxScope: tc.scope},
+			}
+			a, err := NewAgent(&cfg.Users[0], cfg, nil, nil, nil, nil, AgentDeps{MsgContext: tc.msgCtx})
+			if err != nil {
+				t.Fatalf("NewAgent: %v", err)
+			}
+			want := filepath.Join(base, tc.wantRel)
+			fi, statErr := os.Stat(want)
+			if statErr != nil || !fi.IsDir() {
+				t.Fatalf("sandbox root %q not created: stat=%v isDir=%v", want, statErr, fi != nil && fi.IsDir())
+			}
+			// End-to-end: the file_write that failed in production now succeeds.
+			if out, werr := a.handleFileWrite(context.Background(), map[string]any{
+				"path":    "garden_automation_plan.md",
+				"content": "# plan\n",
+			}); werr != nil {
+				t.Fatalf("handleFileWrite: %v (out=%q)", werr, out)
+			}
+			if got, rerr := a.handleFileRead(context.Background(), map[string]any{
+				"path": "garden_automation_plan.md",
+			}); rerr != nil || got != "# plan\n" {
+				t.Fatalf("handleFileRead = %q, %v", got, rerr)
+			}
+		})
+	}
+}
