@@ -170,4 +170,3 @@ partial set — still succeeds and ships ad-hoc-signed darwin binaries
   updater/installers use atomic rename — tell the user to re-run
   `scripts/update.sh`) and a genuine signing problem (probe with
   `codesign -dv` / `xcrun stapler verify`).
-# no-op
