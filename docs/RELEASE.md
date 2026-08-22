@@ -8,23 +8,47 @@ checklist.
 Pushing a `v*` tag runs `.github/workflows/release.yml`:
 
 1. **goreleaser** (macos-latest) — builds all targets (`CGO_ENABLED=0`),
-   archives them, and signs every darwin binary with a Developer ID
-   Application certificate, submits it to Apple's notary service, and staples
-   the ticket (`scripts/darwin-sign-notarize.sh`, run from the goreleaser
-   post-build hook). Cosign signs the checksums, syft emits SBOMs, and the
-   build is attested.
+   archives them, and handles darwin signing per the credential state
+   (`scripts/darwin-sign-notarize.sh`, run from the goreleaser post-build
+   hook): with credentials, every darwin binary is signed with a Developer ID
+   Application certificate, submitted to Apple's notary service, and
+   stapled; without them, the hook warns and falls back to ad-hoc signing
+   ("Darwin signing: two paths" below). Cosign signs the checksums, syft
+   emits SBOMs, and the build is attested.
 2. **sd-images** (ubuntu-latest) — packages the linux binaries into
    flashable Raspberry Pi SD images.
 3. **post-release** (ubuntu-latest) — downloads the published assets and
    verifies the cosign bundle, checksums, binary version, build attestation,
    and runs a server smoke test.
 
-The darwin step is a **hard gate**: when signing credentials are missing the
-job fails in the preflight step with an actionable message, *before anything
-is built or published*. Rationale: an unsigned or ad-hoc signed arm64 binary
-is killed on launch with a silent exit 137 (#311), and a non-notarized binary
-is blocked by Gatekeeper after a browser download (#214). No release ever
-ships a darwin binary that Apple would refuse.
+### Darwin signing: two paths
+
+The darwin signing gate is **conditional on credentials being present**:
+
+- **Credentials complete** (`FAMCLAW_APPLE_P12` + `_PASSPHRASE` +
+  `_TEAM_ID`, plus either the notary-key triple or the Apple-ID pair):
+  every darwin binary is Developer ID-signed (hardened runtime, RFC3161
+  timestamp), notarized, and the Apple ticket is stapled *before
+  archiving*, so the published tarballs contain the final signed binary. No
+  release ever ships a darwin binary that Apple would refuse.
+- **Credentials missing or partial**: the preflight step and the post-build
+  hook print a WARNING naming each missing `FAMCLAW_*` secret, and the
+  release proceeds with the pre-v0.13.0 fallback — the darwin binaries ship
+  **ad-hoc-signed**. What that means for users:
+  - the binaries **run on Apple Silicon out of the box**: ad-hoc signing
+    satisfies the kernel's signature requirement, so there is no exit 137
+    (#311 applies only to *unsigned* binaries);
+  - a **browser-downloaded binary is blocked by Gatekeeper on first run**
+    (#214). The workaround is right-click the binary → **Open** (then
+    "Open" again in the dialog), or
+    `xattr -d com.apple.quarantine <binary>`.
+  - `scripts/update.sh` is unaffected: it installs via a checksum-verified
+    curl download + atomic rename and never goes through Gatekeeper's
+    browser-download path, so the updater works identically for both the
+    ad-hoc and the Developer ID-signed binaries.
+
+Add the credentials (below) to move future releases onto the signed path; an
+ad-hoc fallback release is a valid, supported release in the meantime.
 
 ## Signing credentials (injected at release time)
 
@@ -34,9 +58,9 @@ this repo.
 
 | Secret | Required | Purpose |
 |---|---|---|
-| `FAMCLAW_APPLE_P12` | yes | base64 `.p12` containing the "Developer ID Application" certificate **and** its private key |
-| `FAMCLAW_APPLE_PASSPHRASE` | yes | passphrase the `.p12` was exported with |
-| `FAMCLAW_APPLE_TEAM_ID` | yes | Apple developer team ID |
+| `FAMCLAW_APPLE_P12` | yes, for the signed path | base64 `.p12` containing the "Developer ID Application" certificate **and** its private key |
+| `FAMCLAW_APPLE_PASSPHRASE` | yes, for the signed path | passphrase the `.p12` was exported with |
+| `FAMCLAW_APPLE_TEAM_ID` | yes, for the signed path | Apple developer team ID |
 | `FAMCLAW_NOTARY_KEY` | one of the two notarization options below | base64 App-Services notarytool API key `.p12` |
 | `FAMCLAW_NOTARY_KEY_ID` | with `FAMCLAW_NOTARY_KEY` | key ID of that notary key |
 | `FAMCLAW_NOTARY_ISSUER_ID` | with `FAMCLAW_NOTARY_KEY` | App-Services issuer ID |
@@ -44,6 +68,10 @@ this repo.
 | `FAMCLAW_APPLE_PASSWORD` | with `FAMCLAW_APPLE_ID` | [app-specific password](https://appleid.apple.com) |
 
 The notary key is preferred: it does not trigger Apple 2FA on release day.
+
+All of the secrets above are optional: a release without them — or with a
+partial set — still succeeds and ships ad-hoc-signed darwin binaries
+(see "Darwin signing: two paths" above).
 
 ## One-time credential setup
 
@@ -77,22 +105,27 @@ The notary key is preferred: it does not trigger Apple 2FA on release day.
    release exists; if the tag lands later than the draft date, update the
    section date to the tag day. README quick-start and `docs/` reflect the
    shipped features.
-2. **Credentials.** Confirm the repo secrets from the table are set
-   (`FAMCLAW_APPLE_P12`, `FAMCLAW_APPLE_PASSPHRASE`,
-   `FAMCLAW_APPLE_TEAM_ID`, and either the notary-key triple or
-   `FAMCLAW_APPLE_ID` + `FAMCLAW_APPLE_PASSWORD`).
+2. **Credentials — pick the path.** Confirm the repo secrets from the table
+   are set for the signed path (`FAMCLAW_APPLE_P12`,
+   `FAMCLAW_APPLE_PASSPHRASE`, `FAMCLAW_APPLE_TEAM_ID`, and either the
+   notary-key triple or `FAMCLAW_APPLE_ID` + `FAMCLAW_APPLE_PASSWORD`).
+   Without them the release still succeeds, but the darwin binaries ship
+   ad-hoc-signed ("Darwin signing: two paths").
 3. **Cut and push the tag:**
    ```sh
    git tag v0.13.0
    git push origin v0.13.0
    ```
 4. **Watch the release workflow:**
-   - `Preflight: darwin signing credentials present` passes (on failure it
-     lists the missing secrets — set them and *Re-run failed jobs*; nothing
-     is published until the whole pipeline passes),
+   - `Preflight: darwin signing credentials` passes — it prints
+     `Darwin signing credentials present.` on the signed path, or a WARNING
+     naming the missing secrets on the ad-hoc fallback (both exit 0; the
+     step never blocks the release on missing credentials),
    - the goreleaser log shows `Signing … / Notarizing … / Stapling …` per
      darwin binary and ends `OK: … Developer-ID signed, notarized, and
-     stapled`,
+     stapled` (signed path) — or `WARNING: … AD-HOC SIGNED …`,
+     `Ad-hoc signing …`, and `OK: … ad-hoc signed (no notarization)`
+     (fallback),
    - sd-images and post-release verification pass.
 5. **Verify the published darwin binary on an Apple Silicon Mac** (the real
    acceptance test for #311/#214):
@@ -100,23 +133,31 @@ The notary key is preferred: it does not trigger Apple 2FA on release day.
    cd /tmp && rm -rf fc-verify && mkdir fc-verify && cd fc-verify
    curl -fsSLO https://github.com/famclaw/famclaw/releases/latest/download/famclaw-darwin-arm64.tar.xz
    tar -xJf famclaw-darwin-arm64.tar.xz
-   codesign -dv famclaw            # Authority should be "Developer ID Application: <you>"
-   xcrun stapler verify famclaw    # "… has a valid ticket / verified"
-   ./famclaw --version             # exit 0 — NOT 137
+   codesign -dv famclaw            # signed: Authority = "Developer ID Application: <you>"
+                                   # fallback: Authority = adhoc
+   xcrun stapler verify famclaw    # signed: "… has a valid ticket / verified"
+   ./famclaw --version             # exit 0 — NOT 137 (both paths)
    ```
    Then download the same tarball in a **browser** (so it carries
-   `com.apple.quarantine`) and run it: Gatekeeper must not block it.
+   `com.apple.quarantine`) and run it. On the signed path Gatekeeper must
+   not block it. On the ad-hoc fallback path Gatekeeper blocks the first
+   run by design — verify the workaround instead: right-click → Open (→
+   Open again in the dialog).
 6. **Verify integrity of all assets:** `sha256sum -c checksums.txt`, the cosign
    bundle, and `gh attestation verify` — exact commands are in the
    post-release job summary.
-7. **Close the darwin issues with this evidence:** #311 (exit-137 fixed by
-   signing) and #214 (notarized install path works for a browser download).
+7. **Close the darwin issues with this evidence:** #311 (exit-137 — the
+   `./famclaw --version` check passes on both paths) and #214 (browser
+   download — the notarized install path on signed releases; on ad-hoc
+   fallback releases, the right-click → Open workaround instead).
 
 ## Troubleshooting
 
-- **Preflight fails.** The message lists the missing secrets. Set them, then
-  *Re-run failed jobs* on the same tag — the tag push is already recorded,
-  and no partial release exists because publishing happens only at the end.
+- **Preflight prints a WARNING about darwin credentials.** Expected when
+  the `FAMCLAW_*` secrets are absent or partial — the release proceeds with
+  ad-hoc-signed darwin binaries ("Darwin signing: two paths"). To ship the
+  signed path instead, set the listed secrets and re-run the release for the
+  tag; no partial release exists because publishing happens only at the end.
 - **Notarization rejected.** notarytool prints a log request ID; fetch the
   report with `xcrun notarytool log <request-id> --team-id <TEAM>`. Common
   causes: the binary changed after signing (it does not — the hook signs,
@@ -129,4 +170,3 @@ The notary key is preferred: it does not trigger Apple 2FA on release day.
   updater/installers use atomic rename — tell the user to re-run
   `scripts/update.sh`) and a genuine signing problem (probe with
   `codesign -dv` / `xcrun stapler verify`).
-# no-op

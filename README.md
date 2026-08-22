@@ -129,9 +129,11 @@ touch config.yaml   # start empty — the web wizard fills it in
 Then open `http://<host>:8080` and complete the setup wizard (it writes the
 rest of the config for you).
 
-Release darwin binaries are Developer ID-signed and notarized (the release
-fails loudly if signing credentials are missing — `docs/RELEASE.md`), and the
-tarballs verify against `checksums.txt` plus a cosign signature bundle.
+Release darwin binaries are Developer ID-signed and notarized when signing
+credentials are configured; without them the release falls back to
+ad-hoc-signed darwin binaries (a browser download needs Gatekeeper's
+right-click → Open on first run — `docs/RELEASE.md`). The tarballs verify
+against `checksums.txt` plus a cosign signature bundle.
 Upgrading an existing installation (atomic swap + service restart, never an
 in-place overwrite):
 
@@ -407,7 +409,7 @@ When `enabled` is not set (or `false`), a voice message is **not** silently drop
 | **Unknown-account backend** | Strangers messaging the bot are recorded against a parent-controlled queue, never auto-promoted to a user (issue #111 backend) |
 | **MCP tools** | Multi-transport (stdio/HTTP/SSE), unified tool registry |
 | **LLM profiles** | Multiple named endpoints, per-user assignment via wizard |
-| **CI/CD** | CodeQL, govulncheck, SBOM, cosign signature bundles, Developer ID signing + notarization of darwin release binaries on macos-latest (fails loudly when signing credentials are missing — `docs/RELEASE.md`), TruffleHog, race detector on gateway+agent, schema-drift gate, Telegram/Discord integration tests |
+| **CI/CD** | CodeQL, govulncheck, SBOM, cosign signature bundles, Developer ID signing + notarization of darwin release binaries on macos-latest (ad-hoc-signed fallback when signing credentials are missing — `docs/RELEASE.md`), TruffleHog, race detector on gateway+agent, schema-drift gate, Telegram/Discord integration tests |
 
 ### Recommended models
 
