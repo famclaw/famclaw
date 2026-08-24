@@ -6,3 +6,4 @@ fc-gateway-file-send-fix — working status (append-only)
 [2026-08-24 17:50] TEST: go test ./... PASS; opa test 123/123 PASS; go vet + gofmt clean. Regression tests: filesend (traversal/symlink/oversize/no-sender/audit), discord multipart capture (group vs DM vs invalid filenames), agent dispatch glue.
 [2026-08-24 17:55] DOCS: README (file delivery note), CHANGELOG (Unreleased/Added), docs/FAMILY.md (new section). Commits 3df9146 + 12c0024 pushed to origin/fix/discord-file-send.
 [2026-08-24 17:55] PIPELINE: pending — running no-mistakes next.
+[18:09:30] PIPELINE: no-mistakes run 01M0TEWGYSSWVBMKC5MQY6JAGR started on fix/discord-file-send (head 6188971). intent+rebase completed; review running. Branch is pipeline-owned — no local commits until terminal outcome.
