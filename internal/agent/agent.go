@@ -639,15 +639,19 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// Drain buffered tokens after pipeline completes.
 	// - If the output gate hard-blocked (output_blocked=true), turn.Output
 	//   is already the safe fallback message and we emit nothing.
-	// - If the output gate soft-blocked and redacted, emit turn.Output
-	//   instead of raw tokens to prevent redaction leaks (security fix).
+	// - If the final output differs from what was streamed — the output
+	//   gate redacted it, or the LLM client replaced an unusable response
+	//   with a fail-soft message after streaming nothing — emit turn.Output
+	//   instead of the raw tokens, so no redaction leaks and no reply is
+	//   silently dropped.
 	// - If the output gate allowed unchanged, emit the individual tokens.
-	if onToken != nil && len(bufferedTokens) > 0 {
+	if onToken != nil {
 		raw := strings.Join(bufferedTokens, "")
 		if blocked, ok := turn.GetMeta("output_blocked"); ok && blocked.(bool) {
 			// Hard-blocked: safe message already in turn.Output, no emit.
 		} else if turn.Output != raw {
-			// Redacted (soft-block): emit the final redacted output, not raw tokens.
+			// The delivered text is not what streamed: emit the final
+			// output, not the raw tokens.
 			onToken(turn.Output)
 		} else {
 			// Allowed (no modification): emit individual buffered tokens.
