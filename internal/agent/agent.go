@@ -811,7 +811,11 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 				fileSenders[k] = v
 			}
 			a.senderRegistryMu.RUnlock()
-			return filesend.Handle(ctx, a.db, fileSenders, a.user.Name, a.gatewayForSave(), a.msgContext.Gateway, gateway.OutboundDestination{
+			var auditDB filesend.DB
+			if a.db != nil {
+				auditDB = a.db
+			}
+			return filesend.Handle(ctx, auditDB, fileSenders, a.user.Name, a.gatewayForSave(), a.msgContext.Gateway, gateway.OutboundDestination{
 				ExternalID: a.msgContext.ExternalID,
 				GroupID:    a.msgContext.GroupID,
 			}, a.effectiveSandboxRoot, path, caption)

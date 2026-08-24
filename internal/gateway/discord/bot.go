@@ -2,8 +2,8 @@
 package discord
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -333,8 +333,11 @@ func (b *Bot) SendFile(ctx context.Context, dest gateway.OutboundDestination, fi
 	if b.session == nil {
 		return fmt.Errorf("discord session not initialized")
 	}
-	name := filepath.Base(file.Name)
-	if name == "" || name == "." || name == ".." || len(name) > maxOutboundFileNameBytes {
+	name := file.Name
+	// Name must be a bare filename: no path separators, no dot entries, and
+	// within Discord's 100-byte limit. Rejecting (rather than stripping)
+	// keeps the contract explicit — callers pass the basename they intend.
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") || len(name) > maxOutboundFileNameBytes {
 		return fmt.Errorf("invalid discord filename %q", file.Name)
 	}
 	channelID := dest.GroupID

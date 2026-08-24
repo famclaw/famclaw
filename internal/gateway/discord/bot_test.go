@@ -448,7 +448,9 @@ func newSendFileTestServer(t *testing.T, captures *[]capturedFile, mu *sync.Mute
 			http.Error(w, "multipart parse: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		cap := capturedFile{channelID: strings.Trim(strings.TrimSuffix(r.URL.Path, "/messages"), "/")}
+		seg := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		// path: /channels/{channelID}/messages
+		cap := capturedFile{channelID: seg[1]}
 		if val := r.MultipartForm.Value["payload_json"]; len(val) > 0 {
 			var payload struct {
 				Content string `json:"content"`
@@ -569,7 +571,7 @@ func TestSendFile(t *testing.T) {
 			assert.Len(t, captures, 1)
 			cap := captures[0]
 			assert.Equal(t, tc.wantChannelID, cap.channelID)
-			assert.Equal(t, filepath.Base(tc.file.Name), cap.filename)
+			assert.Equal(t, tc.file.Name, cap.filename)
 			assert.Equal(t, tc.file.Data, cap.content)
 			assert.Equal(t, tc.caption, cap.payload)
 		})
