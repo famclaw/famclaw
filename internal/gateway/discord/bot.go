@@ -305,21 +305,35 @@ func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
 	if b.session == nil {
 		return fmt.Errorf("discord session not initialized")
 	}
-	dmChannelID, err := b.dmChannelID(channelID)
+	return b.postToUserDMChannel(channelID, func(dm string) error {
+		if err := SendChunked(b.session, dm, text); err != nil {
+			return fmt.Errorf("sending discord message to %s: %w", dm, err)
+		}
+		return nil
+	})
+}
+
+// postToUserDMChannel posts to the user's DM channel with stale-cache
+// recovery: if posting to the cached channel fails, the cache entry is
+// invalidated and the channel is reopened once. A bot removed from the
+// user's DMs is the documented cause — the cached channel then 404s
+// permanently, so without this recovery every subsequent delivery to that
+// user would fail while inbound messages keep working. Shared by Send and
+// SendFile so text and file delivery recover identically.
+func (b *Bot) postToUserDMChannel(userID string, post func(channelID string) error) error {
+	channelID, err := b.dmChannelID(userID)
 	if err != nil {
-		return fmt.Errorf("opening discord DM for %s: %w", channelID, err)
+		return fmt.Errorf("opening discord DM for %s: %w", userID, err)
 	}
-	if err := SendChunked(b.session, dmChannelID, text); err != nil {
+	if err := post(channelID); err != nil {
 		// Cached DM channel may be stale (bot removed from the user's DMs).
 		// Invalidate and retry once with a fresh channel.
-		b.dmCache.Delete(channelID)
-		dmChannelID, err = b.dmChannelID(channelID)
+		b.dmCache.Delete(userID)
+		channelID, err = b.dmChannelID(userID)
 		if err != nil {
-			return fmt.Errorf("reopening discord DM for %s: %w", channelID, err)
+			return fmt.Errorf("reopening discord DM for %s: %w", userID, err)
 		}
-		if err := SendChunked(b.session, dmChannelID, text); err != nil {
-			return fmt.Errorf("sending discord message to %s: %w", channelID, err)
-		}
+		return post(channelID)
 	}
 	return nil
 }
@@ -340,21 +354,19 @@ func (b *Bot) SendFile(ctx context.Context, dest gateway.OutboundDestination, fi
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") || len(name) > maxOutboundFileNameBytes {
 		return fmt.Errorf("invalid discord filename %q", file.Name)
 	}
-	channelID := dest.GroupID
-	if channelID == "" {
-		dm, err := b.dmChannelID(dest.ExternalID)
-		if err != nil {
-			return fmt.Errorf("opening discord DM for %s: %w", dest.ExternalID, err)
+	post := func(channelID string) error {
+		if _, err := b.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+			Content: caption,
+			File:    &discordgo.File{Name: name, Reader: bytes.NewReader(file.Data)},
+		}, discordgo.WithContext(ctx)); err != nil {
+			return fmt.Errorf("sending discord file to %s: %w", channelID, notify.RedactWebhookURLInError(err))
 		}
-		channelID = dm
+		return nil
 	}
-	if _, err := b.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Content: caption,
-		File:    &discordgo.File{Name: name, Reader: bytes.NewReader(file.Data)},
-	}, discordgo.WithContext(ctx)); err != nil {
-		return fmt.Errorf("sending discord file to %s: %w", channelID, notify.RedactWebhookURLInError(err))
+	if dest.GroupID != "" {
+		return post(dest.GroupID)
 	}
-	return nil
+	return b.postToUserDMChannel(dest.ExternalID, post)
 }
 
 // dmChannelID returns the DM channel ID for the given recipient user ID,

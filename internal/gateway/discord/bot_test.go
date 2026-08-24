@@ -577,3 +577,108 @@ func TestSendFile(t *testing.T) {
 		})
 	}
 }
+
+// TestSendFileStaleDMChannelRecovery is the regression test for the
+// stale-DM-cache asymmetry the first no-mistakes review flagged: Send used
+// to invalidate a cached DM channel only on text-send failure, so a file
+// delivery to a user who had removed-and-re-added the bot would keep hitting
+// the dead cached channel forever. SendFile now shares Send's recovery:
+// prime the cache with a stale channel, deliver, and assert one
+// invalidation + re-open + successful post to the fresh channel.
+func TestSendFileStaleDMChannelRecovery(t *testing.T) {
+	var (
+		mu                        sync.Mutex
+		dmOpenCount               int
+		failedChannels, sentFiles []capturedFile
+	)
+	// The cache is primed, so the ONLY UserChannelCreate is the re-open on
+	// recovery — it must return the fresh channel.
+	dmIDs := []string{"fresh-2"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/dm") {
+			dmOpenCount++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"id":%q,"type":1}`, dmIDs[dmOpenCount-1])))
+			return
+		}
+		if !strings.Contains(r.URL.Path, "/channels/") || !strings.HasSuffix(r.URL.Path, "/messages") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		seg := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		channelID := seg[1]
+		if channelID == "stale-1" {
+			// The classic failure: bot removed from the user's DMs.
+			http.Error(w, `{"message":"Unknown Channel","code":10015}`, http.StatusNotFound)
+			return
+		}
+		if err := r.ParseMultipartForm(64 << 20); err != nil {
+			http.Error(w, "multipart parse: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cap := capturedFile{channelID: channelID}
+		if fh := r.MultipartForm.File["files[0]"]; len(fh) == 1 {
+			cap.filename = fh[0].Filename
+			f, perr := fh[0].Open()
+			if perr == nil {
+				cap.content, _ = io.ReadAll(f)
+				_ = f.Close()
+			}
+		}
+		sentFiles = append(sentFiles, cap)
+		_ = failedChannels
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg-1"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	origUserChannels := discordgo.EndpointUserChannels
+	origChannelMessages := discordgo.EndpointChannelMessages
+	discordgo.EndpointUserChannels = func(string) string { return server.URL + "/dm" }
+	discordgo.EndpointChannelMessages = func(cID string) string {
+		return server.URL + "/channels/" + cID + "/messages"
+	}
+	t.Cleanup(func() {
+		discordgo.EndpointUserChannels = origUserChannels
+		discordgo.EndpointChannelMessages = origChannelMessages
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	session.Client = &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+	b := &Bot{session: session}
+
+	// Prime the cache with a stale channel, as a previous send would have.
+	b.dmCache.Store("user-123", "stale-1")
+
+	dest := gateway.OutboundDestination{ExternalID: "user-123"}
+	file := gateway.OutboundFile{Name: "dino.png", Data: []byte{0x89, 0x50, 0x4e, 0x47}}
+	if err := b.SendFile(context.Background(), dest, file, "your dinosaur"); err != nil {
+		t.Fatalf("SendFile with stale DM cache: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if dmOpenCount != 1 {
+		t.Errorf("UserChannelCreate calls = %d, want exactly 1 (one invalidation + re-open)", dmOpenCount)
+	}
+	if len(sentFiles) != 1 {
+		t.Fatalf("successful posts = %d, want 1", len(sentFiles))
+	}
+	if sentFiles[0].channelID != "fresh-2" {
+		t.Errorf("file posted to channel %q, want fresh DM %q", sentFiles[0].channelID, "fresh-2")
+	}
+	if string(sentFiles[0].content) != string(file.Data) {
+		t.Errorf("file content = %q, want fixture bytes", sentFiles[0].content)
+	}
+	if cached, _ := b.dmCache.Load("user-123"); cached != "fresh-2" {
+		t.Errorf("cache after recovery = %v, want fresh channel %q", cached, "fresh-2")
+	}
+}
