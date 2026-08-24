@@ -116,6 +116,8 @@ func TestDegenerationRetryParams(t *testing.T) {
 		{name: "typical", temp: 0.7, maxTokens: 4096, wantTemp: 0.35, wantMaxTokens: 2048},
 		{name: "already mild", temp: 0.3, maxTokens: 4096, wantTemp: 0.15, wantMaxTokens: 2048},
 		{name: "floor at 0.1", temp: 0.14, maxTokens: 4096, wantTemp: 0.1, wantMaxTokens: 2048},
+		{name: "floor never raises above the original temp", temp: 0.05, maxTokens: 4096, wantTemp: 0.05, wantMaxTokens: 2048},
+		{name: "just above the floor still halves to the floor", temp: 0.15, maxTokens: 4096, wantTemp: 0.1, wantMaxTokens: 2048},
 		{name: "greedy stays greedy, cap still halved", temp: 0, maxTokens: 4096, wantTemp: 0, wantMaxTokens: 2048},
 		{name: "small cap kept", temp: 0.7, maxTokens: 256, wantTemp: 0.35, wantMaxTokens: 256},
 		{name: "tiny cap kept", temp: 0.7, maxTokens: 200, wantTemp: 0.35, wantMaxTokens: 200},
@@ -216,6 +218,20 @@ func fakeSSEBody(content, finish string) string {
 		"choices": []map[string]any{{"delta": map[string]any{}, "finish_reason": finish}},
 	})
 	return fmt.Sprintf("data: %s\ndata: %s\ndata: [DONE]\n", contentChunk, finishChunk)
+}
+
+// fakeSSEReasoningOnlyBody renders a streaming response that carries no
+// delta.content at all: the model spent its budget in reasoning_content,
+// which the client keeps private for a classDeliberation model, so
+// parseSSEStream yields an empty answer with a nil error.
+func fakeSSEReasoningOnlyBody(reasoning, finish string) string {
+	reasoningChunk, _ := json.Marshal(map[string]any{
+		"choices": []map[string]any{{"delta": map[string]any{"reasoning_content": reasoning}}},
+	})
+	finishChunk, _ := json.Marshal(map[string]any{
+		"choices": []map[string]any{{"delta": map[string]any{}, "finish_reason": finish}},
+	})
+	return fmt.Sprintf("data: %s\ndata: %s\ndata: [DONE]\n", reasoningChunk, finishChunk)
 }
 
 // assertRequestShape checks the recorded request count, first-request
@@ -389,6 +405,32 @@ func TestChatDegenerationGuardStreaming(t *testing.T) {
 			responses: []queuedResponse{{status: http.StatusOK, body: fakeSSEBody(incidentMSG1604Tail, "stop")}},
 			wantOut:   incidentMSG1604Tail,
 			wantReqs:  1,
+		},
+		{
+			// The retry spent the halved cap in reasoning_content, which
+			// stays private for this classDeliberation model, so the stream
+			// yields "" with a nil error. Streaming callers set
+			// turn.Streamed and skip the agent's empty-response guard, so
+			// the guard must fail soft here rather than deliver a blank
+			// reply.
+			name: "retry with no answer content delivers fail-soft message",
+			responses: []queuedResponse{
+				{status: http.StatusOK, body: fakeSSEBody(incidentMSG1604Tail, "length")},
+				{status: http.StatusOK, body: fakeSSEReasoningOnlyBody("Okay, the user wants irrigation advice. Let me think about zones...", "length")},
+			},
+			wantOut:   DegenerationFallback,
+			wantReqs:  2,
+			wantRetry: true,
+		},
+		{
+			name: "retry with no answer content and finish stop delivers fail-soft message",
+			responses: []queuedResponse{
+				{status: http.StatusOK, body: fakeSSEBody(incidentMSG1604Tail, "length")},
+				{status: http.StatusOK, body: fakeSSEReasoningOnlyBody("Okay, the user wants irrigation advice. Let me think about zones...", "stop")},
+			},
+			wantOut:   DegenerationFallback,
+			wantReqs:  2,
+			wantRetry: true,
 		},
 		{
 			// Documents the retry contract for callers that buffer onToken

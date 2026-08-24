@@ -569,11 +569,13 @@ func degenerationTrapped(finishReason, content string, toolCalls int) bool {
 // large enough that halving still leaves a usable reply — the cap is the
 // degeneration budget, so a shorter one makes loops cheaper and answers
 // more likely to finish. Small caps are kept so the retry is not tighter
-// than the original.
+// than the original. The floor never raises the temperature: a caller
+// already below it keeps its own value, since a degeneration retry that
+// samples hotter than the attempt that looped is the wrong direction.
 func degenerationRetryParams(temp float64, maxTokens int) (float64, int) {
 	retryTemp := temp / 2
 	if retryTemp > 0 && retryTemp < 0.1 {
-		retryTemp = 0.1
+		retryTemp = min(temp, 0.1)
 	}
 	retryCap := maxTokens
 	if maxTokens > 256 {
@@ -655,13 +657,20 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 	retryTemp, retryCap := degenerationRetryParams(temp, maxTokens)
 	log.Printf("[llm] degeneration guard: repetition loop in streamed response (model=%s) - retrying once (temp %.2f->%.2f, cap %d->%d)", c.model, temp, retryTemp, maxTokens, retryCap)
 	retryFull, retryFinish, retryErr := c.streamOnce(ctx, messages, retryTemp, retryCap, onToken)
-	if retryErr == nil && !degenerationTrapped(retryFinish, retryFull, 0) {
-		return retryFull, nil
-	}
-	if retryErr != nil {
+	switch {
+	case retryErr != nil:
 		log.Printf("[llm] degeneration guard: streamed retry failed: %v - delivering fail-soft message", retryErr)
-	} else {
+	case strings.TrimSpace(retryFull) == "":
+		// No answer content survived the retry: the model spent the halved
+		// cap on reasoning that is kept private (merge flag false, or a
+		// classDeliberation model). Streaming callers set turn.Streamed, so
+		// the agent's empty-response guard is skipped and an empty string
+		// would reach the user as a blank reply.
+		log.Printf("[llm] degeneration guard: streamed retry produced no answer content - delivering fail-soft message")
+	case degenerationTrapped(retryFinish, retryFull, 0):
 		log.Printf("[llm] degeneration guard: streamed retry still degenerating - delivering fail-soft message")
+	default:
+		return retryFull, nil
 	}
 	return DegenerationFallback, nil
 }
