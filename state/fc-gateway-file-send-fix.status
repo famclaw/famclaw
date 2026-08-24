@@ -9,3 +9,4 @@ fc-gateway-file-send-fix — working status (append-only)
 [18:09:30] PIPELINE: no-mistakes run 01M0TEWGYSSWVBMKC5MQY6JAGR started on fix/discord-file-send (head 6188971). intent+rebase completed; review running. Branch is pipeline-owned — no local commits until terminal outcome.
 [19:01:57] PIPELINE: run 01M0TEWGYSSWVBMKC5MQY6JAGR FAILED — review agent infra timeout (silent 1h, 0 findings; branch returned user_owned). Pushed follow-up commit 93a2dce. Re-running pipeline on new head.
 [19:08:34] PIPELINE: re-run started on head 277e937 (progress-note commits only since 6188971; code unchanged). Waiting on review step.
+[20:11:58] PIPELINE: 2nd run 01M0TJPC07WSGANTQDQZ16VX2V also failed on the same 1h review-agent infra timeout (0 findings, active until cutoff). Host config review_agent_timeout raised 60m -> 120m (precedent: this file was already tuned for the degeneration-guard run). Third run starting.
