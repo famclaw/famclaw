@@ -8,3 +8,4 @@ fc-gateway-file-send-fix — working status (append-only)
 [2026-08-24 17:55] PIPELINE: pending — running no-mistakes next.
 [18:09:30] PIPELINE: no-mistakes run 01M0TEWGYSSWVBMKC5MQY6JAGR started on fix/discord-file-send (head 6188971). intent+rebase completed; review running. Branch is pipeline-owned — no local commits until terminal outcome.
 [19:01:57] PIPELINE: run 01M0TEWGYSSWVBMKC5MQY6JAGR FAILED — review agent infra timeout (silent 1h, 0 findings; branch returned user_owned). Pushed follow-up commit 93a2dce. Re-running pipeline on new head.
+[19:08:34] PIPELINE: re-run started on head 277e937 (progress-note commits only since 6188971; code unchanged). Waiting on review step.
