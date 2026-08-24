@@ -590,41 +590,47 @@ type chatResult struct {
 }
 
 // doLLMRequest builds and executes one LLM HTTP request, returning the raw
-// response body for the caller to decode. Non-2xx responses are read in
-// full and surfaced as errors; the body is closed by the caller on 2xx.
-func (c *Client) doLLMRequest(ctx context.Context, req openaiRequest) (*http.Response, error) {
+// response for the caller to decode, along with the cancel func for the
+// per-call timeout context. That context governs the whole exchange,
+// including reading the (possibly long-lived streaming) body, so the
+// caller must defer cancel() BEFORE deferring resp.Body.Close() — an early
+// cancel makes body reads fail with "context canceled". Non-2xx responses
+// are read in full and surfaced as errors; no cleanup is needed by the
+// caller on those paths.
+func (c *Client) doLLMRequest(ctx context.Context, req openaiRequest) (*http.Response, context.CancelFunc, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling chat request: %w", err)
+		return nil, nil, fmt.Errorf("marshaling chat request: %w", err)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.chatEndpoint(), bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("creating chat request: %w", err)
+		return nil, nil, fmt.Errorf("creating chat request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if err := c.setAuth(ctx, httpReq); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Use a configurable per-call timeout instead of the global client timeout
 	deadlineCtx, cancel := context.WithTimeout(ctx, c.defaultTimeout)
-	defer cancel()
 	httpReq = httpReq.WithContext(deadlineCtx)
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("LLM request failed: %w", err)
+		cancel()
+		return nil, nil, fmt.Errorf("LLM request failed: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		b, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		cancel()
 		if readErr != nil {
 			// Log the error for debugging while still returning the status error
 			log.Printf("LLM returned %d: failed to read error body: %v", resp.StatusCode, readErr)
-			return nil, fmt.Errorf("LLM returned %d: reading error body: %w", resp.StatusCode, readErr)
+			return nil, nil, fmt.Errorf("LLM returned %d: reading error body: %w", resp.StatusCode, readErr)
 		}
-		return nil, fmt.Errorf("LLM returned %d: %s", resp.StatusCode, string(b))
+		return nil, nil, fmt.Errorf("LLM returned %d: %s", resp.StatusCode, string(b))
 	}
-	return resp, nil
+	return resp, cancel, nil
 }
 
 // Chat sends a conversation to the LLM and streams the response token by token.
@@ -663,7 +669,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 // streamOnce performs one streaming LLM round trip. onToken may be nil; it
 // is invoked for each stripped answer chunk as it arrives.
 func (c *Client) streamOnce(ctx context.Context, messages []Message, temp float64, maxTokens int, onToken func(string)) (string, string, error) {
-	resp, err := c.doLLMRequest(ctx, openaiRequest{
+	resp, cancel, err := c.doLLMRequest(ctx, openaiRequest{
 		Model:       c.model,
 		Messages:    messages,
 		Stream:      true,
@@ -673,6 +679,7 @@ func (c *Client) streamOnce(ctx context.Context, messages []Message, temp float6
 	if err != nil {
 		return "", "", err
 	}
+	defer cancel()
 	defer resp.Body.Close()
 	return c.parseSSEStream(resp.Body, onToken, c.reasoningFlag(ctx))
 }
@@ -847,7 +854,7 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 // response: reasoning-field reconciliation, inline tool-call salvage,
 // control-token stripping, and the empty-reply check.
 func (c *Client) chatOnce(ctx context.Context, messages []Message, temp float64, maxTokens int, tools []ToolDef) (*chatResult, error) {
-	resp, err := c.doLLMRequest(ctx, openaiRequest{
+	resp, cancel, err := c.doLLMRequest(ctx, openaiRequest{
 		Model:       c.model,
 		Messages:    messages,
 		Temperature: temp,
@@ -857,6 +864,7 @@ func (c *Client) chatOnce(ctx context.Context, messages []Message, temp float64,
 	if err != nil {
 		return nil, err
 	}
+	defer cancel()
 	defer resp.Body.Close()
 
 	var result openaiResponse
