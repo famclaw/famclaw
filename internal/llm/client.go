@@ -541,7 +541,7 @@ func hasDegenerationLoop(text string) bool {
 		}
 	}
 	n := degenerationNGramSize
-	if len(words) < degenerationMinWords || len(words) < n {
+	if len(words) < degenerationMinWords {
 		return false
 	}
 	seen := make(map[string]int, (len(words)-n+1)/2)
