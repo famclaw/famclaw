@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -1276,8 +1277,9 @@ func (m *mockToolChatter) ChatWithTools(_ context.Context, _ []llm.Message, _ fl
 
 // TestToolCallDrainEmptyBufferedTokens verifies that the drain logic handles
 // the tool-call path correctly: ChatWithTools does not invoke OnToken, so
-// bufferedTokens remains empty and the drain block at agent.go:307 is skipped.
-// This is the regression guard for the review-5 finding.
+// bufferedTokens stays empty and the post-gate turn.Output is what reaches
+// the callback — exactly once, and never a raw pre-gate token (the review-5
+// finding this guards).
 func TestToolCallDrainEmptyBufferedTokens(t *testing.T) {
 	t.Parallel()
 
@@ -1326,10 +1328,14 @@ func TestToolCallDrainEmptyBufferedTokens(t *testing.T) {
 		t.Fatalf("Chat: %v", err)
 	}
 
-	// The tool-call path uses ChatWithTools which does not stream tokens.
-	// bufferedTokens stays empty, so the drain block is skipped.
-	if len(tokens) > 0 {
-		t.Errorf("onToken was called %d times — expected 0 for tool-call path", len(tokens))
+	// The tool-call path uses ChatWithTools which does not stream tokens, so
+	// the gated turn.Output is delivered in a single call — a web client that
+	// renders only streamed tokens must not be left with a blank reply.
+	if len(tokens) != 1 {
+		t.Fatalf("onToken was called %d times (%q) — expected exactly 1 for tool-call path", len(tokens), tokens)
+	}
+	if tokens[0] != resp.Content {
+		t.Errorf("emitted %q, want the final response %q", tokens[0], resp.Content)
 	}
 
 	// The final response should be the tool output.
@@ -2000,4 +2006,146 @@ func TestWebSearchError(t *testing.T) {
 			t.Errorf("ordinary error should pass through unchanged, got %v", err)
 		}
 	})
+}
+
+// sseSequenceServer replays one SSE body per chat request, so a test can
+// drive the real llm.Client through a multi-attempt exchange (the
+// degeneration guard's first attempt plus its bounded retry).
+func sseSequenceServer(t *testing.T, bodies ...string) *httptest.Server {
+	t.Helper()
+	callIdx := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "qwen3.6-35b-a3b"}}})
+			return
+		}
+		io.Copy(io.Discard, r.Body)
+		i := callIdx
+		if i >= len(bodies) {
+			i = len(bodies) - 1
+		}
+		callIdx++
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, bodies[i])
+	}))
+}
+
+// sseReasoningOnly renders the smart tier's wire shape for a thinking model
+// that spent its whole budget deliberating: reasoning_content only, no
+// delta.content. The client keeps that private for a classDeliberation
+// model, so no token is ever streamed.
+func sseReasoningOnly(finish string) string {
+	reasoning, _ := json.Marshal(map[string]any{
+		"choices": []map[string]any{{"delta": map[string]any{"reasoning_content": "Let me work through the whole thing step by step..."}}},
+	})
+	fin, _ := json.Marshal(map[string]any{
+		"choices": []map[string]any{{"delta": map[string]any{}, "finish_reason": finish}},
+	})
+	return fmt.Sprintf("data: %s\n\ndata: %s\n\ndata: [DONE]\n\n", reasoning, fin)
+}
+
+// sseContent renders an ordinary streamed answer that stopped cleanly.
+func sseContent(content string) string {
+	chunk, _ := json.Marshal(map[string]any{
+		"choices": []map[string]any{{"delta": map[string]any{"content": content}}},
+	})
+	fin, _ := json.Marshal(map[string]any{
+		"choices": []map[string]any{{"delta": map[string]any{}, "finish_reason": "stop"}},
+	})
+	return fmt.Sprintf("data: %s\n\ndata: %s\n\ndata: [DONE]\n\n", chunk, fin)
+}
+
+// TestStreamedDrainDeliversOutputWithoutBufferedTokens pins the drain
+// contract for the web WebSocket path, where the browser renders content
+// only from streamed token frames: whatever the turn finally delivers must
+// reach onToken, including a fail-soft reply the LLM client substituted
+// after streaming nothing at all.
+func TestStreamedDrainDeliversOutputWithoutBufferedTokens(t *testing.T) {
+	tests := []struct {
+		name        string
+		bodies      []string
+		wantEmitted string
+		wantCalls   int // -1: chunking is the client's business, only the joined text matters
+		wantOutput  string
+	}{
+		{
+			name:        "fail-soft reply reaches the caller when no token streamed",
+			bodies:      []string{sseReasoningOnly("length"), sseReasoningOnly("length")},
+			wantEmitted: llm.DegenerationFallback,
+			wantCalls:   1,
+			wantOutput:  llm.DegenerationFallback,
+		},
+		{
+			name:        "nothing is emitted when the turn produced no output",
+			bodies:      []string{sseReasoningOnly("stop")},
+			wantEmitted: "",
+			wantCalls:   0,
+			wantOutput:  "",
+		},
+		{
+			name:        "ordinary streamed answer still emits its own tokens",
+			bodies:      []string{sseContent("Zone the bed into four sections.")},
+			wantEmitted: "Zone the bed into four sections.",
+			wantCalls:   -1,
+			wantOutput:  "Zone the bed into four sections.",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := sseSequenceServer(t, tt.bodies...)
+			defer server.Close()
+
+			db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			ev, err := policy.NewEvaluator("", "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := &config.Config{
+				LLM: config.LLMConfig{
+					BaseURL:           server.URL,
+					Model:             "qwen3.6-35b-a3b",
+					Temperature:       0.7,
+					MaxResponseTokens: 4096,
+				},
+				Users: []config.UserConfig{
+					{Name: "kid", DisplayName: "Kid", Role: "child", AgeGroup: "age_8_12"},
+				},
+			}
+			client := llm.NewClient(server.URL, "qwen3.6-35b-a3b", "")
+			a, err := NewAgent(&cfg.Users[0], cfg, client, ev, classifier.New(), db, AgentDeps{})
+			if err != nil {
+				t.Fatalf("failed to create agent: %v", err)
+			}
+
+			var tokens []string
+			resp, err := a.Chat(context.Background(), "how do I irrigate the flower bed?", func(tok string) {
+				tokens = append(tokens, tok)
+			})
+			if err != nil {
+				t.Fatalf("Chat: %v", err)
+			}
+			if tt.wantCalls >= 0 && len(tokens) != tt.wantCalls {
+				t.Fatalf("onToken calls = %d (%q), want %d", len(tokens), tokens, tt.wantCalls)
+			}
+			if got := strings.Join(tokens, ""); got != tt.wantEmitted {
+				t.Errorf("emitted = %q, want %q", got, tt.wantEmitted)
+			}
+			if resp.Content != tt.wantOutput {
+				t.Errorf("content = %q, want %q", resp.Content, tt.wantOutput)
+			}
+			if !resp.Streamed {
+				t.Error("Streamed = false, want true for the streaming path")
+			}
+		})
+	}
 }
