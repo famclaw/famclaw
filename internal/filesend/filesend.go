@@ -16,10 +16,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/gateway"
@@ -35,6 +37,12 @@ const MaxFileBytes = 25 * 1024 * 1024
 // SendTimeout bounds a single delivery so a slow gateway cannot stall the
 // agent tool loop. Mirrors sendmsg.SendTimeout.
 const SendTimeout = 30 * time.Second
+
+// MaxCaptionChars mirrors Discord's 2000-character message limit: the caption
+// travels as the message content alongside the file, so an over-long caption
+// is rejected locally with an actionable error instead of failing at the
+// Discord API.
+const MaxCaptionChars = 2000
 
 // Tool returns the agentcore.Tool definition for builtin__send_file.
 // The tool is registered for all roles; OPA tool_policy decides who may
@@ -82,6 +90,9 @@ func Handle(ctx context.Context, db DB, fileSenders map[string]gateway.FileSende
 	if strings.TrimSpace(path) == "" {
 		return "", errors.New("send_file requires a 'path' argument")
 	}
+	if n := utf8.RuneCountInString(caption); n > MaxCaptionChars {
+		return "", fmt.Errorf("send_file: caption is %d characters, above the %d character limit — shorten it and retry", n, MaxCaptionChars)
+	}
 	absPath, err := ConfinePath(sandboxRoot, path)
 	if err != nil {
 		return "", fmt.Errorf("resolving send_file path: %w", err)
@@ -124,7 +135,11 @@ func Handle(ctx context.Context, db DB, fileSenders map[string]gateway.FileSende
 			"caption": caption,
 		}
 		if b, jerr := json.Marshal(auditArgs); jerr == nil {
-			_ = db.LogAudit(ctx, actor, auditGateway, ToolName, b)
+			if err := db.LogAudit(ctx, actor, auditGateway, ToolName, b); err != nil {
+				// Delivery already succeeded — never fail the tool call for a
+				// lost audit row, but make the observability gap visible.
+				log.Printf("[filesend] audit insert failed after successful send_file of %s: %v", name, err)
+			}
 		}
 	}
 	return fmt.Sprintf("sent %q (%d bytes) to the user", name, fi.Size()), nil

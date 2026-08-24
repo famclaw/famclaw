@@ -34,9 +34,13 @@ type fakeDB struct {
 	gateways []string
 	tools    []string
 	args     [][]byte
+	auditErr error
 }
 
 func (f *fakeDB) LogAudit(ctx context.Context, actorName, gw, toolName string, args []byte) error {
+	if f.auditErr != nil {
+		return f.auditErr
+	}
 	f.actors = append(f.actors, actorName)
 	f.gateways = append(f.gateways, gw)
 	f.tools = append(f.tools, toolName)
@@ -239,6 +243,26 @@ func TestHandle(t *testing.T) {
 			wantCalls:   0,
 		},
 		{
+			name:        "oversized caption rejected before delivery",
+			deliveryGw:  "discord",
+			dest:        groupDest,
+			sandboxRoot: func() string { r, _ := newSandbox(t, "z.txt", "z"); return r }(),
+			path:        "z.txt",
+			caption:     strings.Repeat("x", 2001),
+			wantErr:     "above the 2000 character limit",
+			wantCalls:   0,
+		},
+		{
+			name:        "audit failure does not fail a successful delivery",
+			deliveryGw:  "discord",
+			dest:        groupDest,
+			sandboxRoot: func() string { r, _ := newSandbox(t, "w.txt", "w"); return r }(),
+			path:        "w.txt",
+			wantCalls:   1,
+			wantName:    "w.txt",
+			wantAudit:   false, // auditErr set below => no row recorded
+		},
+		{
 			name:        "sender error propagated",
 			deliveryGw:  "discord",
 			dest:        groupDest,
@@ -255,6 +279,10 @@ func TestHandle(t *testing.T) {
 			sender.calls = 0
 			sender.err = tc.senderErr
 			db.args = nil
+			db.auditErr = nil
+			if tc.name == "audit failure does not fail a successful delivery" {
+				db.auditErr = errors.New("db is down")
+			}
 			got, err := Handle(context.Background(), db, senders, "dep", "discord", tc.deliveryGw, tc.dest, tc.sandboxRoot, tc.path, tc.caption)
 			if tc.wantErr != "" {
 				if err == nil {
