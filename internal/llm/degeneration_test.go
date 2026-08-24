@@ -407,6 +407,37 @@ func TestChatDegenerationGuardStreaming(t *testing.T) {
 			wantReqs:  1,
 		},
 		{
+			// The smart tier's wire shape when a thinking model spends the
+			// whole cap deliberating: no delta.content at all, reasoning
+			// kept private, finish_reason=length. That is a thought that
+			// ran out of tokens, so it takes the same bounded retry.
+			name: "reasoning-only first attempt at the cap is retried",
+			responses: []queuedResponse{
+				{status: http.StatusOK, body: fakeSSEReasoningOnlyBody("Okay, the user wants irrigation advice. Let me work through the zones...", "length")},
+				{status: http.StatusOK, body: fakeSSEBody("Concise answer: zone the 80ft bed.", "stop")},
+			},
+			wantOut:   "Concise answer: zone the 80ft bed.",
+			wantBuf:   "Concise answer: zone the 80ft bed.",
+			wantReqs:  2,
+			wantRetry: true,
+		},
+		{
+			name: "reasoning-only first attempt and reasoning-only retry deliver fail-soft message",
+			responses: []queuedResponse{
+				{status: http.StatusOK, body: fakeSSEReasoningOnlyBody("Okay, the user wants irrigation advice. Let me work through the zones...", "length")},
+				{status: http.StatusOK, body: fakeSSEReasoningOnlyBody("Still thinking about the zones...", "length")},
+			},
+			wantOut:   DegenerationFallback,
+			wantReqs:  2,
+			wantRetry: true,
+		},
+		{
+			name:      "reasoning-only first attempt that stopped cleanly is not retried",
+			responses: []queuedResponse{{status: http.StatusOK, body: fakeSSEReasoningOnlyBody("Brief deliberation that produced nothing.", "stop")}},
+			wantOut:   "",
+			wantReqs:  1,
+		},
+		{
 			// The retry spent the halved cap in reasoning_content, which
 			// stays private for this classDeliberation model, so the stream
 			// yields "" with a nil error. Streaming callers set

@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ErrToolCallArgsTruncated is returned when an OpenAI-spec string-encoded
@@ -521,11 +522,6 @@ const (
 	degenerationMinCount  = 5 // occurrences of one 4-gram that mark a loop
 )
 
-var (
-	reDegenerationLead  = regexp.MustCompile(`^[^\p{L}\p{N}]+`)
-	reDegenerationTrail = regexp.MustCompile(`[^\p{L}\p{N}]+$`)
-)
-
 // hasDegenerationLoop reports whether text carries the signature of a
 // repetition loop: a word 4-gram occurring degenerationMinCount times in a
 // response long enough to matter. Callers gate this on
@@ -534,8 +530,9 @@ var (
 func hasDegenerationLoop(text string) bool {
 	words := make([]string, 0, 256)
 	for _, raw := range strings.Fields(text) {
-		w := reDegenerationLead.ReplaceAllString(strings.ToLower(raw), "")
-		w = reDegenerationTrail.ReplaceAllString(w, "")
+		w := strings.TrimFunc(strings.ToLower(raw), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+		})
 		if w != "" {
 			words = append(words, w)
 		}
@@ -556,11 +553,21 @@ func hasDegenerationLoop(text string) bool {
 }
 
 // degenerationTrapped reports whether a finished response is the incident
-// shape: truncated at the token cap AND carrying a repetition loop in its
-// content, with no pending tool work (a truncated tool-call payload is a
-// different failure that the tool loop already retries).
+// shape: truncated at the token cap with no pending tool work (a truncated
+// tool-call payload is a different failure that the tool loop already
+// retries) AND no usable answer to deliver — either a repetition loop in
+// the content, or no content at all because the model spent its whole
+// budget on reasoning that is kept private (the smart tier's
+// merge_reasoning_content_in_choices=false, or a classDeliberation model).
+// Both shapes are a thought that ran out of tokens, and both are worth the
+// bounded retry. A response that stopped cleanly is never trapped, and the
+// non-streaming path never reaches the empty case because chatOnce already
+// errors on empty content with no tool calls.
 func degenerationTrapped(finishReason, content string, toolCalls int) bool {
-	return finishReason == "length" && toolCalls == 0 && hasDegenerationLoop(content)
+	if finishReason != "length" || toolCalls != 0 {
+		return false
+	}
+	return strings.TrimSpace(content) == "" || hasDegenerationLoop(content)
 }
 
 // degenerationRetryParams derives the adjusted sampling parameters for the
@@ -638,10 +645,12 @@ func (c *Client) doLLMRequest(ctx context.Context, req openaiRequest) (*http.Res
 // Chat sends a conversation to the LLM and streams the response token by token.
 // The token callback is called for each streamed token; the full response is also returned.
 //
-// Degeneration guard: when the stream ends with finish_reason=="length" and
-// the content shows a repetition loop, the request is retried once with
-// reduced temperature and a shorter cap. If the retry also degenerates or
-// errors, the honest DegenerationFallback replaces the loop text. Callers
+// Degeneration guard: when the stream ends with finish_reason=="length"
+// and carries no usable answer — a repetition loop, or no content at all
+// because the budget went to private reasoning — the request is retried
+// once with reduced temperature and a shorter cap. If the retry also
+// degenerates, comes back empty, or errors, the honest DegenerationFallback
+// replaces the unusable text. Callers
 // that buffer onToken chunks receive the retry's chunks too; the agent's
 // drain logic emits the returned text verbatim whenever it differs from
 // the joined buffer, so a degenerate first attempt never reaches a
@@ -655,7 +664,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 		return full, nil
 	}
 	retryTemp, retryCap := degenerationRetryParams(temp, maxTokens)
-	log.Printf("[llm] degeneration guard: repetition loop in streamed response (model=%s) - retrying once (temp %.2f->%.2f, cap %d->%d)", c.model, temp, retryTemp, maxTokens, retryCap)
+	log.Printf("[llm] degeneration guard: streamed response truncated at the cap with no usable answer (model=%s) - retrying once (temp %.2f->%.2f, cap %d->%d)", c.model, temp, retryTemp, maxTokens, retryCap)
 	retryFull, retryFinish, retryErr := c.streamOnce(ctx, messages, retryTemp, retryCap, onToken)
 	switch {
 	case retryErr != nil:
