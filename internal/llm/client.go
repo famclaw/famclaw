@@ -500,52 +500,180 @@ type openaiDelta struct {
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
+// DegenerationFallback is the honest fail-soft reply delivered when a
+// response truncated at the token cap is detected as a repetition loop and
+// the bounded retry also degenerates or fails. It replaces the raw
+// scratchpad/loop text the model produced (butler incident 2026-08-22:
+// qwen3.6 leaked its thinking into content, looped on `I will propose the
+// "X".`, and hit the 4096-token cap).
+const DegenerationFallback = "I couldn't finish that thought - my reply got stuck repeating itself. Could you ask again, and I'll keep it brief?"
+
+// Degeneration-loop detection. A model that has fallen into a repetition
+// loop burns its whole token budget re-emitting the same short sequence;
+// the signature is a word 4-gram recurring many times in one long
+// response. Words are lowercased and stripped of surrounding punctuation
+// before counting, so loops that vary one word per iteration
+// ("propose the \"A\"", "propose the \"B\"") still expose their 4-word
+// skeleton ("i will propose the").
+const (
+	degenerationNGramSize = 4 // words per n-gram
+	degenerationMinWords  = 40
+	degenerationMinCount  = 5 // occurrences of one 4-gram that mark a loop
+)
+
+var (
+	reDegenerationLead  = regexp.MustCompile(`^[^\p{L}\p{N}]+`)
+	reDegenerationTrail = regexp.MustCompile(`[^\p{L}\p{N}]+$`)
+)
+
+// hasDegenerationLoop reports whether text carries the signature of a
+// repetition loop: a word 4-gram occurring degenerationMinCount times in a
+// response long enough to matter. Callers gate this on
+// finish_reason=="length" — a response that ran out of tokens — so a long
+// clean answer that merely reuses a phrase a few times is untouched.
+func hasDegenerationLoop(text string) bool {
+	words := make([]string, 0, 256)
+	for _, raw := range strings.Fields(text) {
+		w := reDegenerationLead.ReplaceAllString(strings.ToLower(raw), "")
+		w = reDegenerationTrail.ReplaceAllString(w, "")
+		if w != "" {
+			words = append(words, w)
+		}
+	}
+	n := degenerationNGramSize
+	if len(words) < degenerationMinWords || len(words) < n {
+		return false
+	}
+	seen := make(map[string]int, (len(words)-n+1)/2)
+	for i := 0; i+n <= len(words); i++ {
+		key := strings.Join(words[i:i+n], "\x00")
+		seen[key]++
+		if seen[key] >= degenerationMinCount {
+			return true
+		}
+	}
+	return false
+}
+
+// degenerationTrapped reports whether a finished response is the incident
+// shape: truncated at the token cap AND carrying a repetition loop in its
+// content, with no pending tool work (a truncated tool-call payload is a
+// different failure that the tool loop already retries).
+func degenerationTrapped(finishReason, content string, toolCalls int) bool {
+	return finishReason == "length" && toolCalls == 0 && hasDegenerationLoop(content)
+}
+
+// degenerationRetryParams derives the adjusted sampling parameters for the
+// single bounded retry: the temperature is halved (floored at 0.1 unless
+// the caller was already greedy) and the token cap is halved when it is
+// large enough that halving still leaves a usable reply — the cap is the
+// degeneration budget, so a shorter one makes loops cheaper and answers
+// more likely to finish. Small caps are kept so the retry is not tighter
+// than the original.
+func degenerationRetryParams(temp float64, maxTokens int) (float64, int) {
+	retryTemp := temp / 2
+	if retryTemp > 0 && retryTemp < 0.1 {
+		retryTemp = 0.1
+	}
+	retryCap := maxTokens
+	if maxTokens > 256 {
+		retryCap = maxTokens / 2
+	}
+	return retryTemp, retryCap
+}
+
+// chatResult pairs a finalized LLM message with the finish_reason the
+// server reported, so the degeneration guard can key on truncation.
+type chatResult struct {
+	msg          *Message
+	finishReason string
+}
+
+// doLLMRequest builds and executes one LLM HTTP request, returning the raw
+// response body for the caller to decode. Non-2xx responses are read in
+// full and surfaced as errors; the body is closed by the caller on 2xx.
+func (c *Client) doLLMRequest(ctx context.Context, req openaiRequest) (*http.Response, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling chat request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.chatEndpoint(), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating chat request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if err := c.setAuth(ctx, httpReq); err != nil {
+		return nil, err
+	}
+	// Use a configurable per-call timeout instead of the global client timeout
+	deadlineCtx, cancel := context.WithTimeout(ctx, c.defaultTimeout)
+	defer cancel()
+	httpReq = httpReq.WithContext(deadlineCtx)
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("LLM request failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			// Log the error for debugging while still returning the status error
+			log.Printf("LLM returned %d: failed to read error body: %v", resp.StatusCode, readErr)
+			return nil, fmt.Errorf("LLM returned %d: reading error body: %w", resp.StatusCode, readErr)
+		}
+		return nil, fmt.Errorf("LLM returned %d: %s", resp.StatusCode, string(b))
+	}
+	return resp, nil
+}
+
 // Chat sends a conversation to the LLM and streams the response token by token.
 // The token callback is called for each streamed token; the full response is also returned.
+//
+// Degeneration guard: when the stream ends with finish_reason=="length" and
+// the content shows a repetition loop, the request is retried once with
+// reduced temperature and a shorter cap. If the retry also degenerates or
+// errors, the honest DegenerationFallback replaces the loop text. Callers
+// that buffer onToken chunks receive the retry's chunks too; the agent's
+// drain logic emits the returned text verbatim whenever it differs from
+// the joined buffer, so a degenerate first attempt never reaches a
+// gateway.
 func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, maxTokens int, onToken func(string)) (string, error) {
-	req := openaiRequest{
+	full, finish, err := c.streamOnce(ctx, messages, temp, maxTokens, onToken)
+	if err != nil {
+		return "", err
+	}
+	if !degenerationTrapped(finish, full, 0) {
+		return full, nil
+	}
+	retryTemp, retryCap := degenerationRetryParams(temp, maxTokens)
+	log.Printf("[llm] degeneration guard: repetition loop in streamed response (model=%s) - retrying once (temp %.2f->%.2f, cap %d->%d)", c.model, temp, retryTemp, maxTokens, retryCap)
+	retryFull, retryFinish, retryErr := c.streamOnce(ctx, messages, retryTemp, retryCap, onToken)
+	if retryErr == nil && !degenerationTrapped(retryFinish, retryFull, 0) {
+		return retryFull, nil
+	}
+	if retryErr != nil {
+		log.Printf("[llm] degeneration guard: streamed retry failed: %v - delivering fail-soft message", retryErr)
+	} else {
+		log.Printf("[llm] degeneration guard: streamed retry still degenerating - delivering fail-soft message")
+	}
+	return DegenerationFallback, nil
+}
+
+// streamOnce performs one streaming LLM round trip. onToken may be nil; it
+// is invoked for each stripped answer chunk as it arrives.
+func (c *Client) streamOnce(ctx context.Context, messages []Message, temp float64, maxTokens int, onToken func(string)) (string, string, error) {
+	resp, err := c.doLLMRequest(ctx, openaiRequest{
 		Model:       c.model,
 		Messages:    messages,
 		Stream:      true,
 		Temperature: temp,
 		MaxTokens:   maxTokens,
-	}
-
-	body, err := json.Marshal(req)
+	})
 	if err != nil {
-		return "", fmt.Errorf("marshaling chat request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.chatEndpoint(), bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("creating chat request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if err := c.setAuth(ctx, httpReq); err != nil {
-		return "", err
-	}
-
-	// Use a configurable per-call timeout instead of the global client timeout
-	ctx, cancel := context.WithTimeout(ctx, c.defaultTimeout)
-	defer cancel()
-	httpReq = httpReq.WithContext(ctx)
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("LLM request failed: %w", err)
+		return "", "", err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			// Log the error for debugging while still returning the status error
-			log.Printf("LLM returned %d: failed to read error body: %v", resp.StatusCode, err)
-			return "", fmt.Errorf("LLM returned %d: reading error body: %w", resp.StatusCode, err)
-		}
-		return "", fmt.Errorf("LLM returned %d: %s", resp.StatusCode, string(b))
-	}
-
 	return c.parseSSEStream(resp.Body, onToken, c.reasoningFlag(ctx))
 }
 
@@ -569,11 +697,12 @@ func (c *Client) Chat(ctx context.Context, messages []Message, temp float64, max
 //   - false: keep the buffered reasoning private — the gateway says it is
 //     deliberation.
 //   - nil: decide by the model-aware policy (reasoningClassForModel).
-func (c *Client) parseSSEStream(body io.Reader, onToken func(string), mergeFlag *bool) (string, error) {
+func (c *Client) parseSSEStream(body io.Reader, onToken func(string), mergeFlag *bool) (string, string, error) {
 	var full strings.Builder
 	var carry string
 	var reasoningContent strings.Builder
 	var reasoning strings.Builder
+	var finishReason string
 	scanner := bufio.NewScanner(body)
 
 	for scanner.Scan() {
@@ -595,6 +724,9 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string), mergeFlag 
 		}
 
 		for _, choice := range chunk.Choices {
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				finishReason = *choice.FinishReason
+			}
 			// Answer content (delta.content) is the reply — stream it live,
 			// stripping control tokens that may be split across chunks.
 			if token := choice.Delta.Content; token != "" {
@@ -618,7 +750,7 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string), mergeFlag 
 	}
 
 	if err := scanner.Err(); err != nil {
-		return full.String(), err
+		return full.String(), finishReason, err
 	}
 
 	// Flush any remaining carry at stream end. A split token is now complete
@@ -636,7 +768,7 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string), mergeFlag 
 	// An answer already streamed live; any buffered reasoning was
 	// deliberation and is dropped (Content wins, matching mergeReasoning).
 	if strings.TrimSpace(full.String()) != "" {
-		return full.String(), nil
+		return full.String(), finishReason, nil
 	}
 
 	// No answer content: reconcile the buffered reasoning with the same
@@ -667,7 +799,7 @@ func (c *Client) parseSSEStream(body io.Reader, onToken func(string), mergeFlag 
 	if hoisted != "" && onToken != nil {
 		onToken(hoisted)
 	}
-	return hoisted, nil
+	return hoisted, finishReason, nil
 }
 
 // ChatMessage sends a conversation and returns the full response Message including tool calls.
@@ -683,48 +815,49 @@ func (c *Client) ChatWithTools(ctx context.Context, messages []Message, temp flo
 }
 
 // chatFull does a non-streaming chat call and returns the full Message with tool calls.
+//
+// Degeneration guard: a response truncated at the token cap that contains a
+// repetition loop is retried once with reduced temperature and a shorter
+// cap; if that also degenerates or fails, an honest fail-soft message is
+// returned instead of the loop text (nil error — the caller delivers it as
+// a normal reply, still gated by the output policy).
 func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64, maxTokens int, tools []ToolDef) (*Message, error) {
-	req := openaiRequest{
+	first, err := c.chatOnce(ctx, messages, temp, maxTokens, tools)
+	if err != nil {
+		return nil, err
+	}
+	if !degenerationTrapped(first.finishReason, first.msg.Content, len(first.msg.ToolCalls)) {
+		return first.msg, nil
+	}
+	retryTemp, retryCap := degenerationRetryParams(temp, maxTokens)
+	log.Printf("[llm] degeneration guard: repetition loop in truncated response (model=%s) - retrying once (temp %.2f->%.2f, cap %d->%d)", c.model, temp, retryTemp, maxTokens, retryCap)
+	retry, retryErr := c.chatOnce(ctx, messages, retryTemp, retryCap, tools)
+	if retryErr == nil && !degenerationTrapped(retry.finishReason, retry.msg.Content, len(retry.msg.ToolCalls)) {
+		return retry.msg, nil
+	}
+	if retryErr != nil {
+		log.Printf("[llm] degeneration guard: retry failed: %v - delivering fail-soft message", retryErr)
+	} else {
+		log.Printf("[llm] degeneration guard: retry still degenerating - delivering fail-soft message")
+	}
+	return &Message{Role: "assistant", Content: DegenerationFallback}, nil
+}
+
+// chatOnce performs one non-streaming LLM round trip and finalizes the
+// response: reasoning-field reconciliation, inline tool-call salvage,
+// control-token stripping, and the empty-reply check.
+func (c *Client) chatOnce(ctx context.Context, messages []Message, temp float64, maxTokens int, tools []ToolDef) (*chatResult, error) {
+	resp, err := c.doLLMRequest(ctx, openaiRequest{
 		Model:       c.model,
 		Messages:    messages,
-		Stream:      false,
 		Temperature: temp,
 		MaxTokens:   maxTokens,
 		Tools:       tools,
-	}
-
-	body, err := json.Marshal(req)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("marshaling chat request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.chatEndpoint(), bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating chat request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if err := c.setAuth(ctx, httpReq); err != nil {
 		return nil, err
 	}
-
-	// Use a configurable per-call timeout instead of the global client timeout
-	ctx, cancel := context.WithTimeout(ctx, c.defaultTimeout)
-	defer cancel()
-	httpReq = httpReq.WithContext(ctx)
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("LLM request failed: %w", err)
-	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("LLM returned %d: reading error body: %w", resp.StatusCode, err)
-		}
-		return nil, fmt.Errorf("LLM returned %d: %s", resp.StatusCode, string(b))
-	}
 
 	var result openaiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -757,7 +890,7 @@ func (c *Client) chatFull(ctx context.Context, messages []Message, temp float64,
 	if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
 		return nil, fmt.Errorf("LLM produced an empty response with no tool calls")
 	}
-	return msg, nil
+	return &chatResult{msg: msg, finishReason: result.Choices[0].FinishReason}, nil
 }
 
 // isIncompleteJSON identifies truncation-style decode errors from
