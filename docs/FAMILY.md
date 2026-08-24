@@ -85,6 +85,17 @@ On its own initiative — not just in reply to one person — FamClaw can send a
 
 The feature is powered by the `builtin__send_message` tool.
 
+## The assistant can send you files
+
+When the assistant makes a file for you — a document, an image, anything it writes to the conversation's workspace — it can attach and send it right back into your chat.
+
+- **Same conversation only.** The file goes to the channel or DM you're talking in. There is no way for the assistant to send a file to a different person (that's what the parent-gated `send_message` tool is for, and it stays text).
+- **What it may send.** Only files that live in your conversation's workspace — the same place `file_read` and friends are confined to. Files outside that area cannot be addressed, and anything over 25 MB (Discord's bot limit) is refused with a clear message.
+- **Audited.** Every sent file is recorded in the audit log — what was sent, to whom, and its size. The file's content is not duplicated into the log.
+- **Honest failures.** If the platform can't take a file (for example, Telegram doesn't support it yet), the assistant says so instead of pretending it delivered.
+
+The feature is powered by the `builtin__send_file` tool.
+
 ## Topics that are always blocked
 
 Some topics are never allowed, even with your approval:
