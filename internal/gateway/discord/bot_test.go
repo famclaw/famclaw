@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/famclaw/famclaw/internal/gateway"
 )
 
 func TestDownloadFile(t *testing.T) {
@@ -411,5 +414,164 @@ func TestSendOpensDMChannel(t *testing.T) {
 	}
 	if len(sentChannelIDs) != 1 {
 		t.Errorf("expected 1 total send, got %d", len(sentChannelIDs))
+	}
+}
+
+// capturedFile holds one multipart file upload as observed by the test
+// server: filename, raw content, and the payload JSON (caption).
+type capturedFile struct {
+	channelID string
+	filename  string
+	content   []byte
+	payload   string
+}
+
+// newSendFileTestServer stands up an httptest server capturing file uploads
+// and returns a Bot whose discordgo session points at it, plus the capture.
+func newSendFileTestServer(t *testing.T, captures *[]capturedFile, mu *sync.Mutex) (*Bot, *httptest.Server) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/dm") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"dm-channel-456","type":1}`))
+			return
+		}
+		if !strings.Contains(r.URL.Path, "/channels/") || !strings.HasSuffix(r.URL.Path, "/messages") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		// Parse the multipart upload: discordgo sends payload_json plus
+		// files[0] (filename in the part header).
+		if err := r.ParseMultipartForm(64 << 20); err != nil {
+			http.Error(w, "multipart parse: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cap := capturedFile{channelID: strings.Trim(strings.TrimSuffix(r.URL.Path, "/messages"), "/")}
+		if val := r.MultipartForm.Value["payload_json"]; len(val) > 0 {
+			var payload struct {
+				Content string `json:"content"`
+			}
+			_ = json.Unmarshal([]byte(val[0]), &payload)
+			cap.payload = payload.Content
+		}
+		if fh := r.MultipartForm.File["files[0]"]; len(fh) == 1 {
+			cap.filename = fh[0].Filename
+			f, perr := fh[0].Open()
+			if perr == nil {
+				cap.content, _ = io.ReadAll(f)
+				_ = f.Close()
+			}
+		}
+		*captures = append(*captures, cap)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg-1"}`))
+	}))
+
+	origUserChannels := discordgo.EndpointUserChannels
+	origChannelMessages := discordgo.EndpointChannelMessages
+	discordgo.EndpointUserChannels = func(string) string { return server.URL + "/dm" }
+	discordgo.EndpointChannelMessages = func(cID string) string {
+		return server.URL + "/channels/" + cID + "/messages"
+	}
+	t.Cleanup(func() {
+		discordgo.EndpointUserChannels = origUserChannels
+		discordgo.EndpointChannelMessages = origChannelMessages
+		server.Close()
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	session.Client = &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+	return &Bot{session: session}, server
+}
+
+// TestSendFile is the regression test for the "butler cannot send files"
+// defect: the outbound path must deliver the attachment to the requester's
+// current conversation — the group channel when GroupID is set, the DM
+// channel otherwise — with the file bytes and caption intact.
+func TestSendFile(t *testing.T) {
+	fileBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01}
+
+	tests := []struct {
+		name          string
+		dest          gateway.OutboundDestination
+		file          gateway.OutboundFile
+		caption       string
+		wantErr       string
+		wantChannelID string
+		wantNoHTTP    bool
+	}{
+		{
+			name:          "group chat posts to the conversation channel",
+			dest:          gateway.OutboundDestination{ExternalID: "user-9", GroupID: "channel-77"},
+			file:          gateway.OutboundFile{Name: "dino.png", Data: fileBytes},
+			caption:       "here is your dinosaur",
+			wantChannelID: "channel-77",
+		},
+		{
+			name:          "dm opens a DM channel then posts there",
+			dest:          gateway.OutboundDestination{ExternalID: "user-9"},
+			file:          gateway.OutboundFile{Name: "report.md", Data: []byte("# report")},
+			caption:       "the report you asked for",
+			wantChannelID: "dm-channel-456",
+		},
+		{
+			name:       "empty filename rejected without HTTP",
+			dest:       gateway.OutboundDestination{ExternalID: "user-9"},
+			file:       gateway.OutboundFile{Name: "", Data: fileBytes},
+			wantErr:    "invalid discord filename",
+			wantNoHTTP: true,
+		},
+		{
+			name:       "filename with path separator rejected without HTTP",
+			dest:       gateway.OutboundDestination{ExternalID: "user-9"},
+			file:       gateway.OutboundFile{Name: "a/b.png", Data: fileBytes},
+			wantErr:    "invalid discord filename",
+			wantNoHTTP: true,
+		},
+		{
+			name:       "filename over 100 bytes rejected without HTTP",
+			dest:       gateway.OutboundDestination{ExternalID: "user-9"},
+			file:       gateway.OutboundFile{Name: strings.Repeat("x", 101) + ".png", Data: fileBytes},
+			wantErr:    "invalid discord filename",
+			wantNoHTTP: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var captures []capturedFile
+			b, _ := newSendFileTestServer(t, &captures, &mu)
+			err := b.SendFile(context.Background(), tc.dest, tc.file, tc.caption)
+			if tc.wantErr != "" {
+				assert.Error(t, err)
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %q, want containing %q", err, tc.wantErr)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+			if tc.wantNoHTTP {
+				mu.Lock()
+				defer mu.Unlock()
+				assert.Empty(t, captures, "no HTTP call expected for invalid filenames")
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Len(t, captures, 1)
+			cap := captures[0]
+			assert.Equal(t, tc.wantChannelID, cap.channelID)
+			assert.Equal(t, filepath.Base(tc.file.Name), cap.filename)
+			assert.Equal(t, tc.file.Data, cap.content)
+			assert.Equal(t, tc.caption, cap.payload)
+		})
 	}
 }

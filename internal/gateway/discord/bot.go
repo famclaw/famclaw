@@ -3,6 +3,7 @@ package discord
 
 import (
 	"context"
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -43,6 +44,9 @@ var mimeToExtensions = map[string][]string{
 // maxAudioBytes is the maximum size in bytes for an audio attachment
 // (25MB — matches the transcription max_bytes default).
 const maxAudioBytes = 25 * 1024 * 1024
+
+// maxOutboundFileNameBytes is Discord's limit on upload filenames.
+const maxOutboundFileNameBytes = 100
 
 // validateMIMEExtension checks that the file extension matches the MIME type.
 func validateMIMEExtension(mimeType string, fileName string) error {
@@ -316,6 +320,36 @@ func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
 		if err := SendChunked(b.session, dmChannelID, text); err != nil {
 			return fmt.Errorf("sending discord message to %s: %w", channelID, err)
 		}
+	}
+	return nil
+}
+
+// SendFile delivers a file attachment to the requester's current
+// conversation. In a group chat (dest.GroupID set) it posts to that
+// channel — the bot is already a member there since the user messaged it
+// in that channel. In a DM it opens or reuses the user's DM channel
+// (dmChannelID) and posts there, mirroring Send.
+func (b *Bot) SendFile(ctx context.Context, dest gateway.OutboundDestination, file gateway.OutboundFile, caption string) error {
+	if b.session == nil {
+		return fmt.Errorf("discord session not initialized")
+	}
+	name := filepath.Base(file.Name)
+	if name == "" || name == "." || name == ".." || len(name) > maxOutboundFileNameBytes {
+		return fmt.Errorf("invalid discord filename %q", file.Name)
+	}
+	channelID := dest.GroupID
+	if channelID == "" {
+		dm, err := b.dmChannelID(dest.ExternalID)
+		if err != nil {
+			return fmt.Errorf("opening discord DM for %s: %w", dest.ExternalID, err)
+		}
+		channelID = dm
+	}
+	if _, err := b.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content: caption,
+		File:    &discordgo.File{Name: name, Reader: bytes.NewReader(file.Data)},
+	}, discordgo.WithContext(ctx)); err != nil {
+		return fmt.Errorf("sending discord file to %s: %w", channelID, notify.RedactWebhookURLInError(err))
 	}
 	return nil
 }

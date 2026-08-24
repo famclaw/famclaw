@@ -93,6 +93,19 @@ test_child_file_write_json_allowed if {
     tool_policy.allow with input as child_input_no_args("file_write") with input.args as {"path": "data.json", "content": "{\"key\": \"value\"}"}
 }
 
+# ── 2b. send_file is allowed for every role ─────────────────────────────────
+# The file is delivered to the requester's own channel (the tool has no
+# destination argument) and is sandbox-confined + size-capped by the tool
+# itself, so it inherits the general allow rules for both roles.
+
+test_parent_send_file_allowed if {
+    tool_policy.allow with input as parent_input("send_file")
+}
+
+test_child_send_file_allowed if {
+    tool_policy.allow with input as child_input_no_args("send_file")
+}
+
 # ── 3. file_write with executable content → request_approval for children ───
 
 # Shebang in content

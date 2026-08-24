@@ -30,6 +30,7 @@ import (
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/credstore"
 	"github.com/famclaw/famclaw/internal/familystate"
+	"github.com/famclaw/famclaw/internal/filesend"
 	"github.com/famclaw/famclaw/internal/filetool"
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/gateway/discord"
@@ -459,6 +460,9 @@ func main() {
 	// gateways are built below and captured by the notifier closure to deliver
 	// approval requests through the parent's linked gateway.
 	senderRegistry := make(map[string]gateway.Sender)
+	// fileSenderRegistry maps gateway name → outbound FileSender, for the
+	// send_file tool to deliver files into the requester's own conversation.
+	fileSenderRegistry := make(map[string]gateway.FileSender)
 
 	// Notifications — approval requests are delivered through the parent's
 	// linked gateway accounts (Telegram, Discord) via the senderRegistry.
@@ -691,6 +695,11 @@ func main() {
 		filetool.FileListTool(),
 	)
 	registered = append(registered, "file_read", "file_write", "file_stat", "file_list")
+	// File delivery (send_file) — always registered; OPA tool_policy gates
+	// the call and the gateway must implement gateway.FileSender (Discord
+	// today) for the tool to deliver anything.
+	builtinTools = append(builtinTools, filesend.Tool())
+	registered = append(registered, "send_file")
 	var browserPool *browser.Pool
 	if cfg.Tools.Browser.Enabled {
 		// Pool owns its idle-sweeper goroutine; pass Background and rely on
@@ -764,20 +773,21 @@ func main() {
 			}
 		}
 		a, err := agent.NewAgent(user, cfg, llmClient, evaluator, clf, db, agent.AgentDeps{
-			Pool:           mcpPool,
-			Skills:         enabledSkills,
-			Quarantine:     quarantine,
-			Scanner:        hbScanner,
-			Scheduler:      agentScheduler,
-			BuiltinTools:   builtinTools,
-			Gateway:        msgCtx.Gateway,
-			Cache:          toolCache,
-			BrowserPool:    browserPool,
-			MsgContext:     msgCtx,
-			SenderRegistry: senderRegistry,
-			Transcriber:    voiceTranscriber,
-			ConfigPath:     *cfgPath,
-			LifetimeCtx:    gwCtx,
+			Pool:               mcpPool,
+			Skills:             enabledSkills,
+			Quarantine:         quarantine,
+			Scanner:            hbScanner,
+			Scheduler:          agentScheduler,
+			BuiltinTools:       builtinTools,
+			Gateway:            msgCtx.Gateway,
+			Cache:              toolCache,
+			BrowserPool:        browserPool,
+			MsgContext:         msgCtx,
+			SenderRegistry:     senderRegistry,
+			FileSenderRegistry: fileSenderRegistry,
+			Transcriber:        voiceTranscriber,
+			ConfigPath:         *cfgPath,
+			LifetimeCtx:        gwCtx,
 		})
 		if err != nil {
 			return "", err
@@ -810,6 +820,9 @@ func main() {
 		for _, g := range gateways {
 			if s, ok := g.(gateway.Sender); ok {
 				senderRegistry[g.Name()] = s
+			}
+			if fs, ok := g.(gateway.FileSender); ok {
+				fileSenderRegistry[g.Name()] = fs
 			}
 		}
 		stopGateways = gateway.StartAll(gwCtx, gateways, router.Handle)

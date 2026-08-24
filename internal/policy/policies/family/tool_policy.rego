@@ -32,7 +32,13 @@ action := "allow" if {
 }
 
 # Children may call tools not explicitly blocked for their role/age.
-# file_read, file_stat, file_list are permitted for children. Only
+# file_read, file_stat, file_list are permitted for children. send_file is
+# permitted too: it delivers a file from the conversation sandbox to the
+# requester's own channel (no cross-user targeting — the tool has no
+# destination argument), so it is content-neutral for the user; the
+# sandbox containment and 25 MiB size cap are enforced by the tool itself
+# (internal/filesend). Pinned by tool_policy_test.rego.
+# Only
 # file_write whose content or target looks executable routes to the
 # approval flow (see below) — the general allow rule excludes it via
 # _needs_executable_approval so the two rule sets never overlap.
