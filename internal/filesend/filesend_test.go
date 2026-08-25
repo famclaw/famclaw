@@ -76,14 +76,29 @@ func TestConfinePath(t *testing.T) {
 			t.Fatalf("write fixture: %v", err)
 		}
 	}
+	// Sibling-prefix fixture: a directory whose name has the sandbox root's
+	// base name as a string prefix ("001" vs "0012"). A naive
+	// strings.HasPrefix containment check would wrongly accept paths under
+	// it; the filepath.Rel boundary check must reject them. The sibling
+	// file must exist so the rejection is attributable to the Rel check
+	// and not to EvalSymlinks failing on a missing path.
+	sibling := filepath.Join(filepath.Dir(root), filepath.Base(root)+"2")
+	if err := os.MkdirAll(sibling, 0o700); err != nil {
+		t.Fatalf("mkdir sibling: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "evil"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write sibling fixture: %v", err)
+	}
+
 	outside := t.TempDir()
 
 	tests := []struct {
-		name       string
-		root       string
-		path       string
-		wantErr    bool
-		wantSuffix string
+		name        string
+		root        string
+		path        string
+		wantErr     bool
+		wantErrText string
+		wantSuffix  string
 	}{
 		{name: "relative inside root", root: root, path: "report.md", wantSuffix: "report.md"},
 		{name: "relative in subdir", root: root, path: "sub/nested.txt", wantSuffix: "sub/nested.txt"},
@@ -93,7 +108,7 @@ func TestConfinePath(t *testing.T) {
 		{name: "absolute inside", root: root, path: filepath.Join(sub, "ok.txt"), wantSuffix: "ok.txt"},
 		{name: "empty root", root: "", path: "report.md", wantErr: true},
 		{name: "nonexistent relative", root: root, path: "nope.md", wantErr: true},
-		{name: "sibling prefix trick", root: root, path: "../" + filepath.Base(root) + "2/evil", wantErr: true},
+		{name: "sibling prefix trick", root: root, path: "../" + filepath.Base(root) + "2/evil", wantErr: true, wantErrText: "escapes sandbox root"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,6 +116,9 @@ func TestConfinePath(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("ConfinePath(%q, %q) = %q, want error", tc.root, tc.path, got)
+				}
+				if tc.wantErrText != "" && !strings.Contains(err.Error(), tc.wantErrText) {
+					t.Fatalf("ConfinePath error = %q, want attributable to %q (not a missing-file lstat)", err, tc.wantErrText)
 				}
 				return
 			}

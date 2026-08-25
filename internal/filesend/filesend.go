@@ -131,7 +131,7 @@ func Handle(ctx context.Context, db DB, fileSenders map[string]gateway.FileSende
 		auditArgs := map[string]any{
 			"path":    path,
 			"name":    name,
-			"bytes":   fi.Size(),
+			"bytes":   len(data),
 			"caption": caption,
 		}
 		if b, jerr := json.Marshal(auditArgs); jerr == nil {
@@ -142,7 +142,10 @@ func Handle(ctx context.Context, db DB, fileSenders map[string]gateway.FileSende
 			}
 		}
 	}
-	return fmt.Sprintf("sent %q (%d bytes) to the user", name, fi.Size()), nil
+	// Report the byte count of what was actually delivered (data may have
+	// changed between the stat above and the read; fi.Size() would be the
+	// stat-time value).
+	return fmt.Sprintf("sent %q (%d bytes) to the user", name, len(data)), nil
 }
 
 // ConfinePath resolves path against the conversation sandbox root and
