@@ -83,8 +83,9 @@ var ErrNoFileSenderForGateway = errors.New("file delivery is not available on th
 // for the current gateway. On success it records an audit entry and returns
 // a confirmation string for the LLM transcript.
 //
-// auditGateway is the gateway recorded in the audit log (may differ from
-// deliveryGateway for web-originated conversations). sandboxRoot is the
+// auditGateway is the gateway recorded in the audit log (gatewayForSave():
+// the message context's gateway, or "unknown" when the context carries none —
+// in which case delivery fails before any audit). sandboxRoot is the
 // conversation sandbox root ("" disables the sandbox — the call fails).
 func Handle(ctx context.Context, db DB, fileSenders map[string]gateway.FileSender, actor, auditGateway, deliveryGateway string, dest gateway.OutboundDestination, sandboxRoot, path, caption string) (string, error) {
 	if strings.TrimSpace(path) == "" {
@@ -117,6 +118,12 @@ func Handle(ctx context.Context, db DB, fileSenders map[string]gateway.FileSende
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return "", fmt.Errorf("reading file: %w", err)
+	}
+	// Re-check the cap on the bytes actually delivered: the sandbox is
+	// shared with concurrent tool calls, subagents, and MCP subprocesses,
+	// so a file can grow past the cap between the stat above and this read.
+	if len(data) > MaxFileBytes {
+		return "", fmt.Errorf("send_file: %q is %d bytes, above the %d byte delivery limit", name, len(data), MaxFileBytes)
 	}
 
 	deadlineCtx, cancel := context.WithTimeout(ctx, SendTimeout)

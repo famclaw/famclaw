@@ -165,6 +165,15 @@ func TestHandle(t *testing.T) {
 	}
 
 	dirRoot, _ := newSandbox(t, "docs/README.txt", "x") // dirRoot has a docs/ dir
+
+	// Boundary fixture: a file of exactly MaxFileBytes passes the cap check
+	// (">" rejects, "==" delivers) — pins the limit on both the stat-time
+	// check and the post-read check on the delivered bytes.
+	exactRoot := t.TempDir()
+	exact := make([]byte, MaxFileBytes)
+	if err := os.WriteFile(filepath.Join(exactRoot, "exact.bin"), exact, 0o600); err != nil {
+		t.Fatalf("write exact-size fixture: %v", err)
+	}
 	groupDest := gateway.OutboundDestination{ExternalID: "user-9", GroupID: "chan-1"}
 	dmDest := gateway.OutboundDestination{ExternalID: "user-9"}
 
@@ -250,6 +259,15 @@ func TestHandle(t *testing.T) {
 			path:        "big.bin",
 			wantErr:     "above the",
 			wantCalls:   0,
+		},
+		{
+			name:        "file of exactly the cap is delivered",
+			deliveryGw:  "discord",
+			dest:        groupDest,
+			sandboxRoot: exactRoot,
+			path:        "exact.bin",
+			wantCalls:   1,
+			wantName:    "exact.bin",
 		},
 		{
 			name:        "no sender for gateway",
