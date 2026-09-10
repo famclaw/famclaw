@@ -161,6 +161,8 @@ make build
 
 Each family member's gateway account maps to their profile. Emma's Telegram account → Emma's age policy. Parent's Discord account → parent access.
 
+**File delivery.** When the assistant produces a file in the conversation workspace (e.g. via `file_write`), it can attach and send it back into the same conversation through the `send_file` built-in tool — currently on Discord (the group channel or DM the user is in). Files are confined to the conversation sandbox, capped at 25 MiB (Discord's bot upload limit), and every delivery is audit-logged. Which roles may call the tool is decided by OPA `tool_policy`; on gateways without file support yet, the tool returns an honest "not available" error instead of silently dropping the request.
+
 ---
 
 ## Policy system

@@ -29,6 +29,7 @@ import (
 	"github.com/famclaw/famclaw/internal/compress"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
+	"github.com/famclaw/famclaw/internal/filesend"
 	"github.com/famclaw/famclaw/internal/gateway"
 	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/llm"
@@ -111,9 +112,11 @@ type Agent struct {
 	transcriber          Transcriber
 	effectiveSandboxRoot string
 
-	// senderRegistry maps gateway names to their respective sender implementations.
-	senderRegistry   map[string]gateway.Sender
-	senderRegistryMu sync.RWMutex // protects senderRegistry access
+	// senderRegistry maps gateway names to their respective sender implementations;
+	// fileSenderRegistry maps gateway names to file-delivery implementations.
+	senderRegistry     map[string]gateway.Sender
+	fileSenderRegistry map[string]gateway.FileSender
+	senderRegistryMu   sync.RWMutex // protects senderRegistry and fileSenderRegistry access
 
 	// nowFn returns the current time. Defaults to time.Now; injectable in tests
 	// to make research-status timestamps (incl. timeout recording) deterministic.
@@ -153,19 +156,20 @@ const voiceUnavailableMsg = gateway.VoiceUnavailableMsg
 // safe to leave nil — the Agent degrades gracefully (no MCP tools,
 // no skills, no scanning, no subagents).
 type AgentDeps struct {
-	Pool           *mcp.Pool
-	Skills         []*skillbridge.Skill
-	Quarantine     *skillbridge.Quarantine
-	Scanner        skillbridge.Scanner
-	Scheduler      *subagent.Scheduler
-	BuiltinTools   []agentcore.Tool
-	Gateway        string                    // gateway name (telegram, discord, web, etc.) for audit logs
-	Cache          *toolcache.Cache          // tool-result spillover cache; nil disables spillover (legacy inline path)
-	BrowserPool    *browser.Pool             // backs builtin__browser_*; nil disables browser tools
-	MsgContext     gateway.MsgContext        // gateway-specific context for outbound tools (reminders, etc.)
-	SenderRegistry map[string]gateway.Sender // map of gateway name (e.g., "telegram", "discord") to Sender implementation
-	Transcriber    Transcriber               // transcribes audio attachments into text; nil disables voice transcription
-	ConfigPath     string                    // on-disk path to config.yaml for mcp_add persistence
+	Pool               *mcp.Pool
+	Skills             []*skillbridge.Skill
+	Quarantine         *skillbridge.Quarantine
+	Scanner            skillbridge.Scanner
+	Scheduler          *subagent.Scheduler
+	BuiltinTools       []agentcore.Tool
+	Gateway            string                        // gateway name (telegram, discord, web, etc.) for audit logs
+	Cache              *toolcache.Cache              // tool-result spillover cache; nil disables spillover (legacy inline path)
+	BrowserPool        *browser.Pool                 // backs builtin__browser_*; nil disables browser tools
+	MsgContext         gateway.MsgContext            // gateway-specific context for outbound tools (reminders, etc.)
+	SenderRegistry     map[string]gateway.Sender     // map of gateway name (e.g., "telegram", "discord") to Sender implementation
+	FileSenderRegistry map[string]gateway.FileSender // map of gateway name to FileSender (file delivery; Discord today)
+	Transcriber        Transcriber                   // transcribes audio attachments into text; nil disables voice transcription
+	ConfigPath         string                        // on-disk path to config.yaml for mcp_add persistence
 
 	// ReasoningCache supplies the gateway's per-model
 	// merge_reasoning_content_in_choices to LLM clients this agent builds.
@@ -359,6 +363,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		transcriber:          deps.Transcriber,
 		effectiveSandboxRoot: effectiveSandboxRoot,
 		senderRegistry:       deps.SenderRegistry,
+		fileSenderRegistry:   deps.FileSenderRegistry,
 		nowFn:                deps.NowFn,
 		configPath:           deps.ConfigPath,
 		lifetimeCtx:          deps.LifetimeCtx,
@@ -797,6 +802,23 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			}
 			a.senderRegistryMu.RUnlock()
 			return sendmsg.Handle(ctx, a.db, a.cfg, senders, a.user.Name, a.gatewayForSave(), to, msg)
+		case "builtin__send_file":
+			path, _ := args["path"].(string)
+			caption, _ := args["caption"].(string)
+			a.senderRegistryMu.RLock()
+			fileSenders := make(map[string]gateway.FileSender, len(a.fileSenderRegistry))
+			for k, v := range a.fileSenderRegistry {
+				fileSenders[k] = v
+			}
+			a.senderRegistryMu.RUnlock()
+			var auditDB filesend.DB
+			if a.db != nil {
+				auditDB = a.db
+			}
+			return filesend.Handle(ctx, auditDB, fileSenders, a.user.Name, a.gatewayForSave(), a.msgContext.Gateway, gateway.OutboundDestination{
+				ExternalID: a.msgContext.ExternalID,
+				GroupID:    a.msgContext.GroupID,
+			}, a.effectiveSandboxRoot, path, caption)
 		case "builtin__mcp_list":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath}
 			return admin.HandleMCPList(ctx, deps, args)
@@ -819,34 +841,9 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 }
 
 func (a *Agent) confinePath(path string) (string, error) {
-	if a.effectiveSandboxRoot == "" {
-		return "", fmt.Errorf("sandbox root not configured")
-	}
-	sandboxRoot := a.effectiveSandboxRoot
-	var err error
-	// Ensure sandbox root is absolute and evaluated for symlinks
-	if sandboxRoot, err = filepath.EvalSymlinks(filepath.Clean(sandboxRoot)); err != nil {
-		return "", fmt.Errorf("invalid sandbox root: %w", err)
-	}
-	var absPath string
-	if filepath.IsAbs(path) {
-		if absPath, err = filepath.EvalSymlinks(filepath.Clean(path)); err != nil {
-			return "", fmt.Errorf("failed to clean path: %w", err)
-		}
-	} else {
-		if absPath, err = filepath.EvalSymlinks(filepath.Clean(filepath.Join(sandboxRoot, path))); err != nil {
-			return "", fmt.Errorf("failed to join and clean path: %w", err)
-		}
-	}
-	// Check that the path is within the sandbox root using filepath.Rel to avoid string prefix issues.
-	rel, err := filepath.Rel(sandboxRoot, absPath)
-	if err != nil {
-		return "", fmt.Errorf("computing relative path: %w", err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path %q escapes sandbox root %q", path, sandboxRoot)
-	}
-	return absPath, nil
+	// Delegates to the shared containment rule (also used by send_file) so
+	// every conversation-file tool enforces identical escape checks.
+	return filesend.ConfinePath(a.effectiveSandboxRoot, path)
 }
 
 // Subagent timeout defaults / caps (in seconds).

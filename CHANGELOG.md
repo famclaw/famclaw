@@ -3,6 +3,11 @@
 All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+### Added
+- **The assistant can send files back to users on Discord.** A new built-in tool, `send_file`, delivers a file from the current conversation's workspace into the user's own chat (group channel or DM). This closes the outbound half of the file story: inbound attachments have always landed in the per-conversation sandbox, but `gateway.Reply` carried text only, so a file the assistant produced (via `file_write` or an MCP tool) could never reach the user. The tool confines the path to the conversation sandbox (sharing the exact containment rule of `file_read`), caps delivery at 25 MiB (Discord's default bot upload limit), rejects non-regular files and separator-bearing filenames, times out a stuck gateway after 30 s, and audit-logs every delivery (path, name, size, caption — never content). OPA `tool_policy` pins the allow for both roles (the file goes to the requester's own channel; there is no cross-user targeting), and on gateways without a file sender the tool fails honestly with "file delivery is not available on this gateway yet".
+
 ## v0.13.0 — 2026-08-21
 
 ### Changed

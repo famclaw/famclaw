@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/famclaw/famclaw/internal/gateway"
 )
 
 func TestDownloadFile(t *testing.T) {
@@ -411,5 +414,271 @@ func TestSendOpensDMChannel(t *testing.T) {
 	}
 	if len(sentChannelIDs) != 1 {
 		t.Errorf("expected 1 total send, got %d", len(sentChannelIDs))
+	}
+}
+
+// capturedFile holds one multipart file upload as observed by the test
+// server: filename, raw content, and the payload JSON (caption).
+type capturedFile struct {
+	channelID string
+	filename  string
+	content   []byte
+	payload   string
+}
+
+// newSendFileTestServer stands up an httptest server capturing file uploads
+// and returns a Bot whose discordgo session points at it, plus the capture.
+func newSendFileTestServer(t *testing.T, captures *[]capturedFile, mu *sync.Mutex) (*Bot, *httptest.Server) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/dm") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"dm-channel-456","type":1}`))
+			return
+		}
+		if !strings.Contains(r.URL.Path, "/channels/") || !strings.HasSuffix(r.URL.Path, "/messages") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		// Parse the multipart upload: discordgo sends payload_json plus
+		// files[0] (filename in the part header).
+		if err := r.ParseMultipartForm(64 << 20); err != nil {
+			http.Error(w, "multipart parse: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		seg := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		// path: /channels/{channelID}/messages
+		cap := capturedFile{channelID: seg[1]}
+		if val := r.MultipartForm.Value["payload_json"]; len(val) > 0 {
+			var payload struct {
+				Content string `json:"content"`
+			}
+			_ = json.Unmarshal([]byte(val[0]), &payload)
+			cap.payload = payload.Content
+		}
+		if fh := r.MultipartForm.File["files[0]"]; len(fh) == 1 {
+			cap.filename = fh[0].Filename
+			f, perr := fh[0].Open()
+			if perr == nil {
+				cap.content, _ = io.ReadAll(f)
+				_ = f.Close()
+			}
+		}
+		*captures = append(*captures, cap)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg-1"}`))
+	}))
+
+	origUserChannels := discordgo.EndpointUserChannels
+	origChannelMessages := discordgo.EndpointChannelMessages
+	discordgo.EndpointUserChannels = func(string) string { return server.URL + "/dm" }
+	discordgo.EndpointChannelMessages = func(cID string) string {
+		return server.URL + "/channels/" + cID + "/messages"
+	}
+	t.Cleanup(func() {
+		discordgo.EndpointUserChannels = origUserChannels
+		discordgo.EndpointChannelMessages = origChannelMessages
+		server.Close()
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	session.Client = &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+	return &Bot{session: session}, server
+}
+
+// TestSendFile is the regression test for the "butler cannot send files"
+// defect: the outbound path must deliver the attachment to the requester's
+// current conversation — the group channel when GroupID is set, the DM
+// channel otherwise — with the file bytes and caption intact.
+func TestSendFile(t *testing.T) {
+	fileBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01}
+
+	tests := []struct {
+		name          string
+		dest          gateway.OutboundDestination
+		file          gateway.OutboundFile
+		caption       string
+		wantErr       string
+		wantChannelID string
+		wantNoHTTP    bool
+	}{
+		{
+			name:          "group chat posts to the conversation channel",
+			dest:          gateway.OutboundDestination{ExternalID: "user-9", GroupID: "channel-77"},
+			file:          gateway.OutboundFile{Name: "dino.png", Data: fileBytes},
+			caption:       "here is your dinosaur",
+			wantChannelID: "channel-77",
+		},
+		{
+			name:          "dm opens a DM channel then posts there",
+			dest:          gateway.OutboundDestination{ExternalID: "user-9"},
+			file:          gateway.OutboundFile{Name: "report.md", Data: []byte("# report")},
+			caption:       "the report you asked for",
+			wantChannelID: "dm-channel-456",
+		},
+		{
+			name:       "empty filename rejected without HTTP",
+			dest:       gateway.OutboundDestination{ExternalID: "user-9"},
+			file:       gateway.OutboundFile{Name: "", Data: fileBytes},
+			wantErr:    "invalid discord filename",
+			wantNoHTTP: true,
+		},
+		{
+			name:       "filename with path separator rejected without HTTP",
+			dest:       gateway.OutboundDestination{ExternalID: "user-9"},
+			file:       gateway.OutboundFile{Name: "a/b.png", Data: fileBytes},
+			wantErr:    "invalid discord filename",
+			wantNoHTTP: true,
+		},
+		{
+			name:       "filename over 100 bytes rejected without HTTP",
+			dest:       gateway.OutboundDestination{ExternalID: "user-9"},
+			file:       gateway.OutboundFile{Name: strings.Repeat("x", 101) + ".png", Data: fileBytes},
+			wantErr:    "invalid discord filename",
+			wantNoHTTP: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var captures []capturedFile
+			b, _ := newSendFileTestServer(t, &captures, &mu)
+			err := b.SendFile(context.Background(), tc.dest, tc.file, tc.caption)
+			if tc.wantErr != "" {
+				assert.Error(t, err)
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %q, want containing %q", err, tc.wantErr)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+			if tc.wantNoHTTP {
+				mu.Lock()
+				defer mu.Unlock()
+				assert.Empty(t, captures, "no HTTP call expected for invalid filenames")
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Len(t, captures, 1)
+			cap := captures[0]
+			assert.Equal(t, tc.wantChannelID, cap.channelID)
+			assert.Equal(t, tc.file.Name, cap.filename)
+			assert.Equal(t, tc.file.Data, cap.content)
+			assert.Equal(t, tc.caption, cap.payload)
+		})
+	}
+}
+
+// TestSendFileStaleDMChannelRecovery is the regression test for the
+// stale-DM-cache asymmetry the first no-mistakes review flagged: Send used
+// to invalidate a cached DM channel only on text-send failure, so a file
+// delivery to a user who had removed-and-re-added the bot would keep hitting
+// the dead cached channel forever. SendFile now shares Send's recovery:
+// prime the cache with a stale channel, deliver, and assert one
+// invalidation + re-open + successful post to the fresh channel.
+func TestSendFileStaleDMChannelRecovery(t *testing.T) {
+	var (
+		mu                        sync.Mutex
+		dmOpenCount               int
+		failedChannels, sentFiles []capturedFile
+	)
+	// The cache is primed, so the ONLY UserChannelCreate is the re-open on
+	// recovery — it must return the fresh channel.
+	dmIDs := []string{"fresh-2"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/dm") {
+			dmOpenCount++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"id":%q,"type":1}`, dmIDs[dmOpenCount-1])))
+			return
+		}
+		if !strings.Contains(r.URL.Path, "/channels/") || !strings.HasSuffix(r.URL.Path, "/messages") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		seg := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		channelID := seg[1]
+		if channelID == "stale-1" {
+			// The classic failure: bot removed from the user's DMs.
+			http.Error(w, `{"message":"Unknown Channel","code":10015}`, http.StatusNotFound)
+			return
+		}
+		if err := r.ParseMultipartForm(64 << 20); err != nil {
+			http.Error(w, "multipart parse: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cap := capturedFile{channelID: channelID}
+		if fh := r.MultipartForm.File["files[0]"]; len(fh) == 1 {
+			cap.filename = fh[0].Filename
+			f, perr := fh[0].Open()
+			if perr == nil {
+				cap.content, _ = io.ReadAll(f)
+				_ = f.Close()
+			}
+		}
+		sentFiles = append(sentFiles, cap)
+		_ = failedChannels
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg-1"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	origUserChannels := discordgo.EndpointUserChannels
+	origChannelMessages := discordgo.EndpointChannelMessages
+	discordgo.EndpointUserChannels = func(string) string { return server.URL + "/dm" }
+	discordgo.EndpointChannelMessages = func(cID string) string {
+		return server.URL + "/channels/" + cID + "/messages"
+	}
+	t.Cleanup(func() {
+		discordgo.EndpointUserChannels = origUserChannels
+		discordgo.EndpointChannelMessages = origChannelMessages
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	session.Client = &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+	b := &Bot{session: session}
+
+	// Prime the cache with a stale channel, as a previous send would have.
+	b.dmCache.Store("user-123", "stale-1")
+
+	dest := gateway.OutboundDestination{ExternalID: "user-123"}
+	file := gateway.OutboundFile{Name: "dino.png", Data: []byte{0x89, 0x50, 0x4e, 0x47}}
+	if err := b.SendFile(context.Background(), dest, file, "your dinosaur"); err != nil {
+		t.Fatalf("SendFile with stale DM cache: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if dmOpenCount != 1 {
+		t.Errorf("UserChannelCreate calls = %d, want exactly 1 (one invalidation + re-open)", dmOpenCount)
+	}
+	if len(sentFiles) != 1 {
+		t.Fatalf("successful posts = %d, want 1", len(sentFiles))
+	}
+	if sentFiles[0].channelID != "fresh-2" {
+		t.Errorf("file posted to channel %q, want fresh DM %q", sentFiles[0].channelID, "fresh-2")
+	}
+	if string(sentFiles[0].content) != string(file.Data) {
+		t.Errorf("file content = %q, want fixture bytes", sentFiles[0].content)
+	}
+	if cached, _ := b.dmCache.Load("user-123"); cached != "fresh-2" {
+		t.Errorf("cache after recovery = %v, want fresh channel %q", cached, "fresh-2")
 	}
 }

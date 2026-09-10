@@ -2,6 +2,7 @@
 package discord
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -43,6 +44,9 @@ var mimeToExtensions = map[string][]string{
 // maxAudioBytes is the maximum size in bytes for an audio attachment
 // (25MB — matches the transcription max_bytes default).
 const maxAudioBytes = 25 * 1024 * 1024
+
+// maxOutboundFileNameBytes is Discord's limit on upload filenames.
+const maxOutboundFileNameBytes = 100
 
 // validateMIMEExtension checks that the file extension matches the MIME type.
 func validateMIMEExtension(mimeType string, fileName string) error {
@@ -301,23 +305,68 @@ func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
 	if b.session == nil {
 		return fmt.Errorf("discord session not initialized")
 	}
-	dmChannelID, err := b.dmChannelID(channelID)
+	return b.postToUserDMChannel(channelID, func(dm string) error {
+		if err := SendChunked(b.session, dm, text); err != nil {
+			return fmt.Errorf("sending discord message to %s: %w", dm, err)
+		}
+		return nil
+	})
+}
+
+// postToUserDMChannel posts to the user's DM channel with stale-cache
+// recovery: if posting to the cached channel fails, the cache entry is
+// invalidated and the channel is reopened once. A bot removed from the
+// user's DMs is the documented cause — the cached channel then 404s
+// permanently, so without this recovery every subsequent delivery to that
+// user would fail while inbound messages keep working. Shared by Send and
+// SendFile so text and file delivery recover identically.
+func (b *Bot) postToUserDMChannel(userID string, post func(channelID string) error) error {
+	channelID, err := b.dmChannelID(userID)
 	if err != nil {
-		return fmt.Errorf("opening discord DM for %s: %w", channelID, err)
+		return fmt.Errorf("opening discord DM for %s: %w", userID, err)
 	}
-	if err := SendChunked(b.session, dmChannelID, text); err != nil {
+	if err := post(channelID); err != nil {
 		// Cached DM channel may be stale (bot removed from the user's DMs).
 		// Invalidate and retry once with a fresh channel.
-		b.dmCache.Delete(channelID)
-		dmChannelID, err = b.dmChannelID(channelID)
+		b.dmCache.Delete(userID)
+		channelID, err = b.dmChannelID(userID)
 		if err != nil {
-			return fmt.Errorf("reopening discord DM for %s: %w", channelID, err)
+			return fmt.Errorf("reopening discord DM for %s: %w", userID, err)
 		}
-		if err := SendChunked(b.session, dmChannelID, text); err != nil {
-			return fmt.Errorf("sending discord message to %s: %w", channelID, err)
-		}
+		return post(channelID)
 	}
 	return nil
+}
+
+// SendFile delivers a file attachment to the requester's current
+// conversation. In a group chat (dest.GroupID set) it posts to that
+// channel — the bot is already a member there since the user messaged it
+// in that channel. In a DM it opens or reuses the user's DM channel
+// (dmChannelID) and posts there, mirroring Send.
+func (b *Bot) SendFile(ctx context.Context, dest gateway.OutboundDestination, file gateway.OutboundFile, caption string) error {
+	if b.session == nil {
+		return fmt.Errorf("discord session not initialized")
+	}
+	name := file.Name
+	// Name must be a bare filename: no path separators, no dot entries, and
+	// within Discord's 100-byte limit. Rejecting (rather than stripping)
+	// keeps the contract explicit — callers pass the basename they intend.
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") || len(name) > maxOutboundFileNameBytes {
+		return fmt.Errorf("invalid discord filename %q", file.Name)
+	}
+	post := func(channelID string) error {
+		if _, err := b.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+			Content: caption,
+			File:    &discordgo.File{Name: name, Reader: bytes.NewReader(file.Data)},
+		}, discordgo.WithContext(ctx)); err != nil {
+			return fmt.Errorf("sending discord file to %s: %w", channelID, notify.RedactWebhookURLInError(err))
+		}
+		return nil
+	}
+	if dest.GroupID != "" {
+		return post(dest.GroupID)
+	}
+	return b.postToUserDMChannel(dest.ExternalID, post)
 }
 
 // dmChannelID returns the DM channel ID for the given recipient user ID,

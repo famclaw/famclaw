@@ -98,3 +98,26 @@ type Sender interface {
 	// chatID is the gateway-specific identifier (e.g., Telegram chat_id, Discord channel_id).
 	Send(ctx context.Context, chatID string, text string) error
 }
+
+// OutboundFile is a file the agent wants to deliver to a user through a
+// gateway. Name is the filename as presented to the platform (no path
+// components); Data is the full file content.
+type OutboundFile struct {
+	Name string
+	Data []byte
+}
+
+// OutboundDestination identifies where a delivery goes: the requester's
+// current conversation. ExternalID is the platform user id; GroupID is the
+// platform channel id when the conversation is a group (empty for DMs).
+type OutboundDestination struct {
+	ExternalID string
+	GroupID    string
+}
+
+// FileSender is implemented by gateway bots that can deliver a file
+// attachment to the requester's current conversation. caption is an
+// optional short message shown alongside the file.
+type FileSender interface {
+	SendFile(ctx context.Context, dest OutboundDestination, file OutboundFile, caption string) error
+}
