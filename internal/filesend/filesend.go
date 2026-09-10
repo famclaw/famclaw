@@ -129,6 +129,8 @@ func Handle(ctx context.Context, db DB, fileSenders map[string]gateway.FileSende
 	deadlineCtx, cancel := context.WithTimeout(ctx, SendTimeout)
 	defer cancel()
 	if err := sender.SendFile(deadlineCtx, dest, gateway.OutboundFile{Name: name, Data: data}, caption); err != nil {
+		// Log the error for debugging and observability
+		log.Printf("[filesend] failed to send file %q via %s: %v", name, deliveryGateway, err)
 		return "", fmt.Errorf("sending file via %s: %w", deliveryGateway, err)
 	}
 

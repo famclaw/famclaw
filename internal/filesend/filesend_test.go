@@ -309,6 +309,17 @@ func TestHandle(t *testing.T) {
 			wantCalls:   1,
 			wantAudit:   false,
 		},
+		{
+			name:        "sender error logs properly",
+			deliveryGw:  "discord",
+			dest:        groupDest,
+			sandboxRoot: func() string { r, _ := newSandbox(t, "z.txt", "z"); return r }(),
+			path:        "z.txt",
+			senderErr:   errors.New("network error"),
+			wantErr:     "network error",
+			wantCalls:   1,
+			wantAudit:   false,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
