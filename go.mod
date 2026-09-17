@@ -13,7 +13,7 @@ require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/elastic/go-seccomp-bpf v1.6.0
 	github.com/landlock-lsm/go-landlock v0.10.0
-	github.com/mark3labs/mcp-go v0.58.0
+	github.com/mark3labs/mcp-go v1.0.0
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/crypto v0.56.0
