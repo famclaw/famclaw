@@ -145,13 +145,9 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store
 		skillRegistry: skillRegistry,
 		familyState:   fs,
 		clients:       make(map[*websocket.Conn]*wsClient),
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				// This is kept for backward compatibility but will be replaced by our custom check
-				// The actual origin validation will happen in handleChat
-				return true
-			},
-		},
+	}
+	s.upgrader = websocket.Upgrader{
+		CheckOrigin: s.allowedOrigin,
 	}
 	// Auth handler is wired with closures so the dependency graph stays
 	// one-directional: AuthHandler does not import *Server, only the bits of
