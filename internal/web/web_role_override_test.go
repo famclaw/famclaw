@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
@@ -148,6 +149,8 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 	// before t.TempDir()'s RemoveAll.
 	t.Cleanup(func() { _ = db.Close() })
 
+	sessions := store.NewSessionStore(db.SQL())
+
 	ev, err := policy.NewEvaluator("", "", "")
 	if err != nil {
 		t.Fatalf("NewEvaluator: %v", err)
@@ -181,10 +184,12 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 		identStore: identStore,
 		evaluator:  ev,
 		clf:        clf,
+		sessions:   sessions,
 		notifier:   notify.NewMultiNotifier(cfg, identStore, func(ctx context.Context, gw, chatID, text string) error { return nil }),
 		cfgMu:      sync.RWMutex{},
 		clients:    make(map[*websocket.Conn]*wsClient),
 	}
+	s.upgrader = websocket.Upgrader{CheckOrigin: s.allowedOrigin}
 
 	// Wait for background goroutines (approval notifications, dashboard
 	// broadcasts) to exit before the DB is closed. Registered after the
@@ -203,13 +208,18 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 	}
 	u.Scheme = "ws"
 	u.Path = "/api/chat"
-	q := u.Query()
-	q.Set("user", "emma")
-	u.RawQuery = q.Encode()
 	wsURL := u.String()
 
-	// Dial the WebSocket connection.
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	// Authenticate as emma (config.Users[1] → synthesised session user ID 2) and
+	// carry the session cookie — /api/chat is now session-gated.
+	ctx := context.Background()
+	sessID, err := sessions.Create(ctx, 2, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatalf("sessions.Create: %v", err)
+	}
+
+	// Dial the WebSocket connection with the session cookie.
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Cookie": []string{"famclaw_session=" + sessID}})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -295,8 +305,6 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 			}
 		}
 	}
-
-	ctx := context.Background()
 
 	// Step 1: Set the role override for emma to child/under_8 (simulate parent calling set_user_role).
 	err = db.SetRoleOverride(ctx, "emma", "child", "under_8", "parent")

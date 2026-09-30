@@ -145,12 +145,9 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store
 		skillRegistry: skillRegistry,
 		familyState:   fs,
 		clients:       make(map[*websocket.Conn]*wsClient),
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				// Allow connections from LAN — all origins on local network
-				return true
-			},
-		},
+	}
+	s.upgrader = websocket.Upgrader{
+		CheckOrigin: s.allowedOrigin,
 	}
 	// Auth handler is wired with closures so the dependency graph stays
 	// one-directional: AuthHandler does not import *Server, only the bits of
@@ -205,9 +202,8 @@ func (s *Server) Handler() http.Handler {
 	// ── Gateway / external entry points (their own auth) ──────────────────────
 	mux.HandleFunc("/decide", s.handleDecideLink) // HMAC-signed approval token
 
-	mux.HandleFunc("/api/chat", s.handleChat) // WebSocket — public, user identity from ?user=NAME query (gateway model, not session)
-
 	// ── Protected admin surface (session-gated) ───────────────────────────────
+	mux.Handle("/api/chat", s.protect(s.handleChat)) // WebSocket — identity bound to the server-side session
 	mux.Handle("/api/users", s.protect(s.handleUsers))
 	mux.Handle("/api/approvals", s.protect(s.handleApprovals))
 	mux.Handle("/api/approvals/decide", s.protect(s.handleDecide))
@@ -354,20 +350,34 @@ func (s *Server) SetReasoningCache(rc *llm.ReasoningCache) {
 // ── WebSocket chat ─────────────────────────────────────────────────────────────
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
-	userName := r.URL.Query().Get("user")
-	if userName == "" {
-		http.Error(w, "missing ?user=", http.StatusBadRequest)
+	// Get authenticated user from session
+	identity, ok := middleware.IdentityFrom(r.Context())
+	if !ok {
+		http.Error(w, `{"error":"unauthenticated"}`, http.StatusUnauthorized)
 		return
 	}
 
-	userCfg := s.cfg.GetUser(userName)
+	// Resolve user from session ID
+	userCfg := s.getUserByID(identity.UserID)
 	if userCfg == nil {
 		http.Error(w, "unknown user", http.StatusForbidden)
 		return
 	}
 
+	// A parent session may preview another household member's chat via
+	// ?user=<name> (the web UI's user chooser). The privilege check uses the
+	// base config role (before DB overrides) so an override cannot grant
+	// impersonation rights. Non-parent sessions ignore the parameter: their
+	// chat identity is always the session user.
+	if claimed := r.URL.Query().Get("user"); claimed != "" && claimed != userCfg.Name && userCfg.Role == "parent" {
+		if other := s.getUserByName(claimed); other != nil {
+			userCfg = other
+		}
+	}
+
 	// Resolve the role/age override (if any) that supersedes the config row.
-	adjustedUser := s.resolveUserRole(r.Context(), userName)
+	adjustedUser := s.resolveUserRole(r.Context(), userCfg.Name)
+
 	// Initialize last known role and ageGroup from the adjustedUser for change detection.
 	lastRole := adjustedUser.Role
 	lastAgeGroup := adjustedUser.AgeGroup
@@ -379,7 +389,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	client := &wsClient{conn: conn, userName: userName}
+	client := &wsClient{conn: conn, userName: userCfg.Name}
 	s.clientsMu.Lock()
 	s.clients[conn] = client
 	s.clientsMu.Unlock()
@@ -422,7 +432,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// Check for role override changes and recreate agent if needed.
 		currentRole := userCfg.Role
 		currentAgeGroup := userCfg.AgeGroup
-		if role, ageGroup, err := s.db.GetRoleOverride(r.Context(), userName); err == nil {
+		if role, ageGroup, err := s.db.GetRoleOverride(r.Context(), userCfg.Name); err == nil {
 			if role != "" {
 				currentRole = role
 			}
@@ -513,6 +523,24 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			s.sendWS(client, "pong", nil)
 		}
 	}
+}
+
+// allowedOrigin enforces a same-origin policy on WebSocket upgrades. Browsers
+// always send an Origin header on WS handshakes, so any present Origin must
+// match this server's own origin (scheme://host); this blocks a page on
+// another host from opening a chat socket. Requests without an Origin header
+// are non-browser clients (scripts, native apps) and are permitted — their
+// access is controlled by the session gate, not the origin check.
+func (s *Server) allowedOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return origin == fmt.Sprintf("%s://%s", scheme, r.Host)
 }
 
 func (s *Server) sendWS(client *wsClient, msgType string, payload any) {
@@ -963,4 +991,30 @@ func (s *Server) resolveUserRole(ctx context.Context, userName string) *config.U
 		return &copied
 	}
 	return userCfg
+}
+
+// getUserByName returns the user config with the given name, or nil if no
+// configured user matches.
+func (s *Server) getUserByName(name string) *config.UserConfig {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	for i := range s.cfg.Users {
+		if s.cfg.Users[i].Name == name {
+			return &s.cfg.Users[i]
+		}
+	}
+	return nil
+}
+
+// getUserByID maps a session user ID back to a user config. User IDs are
+// synthesised from config order (index + 1) by resolveParentUserID and there
+// is no separate users table, so the reverse lookup uses the same index scheme.
+func (s *Server) getUserByID(userID int64) *config.UserConfig {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+
+	if userID < 1 || int(userID-1) >= len(s.cfg.Users) {
+		return nil
+	}
+	return &s.cfg.Users[userID-1]
 }
