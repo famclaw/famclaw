@@ -382,12 +382,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	lastRole := adjustedUser.Role
 	lastAgeGroup := adjustedUser.AgeGroup
 
-	// Validate WebSocket origin - apply explicit same-origin/allowed-origin policy
-	if !s.allowedOrigin(r) {
-		http.Error(w, "Forbidden: Origin not allowed", http.StatusForbidden)
-		return
-	}
-
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[ws] upgrade error: %v", err)
