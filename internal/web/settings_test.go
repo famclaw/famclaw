@@ -219,11 +219,11 @@ func TestSettingsPost_RoundTrip(t *testing.T) {
 // new PIN updates it, while an omitted PIN preserves the existing value.
 func TestSettingsPost_ExplicitPinUpdate(t *testing.T) {
 	cases := []struct {
-		name        string
-		sarahPIN    string // POST value for sarah
-		johnPIN     string // POST value for john (empty = preserve)
-		wantSarah   string // expected sarah PIN after POST
-		wantJohn    string // expected john PIN after POST
+		name      string
+		sarahPIN  string // POST value for sarah
+		johnPIN   string // POST value for john (empty = preserve)
+		wantSarah string // expected sarah PIN after POST
+		wantJohn  string // expected john PIN after POST
 	}{
 		{
 			name:      "update one, preserve the other",
