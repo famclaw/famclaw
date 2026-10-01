@@ -365,6 +365,70 @@ func TestSettingsPost_ReorderUnknownUser(t *testing.T) {
 	}
 }
 
+// TestSettingsPost_PinPreservedCaseInsensitive verifies that PIN preservation
+// matches the config's case-insensitive identity convention (Config.GetUser).
+// An unknown user (truly new name) must still NOT inherit a PIN.
+func TestSettingsPost_PinPreservedCaseInsensitive(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	initialCfg := &config.Config{
+		Users: []config.UserConfig{
+			{Name: "sarah", DisplayName: "Sarah", Role: "parent", PIN: "1234"},
+			{Name: "john", DisplayName: "John", Role: "parent", PIN: "5678"},
+		},
+	}
+
+	data, _ := yaml.Marshal(initialCfg)
+	if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	s := &Server{
+		cfg:     initialCfg,
+		cfgPath: cfgPath,
+		cfgMu:   sync.RWMutex{},
+	}
+
+	// POST references the same two users with different casing (omitting PINs),
+	// plus a genuinely new unknown user that must not inherit a PIN.
+	body := `{
+		"users": [
+			{"name": "SARAH", "display_name": "Sarah", "role": "parent"},
+			{"name": "John", "display_name": "John", "role": "parent"},
+			{"name": "bob_new", "display_name": "Bob", "role": "parent"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	s.handleSettingsPost(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST failed: %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+
+	// Case variants must have matched the existing users and preserved their
+	// PINs via the shared case-insensitive identity convention.
+	sarahPIN := s.cfg.GetUser("sarah")
+	if sarahPIN == nil || sarahPIN.PIN != "1234" {
+		t.Errorf("sarah PIN = %v, want 1234 (preserved despite case-variant name)", sarahPIN)
+	}
+	johnPIN := s.cfg.GetUser("john")
+	if johnPIN == nil || johnPIN.PIN != "5678" {
+		t.Errorf("john PIN = %v, want 5678 (preserved despite case-variant name)", johnPIN)
+	}
+
+	// The unknown user must not inherit anyone else's PIN.
+	bobPIN := s.cfg.GetUser("bob_new")
+	if bobPIN == nil || bobPIN.PIN != "" {
+		t.Errorf("unknown user bob_new PIN = %v, want empty (no inheritance)", bobPIN)
+	}
+}
+
 // TestSettingsPost_AllParentsRemoved verifies that removing all parents with
 // PINs is rejected and does not mutate the live config or persisted file.
 func TestSettingsPost_AllParentsRemoved(t *testing.T) {

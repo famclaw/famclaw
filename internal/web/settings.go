@@ -195,12 +195,9 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			// Preserve existing PIN if not provided in update
 			pin := u.PIN
 			if pin == "" {
-				// Find existing user to preserve PIN
-				for _, existingUser := range s.cfg.Users {
-					if existingUser.Name == u.Name {
-						pin = existingUser.PIN
-						break
-					}
+				// Find existing user (case-insensitive, matching GetUser) to preserve PIN
+				if existingUser := s.cfg.GetUser(u.Name); existingUser != nil {
+					pin = existingUser.PIN
 				}
 			}
 
