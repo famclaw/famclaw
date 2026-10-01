@@ -190,7 +190,19 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		hasParentWithPIN := false
 		var users []config.UserConfig
 		for _, u := range update.Users {
-			if u.Role == "parent" && u.PIN != "" {
+			// Preserve existing PIN if not provided in update
+			pin := u.PIN
+			if pin == "" {
+				// Find existing user to preserve PIN
+				for _, existingUser := range s.cfg.Users {
+					if existingUser.Name == u.Name {
+						pin = existingUser.PIN
+						break
+					}
+				}
+			}
+
+			if u.Role == "parent" && pin != "" {
 				hasParentWithPIN = true
 			}
 			users = append(users, config.UserConfig{
@@ -198,7 +210,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				DisplayName: u.DisplayName,
 				Role:        u.Role,
 				AgeGroup:    u.AgeGroup,
-				PIN:         u.PIN,
+				PIN:         pin,
 				Color:       u.Color,
 				LLMProfile:  u.LLMProfile,
 			})
