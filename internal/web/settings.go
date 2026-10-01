@@ -149,21 +149,23 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
 
+	// Build updated config values first, validate everything, then assign
 	// LLM config — legacy single endpoint
+	newLLM := s.cfg.LLM
 	if update.LLM.BaseURL != "" {
-		s.cfg.LLM.BaseURL = update.LLM.BaseURL
+		newLLM.BaseURL = update.LLM.BaseURL
 	}
 	if update.LLM.Model != "" {
-		s.cfg.LLM.Model = update.LLM.Model
+		newLLM.Model = update.LLM.Model
 	}
 	// Only update API key if client sends a non-masked value
 	if update.LLM.APIKey != "" && update.LLM.APIKey != "••••••••" {
-		s.cfg.LLM.APIKey = update.LLM.APIKey
+		newLLM.APIKey = update.LLM.APIKey
 	}
 
 	// LLM profiles — pointer fields distinguish "omitted" from "explicit clear"
 	if update.LLM.Default != nil {
-		s.cfg.LLM.Default = *update.LLM.Default
+		newLLM.Default = *update.LLM.Default
 	}
 	if update.LLM.Profiles != nil {
 		profiles := *update.LLM.Profiles
@@ -182,23 +184,32 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			}
 			newProfiles[name] = p
 		}
-		s.cfg.LLM.Profiles = newProfiles
+		newLLM.Profiles = newProfiles
 	}
 
 	// Users — validate at least one parent with PIN remains
+	var newUsers []config.UserConfig
 	if len(update.Users) > 0 {
 		hasParentWithPIN := false
-		var users []config.UserConfig
 		for _, u := range update.Users {
-			if u.Role == "parent" && u.PIN != "" {
+			// Preserve existing PIN if not provided in update
+			pin := u.PIN
+			if pin == "" {
+				// Find existing user (case-insensitive, matching GetUser) to preserve PIN
+				if existingUser := s.cfg.GetUser(u.Name); existingUser != nil {
+					pin = existingUser.PIN
+				}
+			}
+
+			if u.Role == "parent" && pin != "" {
 				hasParentWithPIN = true
 			}
-			users = append(users, config.UserConfig{
+			newUsers = append(newUsers, config.UserConfig{
 				Name:        u.Name,
 				DisplayName: u.DisplayName,
 				Role:        u.Role,
 				AgeGroup:    u.AgeGroup,
-				PIN:         u.PIN,
+				PIN:         pin,
 				Color:       u.Color,
 				LLMProfile:  u.LLMProfile,
 			})
@@ -207,24 +218,26 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, fmt.Errorf("at least one parent user with a PIN is required"), http.StatusBadRequest)
 			return
 		}
-		s.cfg.Users = users
+	} else {
+		// If no users provided, keep existing users
+		newUsers = s.cfg.Users
 	}
 
 	// Gateways
-	s.cfg.Gateways.Telegram.Enabled = update.Gateways.Telegram.Enabled
+	newGateways := s.cfg.Gateways
+	newGateways.Telegram.Enabled = update.Gateways.Telegram.Enabled
 	if update.Gateways.Telegram.Token != "" {
-		s.cfg.Gateways.Telegram.Token = update.Gateways.Telegram.Token
+		newGateways.Telegram.Token = update.Gateways.Telegram.Token
 	}
-	s.cfg.Gateways.Discord.Enabled = update.Gateways.Discord.Enabled
+	newGateways.Discord.Enabled = update.Gateways.Discord.Enabled
 	if update.Gateways.Discord.Token != "" {
-		s.cfg.Gateways.Discord.Token = update.Gateways.Discord.Token
+		newGateways.Discord.Token = update.Gateways.Discord.Token
 	}
 
 	// WebFetch — allowlist and enable flag
-	// Empty update list is ignored (client didn't send it); non-empty replaces
-	// the allowlist entirely. Enabled flag can be toggled independently.
+	newWebFetch := s.cfg.Tools.WebFetch
 	if update.WebFetch.Enabled != s.cfg.Tools.WebFetch.Enabled {
-		s.cfg.Tools.WebFetch.Enabled = update.WebFetch.Enabled
+		newWebFetch.Enabled = update.WebFetch.Enabled
 	}
 	if len(update.WebFetch.URLAllowlist) > 0 {
 		// Deduplicate, trim whitespace, and validate hosts
@@ -244,14 +257,20 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				deduped = append(deduped, trimmed)
 			}
 		}
-		s.cfg.Tools.WebFetch.URLAllowlist = deduped
+		newWebFetch.URLAllowlist = deduped
 	}
 
-	// Validate web_fetch config after mutation
-	if s.cfg.Tools.WebFetch.Enabled && len(s.cfg.Tools.WebFetch.URLAllowlist) == 0 {
+	// Validate web_fetch config before assignment
+	if newWebFetch.Enabled && len(newWebFetch.URLAllowlist) == 0 {
 		jsonErr(w, fmt.Errorf("web_fetch is enabled but url_allowlist is empty — set at least one host or disable web_fetch"), http.StatusBadRequest)
 		return
 	}
+
+	// Assign all validated values at once
+	s.cfg.LLM = newLLM
+	s.cfg.Users = newUsers
+	s.cfg.Gateways = newGateways
+	s.cfg.Tools.WebFetch = newWebFetch
 
 	// Write back to config.yaml
 	if s.cfgPath != "" {
