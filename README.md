@@ -477,6 +477,14 @@ Regenerate the four persona snapshots:
 UPDATE_PROMPT_SNAPSHOTS=1 go test ./internal/prompt/
 ```
 
+### Classification eval corpus
+
+The keyword classifier is scored against a hand-authored multilingual corpus at `internal/classifier/testdata/classification_corpus.json` (a representative ~150-sample subset; a full ~400–500 corpus is a follow-up). `internal/classifier/eval_test.go` recomputes per-category P/R/F1, per-language critical-category recall, and benign FPR, then checks them against the committed `internal/classifier/testdata/classification_results.json`. Thresholds (critical recall ≥ 95%, benign FPR ≤ 5%) are **recorded targets, not build gates** — the results artifact documents the current English-only keyword gap across `en/es/fr/de/zh`. Regenerate the artifact after changing the corpus:
+
+```bash
+FAMCLAW_REGEN_CLASSIFIER_EVAL=1 go test -run TestEvalRegenerate ./internal/classifier/
+```
+
 ---
 
 ## License

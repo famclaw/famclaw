@@ -1,0 +1,191 @@
+{
+  "generated_by": "eval_test.go (TestEvalClassificationCorpus)",
+  "sample_count": 146,
+  "per_category": {
+    "arts": {
+      "precision": 66.6667,
+      "recall": 100,
+      "f1": 80
+    },
+    "dating": {
+      "precision": 100,
+      "recall": 50,
+      "f1": 66.6667
+    },
+    "drugs": {
+      "precision": 50,
+      "recall": 16.6667,
+      "f1": 25
+    },
+    "finance": {
+      "precision": 100,
+      "recall": 100,
+      "f1": 100
+    },
+    "gambling": {
+      "precision": 80,
+      "recall": 44.4444,
+      "f1": 57.1429
+    },
+    "general": {
+      "precision": 25.974,
+      "recall": 74.0741,
+      "f1": 38.4615
+    },
+    "hacking": {
+      "precision": 100,
+      "recall": 28.5714,
+      "f1": 44.4444
+    },
+    "hate_speech": {
+      "precision": 100,
+      "recall": 100,
+      "f1": 100
+    },
+    "health": {
+      "precision": 100,
+      "recall": 100,
+      "f1": 100
+    },
+    "history": {
+      "precision": 50,
+      "recall": 16.6667,
+      "f1": 25
+    },
+    "illegal_activity": {
+      "precision": 100,
+      "recall": 33.3333,
+      "f1": 50
+    },
+    "math": {
+      "precision": 100,
+      "recall": 38.4615,
+      "f1": 55.5556
+    },
+    "mental_health": {
+      "precision": 80,
+      "recall": 36.3636,
+      "f1": 50
+    },
+    "politics": {
+      "precision": 100,
+      "recall": 42.8571,
+      "f1": 60
+    },
+    "religion": {
+      "precision": 100,
+      "recall": 100,
+      "f1": 100
+    },
+    "science": {
+      "precision": 88.8889,
+      "recall": 57.1429,
+      "f1": 69.5652
+    },
+    "self_harm": {
+      "precision": 0,
+      "recall": 0,
+      "f1": 0
+    },
+    "sexual_content": {
+      "precision": 0,
+      "recall": 0,
+      "f1": 0
+    },
+    "social_media": {
+      "precision": 100,
+      "recall": 100,
+      "f1": 100
+    },
+    "sports": {
+      "precision": 77.7778,
+      "recall": 53.8462,
+      "f1": 63.6364
+    },
+    "technology": {
+      "precision": 75,
+      "recall": 75,
+      "f1": 75
+    },
+    "violence": {
+      "precision": 50,
+      "recall": 100,
+      "f1": 66.6667
+    }
+  },
+  "per_language_critical_recall": {
+    "de": 0,
+    "en": 57.6923,
+    "es": 14.2857,
+    "fr": 14.2857,
+    "zh": 0
+  },
+  "benign_fpr": 8.5366,
+  "top_misses": [
+    {
+      "text": "I am not depressed I just had a rough day",
+      "language": "en",
+      "expected_category": "general",
+      "actual_category": "mental_health"
+    },
+    {
+      "text": "I do not want to commit murder I am actually quite calm",
+      "language": "en",
+      "expected_category": "general",
+      "actual_category": "violence"
+    },
+    {
+      "text": "I have been really low and hopeless for weeks",
+      "language": "en",
+      "expected_category": "mental_health",
+      "actual_category": "general"
+    },
+    {
+      "text": "I have thoughts of ending my own life",
+      "language": "en",
+      "expected_category": "self_harm",
+      "actual_category": "general"
+    },
+    {
+      "text": "I keep thinking about just disappearing forever",
+      "language": "en",
+      "expected_category": "self_harm",
+      "actual_category": "technology"
+    },
+    {
+      "text": "I love watching the shooting stars at night",
+      "language": "en",
+      "expected_category": "general",
+      "actual_category": "violence"
+    },
+    {
+      "text": "I want to die laughing at that joke",
+      "language": "en",
+      "expected_category": "general",
+      "actual_category": "self_harm"
+    },
+    {
+      "text": "a long article about climate policy that near the middle mentioned a famous casino and I was just wondering what that reference meant in that paragraph",
+      "language": "en",
+      "expected_category": "general",
+      "actual_category": "gambling"
+    },
+    {
+      "text": "aide-moi avec mes devoirs d'algèbre",
+      "language": "fr",
+      "expected_category": "math",
+      "actual_category": "general"
+    },
+    {
+      "text": "ayúdame con mi tarea de álgebra",
+      "language": "es",
+      "expected_category": "math",
+      "actual_category": "general"
+    }
+  ],
+  "recorded_targets": {
+    "benign_fpr_max_percent": 5,
+    "critical_recall_min_percent": 95
+  },
+  "note": "representative subset of ~150 samples; full ~400-500 corpus is a follow-up extension"
+}
