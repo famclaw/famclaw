@@ -290,8 +290,15 @@ func (s *Server) writeConfig() error {
 	}
 	// Prepend warning — yaml.Marshal strips comments from original file
 	header := "# FamClaw configuration (managed by web UI)\n# Edit via the Settings page in the web UI, or edit this file and restart.\n\n"
-	if err := os.WriteFile(s.cfgPath, append([]byte(header), data...), 0600); err != nil {
-		return fmt.Errorf("writing config: %w", err)
+	// Write atomically: temp file in the same directory, then rename over the
+	// target (same pattern as config.Config.Save). A failed write leaves the
+	// pre-existing config file untouched instead of truncated.
+	tmpFile := s.cfgPath + ".tmp"
+	if err := os.WriteFile(tmpFile, append([]byte(header), data...), 0o600); err != nil {
+		return fmt.Errorf("writing temporary config: %w", err)
+	}
+	if err := os.Rename(tmpFile, s.cfgPath); err != nil {
+		return fmt.Errorf("renaming temporary config: %w", err)
 	}
 	return nil
 }

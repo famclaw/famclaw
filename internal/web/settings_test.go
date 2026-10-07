@@ -491,6 +491,76 @@ func TestSettingsPost_AllParentsRemoved(t *testing.T) {
 	}
 }
 
+// TestSettingsWriteConfig_Atomic proves writeConfig persists the config
+// atomically: a successful write lands a valid, parseable file with the
+// managed header, and a forced failure at the temp-write step leaves the
+// pre-existing config file byte-identical (never truncated/corrupted).
+func TestSettingsWriteConfig_Atomic(t *testing.T) {
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			BaseURL: "https://api.openai.com",
+			Model:   "gpt-4",
+		},
+		Users: []config.UserConfig{
+			{Name: "sarah", DisplayName: "Sarah", Role: "parent", PIN: "1234"},
+		},
+	}
+
+	// Happy path: a successful write must land a valid file with the header.
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	seed, _ := yaml.Marshal(cfg)
+	if err := os.WriteFile(cfgPath, seed, 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	s := &Server{cfg: cfg, cfgPath: cfgPath, cfgMu: sync.RWMutex{}}
+	if err := s.writeConfig(); err != nil {
+		t.Fatalf("writeConfig: %v", err)
+	}
+
+	content, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	if !bytes.HasPrefix(content, []byte("# FamClaw configuration")) {
+		t.Errorf("written config missing managed header")
+	}
+	// No leftover temp file after a clean write.
+	if _, err := os.Stat(cfgPath + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("temp file left behind after successful write: %v", err)
+	}
+
+	// Forced failure: pre-create the temp target as a directory so
+	// os.WriteFile fails at the temp-write step, before any rename touches
+	// the real file. The original config must remain byte-identical.
+	tmp2 := t.TempDir()
+	cfgPath2 := filepath.Join(tmp2, "config.yaml")
+	if err := os.WriteFile(cfgPath2, seed, 0o600); err != nil {
+		t.Fatalf("seed config 2: %v", err)
+	}
+	original, err := os.ReadFile(cfgPath2)
+	if err != nil {
+		t.Fatalf("read original: %v", err)
+	}
+	if err := os.MkdirAll(cfgPath2+".tmp", 0o700); err != nil {
+		t.Fatalf("block temp target: %v", err)
+	}
+
+	s2 := &Server{cfg: cfg, cfgPath: cfgPath2, cfgMu: sync.RWMutex{}}
+	if err := s2.writeConfig(); err == nil {
+		t.Fatalf("writeConfig: expected error when temp write fails, got nil")
+	}
+
+	current, err := os.ReadFile(cfgPath2)
+	if err != nil {
+		t.Fatalf("read config after forced failure: %v", err)
+	}
+	if !bytes.Equal(current, original) {
+		t.Errorf("pre-existing config was corrupted by a failed write:\n got=%q\nwant=%q", current, original)
+	}
+}
+
 // TestSettingsPost_InvalidWebFetchHost verifies that an invalid host in the
 // web_fetch allowlist leaves BOTH s.cfg and the persisted file byte-identical.
 func TestSettingsPost_InvalidWebFetchHost(t *testing.T) {
