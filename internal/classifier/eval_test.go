@@ -1,3 +1,18 @@
+// This file implements the deterministic classification evaluation for the
+// keyword topic classifier: it scores the hand-authored multilingual corpus
+// (testdata/classification_corpus.json), recomputes per-category P/R/F1,
+// per-language critical-category recall, and benign FPR, and checks them
+// against the committed testdata/classification_results.json artifact. The
+// critical-category set is {self_harm, hate_speech, illegal_activity,
+// sexual_content}; the recorded thresholds (critical recall >= 95%, benign
+// FPR <= 5%) are targets, not build gates.
+//
+// If the committed artifact goes stale after a classifier or corpus change,
+// TestEvalClassificationCorpus fails and prints the exact regeneration
+// command below. To regenerate the artifact:
+//
+//	FAMCLAW_REGEN_CLASSIFIER_EVAL=1 go test -run TestEvalRegenerate ./internal/classifier/
+
 package classifier
 
 import (
@@ -69,6 +84,10 @@ const (
 	corpusPath   = "testdata/classification_corpus.json"
 	resultsPath  = "testdata/classification_results.json"
 	topMissLimit = 10
+	// resultsRegenCmd is the exact command that regenerates the committed
+	// classification_results.json from the live corpus; it is printed whenever
+	// a committed artifact no longer matches the recomputed metrics.
+	resultsRegenCmd = "FAMCLAW_REGEN_CLASSIFIER_EVAL=1 go test -run TestEvalRegenerate ./internal/classifier/"
 )
 
 // percent4 rounds a ratio to 4-decimal percentage points (e.g. 95.5263).
@@ -227,31 +246,31 @@ func TestEvalClassificationCorpus(t *testing.T) {
 					t.Fatalf("parsing committed results %s: %v", resultsPath, err)
 				}
 				if want.SampleCount != got.SampleCount {
-					t.Errorf("sample_count: results.json has %d, corpus has %d; regenerate results.json",
-						want.SampleCount, got.SampleCount)
+					t.Errorf("sample_count: results.json has %d, corpus has %d; regenerate the artifact with: %s",
+						want.SampleCount, got.SampleCount, resultsRegenCmd)
 				}
 				for cat := range got.PerCategory {
 					w, ok := want.PerCategory[cat]
 					if !ok {
-						t.Errorf("per_category[%s] missing from results.json", cat)
+						t.Errorf("per_category[%s] missing from results.json; regenerate the artifact with: %s", cat, resultsRegenCmd)
 						continue
 					}
 					g := got.PerCategory[cat]
 					if w.Precision != g.Precision || w.Recall != g.Recall || w.F1 != g.F1 {
-						t.Errorf("per_category[%s]: got %+v, results.json has %+v; regenerate results.json",
-							cat, g, w)
+						t.Errorf("per_category[%s]: got %+v, results.json has %+v; regenerate the artifact with: %s",
+							cat, g, w, resultsRegenCmd)
 					}
 				}
 				if want.BenignFPR != got.BenignFPR {
-					t.Errorf("benign_fpr: got %.4f, results.json has %.4f; regenerate results.json",
-						got.BenignFPR, want.BenignFPR)
+					t.Errorf("benign_fpr: got %.4f, results.json has %.4f; regenerate the artifact with: %s",
+						got.BenignFPR, want.BenignFPR, resultsRegenCmd)
 				}
 				for lang, v := range got.PerLanguageCriticalRecall {
 					if w, ok := want.PerLanguageCriticalRecall[lang]; !ok {
-						t.Errorf("per_language_critical_recall[%s] missing from results.json", lang)
+						t.Errorf("per_language_critical_recall[%s] missing from results.json; regenerate the artifact with: %s", lang, resultsRegenCmd)
 					} else if w != v {
-						t.Errorf("per_language_critical_recall[%s]: got %.4f, results.json has %.4f; regenerate results.json",
-							lang, v, w)
+						t.Errorf("per_language_critical_recall[%s]: got %.4f, results.json has %.4f; regenerate the artifact with: %s",
+							lang, v, w, resultsRegenCmd)
 					}
 				}
 			},
