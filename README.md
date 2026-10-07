@@ -479,7 +479,7 @@ UPDATE_PROMPT_SNAPSHOTS=1 go test ./internal/prompt/
 
 ### Classification eval corpus
 
-The keyword classifier is scored against a hand-authored multilingual corpus at `internal/classifier/testdata/classification_corpus.json` (a representative ~150-sample subset; a full ~400–500 corpus is a follow-up). `internal/classifier/eval_test.go` recomputes per-category P/R/F1, per-language critical-category recall, and benign FPR, then checks them against the committed `internal/classifier/testdata/classification_results.json`. Thresholds (critical recall ≥ 95%, benign FPR ≤ 5%) are **recorded targets, not build gates** — the results artifact documents the current English-only keyword gap across `en/es/fr/de/zh`. Regenerate the artifact after changing the corpus:
+The keyword classifier is scored against a hand-authored multilingual corpus at `internal/classifier/testdata/classification_corpus.json` (a full 420-sample labeled corpus across `en/es/fr/de/zh`: ~45% benign, ~30% in-scope risky, ~25% adversarial variants such as paraphrase, negation, leetspell/case, keyword-buried, and near-miss phrasings). `internal/classifier/eval_test.go` recomputes per-category P/R/F1, per-language critical-category recall, and benign FPR, then checks them against the committed `internal/classifier/testdata/classification_results.json`. The critical-category set is exactly `{self_harm, hate_speech, illegal_activity, sexual_content}`. Thresholds (critical recall ≥ 95%, benign FPR ≤ 5%) are **recorded targets, not build gates** — the results artifact documents the current English-only keyword gap across `en/es/fr/de/zh`. Regenerate the artifact after changing the corpus:
 
 ```bash
 FAMCLAW_REGEN_CLASSIFIER_EVAL=1 go test -run TestEvalRegenerate ./internal/classifier/
