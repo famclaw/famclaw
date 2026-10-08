@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/famclaw/famclaw/internal/config"
@@ -266,6 +267,24 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Snapshot the sections about to be replaced so a failed write can roll
+	// memory back to the on-disk state.
+	snapLLM := s.cfg.LLM
+	if s.cfg.LLM.Profiles != nil {
+		snapLLM.Profiles = make(map[string]config.LLMProfile, len(s.cfg.LLM.Profiles))
+		for name, p := range s.cfg.LLM.Profiles {
+			snapLLM.Profiles[name] = p
+		}
+	}
+	snapUsers := make([]config.UserConfig, len(s.cfg.Users))
+	copy(snapUsers, s.cfg.Users)
+	snapGateways := s.cfg.Gateways
+	snapTools := s.cfg.Tools
+	if s.cfg.Tools.WebFetch.URLAllowlist != nil {
+		snapTools.WebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
+		copy(snapTools.WebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
+	}
+
 	// Assign all validated values at once
 	s.cfg.LLM = newLLM
 	s.cfg.Users = newUsers
@@ -275,6 +294,10 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	// Write back to config.yaml
 	if s.cfgPath != "" {
 		if err := s.writeConfig(); err != nil {
+			s.cfg.LLM = snapLLM
+			s.cfg.Users = snapUsers
+			s.cfg.Gateways = snapGateways
+			s.cfg.Tools = snapTools
 			jsonErr(w, fmt.Errorf("saving config: %w", err), http.StatusInternalServerError)
 			return
 		}
@@ -288,17 +311,30 @@ func (s *Server) writeConfig() error {
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
-	// Prepend warning — yaml.Marshal strips comments from original file
 	header := "# FamClaw configuration (managed by web UI)\n# Edit via the Settings page in the web UI, or edit this file and restart.\n\n"
-	// Write atomically: temp file in the same directory, then rename over the
-	// target (same pattern as config.Config.Save). A failed write leaves the
-	// pre-existing config file untouched instead of truncated.
-	tmpFile := s.cfgPath + ".tmp"
-	if err := os.WriteFile(tmpFile, append([]byte(header), data...), 0o600); err != nil {
-		return fmt.Errorf("writing temporary config: %w", err)
+	content := append([]byte(header), data...)
+
+	// Atomic write: create temp file in same directory, write, close, rename.
+	// Mirrors config.Config.Save. s.cfg is NOT mutated on any failure path.
+	dir := filepath.Dir(s.cfgPath)
+	tmp, err := os.CreateTemp(dir, ".settings-")
+	if err != nil {
+		return fmt.Errorf("creating temp config: %w", err)
 	}
-	if err := os.Rename(tmpFile, s.cfgPath); err != nil {
-		return fmt.Errorf("renaming temporary config: %w", err)
+	tmpName := tmp.Name()
+
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("writing temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("closing temp config: %w", err)
+	}
+	if err := os.Rename(tmpName, s.cfgPath); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("renaming temp config: %w", err)
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -493,8 +494,7 @@ func TestSettingsPost_AllParentsRemoved(t *testing.T) {
 
 // TestSettingsWriteConfig_Atomic proves writeConfig persists the config
 // atomically: a successful write lands a valid, parseable file with the
-// managed header, and a forced failure at the temp-write step leaves the
-// pre-existing config file byte-identical (never truncated/corrupted).
+// managed header, and no leftover temp files remain.
 func TestSettingsWriteConfig_Atomic(t *testing.T) {
 	cfg := &config.Config{
 		LLM: config.LLMConfig{
@@ -506,7 +506,6 @@ func TestSettingsWriteConfig_Atomic(t *testing.T) {
 		},
 	}
 
-	// Happy path: a successful write must land a valid file with the header.
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.yaml")
 	seed, _ := yaml.Marshal(cfg)
@@ -526,38 +525,119 @@ func TestSettingsWriteConfig_Atomic(t *testing.T) {
 	if !bytes.HasPrefix(content, []byte("# FamClaw configuration")) {
 		t.Errorf("written config missing managed header")
 	}
-	// No leftover temp file after a clean write.
-	if _, err := os.Stat(cfgPath + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("temp file left behind after successful write: %v", err)
+	// No leftover .settings-* temp file after a clean write.
+	leftovers, _ := filepath.Glob(filepath.Join(tmp, ".settings-*"))
+	if len(leftovers) != 0 {
+		t.Errorf("temp file(s) left behind after successful write: %v", leftovers)
+	}
+}
+
+// TestSettingsPost_WriteFailureRollsBackMemory exercises the real handler
+// path: when persistence fails, handleSettingsPost must roll s.cfg back so
+// memory and disk agree, return 500, and leave the on-disk config untouched.
+func TestSettingsPost_WriteFailureRollsBackMemory(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	initialCfg := &config.Config{
+		LLM: config.LLMConfig{
+			BaseURL: "https://api.openai.com",
+			Model:   "gpt-4",
+		},
+		Users: []config.UserConfig{
+			{Name: "sarah", DisplayName: "Sarah", Role: "parent", PIN: "1234"},
+		},
+		Gateways: config.GatewaysConfig{
+			Telegram: config.TelegramConfig{Enabled: true, Token: "123456789:ABC"},
+		},
+		Tools: config.ToolsConfig{
+			WebFetch: config.WebFetchConfig{
+				Enabled:      true,
+				URLAllowlist: []string{"example.com"},
+			},
+		},
 	}
 
-	// Forced failure: pre-create the temp target as a directory so
-	// os.WriteFile fails at the temp-write step, before any rename touches
-	// the real file. The original config must remain byte-identical.
-	tmp2 := t.TempDir()
-	cfgPath2 := filepath.Join(tmp2, "config.yaml")
-	if err := os.WriteFile(cfgPath2, seed, 0o600); err != nil {
-		t.Fatalf("seed config 2: %v", err)
-	}
-	original, err := os.ReadFile(cfgPath2)
+	seed, err := yaml.Marshal(initialCfg)
 	if err != nil {
-		t.Fatalf("read original: %v", err)
-	}
-	if err := os.MkdirAll(cfgPath2+".tmp", 0o700); err != nil {
-		t.Fatalf("block temp target: %v", err)
+		t.Fatalf("marshal seed: %v", err)
 	}
 
-	s2 := &Server{cfg: cfg, cfgPath: cfgPath2, cfgMu: sync.RWMutex{}}
-	if err := s2.writeConfig(); err == nil {
-		t.Fatalf("writeConfig: expected error when temp write fails, got nil")
+	// Make cfgPath a non-empty directory so the rename inside writeConfig
+	// fails portably regardless of euid; the sentinel is the on-disk record.
+	if err := os.MkdirAll(cfgPath, 0o700); err != nil {
+		t.Fatalf("mkdir config target: %v", err)
+	}
+	sentinel := filepath.Join(cfgPath, "sentinel")
+	if err := os.WriteFile(sentinel, seed, 0o600); err != nil {
+		t.Fatalf("seed sentinel: %v", err)
 	}
 
-	current, err := os.ReadFile(cfgPath2)
+	s := &Server{
+		cfg:     initialCfg,
+		cfgPath: cfgPath,
+		cfgMu:   sync.RWMutex{},
+	}
+
+	// Pre-POST in-memory snapshot of the sections the handler may replace.
+	preLLM := initialCfg.LLM
+	preUsers := make([]config.UserConfig, len(initialCfg.Users))
+	copy(preUsers, initialCfg.Users)
+	preGateways := initialCfg.Gateways
+	preTools := initialCfg.Tools
+	if initialCfg.Tools.WebFetch.URLAllowlist != nil {
+		allow := make([]string, len(initialCfg.Tools.WebFetch.URLAllowlist))
+		copy(allow, initialCfg.Tools.WebFetch.URLAllowlist)
+		preTools.WebFetch.URLAllowlist = allow
+	}
+
+	// POST that changes every managed section so a missing rollback is visible.
+	body := `{
+		"llm": {"base_url": "https://api.anthropic.com", "model": "claude-3"},
+		"users": [
+			{"name": "sarah", "display_name": "Sarah Updated", "role": "parent", "pin": "4321"}
+		],
+		"gateways": {
+			"telegram": {"enabled": false, "token": "999:NEW"},
+			"discord": {"enabled": true, "token": "987654321:ZYX"}
+		},
+		"web_fetch": {"enabled": true, "url_allowlist": ["example.com", "test.com"]}
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	s.handleSettings(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	disk, err := os.ReadFile(sentinel)
 	if err != nil {
-		t.Fatalf("read config after forced failure: %v", err)
+		t.Fatalf("read sentinel: %v", err)
 	}
-	if !bytes.Equal(current, original) {
-		t.Errorf("pre-existing config was corrupted by a failed write:\n got=%q\nwant=%q", current, original)
+	if !bytes.Equal(disk, seed) {
+		t.Errorf("on-disk config changed by failed POST:\n got=%s\nwant=%s", disk, seed)
+	}
+
+	leftovers, _ := filepath.Glob(filepath.Join(tmp, ".settings-*"))
+	if len(leftovers) != 0 {
+		t.Errorf("temp file(s) left behind after failed write: %v", leftovers)
+	}
+
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	if !reflect.DeepEqual(s.cfg.LLM, preLLM) {
+		t.Errorf("LLM not rolled back: got %+v, want %+v", s.cfg.LLM, preLLM)
+	}
+	if !reflect.DeepEqual(s.cfg.Users, preUsers) {
+		t.Errorf("Users not rolled back: got %+v, want %+v", s.cfg.Users, preUsers)
+	}
+	if !reflect.DeepEqual(s.cfg.Gateways, preGateways) {
+		t.Errorf("Gateways not rolled back: got %+v, want %+v", s.cfg.Gateways, preGateways)
+	}
+	if !reflect.DeepEqual(s.cfg.Tools, preTools) {
+		t.Errorf("Tools not rolled back: got %+v, want %+v", s.cfg.Tools, preTools)
 	}
 }
 
