@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/famclaw/famclaw/internal/config"
@@ -288,17 +289,30 @@ func (s *Server) writeConfig() error {
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
-	// Prepend warning — yaml.Marshal strips comments from original file
 	header := "# FamClaw configuration (managed by web UI)\n# Edit via the Settings page in the web UI, or edit this file and restart.\n\n"
-	// Write atomically: temp file in the same directory, then rename over the
-	// target (same pattern as config.Config.Save). A failed write leaves the
-	// pre-existing config file untouched instead of truncated.
-	tmpFile := s.cfgPath + ".tmp"
-	if err := os.WriteFile(tmpFile, append([]byte(header), data...), 0o600); err != nil {
-		return fmt.Errorf("writing temporary config: %w", err)
+	content := append([]byte(header), data...)
+
+	// Atomic write: create temp file in same directory, write, close, rename.
+	// Mirrors config.Config.Save. s.cfg is NOT mutated on any failure path.
+	dir := filepath.Dir(s.cfgPath)
+	tmp, err := os.CreateTemp(dir, ".settings-")
+	if err != nil {
+		return fmt.Errorf("creating temp config: %w", err)
 	}
-	if err := os.Rename(tmpFile, s.cfgPath); err != nil {
-		return fmt.Errorf("renaming temporary config: %w", err)
+	tmpName := tmp.Name()
+
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("writing temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("closing temp config: %w", err)
+	}
+	if err := os.Rename(tmpName, s.cfgPath); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("renaming temp config: %w", err)
 	}
 	return nil
 }

@@ -493,8 +493,7 @@ func TestSettingsPost_AllParentsRemoved(t *testing.T) {
 
 // TestSettingsWriteConfig_Atomic proves writeConfig persists the config
 // atomically: a successful write lands a valid, parseable file with the
-// managed header, and a forced failure at the temp-write step leaves the
-// pre-existing config file byte-identical (never truncated/corrupted).
+// managed header, and no leftover temp files remain.
 func TestSettingsWriteConfig_Atomic(t *testing.T) {
 	cfg := &config.Config{
 		LLM: config.LLMConfig{
@@ -506,7 +505,6 @@ func TestSettingsWriteConfig_Atomic(t *testing.T) {
 		},
 	}
 
-	// Happy path: a successful write must land a valid file with the header.
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.yaml")
 	seed, _ := yaml.Marshal(cfg)
@@ -526,38 +524,123 @@ func TestSettingsWriteConfig_Atomic(t *testing.T) {
 	if !bytes.HasPrefix(content, []byte("# FamClaw configuration")) {
 		t.Errorf("written config missing managed header")
 	}
-	// No leftover temp file after a clean write.
-	if _, err := os.Stat(cfgPath + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("temp file left behind after successful write: %v", err)
+	// No leftover .settings-* temp file after a clean write.
+	leftovers, _ := filepath.Glob(filepath.Join(tmp, ".settings-*"))
+	if len(leftovers) != 0 {
+		t.Errorf("temp file(s) left behind after successful write: %v", leftovers)
 	}
+}
 
-	// Forced failure: pre-create the temp target as a directory so
-	// os.WriteFile fails at the temp-write step, before any rename touches
-	// the real file. The original config must remain byte-identical.
-	tmp2 := t.TempDir()
-	cfgPath2 := filepath.Join(tmp2, "config.yaml")
-	if err := os.WriteFile(cfgPath2, seed, 0o600); err != nil {
-		t.Fatalf("seed config 2: %v", err)
+// TestSettingsWriteConfig_FailurePreservesState is a table-driven test that
+// asserts writeConfig leaves both the on-disk config byte-identical and the
+// in-memory s.cfg unchanged when the underlying filesystem operation fails.
+func TestSettingsWriteConfig_FailurePreservesState(t *testing.T) {
+	baseCfg := &config.Config{
+		LLM: config.LLMConfig{
+			BaseURL: "https://api.openai.com",
+			Model:   "gpt-4",
+		},
+		Users: []config.UserConfig{
+			{Name: "sarah", DisplayName: "Sarah", Role: "parent", PIN: "1234"},
+		},
 	}
-	original, err := os.ReadFile(cfgPath2)
+	seed, err := yaml.Marshal(baseCfg)
 	if err != nil {
-		t.Fatalf("read original: %v", err)
-	}
-	if err := os.MkdirAll(cfgPath2+".tmp", 0o700); err != nil {
-		t.Fatalf("block temp target: %v", err)
+		t.Fatalf("marshal seed: %v", err)
 	}
 
-	s2 := &Server{cfg: cfg, cfgPath: cfgPath2, cfgMu: sync.RWMutex{}}
-	if err := s2.writeConfig(); err == nil {
-		t.Fatalf("writeConfig: expected error when temp write fails, got nil")
+	tests := []struct {
+		name   string
+		setup  func(t *testing.T) (cfgPath string, cleanup func())
+	}{
+		{
+			name: "create_temp_fails_readonly_dir",
+			setup: func(t *testing.T) (string, func()) {
+				dir := t.TempDir()
+				cfgPath := filepath.Join(dir, "config.yaml")
+				if err := os.WriteFile(cfgPath, seed, 0o600); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+				// Make directory read-only so os.CreateTemp fails.
+				if err := os.Chmod(dir, 0o500); err != nil {
+					t.Fatalf("chmod: %v", err)
+				}
+				cleanup := func() { os.Chmod(dir, 0o700) }
+				return cfgPath, cleanup
+			},
+		},
+		{
+			name: "rename_fails_target_is_dir",
+			setup: func(t *testing.T) (string, func()) {
+				dir := t.TempDir()
+				// cfgPath points to a directory, so os.Rename onto it fails.
+				cfgPath := filepath.Join(dir, "config.yaml")
+				if err := os.MkdirAll(cfgPath, 0o700); err != nil {
+					t.Fatalf("mkdir target: %v", err)
+				}
+				// Write a sentinel file inside so we can assert it is untouched.
+				sentinel := filepath.Join(cfgPath, "sentinel")
+				if err := os.WriteFile(sentinel, seed, 0o600); err != nil {
+					t.Fatalf("write sentinel: %v", err)
+				}
+				return cfgPath, nil
+			},
+		},
 	}
 
-	current, err := os.ReadFile(cfgPath2)
-	if err != nil {
-		t.Fatalf("read config after forced failure: %v", err)
-	}
-	if !bytes.Equal(current, original) {
-		t.Errorf("pre-existing config was corrupted by a failed write:\n got=%q\nwant=%q", current, original)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfgPath, cleanup := tt.setup(t)
+			if cleanup != nil {
+				defer cleanup()
+			}
+
+			// Snapshot disk state (for rename_fails_target_is_dir the
+			// "disk" is the sentinel file inside the directory).
+			var diskBefore []byte
+			if info, err := os.Stat(cfgPath); err == nil && info.IsDir() {
+				diskBefore, _ = os.ReadFile(filepath.Join(cfgPath, "sentinel"))
+			} else {
+				diskBefore, _ = os.ReadFile(cfgPath)
+			}
+
+			// Use a mutable copy of the config so we can detect mutation.
+			cfgCopy := *baseCfg
+			cfgCopy.Users = make([]config.UserConfig, len(baseCfg.Users))
+			copy(cfgCopy.Users, baseCfg.Users)
+			originalURL := cfgCopy.LLM.BaseURL
+			originalModel := cfgCopy.LLM.Model
+			originalUsers := len(cfgCopy.Users)
+
+			s := &Server{cfg: &cfgCopy, cfgPath: cfgPath, cfgMu: sync.RWMutex{}}
+			if err := s.writeConfig(); err == nil {
+				t.Fatal("expected error, got nil")
+			}
+
+			// Assert s.cfg is unchanged.
+			if s.cfg.LLM.BaseURL != originalURL {
+				t.Errorf("LLM.BaseURL mutated: got %q, want %q", s.cfg.LLM.BaseURL, originalURL)
+			}
+			if s.cfg.LLM.Model != originalModel {
+				t.Errorf("LLM.Model mutated: got %q, want %q", s.cfg.LLM.Model, originalModel)
+			}
+			if len(s.cfg.Users) != originalUsers {
+				t.Errorf("Users length mutated: got %d, want %d", len(s.cfg.Users), originalUsers)
+			}
+
+			// Assert disk state unchanged.
+			if info, err := os.Stat(cfgPath); err == nil && info.IsDir() {
+				diskAfter, _ := os.ReadFile(filepath.Join(cfgPath, "sentinel"))
+				if !bytes.Equal(diskAfter, diskBefore) {
+					t.Error("sentinel file was modified by failed writeConfig")
+				}
+			} else {
+				diskAfter, _ := os.ReadFile(cfgPath)
+				if !bytes.Equal(diskAfter, diskBefore) {
+					t.Errorf("config file corrupted by failed write:\n got=%q\nwant=%q", diskAfter, diskBefore)
+				}
+			}
+		})
 	}
 }
 
