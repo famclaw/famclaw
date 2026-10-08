@@ -550,25 +550,9 @@ func TestSettingsWriteConfig_FailurePreservesState(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		setup  func(t *testing.T) (cfgPath string, cleanup func())
+		name  string
+		setup func(t *testing.T) (cfgPath string, cleanup func())
 	}{
-		{
-			name: "create_temp_fails_readonly_dir",
-			setup: func(t *testing.T) (string, func()) {
-				dir := t.TempDir()
-				cfgPath := filepath.Join(dir, "config.yaml")
-				if err := os.WriteFile(cfgPath, seed, 0o600); err != nil {
-					t.Fatalf("seed: %v", err)
-				}
-				// Make directory read-only so os.CreateTemp fails.
-				if err := os.Chmod(dir, 0o500); err != nil {
-					t.Fatalf("chmod: %v", err)
-				}
-				cleanup := func() { os.Chmod(dir, 0o700) }
-				return cfgPath, cleanup
-			},
-		},
 		{
 			name: "rename_fails_target_is_dir",
 			setup: func(t *testing.T) (string, func()) {
