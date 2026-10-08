@@ -267,6 +267,24 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Snapshot the sections about to be replaced so a failed write can roll
+	// memory back to the on-disk state.
+	snapLLM := s.cfg.LLM
+	if s.cfg.LLM.Profiles != nil {
+		snapLLM.Profiles = make(map[string]config.LLMProfile, len(s.cfg.LLM.Profiles))
+		for name, p := range s.cfg.LLM.Profiles {
+			snapLLM.Profiles[name] = p
+		}
+	}
+	snapUsers := make([]config.UserConfig, len(s.cfg.Users))
+	copy(snapUsers, s.cfg.Users)
+	snapGateways := s.cfg.Gateways
+	snapTools := s.cfg.Tools
+	if s.cfg.Tools.WebFetch.URLAllowlist != nil {
+		snapTools.WebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
+		copy(snapTools.WebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
+	}
+
 	// Assign all validated values at once
 	s.cfg.LLM = newLLM
 	s.cfg.Users = newUsers
@@ -276,6 +294,10 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	// Write back to config.yaml
 	if s.cfgPath != "" {
 		if err := s.writeConfig(); err != nil {
+			s.cfg.LLM = snapLLM
+			s.cfg.Users = snapUsers
+			s.cfg.Gateways = snapGateways
+			s.cfg.Tools = snapTools
 			jsonErr(w, fmt.Errorf("saving config: %w", err), http.StatusInternalServerError)
 			return
 		}
