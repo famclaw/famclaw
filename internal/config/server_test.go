@@ -57,9 +57,9 @@ func TestValidate_ServerHost(t *testing.T) {
 			wantErrSubs: nil,
 		},
 		{
-			name:        "specific non-loopback IP without secret",
-			// 10.x is used deliberately — a 192.168.1.x address would look
-			// like a real household LAN address and fail the no-private-info
+			name: "specific non-loopback IP without secret",
+			// 10.x is used deliberately — a 192.168/16 household-range address
+			// would look like a real LAN address and fail the no-private-info
 			// review gate, while 10.x is the canonical RFC1918 test range.
 			host:        "10.0.0.50",
 			secret:      "",

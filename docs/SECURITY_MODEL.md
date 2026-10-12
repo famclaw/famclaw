@@ -16,6 +16,88 @@ Sessions are invalidated immediately on logout. Expired sessions are cleaned
 by the hourly goroutine and also filtered on read (Get returns ErrNoSession
 for expired rows).
 
+## Network exposure
+
+### Default bind
+
+`server.host` defaults to `0.0.0.0` (all interfaces). FamClaw's product
+shape is a "family box on the LAN" that phones, tablets, and children reach
+from other devices, so a fresh install that refused LAN connections would
+be a bigger product break than the exposure. The exposure is contained
+instead of avoided:
+
+- **Every authenticated surface is session-gated.** No API route returns
+  data or takes an action without a valid `famclaw_session` cookie
+  (see Web session model). The only public routes are the login/join
+  entry points, first-boot setup, health, and the HMAC-signed `/decide`
+  approval link.
+- **Public entry points are rate-limited with constant-shape responses.**
+  `/login`, `/api/join`, and `/api/setup/unlock` share one per-IP budget
+  (5 failures / 15 min → 1 min lockout) and return byte-identical errors
+  for "no such credential" and "wrong credential".
+- **Boot validation + loud log.** A wildcard bind (`0.0.0.0`, `::`, `*`)
+  requires `server.secret` to be set to 32+ characters
+  (`Config.Validate` fails boot otherwise), because the secret signs the
+  `/decide` approval tokens and a LAN-facing install without it is the
+  worst state. The boot log says explicitly which mode is active:
+  "listening on all interfaces — LAN/remote access enabled" or
+  "listening on loopback only".
+
+**Override for single-operator boxes:** `server.host: 127.0.0.1`
+(loopback-only, no secret required) or a specific LAN IP for a
+particular interface. Any `server.host` that is not a valid IP fails boot
+with a message naming the key.
+
+### Child web access: per-child join codes
+
+Children get a web session without sharing the parent PIN. The parent
+issues a short, revocable, per-child **access code** from the dashboard
+(Web Access Codes section); the child enters (name + code) on the public
+`/join` page and receives the same `famclaw_session` cookie as the parent
+flow, bound to the child's user ID.
+
+Storage and lifecycle:
+
+- The code is 8 characters from an unambiguous alphabet (no 0/O/1/I),
+  generated server-side (never parent-chosen) — 40 bits of entropy.
+- Only `SHA-256(code)`, vault-encrypted (same machine-bound AES-256-GCM
+  as the parent PIN), is persisted — in a `vault_secrets` row named
+  `user_pin:<childName>`. The plaintext code is returned to the parent
+  exactly once, on issue; it is not stored in plaintext anywhere (not the
+  DB, not the config, not the logs).
+- Re-issuing replaces the row: the previous code is dead immediately.
+  Revoking deletes the row. A child session cannot obtain admin
+  capabilities — the admin routes are role-gated to base role `parent`
+  (`protectParent`), and a child chat agent gets the child's toolset,
+  never the admin tools.
+- The join endpoint draws from the SAME per-IP rate budget as `/login`,
+  and all failure states (unknown name, parent name, unissued code, wrong
+  code, vault decrypt failure) return the same 401 body.
+
+The public household directory (`GET /api/users/public`) lists
+non-parent users' names/display-names/colors only — no roles, no age
+groups — because a child must be able to pick their identity without
+credentials.
+
+### WebSocket origin policy
+
+`/api/chat` upgrades are gated by `server.ws_origin_policy`:
+
+- `same-origin` (default): a present `Origin` header must equal the
+  server's own `scheme://host` (scheme, host, and port all compared); a
+  missing `Origin` is allowed — non-browser clients (curl, scripts,
+  native apps) cannot send one, and the SameSite=Strict session cookie is
+  the effective cross-site gate.
+- `strict`: everything above plus a missing `Origin` is rejected — only a
+  browser-grade same-origin handshake can open the socket. Use this on
+  hosts the operator wants reachable only from the dashboard itself.
+
+Any other value fails boot (`Config.Validate`). Rejected upgrades get the
+upgrader's default 403. The SSE dashboard stream (`/api/stream`) sends no
+`Access-Control-Allow-Origin` header at all: it is session-gated and the
+SameSite=Strict cookie will not attach to a cross-origin request, so a
+wildcard would only claim an allowance the gate already denies.
+
 ## PIN storage
 
 The parent PIN is never stored in plaintext. The storage flow:

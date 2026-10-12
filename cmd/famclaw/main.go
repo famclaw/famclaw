@@ -1086,7 +1086,10 @@ func main() {
 
 	// Start
 	go func() {
-		log.Printf("✅ FamClaw %s listening on %s", Version, cfg.Server.Addr())
+		// DescribeBind renders the "loud default" line: a wildcard bind says
+		// explicitly that LAN/remote access is enabled (and where the model
+		// lives), loopback says it is loopback-only.
+		log.Printf("✅ FamClaw %s up on %s: %s", Version, cfg.Server.Addr(), config.DescribeBind(cfg.Server.Host))
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server: %v", err)
 		}

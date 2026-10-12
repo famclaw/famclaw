@@ -2,10 +2,13 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -284,6 +287,240 @@ func clientIP(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// ── Child join codes ─────────────────────────────────────────────────────────
+
+// joinCodeAlphabet is an unambiguous 32-char alphabet (no 0/O/1/I) for
+// per-child join codes. 32 chars keeps int(c) & 31 an unbiased index, so a
+// code is exactly 8 × 5 = 40 bits of entropy from crypto/rand.
+const joinCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+// joinCodeLength is the length of a generated join code.
+const joinCodeLength = 8
+
+// generateJoinCode draws a random 8-character join code from joinCodeAlphabet.
+// Codes are generated server-side (never parent-chosen) so the entropy claim
+// is honest; the parent reads the returned code once and hands it over.
+func generateJoinCode() (string, error) {
+	buf := make([]byte, joinCodeLength)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generating join code: %w", err)
+	}
+	code := make([]byte, joinCodeLength)
+	for i, c := range buf {
+		code[i] = joinCodeAlphabet[int(c)&31]
+	}
+	return string(code), nil
+}
+
+// JoinHandler serves the child-join flow: /api/join (public — the child's
+// entry point, sharing /login's per-IP rate budget) and
+// /api/users/<name>/join-code (parent-only — issue/revoke the per-child
+// code). The model: the parent issues a short, revocable, per-child code
+// from the dashboard; the child enters (name + code) on /join and receives a
+// scoped child session cookie using the SAME web_sessions store and cookie
+// attributes as the parent flow. The child never sees or transmits the
+// parent PIN.
+//
+// All failure paths of HandleJoin return the SAME 401 body — unknown user,
+// parent name, unissued code, wrong code, and vault decrypt failure are
+// indistinguishable — and the handler enforces the same minLatency floor as
+// /login.
+type JoinHandler struct {
+	sessions                 *store.SessionStore
+	vault                    *credstore.Vault
+	getChildPINCiphertext    func(context.Context, string) ([]byte, error)
+	saveChildPINCiphertext   func(context.Context, string, []byte) error
+	deleteChildPINCiphertext func(context.Context, string) error
+	resolveChildUserID       func(context.Context, string) (int64, error)
+	limiter                  *loginLimiter
+	minLatency               time.Duration
+}
+
+// NewJoinHandler constructs a JoinHandler. limiter is the SAME instance as
+// the AuthHandler's (see AuthHandler.Limiter): brute force against /join and
+// /login draws one shared per-IP budget, the same argument handleSetupUnlock
+// already uses.
+func NewJoinHandler(
+	sessions *store.SessionStore,
+	vault *credstore.Vault,
+	getChildPINCiphertext func(context.Context, string) ([]byte, error),
+	saveChildPINCiphertext func(context.Context, string, []byte) error,
+	deleteChildPINCiphertext func(context.Context, string) error,
+	resolveChildUserID func(context.Context, string) (int64, error),
+	limiter *loginLimiter,
+) *JoinHandler {
+	return &JoinHandler{
+		sessions:                 sessions,
+		vault:                    vault,
+		getChildPINCiphertext:    getChildPINCiphertext,
+		saveChildPINCiphertext:   saveChildPINCiphertext,
+		deleteChildPINCiphertext: deleteChildPINCiphertext,
+		resolveChildUserID:       resolveChildUserID,
+		limiter:                  limiter,
+		minLatency:               250 * time.Millisecond,
+	}
+}
+
+// HandleJoin verifies (child name + join code) against the vault row
+// user_pin:<name> and, on success, issues a session cookie bound to the
+// CHILD's user ID. Every failure path returns the byte-identical body
+// {"error":"invalid credentials"} with 401; the 250 ms latency floor keeps
+// timing from a further channel.
+func (j *JoinHandler) HandleJoin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	start := time.Now()
+	defer func() {
+		if d := j.minLatency - time.Since(start); d > 0 {
+			time.Sleep(d)
+		}
+	}()
+
+	ip := clientIP(r)
+	allowed, retryAfter := j.limiter.check(ip)
+	if !allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many attempts"})
+		return
+	}
+
+	// reject writes the constant-shape 401 and records the attempt against
+	// the shared limiter.
+	reject := func() {
+		j.limiter.recordFailure(ip)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+	}
+
+	var req struct {
+		Name string `json:"name"`
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		reject()
+		return
+	}
+
+	// (1) The named user must exist and be a child. resolveChildUserID folds
+	// "unknown name" and "parent name" into one error on purpose: both map
+	// to the same generic 401 below.
+	userID, err := j.resolveChildUserID(r.Context(), req.Name)
+	if err != nil {
+		reject()
+		return
+	}
+
+	// (2) The vault row for this child must exist and decrypt. sql.ErrNoRows
+	// (code never issued) and vault decrypt failure (machine mismatch) are
+	// both surfaced as the same generic 401 — like HandleLogin.
+	ct, err := j.getChildPINCiphertext(r.Context(), req.Name)
+	if err != nil {
+		reject()
+		return
+	}
+	codeHash, err := j.vault.Decrypt(ct)
+	if err != nil {
+		reject()
+		return
+	}
+
+	// (3) Constant-time compare of the submitted code's hash.
+	submitted := sha256.Sum256([]byte(req.Code))
+	if subtle.ConstantTimeCompare(submitted[:], codeHash) != 1 {
+		reject()
+		return
+	}
+
+	j.limiter.recordSuccess(ip)
+
+	sid, err := j.sessions.Create(r.Context(), userID, ip, r.Header.Get("User-Agent"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+
+	// Same cookie name and attributes as the parent flow: the session is the
+	// identity, and WithSession cannot tell (or care) which flow issued it.
+	http.SetCookie(w, &http.Cookie{
+		Name:     "famclaw_session",
+		Value:    sid,
+		Path:     "/",
+		MaxAge:   7 * 24 * 3600,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
+	})
+	writeJSON(w, http.StatusOK, map[string]int64{"user_id": userID})
+}
+
+// HandleJoinCode issues or revokes the join code for a named child. Mounted
+// behind protectParent (parent session required). The plain code is returned
+// exactly once on issue and never persisted (only its SHA-256, vault-
+// encrypted, is stored); re-issuing replaces the row, so the old code is
+// dead.
+func (j *JoinHandler) HandleJoinCode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing user name"})
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+
+	// Name must resolve to a child; parents have no join codes and unknown
+	// names are a config error the parent should see plainly (this is the
+	// authenticated admin surface — clarity, not constant shape).
+	if _, err := j.resolveChildUserID(r.Context(), name); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not a child user"})
+		return
+	}
+
+	switch req.Action {
+	case "issue":
+		code, err := generateJoinCode()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		sum := sha256.Sum256([]byte(code))
+		ct, err := j.vault.Encrypt(sum[:])
+		if err != nil {
+			log.Printf("[join] vault.Encrypt for %q: %v", name, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		if err := j.saveChildPINCiphertext(r.Context(), name, ct); err != nil {
+			log.Printf("[join] storing join code for %q: %v", name, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"code": code})
+	case "revoke":
+		// Deleting a row that does not exist is a no-op success — revoking
+		// twice is not an error from the operator's perspective.
+		if err := j.deleteChildPINCiphertext(r.Context(), name); err != nil {
+			log.Printf("[join] revoking join code for %q: %v", name, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": `action must be "issue" or "revoke"`})
+	}
 }
 
 // writeJSON writes a JSON response with the given status code. Encode errors

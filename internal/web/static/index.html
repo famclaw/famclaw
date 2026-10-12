@@ -320,7 +320,11 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
   <div id="user-screen">
     <h2>Who's asking?</h2>
     <div id="user-grid"></div>
-    <p class="login-affordance"><a href="/login">Sign in as parent</a></p>
+    <p class="login-affordance">
+      <a href="/join">Join FamClaw with an access code</a>
+      ·
+      <a href="/login">Sign in as parent</a>
+    </p>
   </div>
 
   <!-- Chat screen -->
@@ -362,6 +366,12 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
           <div class="empty-state">Select a child to view conversations</div>
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap" id="conv-user-buttons"></div>
+      </div>
+      <div class="d-section">
+        <div class="d-title">🔑 Web Access Codes</div>
+        <div class="d-card" id="join-codes-list">
+          <div class="empty-state">Loading…</div>
+        </div>
       </div>
       <div class="d-section">
         <div class="d-title">👥 Unknown Accounts</div>
@@ -685,6 +695,7 @@ const state = {
   users: [],
   currentUser: null,
   ws: null,
+  guest: false,          // true when there is no session: grid is the public directory
   mode: 'chat',           // 'chat' | 'dashboard'
   streamingMsg: null,     // DOM element being streamed into
 };
@@ -701,14 +712,20 @@ async function boot() {
   }
 
   // Otherwise the SPA requires an authenticated session. Anything else (no
-  // cookie, expired cookie, server-revoked cookie) bounces to /login so the
-  // protected admin endpoints never see an unauthenticated request.
+  // cookie, expired cookie, server-revoked cookie) falls into the guest
+  // branch below.
   const sess = await fetch('/session', {credentials: 'same-origin'})
     .then(r => r.json())
     .catch(() => ({logged_in: false}));
+
+  // No session: the grid shows the PUBLIC household directory (non-parent
+  // users only, nothing sensitive) so a child can pick their identity and
+  // reach /join with a parent-issued access code; the parent uses /login with
+  // the PIN. The protected admin endpoints never see an unauthenticated
+  // request.
   if (!sess || !sess.logged_in) {
-    console.log('not logged in — guest mode (chat-only)');
-    // Render chat UI in guest mode
+    state.guest = true;
+    state.users = (await apiFetch('/api/users/public')) || [];
     renderUserGrid();
     return;
   }
@@ -727,16 +744,27 @@ function renderUserGrid() {
   state.users.forEach(u => {
     const card = el('div', { class: 'user-card', 'data-name': u.name });
     const initials = u.display_name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2);
+    // In guest mode the grid is the public directory (no role/age data): the
+    // card advertises the join-code entry instead of a role badge.
+    const roleLabel = state.guest
+      ? '🔑 access code'
+      : (u.role === 'parent' ? '👑 Parent' : ageLabel(u.age_group));
     card.innerHTML = `
       <div class="avatar" style="background:${u.color || '#6366f1'}">${initials}</div>
       <div class="name">${u.display_name}</div>
-      <div class="role">${u.role === 'parent' ? '👑 Parent' : ageLabel(u.age_group)}</div>`;
+      <div class="role">${roleLabel}</div>`;
     card.onclick = () => selectUser(u);
     grid.appendChild(card);
   });
 }
 
 function selectUser(user) {
+  if (state.guest) {
+    // No session: children get one on /join with a parent-issued access code
+    // (clicking a card is the natural "I am X" entry point).
+    window.location.href = '/join';
+    return;
+  }
   if (user.role === 'parent') {
     // Boot already verified the session, so the parent doesn't need to
     // re-authenticate just to switch into the dashboard view.
@@ -901,6 +929,7 @@ async function loadDashboard() {
   renderSkills(skills || []);
   renderMcpServers((mcp && mcp.servers) || []);
   renderConversationButtons();
+  renderJoinCodes();
   loadUnknownAccounts();
 }
 
@@ -913,6 +942,78 @@ function renderConversationButtons() {
     btn.onclick = () => loadConversations(u.name);
     container.appendChild(btn);
   });
+}
+
+// renderJoinCodes shows one "access code" control per child on the parent
+// dashboard. Issue generates a parent-issued join code (returned exactly
+// once, never re-shown); Revoke kills it. The code is the child's entry to a
+// web session — the child enters it on /join.
+function renderJoinCodes() {
+  const list = document.getElementById('join-codes-list');
+  if (!list) return;
+  list.textContent = '';
+  const children = state.users.filter(u => u.role === 'child');
+  if (!children.length) {
+    const empty = el('div', {class: 'empty-state'});
+    empty.textContent = 'No child users configured.';
+    list.appendChild(empty);
+    return;
+  }
+  children.forEach(u => {
+    const row = el('div', {class: 'approval-item'});
+    const avatar = el('div', {class: 'ap-avatar', style: `background:${u.color || '#6366f1'}`});
+    avatar.textContent = u.display_name[0].toUpperCase();
+    const body = el('div', {class: 'ap-body'});
+    const name = el('div', {class: 'ap-name'});
+    name.textContent = u.display_name;
+    const codeEl = el('span', {style: 'font-family:monospace;letter-spacing:.15em;margin-right:8px'});
+    const issueBtn = el('button', {class: 'btn'});
+    issueBtn.textContent = 'Issue code';
+    issueBtn.addEventListener('click', () => setJoinCode(u.name, 'issue', codeEl, issueBtn));
+    const revokeBtn = el('button', {class: 'btn'});
+    revokeBtn.textContent = 'Revoke';
+    revokeBtn.addEventListener('click', () => setJoinCode(u.name, 'revoke', codeEl, revokeBtn));
+    const actions = el('div', {class: 'ap-actions'});
+    actions.appendChild(codeEl);
+    actions.appendChild(issueBtn);
+    actions.appendChild(revokeBtn);
+    body.appendChild(name);
+    body.appendChild(actions);
+    row.appendChild(avatar);
+    row.appendChild(body);
+    list.appendChild(row);
+  });
+}
+
+// setJoinCode issues or revokes a child's join code and reflects the result
+// inline. On issue, the code is displayed once; it is not persisted anywhere,
+// so "show again" would be a fresh issue (the old code is dead).
+async function setJoinCode(name, action, codeEl, btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/users/${encodeURIComponent(name)}/join-code`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action})
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showToast(data.error || 'Failed');
+      return;
+    }
+    if (action === 'issue') {
+      codeEl.textContent = data.code || '';
+      showToast('Code issued — share it once; it will not be shown again');
+    } else {
+      codeEl.textContent = '';
+      showToast('Access code revoked');
+    }
+  } catch {
+    showToast('Connection error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function loadConversations(userName) {

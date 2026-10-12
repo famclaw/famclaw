@@ -69,7 +69,8 @@ type Server struct {
 	sessions       *store.SessionStore
 	vault          *credstore.Vault
 	auth           *AuthHandler
-	vaultMismatch  bool // protected by vaultMu — true once a probe finds the on-disk vault was sealed by a different machine
+	join           *JoinHandler // child join-code flow; shares auth's limiter
+	vaultMismatch  bool         // protected by vaultMu — true once a probe finds the on-disk vault was sealed by a different machine
 	vaultMu        sync.RWMutex
 	mcpSkipped     []string       // MCP servers skipped at boot, surfaced by /api/health
 	seccheckStatus SecCheckStatus // scanner availability, surfaced by /api/health
@@ -154,6 +155,18 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store
 	// state it needs.
 	if sessions != nil && vault != nil {
 		s.auth = NewAuthHandler(sessions, vault, s.getParentPINCiphertext, s.resolveParentUserID)
+		// The join handler shares the AuthHandler's limiter instance: from an
+		// attacker's perspective /join and /login gate the same household,
+		// so one per-IP budget covers both.
+		s.join = NewJoinHandler(
+			sessions,
+			vault,
+			s.getChildPINCiphertext,
+			s.saveChildPINCiphertext,
+			s.deleteChildPINCiphertext,
+			s.resolveChildUserID,
+			s.auth.Limiter(),
+		)
 	}
 	return s
 }
@@ -190,6 +203,21 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/session", s.auth.HandleSession)
 	}
 
+	// ── Child join (public — the child's entry point) ────────────────────────
+	// /join serves the embedded join page (via the static tree); /api/join
+	// exchanges (child name + parent-issued code) for a scoped child session.
+	// Both are rate-limited by the same per-IP budget as /login.
+	mux.HandleFunc("/join", s.handleJoinPage)
+	if s.join != nil {
+		mux.HandleFunc("/api/join", s.join.HandleJoin)
+		// Issue/revoke a per-child join code — parent session required.
+		mux.Handle("/api/users/{name}/join-code", s.protectParent(http.HandlerFunc(s.join.HandleJoinCode)))
+	}
+	// Household directory for the join page: non-parent users only, no roles
+	// or age groups — a child must be able to pick an identity without
+	// credentials, and nothing sensitive leaks through this listing.
+	mux.HandleFunc("/api/users/public", s.handleUsersPublic)
+
 	// ── First-boot setup endpoints (always public) ────────────────────────────
 	// /api/setup/detect runs before any PIN is configured (see handleSetupDetect
 	// for its own first-boot guard). The PIN-bootstrap and vault-unlock endpoints
@@ -202,27 +230,36 @@ func (s *Server) Handler() http.Handler {
 	// ── Gateway / external entry points (their own auth) ──────────────────────
 	mux.HandleFunc("/decide", s.handleDecideLink) // HMAC-signed approval token
 
-	// ── Protected admin surface (session-gated) ───────────────────────────────
+	// ── Protected admin surface ──────────────────────────────────────────────
+	// Two tiers:
+	//   - s.protect (any valid session): the chat surface, conversation
+	//     history, family-state reads, and the SSE stream — a child session
+	//     may use these as itself.
+	//   - s.protectParent (parent session only): the management surface
+	//     (settings, approvals, skills, MCP, unknown accounts, join-code
+	//     issue/revoke). "Bind authorization to server-side identity" — a
+	//     child session must not be able to POST /api/settings any more
+	//     than it could reach the parent's admin tools over chat.
 	mux.Handle("/api/chat", s.protect(s.handleChat)) // WebSocket — identity bound to the server-side session
-	mux.Handle("/api/users", s.protect(s.handleUsers))
-	mux.Handle("/api/approvals", s.protect(s.handleApprovals))
-	mux.Handle("/api/approvals/decide", s.protect(s.handleDecide))
-	mux.Handle("/api/skills", s.protect(s.handleSkills))
-	mux.Handle("/api/skills/install", s.protect(s.handleSkillInstall))
-	mux.Handle("/api/skills/remove", s.protect(s.handleSkillRemove))
-	mux.Handle("/api/mcp", s.protect(s.handleMCP))
-	mux.Handle("/api/mcp/add", s.protect(s.handleMCPAdd))
-	mux.Handle("/api/mcp/remove", s.protect(s.handleMCPRemove))
-	mux.Handle("/api/unknown-accounts", s.protect(s.handleUnknownAccounts))
-	mux.Handle("/api/unknown-accounts/link", s.protect(s.handleUnknownAccountLink))
-	mux.Handle("/api/unknown-accounts/dismiss", s.protect(s.handleUnknownAccountDismiss))
+	mux.Handle("/api/users", s.protectParent(s.handleUsers))
+	mux.Handle("/api/approvals", s.protectParent(s.handleApprovals))
+	mux.Handle("/api/approvals/decide", s.protectParent(s.handleDecide))
+	mux.Handle("/api/skills", s.protectParent(s.handleSkills))
+	mux.Handle("/api/skills/install", s.protectParent(s.handleSkillInstall))
+	mux.Handle("/api/skills/remove", s.protectParent(s.handleSkillRemove))
+	mux.Handle("/api/mcp", s.protectParent(s.handleMCP))
+	mux.Handle("/api/mcp/add", s.protectParent(s.handleMCPAdd))
+	mux.Handle("/api/mcp/remove", s.protectParent(s.handleMCPRemove))
+	mux.Handle("/api/unknown-accounts", s.protectParent(s.handleUnknownAccounts))
+	mux.Handle("/api/unknown-accounts/link", s.protectParent(s.handleUnknownAccountLink))
+	mux.Handle("/api/unknown-accounts/dismiss", s.protectParent(s.handleUnknownAccountDismiss))
 	mux.Handle("/api/conversations", s.protect(s.handleConversations))
 	mux.Handle("/api/reminders/undelivered", s.protect(s.handleUndeliveredReminders))
 	mux.Handle("/api/family-state/facts", s.protect(s.handleFamilyStateFacts))
 	mux.Handle("/api/family-state/facts/", s.protect(s.handleFamilyStateFact))
 	mux.Handle("/api/family-state/categories", s.protect(s.handleFamilyStateCategories))
 	mux.Handle("/api/family-state/categories/", s.protect(s.handleFamilyStateCategory))
-	mux.Handle("/api/settings", s.protect(s.handleSettings))
+	mux.Handle("/api/settings", s.protectParent(s.handleSettings))
 	mux.Handle("/api/setup/test-telegram", s.conditionalProtect(s.handleTestTelegram))
 	mux.Handle("/api/setup/test-discord", s.conditionalProtect(s.handleTestDiscord))
 	mux.Handle("/api/stream", s.protect(s.handleStream))
@@ -247,13 +284,37 @@ func (s *Server) protect(h http.HandlerFunc) http.Handler {
 	return middleware.WithSession(s.sessions)(h)
 }
 
-// conditionalProtect bypasses session protection while the parent PIN has not
-// been configured yet, and falls back to s.protect once setup is complete.
-// Used by setup-wizard endpoints (gateway "Test connection" probes) that the
-// wizard hits before /api/setup/pin seats the initial session cookie — without
-// this gate they would 401 on every fresh install.
+// protectParent is protect plus a role gate: the session's user must have
+// the BASE config role "parent" (DB role overrides are deliberately ignored,
+// the same rule ?user= impersonation uses — an override cannot grant admin
+// rights). Anonymous requests still get 401 (the session middleware ran
+// first); a valid child session gets 403.
+func (s *Server) protectParent(h http.HandlerFunc) http.Handler {
+	gated := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := middleware.IdentityFrom(r.Context())
+		if !ok {
+			// Unreachable — WithSession attaches an identity before the inner
+			// handler runs — but fail closed rather than assume.
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+			return
+		}
+		userCfg := s.getUserByID(identity.UserID)
+		if userCfg == nil || userCfg.Role != "parent" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+			return
+		}
+		h(w, r)
+	})
+	return s.protect(gated)
+}
+
+// conditionalProtect bypasses protection while the parent PIN has not been
+// configured yet, and falls back to s.protectParent once setup is complete —
+// post-PIN, the gateway "Test connection" probes are a management action and
+// a child session must not reach them. Used by setup-wizard endpoints that
+// the wizard hits before /api/setup/pin seats the initial session cookie.
 func (s *Server) conditionalProtect(h http.HandlerFunc) http.Handler {
-	protected := s.protect(h)
+	protected := s.protectParent(h)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.hasPINConfigured(r.Context()) {
 			h(w, r)
@@ -303,6 +364,69 @@ func (s *Server) resolveParentUserID(ctx context.Context) (int64, error) {
 		}
 	}
 	return 0, fmt.Errorf("resolving parent user id: no parent user configured")
+}
+
+// childPINRowName returns the vault_secrets row name holding a child's join
+// code hash. The "user_pin:" prefix means the row can never collide with the
+// parent's "parent_pin" row (the only other fixed name); TestChildPINRowName
+// pins this.
+func childPINRowName(name string) string {
+	return "user_pin:" + name
+}
+
+// getChildPINCiphertext fetches the encrypted join-code hash for a child.
+// Returns sql.ErrNoRows when the parent has not issued a code yet;
+// JoinHandler maps that to the same generic 401 as a wrong-code attempt.
+func (s *Server) getChildPINCiphertext(ctx context.Context, name string) ([]byte, error) {
+	var ct []byte
+	err := s.db.SQL().QueryRowContext(ctx,
+		`SELECT ciphertext FROM vault_secrets WHERE name = ?`, childPINRowName(name)).Scan(&ct)
+	return ct, err
+}
+
+// saveChildPINCiphertext upserts the encrypted join-code hash. Re-issuing
+// replaces the row — the previous code is dead from the moment the new one
+// is stored.
+func (s *Server) saveChildPINCiphertext(ctx context.Context, name string, ct []byte) error {
+	_, err := s.db.SQL().ExecContext(ctx,
+		`INSERT INTO vault_secrets(name, ciphertext, updated_at) VALUES(?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET ciphertext = excluded.ciphertext, updated_at = excluded.updated_at`,
+		childPINRowName(name), ct, time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("saving child join code for %q: %w", name, err)
+	}
+	return nil
+}
+
+// deleteChildPINCiphertext revokes the child's join code. Deleting a
+// missing row is a no-op (see JoinHandler.HandleJoinCode).
+func (s *Server) deleteChildPINCiphertext(ctx context.Context, name string) error {
+	if _, err := s.db.SQL().ExecContext(ctx,
+		`DELETE FROM vault_secrets WHERE name = ?`, childPINRowName(name)); err != nil {
+		return fmt.Errorf("revoking child join code for %q: %w", name, err)
+	}
+	return nil
+}
+
+// resolveChildUserID returns the synthesised session ID (config index + 1,
+// the same scheme resolveParentUserID uses) for the named user — but only
+// when the user exists AND is not a parent. Both "unknown name" and
+// "parent name" return an error on purpose: /api/join maps either to the
+// same generic 401, so the endpoint cannot distinguish "no such child" from
+// "parents have no join codes".
+func (s *Server) resolveChildUserID(ctx context.Context, name string) (int64, error) {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	for i, u := range s.cfg.Users {
+		if u.Name != name {
+			continue
+		}
+		if u.Role == "parent" {
+			return 0, fmt.Errorf("resolving child user %q: parents have no join codes", name)
+		}
+		return int64(i + 1), nil
+	}
+	return 0, fmt.Errorf("resolving child user %q: no such user", name)
 }
 
 // getVaultMismatch returns the current vault-mismatch flag. Used by handleRoot
@@ -526,22 +650,34 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// allowedOrigin enforces a same-origin policy on WebSocket upgrades. Browsers
-// always send an Origin header on WS handshakes, so any present Origin must
-// match this server's own origin (scheme://host); this blocks a page on
-// another host from opening a chat socket. Requests without an Origin header
-// are non-browser clients (scripts, native apps) and are permitted — their
-// access is controlled by the session gate, not the origin check.
+// allowedOrigin enforces the configured WebSocket origin policy on upgrades.
+// Browsers always send an Origin header on WS handshakes, so a present
+// Origin must match this server's own origin (scheme://host) — this blocks a
+// page on another host from opening a chat socket. A missing Origin means a
+// non-browser client (scripts, native apps): "same-origin" (default) allows
+// it — the SameSite=Strict session cookie remains the cross-site gate;
+// "strict" rejects it so only a same-origin browser handshake can open the
+// socket. Rejected upgrades get the upgrader's default 403.
 func (s *Server) allowedOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		return true
+		return s.wsOriginPolicy() != "strict"
 	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
 	return origin == fmt.Sprintf("%s://%s", scheme, r.Host)
+}
+
+// wsOriginPolicy returns the configured WebSocket origin policy. The value is
+// validated at boot (Config.Validate) and defaulted by applyDefaults, so only
+// "same-origin" or "strict" reaches here; reading it per request (under the
+// config lock) keeps hot-reloaded configs honoured without a restart.
+func (s *Server) wsOriginPolicy() string {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg.Server.WSOriginPolicy
 }
 
 func (s *Server) sendWS(client *wsClient, msgType string, payload any) {
@@ -559,6 +695,46 @@ func (s *Server) sendWS(client *wsClient, msgType string, payload any) {
 }
 
 // ── REST API ──────────────────────────────────────────────────────────────────
+
+// handleJoinPage redirects GET /join to the embedded child-join page,
+// mirroring how GET /login redirects to /login.html (the static file is
+// served by the root handler). POST is meaningless here — the join exchange
+// lives on /api/join.
+func (s *Server) handleJoinPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		http.Redirect(w, r, "/join.html", http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("Allow", "GET")
+	w.WriteHeader(http.StatusMethodNotAllowed)
+}
+
+// handleUsersPublic serves the household directory the child-join page uses
+// to pick an identity. Public on purpose — a child must reach it without
+// credentials — but it exposes non-parent users only and nothing beyond
+// name/display-name/color: no roles, no age groups, no admin data.
+func (s *Server) handleUsersPublic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	type publicUserView struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+		Color       string `json:"color"`
+	}
+	s.cfgMu.RLock()
+	users := make([]publicUserView, 0, len(s.cfg.Users))
+	for _, u := range s.cfg.Users {
+		if u.Role == "parent" {
+			continue
+		}
+		users = append(users, publicUserView{Name: u.Name, DisplayName: u.DisplayName, Color: u.Color})
+	}
+	s.cfgMu.RUnlock()
+	jsonOK(w, users)
+}
 
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	type userView struct {
@@ -815,7 +991,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// No Access-Control-Allow-Origin header: the endpoint is session-gated
+	// (s.protect) and the SameSite=Strict cookie will not attach to a
+	// cross-origin request, so a wildcard would only claim a cross-origin
+	// allowance the gate already denies. The SPA consumes this same-origin.
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
