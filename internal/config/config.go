@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -215,6 +216,14 @@ type ServerConfig struct {
 	Host   string `yaml:"host"`
 	Port   int    `yaml:"port"`
 	Secret string `yaml:"secret"`
+	// WSOriginPolicy controls the WebSocket origin gate for /api/chat:
+	//   - "same-origin" (default): a present Origin header must equal the
+	//     server's own scheme://Host; a missing Origin is allowed (non-browser
+	//     clients — curl, scripts, native apps — cannot send one, and the
+	//     SameSite=Strict session cookie remains the cross-site gate).
+	//   - "strict": everything above PLUS missing-Origin is rejected, so
+	//     only a same-origin browser handshake can open the chat socket.
+	WSOriginPolicy string `yaml:"ws_origin_policy,omitempty"`
 	// Deprecated: mDNS was removed in v0.5.x (issue #110) because it
 	// didn't resolve reliably on Windows or many home routers. The field
 	// is retained so existing config.yaml files continue to load, and
@@ -477,6 +486,12 @@ func applyDefaults(c *Config) {
 	if c.Server.Port == 0 {
 		c.Server.Port = 8080
 	}
+	// WebSocket origin gate defaults to same-origin: a present Origin header
+	// must equal the server's own origin, while a missing Origin (non-browser
+	// clients) is allowed. "strict" is the opt-in for browser-only handshakes.
+	if c.Server.WSOriginPolicy == "" {
+		c.Server.WSOriginPolicy = "same-origin"
+	}
 	if c.Server.MDNSName == "" {
 		c.Server.MDNSName = "famclaw"
 	}
@@ -587,6 +602,61 @@ func applyDefaults(c *Config) {
 	}
 }
 
+// validateServer checks the server bind and the WebSocket origin policy.
+// It operates on the *effective* config (post applyDefaults), so the host is
+// already "0.0.0.0" when the operator left it empty.
+//
+// Bind rules:
+//   - A wildcard bind (0.0.0.0, ::, *) exposes the web UI to every
+//     interface — acceptable only when a real HMAC secret is configured
+//     (the secret signs /decide approval tokens and is required for a
+//     LAN-facing install to be safe). Boot fails with an actionable message
+//     rather than letting the operator discover the exposure at runtime.
+//   - Any other host must be a valid IP address; a value ListenAndServe
+//     would reject fails boot with a message naming the key.
+//   - Loopback (127.0.0.1, ::1) has no extra requirement.
+func validateServer(srv ServerConfig) error {
+	switch srv.WSOriginPolicy {
+	case "", "same-origin", "strict":
+	default:
+		return fmt.Errorf(
+			"server.ws_origin_policy must be \"same-origin\" or \"strict\" (got %q)",
+			srv.WSOriginPolicy,
+		)
+	}
+	host := srv.Host
+	wildcard := host == "0.0.0.0" || host == "::" || host == "*"
+	if !wildcard {
+		if ip := net.ParseIP(host); ip == nil {
+			return fmt.Errorf("server.host %q is not a valid IP address (e.g. \"127.0.0.1\" for loopback-only)", host)
+		}
+	}
+	if wildcard && len(srv.Secret) < 32 {
+		return fmt.Errorf(
+			"server.host %q binds to all interfaces (LAN/remote access) but server.secret is not set (need 32+ chars).\n"+
+				"Generate one: openssl rand -hex 32\n"+
+				"Then set: FAMCLAW_SECRET=<value>\n"+
+				"Or restrict the bind: server.host: 127.0.0.1",
+			host,
+		)
+	}
+	return nil
+}
+
+// DescribeBind renders the single boot log line describing the effective
+// bind. Kept as a pure function (no *Server, no logging) so the "loud
+// default" wording is table-tested without spinning up main.
+func DescribeBind(host string) string {
+	switch host {
+	case "0.0.0.0", "::", "*":
+		return "listening on all interfaces — LAN/remote access enabled; auth is session-gated (see docs/SECURITY_MODEL.md)"
+	case "127.0.0.1", "::1":
+		return "listening on loopback only"
+	default:
+		return "listening on " + host + " (bound to a specific interface)"
+	}
+}
+
 // Validate checks that critical config values are set and safe.
 // Called at startup — fails fast with plain-language errors.
 func (c *Config) Validate() error {
@@ -597,6 +667,9 @@ func (c *Config) Validate() error {
 				"Then set: FAMCLAW_SECRET=<value>",
 			len(c.Server.Secret),
 		)
+	}
+	if err := validateServer(c.Server); err != nil {
+		return err
 	}
 	for _, u := range c.Users {
 		if u.Role == "parent" && u.PIN != "" && len(u.PIN) < 4 {

@@ -225,8 +225,10 @@ func TestValidate_SandboxRootDefaultCreatesDir(t *testing.T) {
 		Tools: ToolsConfig{
 			SandboxRoot: "",
 		},
+		// Loopback bind: this test exercises the sandbox default, not the
+		// bind rules (see TestValidate_ServerHost).
 		Server: ServerConfig{
-			Host: "0.0.0.0",
+			Host: "127.0.0.1",
 			Port: 8080,
 		},
 		LLM: LLMConfig{
@@ -306,9 +308,10 @@ func TestSandboxEnabled_IsEnabled(t *testing.T) {
 }
 
 func TestValidate_SandboxRootErrors(t *testing.T) {
-	// Common config fields
+	// Loopback bind keeps this test focused on the sandbox root rules;
+	// the bind/secret matrix is covered by TestValidate_ServerHost.
 	serverCfg := ServerConfig{
-		Host: "0.0.0.0",
+		Host: "127.0.0.1",
 		Port: 8080,
 	}
 	llmCfg := LLMConfig{
@@ -481,6 +484,9 @@ func TestLLMTimeoutValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &Config{
+				// Loopback bind keeps this test focused on the LLM timeout
+				// rule; the bind/secret matrix is TestValidate_ServerHost.
+				Server: ServerConfig{Host: "127.0.0.1", Port: 8080},
 				LLM: LLMConfig{
 					BaseURL:        "http://localhost:11434",
 					Model:          "llama3",

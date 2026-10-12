@@ -20,7 +20,7 @@ func TestValidate_FallbackToBrowser(t *testing.T) {
 					TimeoutSec:   15,
 				},
 			},
-			Server: ServerConfig{Host: "0.0.0.0", Port: 8080},
+			Server: ServerConfig{Host: "127.0.0.1", Port: 8080},
 			LLM: LLMConfig{
 				MaxContextTokens:  4096,
 				MaxResponseTokens: 512,
