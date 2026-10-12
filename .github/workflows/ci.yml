@@ -91,18 +91,15 @@ jobs:
         # the head commit, which the same guard already scans). push/merge_group
         # runs have no PR metadata and are tracked-files-only.
         #
-        # The title/body are interpolated by the workflow engine, not the shell,
-        # and the body is a quoted YAML block: no shell quoting, no command
-        # substitution, no line splitting — an adversarial PR title or body
-        # cannot execute code before the guard runs.
+        # The title/body are extracted from $GITHUB_EVENT_PATH with jq and
+        # written straight to files — no PR-metadata value is ever interpolated
+        # into shell script text, so an adversarial PR title or body (including
+        # a column-0 "EOF" line) cannot close a heredoc or execute code before
+        # the guard runs.
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            cat > "${RUNNER_TEMP}/pr-title.txt" << 'EOF'
-          ${{ github.event.pull_request.title }}
-          EOF
-            cat > "${RUNNER_TEMP}/pr-body.txt" << 'EOF'
-          ${{ github.event.pull_request.body }}
-          EOF
+            jq -r '.pull_request.title // ""' "$GITHUB_EVENT_PATH" > "${RUNNER_TEMP}/pr-title.txt"
+            jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "${RUNNER_TEMP}/pr-body.txt"
             PR_TITLE_FILE="${RUNNER_TEMP}/pr-title.txt" \
             PR_BODY_FILE="${RUNNER_TEMP}/pr-body.txt" \
               bash .github/scripts/check-private-details.sh

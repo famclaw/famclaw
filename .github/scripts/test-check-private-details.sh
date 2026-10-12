@@ -10,10 +10,10 @@
 #   4. documented placeholders and allowed example addresses still pass,
 #   5. failure output names label/line/pattern only — never the offending value.
 #
-# NO-LEAK: the fixtures are real patterns (a home path, a 192.168.x address) but
-# obviously synthetic (fixtureperson / 192.168.127.8 — TEST-NET-style, never a
-# host here). They are built at runtime via obf() so this harness file itself —
-# a tracked file the guard scans — matches none of its own patterns.
+# NO-LEAK: the fixtures are real patterns (a home path, a planted PRIVATE_IP
+# sample) but obviously synthetic (fixtureperson / TEST-NET-style, never a host
+# here). They are built at runtime via obf() so this harness file itself — a
+# tracked file the guard scans — matches none of its own patterns.
 #
 # Requires: bash, git. Run: .github/scripts/test-check-private-details.sh
 set -euo pipefail
@@ -112,11 +112,11 @@ assert_zero "same repo passes without PR metadata (gap baseline)" "$RC"
 printf 'Copy from /home/user/notes, /Users/you/app, /home/runner/work; peers: 192.168.0.1, 192.168.1.50, 192.168.1.10\n' > "$REPO/allowed-title.txt"
 printf 'Docs example 192.168.0.1 and placeholder /Users/USER/docs stay allowed.\n' > "$REPO/allowed-body.txt"
 run_guard "$REPO/allowed-title.txt" "$REPO/allowed-body.txt"
-assert_zero "placeholders + documented examples still pass" "$?"
+assert_zero "placeholders + documented examples still pass" "$RC"
 
 # --- 5. missing / unset metadata files are skipped, not fatal ----------------
 run_guard "/nonexistent-title-file" "$REPO/allowed-body.txt"
-assert_zero "missing title file is skipped" "$?"
+assert_zero "missing title file is skipped" "$RC"
 
 # --- summary ------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
