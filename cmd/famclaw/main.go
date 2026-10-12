@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -677,14 +676,20 @@ func main() {
 	if cfg.Tools.WebSearch.Enabled {
 		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
 		registered = append(registered, "web_search")
-		// Startup reachability check: verify the search endpoint responds so
-		// an operator never sees web_search "configured but dead." This is a
-		// best-effort warning — a unreachable endpoint does NOT prevent
-		// startup (the tool will fail honestly at call time via ErrUnavailable).
-		if wsErr := checkSearchEndpointReachable(cfg.Tools.WebSearch.Endpoint, probeTimeout); wsErr != nil {
-			log.Printf("WARNING: web_search endpoint %s did not respond at startup: %v — web_search is enabled and will still attempt searches at runtime, reporting any failure honestly", websearch.SanitizeEndpoint(cfg.Tools.WebSearch.Endpoint), wsErr)
+		// Startup probe: a REAL JSON probe — it issues an actual
+		// format=json search request and verifies the response is a usable
+		// JSON search payload, so a misconfigured endpoint (e.g. SearXNG
+		// answering HTML because format=json is off) is surfaced at startup
+		// with an actionable detail instead of at first use as a generic
+		// "unavailable." Best-effort: a failed probe does NOT gate startup;
+		// the tool fails honestly at call time (classified errors).
+		if strings.TrimSpace(cfg.Tools.WebSearch.Endpoint) == "" {
+			// Hosted provider (e.g. tavily): no local endpoint to probe.
+			log.Printf("web_search: hosted provider %q selected — no local search endpoint to probe at startup", cfg.Tools.WebSearch.Provider)
+		} else if wsErr := websearch.ProbeSearchEndpoint(cfg.Tools.WebSearch.Endpoint, probeTimeout); wsErr != nil {
+			log.Printf("WARNING: web_search endpoint %s: %v — web_search is enabled and will still attempt searches at runtime, reporting any failure honestly", websearch.SanitizeEndpoint(cfg.Tools.WebSearch.Endpoint), wsErr)
 		} else {
-			log.Printf("web_search: endpoint %s reachable at startup", websearch.SanitizeEndpoint(cfg.Tools.WebSearch.Endpoint))
+			log.Printf("web_search: endpoint %s reachable at startup (JSON search response confirmed)", websearch.SanitizeEndpoint(cfg.Tools.WebSearch.Endpoint))
 		}
 	}
 	// File tools are always available; access is restricted by OPA policy.
@@ -1215,59 +1220,3 @@ func parseTTLByRole(in map[string]string) map[string]time.Duration {
 // as "unreachable" when it is merely slow. The probe is best-effort and does
 // NOT gate startup.
 const probeTimeout = 30 * time.Second
-
-// checkSearchEndpointReachable does a best-effort HTTP probe against the
-// configured search endpoint at startup. It returns nil if the host responds
-// with any HTTP status (even an error status — the point is that the service
-// is up and listening). It returns an error only on connection-level failures
-// (refused, timeout, DNS failure), so the operator gets early warning when
-// web_search is "configured but dead." This check does NOT gate startup.
-//
-// The returned error distinguishes a timeout (the endpoint is slow, not
-// necessarily down — common for SearXNG fanning out to external engines) from a
-// genuine connection failure ("unreachable"). Callers must not fold both into
-// an "unreachable" claim: doing so misled operators into believing web_search
-// was offline when it was merely slow (see fc-websearch-honest-failure).
-func checkSearchEndpointReachable(endpoint string, timeout time.Duration) error {
-	if endpoint == "" {
-		return fmt.Errorf("endpoint not configured")
-	}
-	// Parse the endpoint and join the search path. websearch.JoinSearchPath
-	// handles all endpoint shapes (bare host, base path, full search URL,
-	// trailing slash) without double-appending /search. The path is
-	// cleaned of double slashes and trailing slashes.
-	parsed, err := url.Parse(strings.TrimSpace(endpoint))
-	if err != nil {
-		return fmt.Errorf("parse search endpoint: %w", err)
-	}
-	if parsed.Host == "" {
-		return fmt.Errorf("search endpoint must include a host (configured as %s)", websearch.SanitizeEndpoint(endpoint))
-	}
-	// Strip credentials from the probe URL so the startup diagnostic
-	// request does not transmit embedded userinfo (e.g. http://user:pass@host)
-	// to the search backend. The probe only checks that the host is
-	// listening — any HTTP response (even 401) means the service is up.
-	parsed.User = nil
-	parsed.Path = websearch.JoinSearchPath(parsed.Path)
-	parsed.RawQuery = "q=__famclaw_startup_probe__&format=json"
-	probeURL := parsed.String()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
-	if err != nil {
-		return fmt.Errorf("build probe request: %w", err)
-	}
-	req.Header.Set("User-Agent", "famclaw-startup-check/1")
-	// A bare client — no allowlist enforcement here. This is a diagnostic
-	// only; the actual tool enforces the allowlist at call time.
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("timed out after %s (endpoint is slow, not necessarily down): %w", timeout, err)
-		}
-		return fmt.Errorf("unreachable: %w", err)
-	}
-	resp.Body.Close()
-	return nil
-}

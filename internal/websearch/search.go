@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"net/url"
 	"path"
 	"strings"
@@ -18,13 +19,6 @@ const (
 	hardMaxResults    = 16
 	defaultTimeout    = 30 * time.Second
 )
-
-// ErrUnavailable is returned when the search backend cannot be reached or
-// returned a non-searchable response. Callers use errors.Is to detect it and
-// translate it into an honest "I could not search right now" reply rather
-// than letting the LLM hallucinate results. It is distinct from a zero-result
-// response, which is a successful search that simply found nothing.
-var ErrUnavailable = errors.New("web_search: search backend unavailable")
 
 // SanitizeEndpoint parses rawEndpoint and returns a string with any
 // embedded userinfo (username/password) stripped, so it is safe to log.
@@ -81,16 +75,26 @@ type Hit struct {
 // Search runs query against the configured SearXNG endpoint and returns
 // up to opts.MaxResults hits.
 //
-// Error semantics:
-//   - ErrUnavailable: the backend could not be reached or returned a
-//     non-searchable response (connection refused, timeout, wrong content
-//     type, non-2xx, etc.). The caller MUST report this to the user honestly
-//     rather than inventing results.
-//   - A hostNotAllowedError from the URL allowlist is returned as-is — it is
-//     a configuration gap the parent fixes, not a transient failure.
+// Error semantics (web-retrieval plan, Slice 2a — typed classes, all of
+// which also wrap the ErrUnavailable umbrella):
+//   - ErrAuthConfig: the endpoint answered 401/403 (an auth/config gap).
+//   - ErrRateLimited: 429 (upstream bot-blocking is common on SearXNG's
+//     engines) — the retry decorator may retry it.
+//   - ErrProvider5xx: 5xx from the endpoint.
+//   - ErrMalformed: 2xx but not JSON (e.g. SearXNG without format=json
+//     enabled — HTML error page), or unparseable JSON.
+//   - ErrConnection / ErrTimeout: transport-level failures.
+//   - ErrUnavailable: any other non-2xx status (400/404/...) — a
+//     configuration/misuse the operator fixes, not transient.
+//   - A hostNotAllowedError from the URL allowlist is returned as-is — it
+//     is a configuration gap the parent fixes, not a transient failure,
+//     and is never classified or retried.
 //   - A zero-length hit slice with a nil error means the backend responded
 //     normally but found no matches. This is NOT an error and must not be
 //     confused with ErrUnavailable.
+//
+// None of these sentinels is ever returned for a genuine empty result:
+// report honestly, never invent or mask.
 func Search(ctx context.Context, query string, opts Options) ([]Hit, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -147,24 +151,65 @@ func Search(ctx context.Context, query string, opts Options) ([]Hit, error) {
 	})
 	if err != nil {
 		// A redirect-bounce through an allowlist violation is still a
-		// configuration error, not a backend-unavailability.
+		// configuration error, not a backend-unavailability: return it
+		// as-is (never classified, never retried).
 		var hostErr *webfetch.HostNotAllowedError
 		if errors.As(err, &hostErr) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		// Classify the failure (Slice 2a): webfetch returns the Result even
+		// on non-2xx, so the real HTTP status is available for 4xx/5xx
+		// mapping; without a Result the failure is transport-level.
+		return nil, classifyFetchError(res, err)
 	}
 
 	var parsed struct {
 		Results []Hit `json:"results"`
 	}
 	if jerr := json.Unmarshal([]byte(res.Text), &parsed); jerr != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnavailable, jerr)
+		// 2xx JSON content type but unparseable body: the provider answered
+		// but the payload is not a search response (malformed JSON).
+		return nil, newClassified(ErrMalformed, fmt.Sprintf("malformed JSON response: %v", jerr), 0)
 	}
 	if len(parsed.Results) > n {
 		parsed.Results = parsed.Results[:n]
 	}
 	return parsed.Results, nil
+}
+
+// classifyFetchError maps a webfetch.Fetch failure to exactly one class
+// sentinel (Slice 2a). webfetch returns the Result alongside the error for
+// HTTP-level failures, so the real status can be classified:
+//
+//   - 401/403 → ErrAuthConfig, 429 → ErrRateLimited, 5xx → ErrProvider5xx.
+//   - 2xx with a non-JSON content type → ErrMalformed (SearXNG without
+//     format=json enabled returns HTML — the F4 misconfig, now surfaced
+//     with an actionable detail instead of a generic "unavailable").
+//   - 2xx with a JSON content type → the body read failed mid-stream:
+//     ErrConnection.
+//   - any other non-2xx (400/404/405/...) → the ErrUnavailable umbrella
+//     with a status detail: configuration/misuse, never retried.
+//   - no Result at all (connection refused, DNS, timeout, redirect guard)
+//     → classifyTransport: ErrTimeout or ErrConnection.
+func classifyFetchError(res *webfetch.Result, err error) error {
+	if res != nil && res.StatusCode != 0 {
+		switch {
+		case res.StatusCode >= 200 && res.StatusCode < 300:
+			// The listener answered 2xx. The failure is the content type
+			// (or a mid-stream read error). Check the negotiated type, not
+			// the error text: a JSON-typed 2xx can only have failed on the
+			// body read, anything else is a non-JSON answer.
+			mediaType, _, _ := mime.ParseMediaType(res.ContentType)
+			if mediaType == "application/json" {
+				return newClassified(ErrConnection, "read response: "+err.Error(), 0)
+			}
+			return newClassified(ErrMalformed,
+				fmt.Sprintf("endpoint returned %q, not application/json (is SearXNG's format=json enabled?)", res.ContentType), 0)
+		default:
+			return classifyHTTP(res.StatusCode, 0)
+		}
+	}
+	return classifyTransport(err)
 }
 
 // FormatHits renders hits as a compact text block for the LLM tool reply.

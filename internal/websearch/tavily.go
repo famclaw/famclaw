@@ -76,13 +76,19 @@ type tavilyResponse struct {
 
 // Search POSTs {query, max_results} to the Tavily API with the Bearer key
 // and maps the response's results to the shared Hit shape.
+//
+// Error semantics (Slice 2a): 401/403 → ErrAuthConfig, 429 → ErrRateLimited
+// (carrying the provider's Retry-After when present), 5xx → ErrProvider5xx,
+// non-JSON / oversize body → ErrMalformed, transport failure →
+// ErrConnection or ErrTimeout. All also wrap the ErrUnavailable umbrella.
+// A valid zero-result response is (nil, nil) — a success, never an error.
 func (p *TavilyProvider) Search(ctx context.Context, query string, limit int) ([]Hit, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("web_search: empty query")
 	}
 	if p.key == "" {
-		return nil, fmt.Errorf("%w: tavily provider has no API key configured", ErrUnavailable)
+		return nil, newClassified(ErrAuthConfig, "tavily provider has no API key configured", 0)
 	}
 	n := limit
 	if n <= 0 {
@@ -128,26 +134,29 @@ func (p *TavilyProvider) Search(ctx context.Context, query string, limit int) ([
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: tavily: %v", ErrUnavailable, err)
+		// Transport-level failure (refused/DNS/reset/timeout): classify the
+		// class, keep the transport detail for server-side debugging.
+		return nil, newClassified(transportClass(err), "tavily: "+err.Error(), 0)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: tavily: read response: %v", ErrUnavailable, err)
+		return nil, newClassified(ErrConnection, "tavily: read response: "+err.Error(), 0)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Never echo the body: on auth failures Tavily's response can
 		// include key-derived details, and the body is not worth leaking
-		// into the tool result the LLM would relay.
-		return nil, fmt.Errorf("%w: tavily: non-2xx status %d", ErrUnavailable, resp.StatusCode)
+		// into a message the LLM would relay. The 429 case carries the
+		// provider's Retry-After so the retry decorator can honor it.
+		return nil, classifyHTTP(resp.StatusCode, retryAfterFromHeader(resp.Header))
 	}
 	if len(raw) > 1024*1024 {
-		return nil, fmt.Errorf("%w: tavily: response exceeds 1 MiB cap", ErrUnavailable)
+		return nil, newClassified(ErrMalformed, "tavily: response exceeds 1 MiB cap", 0)
 	}
 
 	var parsed tavilyResponse
 	if jerr := json.Unmarshal(raw, &parsed); jerr != nil {
-		return nil, fmt.Errorf("%w: tavily: malformed JSON response: %v", ErrUnavailable, jerr)
+		return nil, newClassified(ErrMalformed, fmt.Sprintf("tavily: malformed JSON response: %v", jerr), 0)
 	}
 	if len(parsed.Results) > n {
 		parsed.Results = parsed.Results[:n]

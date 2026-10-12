@@ -1591,42 +1591,66 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 }
 
 // webSearchError translates a web_search error into a (result, error) pair
-// that the agent's tool loop can feed to the LLM. When the backend is
-// unreachable (ErrUnavailable) it returns a short NEUTRAL marker as the
-// RESULT string with a nil error — this is critical because the tool loop
-// formats non-nil errors as "Error: <msg>", which the LLM may treat as a
-// system failure and ignore in favour of hallucination. A result string
-// with nil error is treated as a normal tool output, so the LLM relays the
-// marker honestly.
+// that the agent's tool loop can feed to the LLM. Each backend failure class
+// maps to a short NEUTRAL marker returned as the RESULT string with a nil
+// error — this is critical because the tool loop formats non-nil errors as
+// "Error: <msg>", which the LLM may treat as a system failure and ignore in
+// favour of hallucination. A result string with nil error is treated as a
+// normal tool output, so the LLM relays the marker honestly. Class-specific
+// markers (rate-limited vs down vs misconfigured) let the model report the
+// real reason instead of a blanket "unavailable."
 //
-// The marker is intentionally NOT a full English sentence addressed to the
+// The markers are intentionally NOT full English sentences addressed to the
 // user. The behavioural rule in internal/prompt/components.go instructs the
 // model to convey this in the family member's language. Returning a
 // pre-written sentence would force it into English regardless of who is
 // asking.
 //
-// Host-not-allowed errors are translated into a sanitized result
-// string so the tool loop does not format them as "Error: <msg>" —
-// the LLM may ignore or mishandle a non-nil error. Other genuine
+// The sanitized endpoint is logged server-side for debugging but never
+// echoed to the family chat — it may contain internal hostnames,
+// credentials, or network topology that should not reach the user.
+//
+// Host-not-allowed errors and configuration gaps (unknown provider, hosted
+// provider without a key) are translated into sanitized result strings so
+// the tool loop does not format them as "Error: <msg>". Other genuine
 // errors pass through as ("", err) for the tool loop to surface.
 func webSearchError(err error, endpoint string) (string, error) {
-	if errors.Is(err, websearch.ErrUnavailable) {
-		// Log the full endpoint server-side for debugging, but do NOT
-		// echo it to the family chat — it may contain internal hostnames,
-		// credentials, or network topology that should not reach the user.
-		log.Printf("[agent] web_search backend unreachable at %s", websearch.SanitizeEndpoint(endpoint))
-		return "web_search: unavailable", nil
+	if err == nil {
+		return "", nil
 	}
 	var hostErr *webfetch.HostNotAllowedError
 	if errors.As(err, &hostErr) {
 		return "web_search: host not permitted", nil
 	}
-	// Configuration errors (unknown provider, hosted provider without a
-	// key) are operator gaps, not transient failures: surface a neutral
-	// marker so the LLM reports the gap instead of treating the raw error
-	// string as a system failure.
 	if strings.Contains(err.Error(), "API key is set") || strings.Contains(err.Error(), "unknown provider") {
 		return "web_search: provider not configured", nil
+	}
+	// Classified backend failures (web-retrieval plan, Slice 2): check the
+	// specific classes BEFORE the ErrUnavailable umbrella they all wrap —
+	// the residual (e.g. 400/404 or a plain wrapped legacy error) keeps
+	// the historical "unavailable" marker.
+	switch {
+	case errors.Is(err, websearch.ErrRateLimited):
+		log.Printf("[agent] web_search rate-limited (429) at %s", websearch.SanitizeEndpoint(endpoint))
+		return "web_search: rate limited", nil
+	case errors.Is(err, websearch.ErrProvider5xx):
+		log.Printf("[agent] web_search backend server error (5xx) at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
+		return "web_search: search backend error", nil
+	case errors.Is(err, websearch.ErrTimeout):
+		log.Printf("[agent] web_search request timed out at %s", websearch.SanitizeEndpoint(endpoint))
+		return "web_search: search timed out", nil
+	case errors.Is(err, websearch.ErrConnection):
+		log.Printf("[agent] web_search connection failure at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
+		return "web_search: search backend unreachable", nil
+	case errors.Is(err, websearch.ErrAuthConfig):
+		log.Printf("[agent] web_search backend rejected the request (401/403) at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
+		return "web_search: search backend auth or config error", nil
+	case errors.Is(err, websearch.ErrMalformed):
+		log.Printf("[agent] web_search malformed backend response at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
+		return "web_search: invalid search backend response", nil
+	case errors.Is(err, websearch.ErrUnavailable):
+		log.Printf("[agent] web_search backend unreachable at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
+		return "web_search: unavailable", nil
 	}
 	return "", err
 }

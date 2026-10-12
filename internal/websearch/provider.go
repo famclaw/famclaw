@@ -12,6 +12,10 @@ import (
 // No global state: providers are constructed with their full configuration
 // and passed in (repository rule 4/7 — no package-level mutable provider).
 //
+// Providers built via ProviderFor are wrapped in the retry decorator
+// (Slice 2b), so SearXNG and Tavily get identical retry semantics: bounded,
+// ctx-bound, transient classes only.
+//
 // Adding a hosted backend (e.g. "exa", "brave") later is a config addition
 // plus one more case in ProviderFor, not a rework of the search tool
 // contract.
@@ -21,11 +25,14 @@ type Provider interface {
 	Name() string
 	// Search runs a single query and returns up to limit hits.
 	//
-	// Error semantics match websearch.Search: ErrUnavailable (wrapped with a
-	// detail) for unreachable/non-searchable backends, a
+	// Error semantics (Slice 2a): a typed searchError carrying exactly one
+	// class sentinel (ErrAuthConfig / ErrRateLimited / ErrProvider5xx /
+	// ErrMalformed / ErrConnection / ErrTimeout), which also wraps the
+	// ErrUnavailable umbrella for legacy errors.Is callers; a
 	// webfetch.HostNotAllowedError returned as-is (a configuration gap the
-	// parent fixes in tools.web_fetch.url_allowlist), and (nil, nil) for a
-	// valid zero-result response — which is a success, never an error.
+	// parent fixes in tools.web_fetch.url_allowlist — never classified,
+	// never retried); and (nil, nil) for a valid zero-result response —
+	// which is a success, never an error.
 	Search(ctx context.Context, query string, limit int) ([]Hit, error)
 }
 
@@ -80,19 +87,128 @@ func ProviderFor(pc ProviderConfig) (Provider, error) {
 	name := strings.ToLower(strings.TrimSpace(pc.Name))
 	switch name {
 	case "", "searxng":
-		return &searxngProvider{endpoint: pc.Endpoint, opts: Options{
+		return &retryingProvider{inner: &searxngProvider{endpoint: pc.Endpoint, opts: Options{
 			MaxResults:           pc.MaxResults,
 			Timeout:              pc.Timeout,
 			HostValidator:        pc.HostValidator,
 			AllowPrivateNetworks: pc.AllowPrivateNetworks,
-		}}, nil
+		}}, maxRetries: defaultMaxRetries}, nil
 	case "tavily":
 		if strings.TrimSpace(pc.TavilyAPIKey) == "" {
 			return nil, fmt.Errorf("web_search: tavily provider selected but no API key is set (env FAMCLAW_WEB_SEARCH_API_KEY or tools.web_search.tavily_api_key)")
 		}
-		return NewTavilyProvider(TavilyConfig{APIKey: pc.TavilyAPIKey}), nil
+		return &retryingProvider{inner: NewTavilyProvider(TavilyConfig{APIKey: pc.TavilyAPIKey, Timeout: pc.Timeout}), maxRetries: defaultMaxRetries}, nil
 	default:
 		return nil, fmt.Errorf("web_search: unknown provider %q (supported: searxng [default], tavily)", pc.Name)
+	}
+}
+
+// retryingProvider decorates a Provider with bounded, ctx-bound retry of
+// transient failures only (web-retrieval plan, Slice 2b). It is a property
+// of the injected provider — both SearXNG and Tavily get identical
+// semantics — and it adds no global state: the retry budget is a fixed
+// constant and the deadline is the caller's ctx (never extended).
+//
+// Retry policy (exactly the documented transient set, nothing else):
+//   - RETRY: ErrRateLimited, ErrProvider5xx, ErrConnection, ErrTimeout.
+//     A 429 with a Retry-After header waits that long; any transient class
+//     without one gets short capped exponential backoff.
+//   - NEVER RETRY: ErrAuthConfig, ErrMalformed, HostNotAllowedError
+//     (configuration gaps — they fail identically on retry), the
+//     undetermined umbrella, or a valid result.
+//   - BOUNDED: at most maxRetries retries after the initial attempt (3
+//     attempts total). When the budget runs out, or the remaining ctx time
+//     cannot cover the next delay, the LAST error is returned honestly —
+//     the model reports "rate-limited", not "unavailable".
+//
+// The loop always fits inside the caller's ctx deadline: each attempt runs
+// under the same ctx (so the provider's own timeout caps each attempt at
+// the remaining time), and the pre-sleep check refuses to spend more time
+// than the ctx has left.
+type retryingProvider struct {
+	inner      Provider
+	maxRetries int
+}
+
+// retryer is implemented by errors that carry a provider Retry-After.
+type retryer interface {
+	RetryAfter() time.Duration
+}
+
+const (
+	// defaultMaxRetries is the retry budget: retries AFTER the initial
+	// attempt (max 3 attempts total).
+	defaultMaxRetries = 2
+	// baseRetryDelay is the backoff for a transient failure without a
+	// Retry-After; it doubles per attempt, capped at maxRetryDelay.
+	baseRetryDelay = 500 * time.Millisecond
+	maxRetryDelay  = 2 * time.Second
+)
+
+func (r *retryingProvider) Name() string { return r.inner.Name() }
+
+// retryDelay computes the wait before attempt n+1. The exponential schedule
+// (base 500 ms, doubling, capped at 2 s) is the floor; a server's Retry-After
+// is a minimum, so the effective delay is max(schedule, Retry-After). Waiting
+// longer than the server asked is safe (we retry less often); waiting shorter
+// would violate its rate-limit window. Negative/zero Retry-After is clamped
+// to the schedule.
+func retryDelay(err error, attempt int) time.Duration {
+	d := baseRetryDelay
+	for i := 0; i < attempt; i++ {
+		d *= 2
+		if d > maxRetryDelay {
+			d = maxRetryDelay
+			break
+		}
+	}
+	if d > maxRetryDelay {
+		d = maxRetryDelay
+	}
+	if r, ok := err.(retryer); ok {
+		if ra := r.RetryAfter(); ra > d {
+			return ra
+		}
+	}
+	return d
+}
+
+// Search runs the query through the inner provider with bounded retry of
+// transient failures (see type doc).
+func (r *retryingProvider) Search(ctx context.Context, query string, limit int) ([]Hit, error) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		hits, err := r.inner.Search(ctx, query, limit)
+		if err == nil {
+			// Success (including a valid zero-result) — never retried.
+			return hits, nil
+		}
+		lastErr = err
+		if !isTransient(err) {
+			// Auth, malformed, host-not-allowed, undetermined: fail
+			// immediately with the honest class.
+			return nil, err
+		}
+		if attempt >= r.maxRetries {
+			// Budget exhausted: return the last error class honestly.
+			return nil, err
+		}
+		delay := retryDelay(err, attempt)
+		if deadline, ok := ctx.Deadline(); ok {
+			// The whole loop must fit inside the caller's ctx: never spend
+			// more time than is left (attempts without a deadline are
+			// still bounded by the maxRetries budget).
+			if time.Until(deadline) <= delay {
+				return nil, err
+			}
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			// Canceled mid-backoff: return the last error class honestly
+			// (the caller's turn is over; a fresh error adds no signal).
+			return nil, lastErr
+		}
 	}
 }
 
