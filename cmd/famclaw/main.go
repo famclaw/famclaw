@@ -45,6 +45,7 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/reload"
 	"github.com/famclaw/famclaw/internal/reminder"
+	"github.com/famclaw/famclaw/internal/sendmsg"
 	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 	"github.com/famclaw/famclaw/internal/subagent"
@@ -838,6 +839,15 @@ func main() {
 		reminderDispatcher.RegisterSender(name, s)
 	}
 	reminderScheduler = reminder.NewScheduler(db, reminderDispatcher, 30*time.Second)
+	// A reminder that cannot be delivered is never silently lost: its
+	// content is recorded in the undelivered-reminder store (queryable via
+	// /api/reminders/undelivered) and, when the user is reachable on
+	// another gateway, they get a notice there (e.g. a dead Discord
+	// channel goes out over Telegram).
+	reminderScheduler.SetUndeliveredStore(db)
+	if len(senderRegistry) > 0 {
+		reminderScheduler.SetFallback(&reminderFallback{db: db, senders: senderRegistry})
+	}
 	reminderScheduler.Start(gwCtx)
 	reminderScheduler.ReschedulePending(gwCtx)
 	log.Printf("Reminder scheduler: started (poll interval 30s)")
@@ -1270,4 +1280,54 @@ func checkSearchEndpointReachable(endpoint string, timeout time.Duration) error 
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// reminderFallback delivers an undelivered-reminder notice to the user's
+// best alternate reachable gateway (e.g. a reminder whose Discord channel is
+// dead goes out over Telegram when the user is reachable there). It reuses
+// sendmsg's initiable-gateway resolution — a bot cannot start a Telegram
+// conversation the user never opened — and skips a candidate that is exactly
+// the target the reminder just failed on (same gateway + same chat id),
+// taking the next best route when one exists.
+type reminderFallback struct {
+	db      *store.DB
+	senders map[string]gateway.Sender
+}
+
+// Deliver implements reminder.Fallback. It returns the gateway used and an
+// error when the user cannot be reached on any other channel — in that case
+// the undelivered-reminder store carries the content, so nothing is silently
+// lost.
+func (f *reminderFallback) Deliver(ctx context.Context, r *store.Reminder, text string) (string, error) {
+	cands, err := sendmsg.ResolveDestinations(ctx, f.db, r.UserName)
+	if err != nil {
+		return "", err
+	}
+	failed := r.ExternalID
+	if r.IsGroup && r.GroupID != "" {
+		failed = r.GroupID
+	}
+	var best *sendmsg.Candidate
+	var sender gateway.Sender
+	for i := range cands {
+		c := &cands[i]
+		if c.Gateway == r.Gateway && c.ExternalID == failed {
+			continue // the target that just failed; take the next route
+		}
+		s, ok := f.senders[c.Gateway]
+		if !ok {
+			continue // linked on a gateway this deployment does not run
+		}
+		best, sender = c, s
+		break
+	}
+	if best == nil {
+		return "", fmt.Errorf("no alternate reachable gateway for %s", r.UserName)
+	}
+	deadline, cancel := context.WithTimeout(ctx, sendmsg.SendTimeout)
+	defer cancel()
+	if err := sender.Send(deadline, best.ExternalID, text); err != nil {
+		return "", fmt.Errorf("sending undelivered-reminder notice to %s via %s: %w", r.UserName, best.Gateway, notify.RedactWebhookURLInError(err))
+	}
+	return best.Gateway, nil
 }

@@ -468,3 +468,97 @@ func TestLastMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestUndeliveredReminders covers the undelivered-reminder store: a delivery
+// failure must never silently lose the reminder content, and the user can
+// query what they missed, newest first.
+func TestUndeliveredReminders(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("initial empty", func(t *testing.T) {
+		db, cleanup := newTestDB(t)
+		defer cleanup()
+		got, err := db.GetUndeliveredReminders(ctx, 10)
+		if err != nil {
+			t.Fatalf("GetUndeliveredReminders: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected 0 rows, got %d", len(got))
+		}
+	})
+
+	t.Run("save and read back round-trips every field", func(t *testing.T) {
+		db, cleanup := newTestDB(t)
+		defer cleanup()
+		in := &UndeliveredReminder{
+			ReminderID: 7,
+			UserName:   "julia",
+			Gateway:    "discord",
+			ChatID:     "ch-123",
+			Message:    "take out the trash",
+			Reason:     "invalid_chat",
+		}
+		if err := db.SaveUndeliveredReminder(ctx, in); err != nil {
+			t.Fatalf("SaveUndeliveredReminder: %v", err)
+		}
+		if in.ID == 0 {
+			t.Error("SaveUndeliveredReminder should populate the new row id")
+		}
+		got, err := db.GetUndeliveredReminders(ctx, 10)
+		if err != nil {
+			t.Fatalf("GetUndeliveredReminders: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 row, got %d", len(got))
+		}
+		if got[0].ReminderID != in.ReminderID || got[0].UserName != in.UserName ||
+			got[0].Gateway != in.Gateway || got[0].ChatID != in.ChatID ||
+			got[0].Message != in.Message || got[0].Reason != in.Reason {
+			t.Errorf("round-trip mismatch: got %+v", got[0])
+		}
+		if got[0].CreatedAt.IsZero() {
+			t.Error("CreatedAt should be populated from the row default")
+		}
+	})
+
+	t.Run("newest first with limit", func(t *testing.T) {
+		db, cleanup := newTestDB(t)
+		defer cleanup()
+		for i := 1; i <= 3; i++ {
+			if err := db.SaveUndeliveredReminder(ctx, &UndeliveredReminder{
+				ReminderID: int64(i),
+				UserName:   "julia",
+				Gateway:    "discord",
+				ChatID:     "ch-123",
+				Message:    "msg " + string(rune('a'+i-1)),
+				Reason:     "retries_exhausted",
+			}); err != nil {
+				t.Fatalf("SaveUndeliveredReminder %d: %v", i, err)
+			}
+		}
+		cases := []struct {
+			name  string
+			limit int
+			want  int
+			first int // reminder_id of the newest row
+		}{
+			{"all with default limit", 0, 3, 3},
+			{"explicit limit below count", 2, 2, 3},
+			{"limit above count", 10, 3, 3},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got, err := db.GetUndeliveredReminders(ctx, tc.limit)
+				if err != nil {
+					t.Fatalf("GetUndeliveredReminders: %v", err)
+				}
+				if len(got) != tc.want {
+					t.Fatalf("limit %d: expected %d rows, got %d", tc.limit, tc.want, len(got))
+				}
+				if got[0].ReminderID != int64(tc.first) {
+					t.Errorf("limit %d: newest row reminder_id = %d, want %d (newest first)", tc.limit, got[0].ReminderID, tc.first)
+				}
+			})
+		}
+	})
+}

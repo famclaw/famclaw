@@ -38,6 +38,10 @@ CREATE INDEX idx_tool_cache_expires   ON tool_result_cache (expires_at);
 
 CREATE INDEX idx_tool_cache_user_conv ON tool_result_cache (user_name, conv_id);
 
+CREATE INDEX idx_undelivered_reminders_created_at ON undelivered_reminders(created_at);
+
+CREATE INDEX idx_undelivered_reminders_user ON undelivered_reminders(user_name);
+
 CREATE INDEX idx_unknown_accounts_lookup ON unknown_accounts(gateway, external_id);
 
 CREATE INDEX idx_used_tokens_used_at ON used_tokens(used_at);
@@ -255,6 +259,17 @@ CREATE TABLE tool_result_cache (
 		created_at    INTEGER NOT NULL,
 		expires_at    INTEGER NOT NULL,
 		accessed_at   INTEGER NOT NULL
+	);
+
+CREATE TABLE undelivered_reminders (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		reminder_id INTEGER NOT NULL,
+		user_name   TEXT NOT NULL,
+		gateway     TEXT NOT NULL,
+		chat_id     TEXT NOT NULL,
+		message     TEXT NOT NULL,
+		reason      TEXT NOT NULL,
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
 CREATE TABLE unknown_accounts (

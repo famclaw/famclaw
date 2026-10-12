@@ -217,6 +217,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/unknown-accounts/link", s.protect(s.handleUnknownAccountLink))
 	mux.Handle("/api/unknown-accounts/dismiss", s.protect(s.handleUnknownAccountDismiss))
 	mux.Handle("/api/conversations", s.protect(s.handleConversations))
+	mux.Handle("/api/reminders/undelivered", s.protect(s.handleUndeliveredReminders))
 	mux.Handle("/api/family-state/facts", s.protect(s.handleFamilyStateFacts))
 	mux.Handle("/api/family-state/facts/", s.protect(s.handleFamilyStateFact))
 	mux.Handle("/api/family-state/categories", s.protect(s.handleFamilyStateCategories))
