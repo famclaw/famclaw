@@ -1558,7 +1558,14 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 		return false
 	}
 
-	hits, err := websearch.Search(ctx, query, websearch.Options{
+	// Provider boundary (web-retrieval plan, Slice 1): the backend is
+	// selected from config; SearXNG is the default and keeps its current
+	// behavior byte-for-byte (same endpoint, same url_allowlist host gate,
+	// same private-net policy). The hosted Tavily path uses its fixed
+	// vendor host — NOT the user-fetch url_allowlist (a different surface;
+	// see websearch.TavilyProvider).
+	prov, provErr := websearch.ProviderFor(websearch.ProviderConfig{
+		Name:       cfg.Provider,
 		Endpoint:   cfg.Endpoint,
 		MaxResults: maxResults,
 		Timeout:    time.Duration(cfg.TimeoutSec) * time.Second,
@@ -1569,11 +1576,17 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 			return nil
 		},
 		AllowPrivateNetworks: !fcfg.BlockPrivateNetworks,
+		TavilyAPIKey:         cfg.TavilyAPIKey,
 	})
+	if provErr != nil {
+		return webSearchError(provErr, cfg.Endpoint)
+	}
+
+	hits, err := prov.Search(ctx, query, maxResults)
 	if err != nil {
 		return webSearchError(err, cfg.Endpoint)
 	}
-	log.Printf("[agent][%s] web_search query=%q hits=%d", a.user.Name, query, len(hits))
+	log.Printf("[agent][%s] web_search provider=%s query=%q hits=%d", a.user.Name, prov.Name(), query, len(hits))
 	return websearch.FormatHits(hits), nil
 }
 
@@ -1607,6 +1620,13 @@ func webSearchError(err error, endpoint string) (string, error) {
 	var hostErr *webfetch.HostNotAllowedError
 	if errors.As(err, &hostErr) {
 		return "web_search: host not permitted", nil
+	}
+	// Configuration errors (unknown provider, hosted provider without a
+	// key) are operator gaps, not transient failures: surface a neutral
+	// marker so the LLM reports the gap instead of treating the raw error
+	// string as a system failure.
+	if strings.Contains(err.Error(), "API key is set") || strings.Contains(err.Error(), "unknown provider") {
+		return "web_search: provider not configured", nil
 	}
 	return "", err
 }

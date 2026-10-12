@@ -178,9 +178,16 @@ func FormatHits(hits []Hit) string {
 			b.WriteString("\n\n")
 		}
 		fmt.Fprintf(&b, "%d. %s", i+1, strings.TrimSpace(h.Title))
+		// Guarantee a source URL on every hit: SearXNG occasionally returns
+		// a result with an empty url. Render an explicit placeholder instead
+		// of dropping the line — a missing URL must never tempt the model
+		// into inventing one (web-retrieval plan, Slice 4: behavioral guard
+		// only, no schema change).
 		if u := strings.TrimSpace(h.URL); u != "" {
 			b.WriteString("\n   ")
 			b.WriteString(u)
+		} else {
+			b.WriteString("\n   (source URL not provided by provider)")
 		}
 		if c := strings.TrimSpace(h.Content); c != "" {
 			b.WriteString("\n   ")

@@ -2006,6 +2006,28 @@ func TestWebSearchError(t *testing.T) {
 			t.Errorf("ordinary error should pass through unchanged, got %v", err)
 		}
 	})
+
+	t.Run("tavily provider without a key → provider not configured", func(t *testing.T) {
+		provErr := fmt.Errorf("web_search: tavily provider selected but no API key is set (env FAMCLAW_WEB_SEARCH_API_KEY or tools.web_search.tavily_api_key)")
+		msg, err := webSearchError(provErr, "")
+		if err != nil {
+			t.Fatalf("expected nil error (sanitized result), got %v", err)
+		}
+		if msg != "web_search: provider not configured" {
+			t.Errorf("msg = %q, want the provider-not-configured marker", msg)
+		}
+	})
+
+	t.Run("unknown provider → provider not configured", func(t *testing.T) {
+		provErr := fmt.Errorf("web_search: unknown provider %q (supported: searxng [default], tavily)", "bogus")
+		msg, err := webSearchError(provErr, "http://localhost:8888")
+		if err != nil {
+			t.Fatalf("expected nil error (sanitized result), got %v", err)
+		}
+		if msg != "web_search: provider not configured" {
+			t.Errorf("msg = %q, want the provider-not-configured marker", msg)
+		}
+	})
 }
 
 // sseSequenceServer replays one SSE body per chat request, so a test can
