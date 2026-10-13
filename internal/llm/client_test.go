@@ -232,7 +232,7 @@ func TestChatEndpointRouting(t *testing.T) {
 		{"http://localhost:11434", "/v1/chat/completions"},
 		{"https://api.groq.com/openai/v1", "/v1/chat/completions"},
 		{"https://api.openai.com/v1", "/v1/chat/completions"},
-		{"http://192.168.1.10:8080/v1", "/v1/chat/completions"},
+		{"http://198.51.100.10:8080/v1", "/v1/chat/completions"},
 		{"http://localhost:8080", "/v1/chat/completions"},
 	}
 
@@ -504,7 +504,7 @@ func TestIsOllamaURL(t *testing.T) {
 	}{
 		{"http://localhost:11434", true},
 		{"http://127.0.0.1:11434", true},
-		{"http://192.168.1.10:11434", true},
+		{"http://198.51.100.10:11434", true},
 		{"https://api.groq.com/openai/v1", false},
 		{"https://api.openai.com/v1", false},
 		{"http://localhost:8080", false},

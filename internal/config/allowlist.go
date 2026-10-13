@@ -42,7 +42,7 @@ func NormalizeAllowlistHost(s string) (string, error) {
 		return "", fmt.Errorf("host %q has no host part", s)
 	}
 
-	// IPv4 literals: Hostname() returns "192.168.1.10" — allow all-numeric
+	// IPv4 literals: Hostname() returns "198.51.100.10" — allow all-numeric
 	// labels. Everything else must be a dot-separated sequence of valid
 	// RFC 1123 labels (letters, digits, hyphens; no leading/trailing hyphen).
 	if isIPv4Literal(h) {
