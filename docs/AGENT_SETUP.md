@@ -114,7 +114,10 @@ Essential configuration keys to set:
 - `storage.db_path` - Database file path
 - `gateways.telegram.token` - Telegram bot token (from @BotFather)
 - `gateways.discord.token` - Discord bot token (from Discord Developer Portal)
-- `tools.web_search.enabled` - enable web search (requires `tools.web_fetch.enabled=true`)
+- `tools.web_search.enabled` - enable web search (the SearXNG provider requires `tools.web_fetch.enabled=true`; the hosted `tavily` provider does not)
+- `tools.web_search.provider` - `searxng` (default) or `tavily` (hosted search API); an unknown value is a config error listing the supported ones
+- `tools.web_search.endpoint` - SearXNG JSON search URL, e.g. `http://localhost:8888` (SearXNG only; required when `web_search` is enabled with the default provider). The endpoint host must be in `tools.web_fetch.url_allowlist`
+- `FAMCLAW_WEB_SEARCH_API_KEY` - env var for the hosted provider (Tavily) API key; preferred over `tools.web_search.tavily_api_key` in YAML (env wins; a YAML-set key logs a warning). Note: a hosted provider sends the user's query text to the vendor's API
 - `tools.web_fetch.block_private_networks` - opt-in: block loopback/RFC1918/ULA at the dialer (default false)
 
 ## HoneyBadger Security Scanning (Optional but Recommended)
@@ -145,7 +148,7 @@ This feature is **optional but recommended** for a family assistant to help ensu
 - **Policy/OPA rules:** Enable custom policies by setting `policies.dir` and `policies.data_dir` in `config.yaml` to point to directories containing `.rego` and JSON data files.
 - **Parent notifications:** Configure alert channels under `notifications:` in `config.yaml` (email, Slack, Discord, SMS, ntfy) to receive alerts about quarantined tools, approval requests, etc.
 - **MCP servers:** Enable multi-tool servers by configuring `skills.mcp_servers` in `config.yaml` (see the example in the default config).
-- **Web tools:** The built-in web tools (`web_fetch`, `web_search`, `browser`) can be enabled under `tools:` in `config.yaml`. Note: `web_fetch` requires a non-empty `url_allowlist` to prevent SSRF attacks; an empty list denies all fetches. `web_search` requires `tools.web_fetch.enabled=true`.
+- **Web tools:** The built-in web tools (`web_fetch`, `web_search`, `browser`) can be enabled under `tools:` in `config.yaml`. `web_fetch` extracts HTML→text, plain/JSON, and PDF text layers; it requires a non-empty `url_allowlist` to prevent SSRF attacks (an empty list denies all fetches). Its optional headless-browser fallback (`fallback_to_browser`) fires for thin JS-heavy pages and on 403/429 bot-blocks, and requires `tools.browser.enabled` plus a reachable browser pool. `web_search` queries SearXNG (default — requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate) or hosted Tavily (`provider: tavily` + the `FAMCLAW_WEB_SEARCH_API_KEY` env var). See the README "Web fetch" / "Web search" sections.
 - **MCP runtime management:** List and add MCP servers conversationally via the parent-only `mcp_list` and `mcp_add` built-in tools, or add/remove via the `/api/mcp` endpoints (session-authenticated, parent role) — no config edit or restart required. The running MCP pool is reloaded in place. See [SKILLS.md](./SKILLS.md) and the MCP section of the README.
 - **Config hot-reload:** FamClaw watches `config.yaml` and reloads non-destructive changes in place — including MCP server add/remove, gateway toggles, and tool config — without a restart. Each component reports its actual reload outcome (success, failure, or "requires restart" for non-reloadable components); false success is no longer reported. The voice transcriber is hot-reloadable. The file watcher stops cleanly on shutdown.
 ## Next Steps
