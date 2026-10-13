@@ -344,6 +344,22 @@ func (d *DB) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_reminders_due_at ON reminders(due_at);
 	CREATE INDEX IF NOT EXISTS idx_reminders_user_dispatched ON reminders(user_name, dispatched);
 
+-- Reminders that could not be delivered (dead channel, exhausted retries).
+-- The content is kept here so a delivery failure is never silently lost and
+-- the user can query what they missed (web: /api/reminders/undelivered).
+	CREATE TABLE IF NOT EXISTS undelivered_reminders (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		reminder_id INTEGER NOT NULL,
+		user_name   TEXT NOT NULL,
+		gateway     TEXT NOT NULL,
+		chat_id     TEXT NOT NULL,
+		message     TEXT NOT NULL,
+		reason      TEXT NOT NULL,
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_undelivered_reminders_user ON undelivered_reminders(user_name);
+	CREATE INDEX IF NOT EXISTS idx_undelivered_reminders_created_at ON undelivered_reminders(created_at);
+
 	-- Phase 4 — per-user memory (scoped by user identity, not shared family-wide).
 	-- See docs/superpowers/specs/2026-07-14-user-memory-design.md.
 	CREATE TABLE IF NOT EXISTS user_memories (
@@ -1680,6 +1696,82 @@ func (d *DB) DeleteReminder(ctx context.Context, id int64) error {
 		return fmt.Errorf("deleting reminder: %w", err)
 	}
 	return nil
+}
+
+// ── Undelivered reminders ─────────────────────────────────────────────────────
+//
+// A reminder that cannot be delivered (its chat 404'd, transient retries were
+// exhausted, or the delivery-attempt counter could not be persisted) is
+// recorded here with its original content. This guarantees a delivery failure
+// is never silently lost and the user can query what they missed.
+
+// UndeliveredReminder is a reminder that could not be delivered to its
+// target. Gateway/ChatID is the failed destination (the chat id the
+// dispatcher tried: external_id for DMs, group_id for groups); Reason is a
+// machine-readable cause (invalid_chat, retries_exhausted,
+// attempt_counter_fault).
+type UndeliveredReminder struct {
+	ID         int64
+	ReminderID int64
+	UserName   string
+	Gateway    string
+	ChatID     string
+	Message    string
+	Reason     string
+	CreatedAt  time.Time
+}
+
+// SaveUndeliveredReminder records an undeliverable reminder.
+func (d *DB) SaveUndeliveredReminder(ctx context.Context, u *UndeliveredReminder) error {
+	res, err := d.sql.ExecContext(ctx, `
+		INSERT INTO undelivered_reminders (reminder_id, user_name, gateway, chat_id, message, reason)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		u.ReminderID, u.UserName, u.Gateway, u.ChatID, u.Message, u.Reason)
+	if err != nil {
+		return fmt.Errorf("saving undelivered reminder: %w", err)
+	}
+	if id, err := res.LastInsertId(); err == nil {
+		u.ID = id
+	}
+	return nil
+}
+
+// GetUndeliveredReminders returns recorded undeliverable reminders, newest
+// first. limit <= 0 defaults to 100; the hard cap is 500.
+func (d *DB) GetUndeliveredReminders(ctx context.Context, limit int) ([]UndeliveredReminder, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT id, reminder_id, user_name, gateway, chat_id, message, reason, created_at
+		FROM undelivered_reminders
+		ORDER BY id DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("querying undelivered reminders: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UndeliveredReminder
+	for rows.Next() {
+		u := UndeliveredReminder{}
+		var createdAtStr string
+		if err := rows.Scan(&u.ID, &u.ReminderID, &u.UserName, &u.Gateway, &u.ChatID,
+			&u.Message, &u.Reason, &createdAtStr); err != nil {
+			return nil, fmt.Errorf("scanning undelivered reminder: %w", err)
+		}
+		if t, perr := time.Parse(time.RFC3339, createdAtStr); perr == nil {
+			u.CreatedAt = t
+		} else if t, perr := time.Parse("2006-01-02 15:04:05", createdAtStr); perr == nil {
+			// Values stored as plain UTC text (SQL "YYYY-MM-DD HH:MM:SS").
+			u.CreatedAt = t
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }
 
 // ── Research Task Status ──────────────────────────────────────────────────────

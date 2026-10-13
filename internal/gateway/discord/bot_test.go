@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -680,5 +681,83 @@ func TestSendFileStaleDMChannelRecovery(t *testing.T) {
 	}
 	if cached, _ := b.dmCache.Load("user-123"); cached != "fresh-2" {
 		t.Errorf("cache after recovery = %v, want fresh channel %q", cached, "fresh-2")
+	}
+}
+
+// TestWrapInvalidChat verifies that a discordgo REST 404 (dead channel or
+// user) is upgraded to gateway.InvalidChatError — the fast-path signal that
+// the destination is gone — while transient failures (5xx, transport
+// errors) pass through unchanged.
+func TestWrapInvalidChat(t *testing.T) {
+	rest404 := &discordgo.RESTError{
+		Response:     &http.Response{StatusCode: http.StatusNotFound, Status: "404 Not Found"},
+		ResponseBody: []byte(`{"message":"Unknown Channel","code":0}`),
+	}
+	rest500 := &discordgo.RESTError{
+		Response: &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error"},
+	}
+	cases := []struct {
+		name        string
+		err         error
+		wantInvalid bool
+	}{
+		{"404 rest error", rest404, true},
+		{"404 wrapped by the retry path", fmt.Errorf("reopening discord DM for 42: %w", rest404), true},
+		{"500 rest error", rest500, false},
+		{"plain transport error", fmt.Errorf("sending discord message: connection reset by peer"), false},
+		{"rest error without response", &discordgo.RESTError{}, false},
+		{"nil error", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wrapInvalidChat("12345", tc.err)
+			if invalid := errors.Is(got, gateway.ErrInvalidChat); invalid != tc.wantInvalid {
+				t.Errorf("errors.Is(ErrInvalidChat) = %v, want %v (err=%v)", invalid, tc.wantInvalid, got)
+			}
+		})
+	}
+}
+
+// TestSendDeadChannelInvalidChat drives Send end to end against a fake API
+// that answers with a fixed status: a 404 (destination gone, surviving the
+// stale-cache recovery) must surface as gateway.InvalidChatError, a 500 as a
+// plain transient error so bounded retries still apply.
+func TestSendDeadChannelInvalidChat(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		wantInvalid bool
+	}{
+		{"404 unknown channel", http.StatusNotFound, true},
+		{"500 transient", http.StatusInternalServerError, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"message":"Unknown Channel","code":0}`))
+			}))
+			defer server.Close()
+
+			origUserChannels := discordgo.EndpointUserChannels
+			discordgo.EndpointUserChannels = func(string) string { return server.URL + "/dm" }
+			t.Cleanup(func() { discordgo.EndpointUserChannels = origUserChannels })
+
+			session, err := discordgo.New("Bot test-token")
+			if err != nil {
+				t.Fatalf("discordgo.New: %v", err)
+			}
+			session.Client = &http.Client{Timeout: 5 * time.Second}
+			b := &Bot{session: session}
+
+			err = b.Send(context.Background(), "user-123", "hi")
+			if err == nil {
+				t.Fatal("expected an error from a failing send")
+			}
+			if invalid := errors.Is(err, gateway.ErrInvalidChat); invalid != tc.wantInvalid {
+				t.Errorf("errors.Is(ErrInvalidChat) = %v, want %v (err=%v)", invalid, tc.wantInvalid, err)
+			}
+		})
 	}
 }

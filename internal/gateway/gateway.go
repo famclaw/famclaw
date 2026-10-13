@@ -5,6 +5,8 @@ package gateway
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/famclaw/famclaw/internal/config"
 )
@@ -98,6 +100,44 @@ type Sender interface {
 	// chatID is the gateway-specific identifier (e.g., Telegram chat_id, Discord channel_id).
 	Send(ctx context.Context, chatID string, text string) error
 }
+
+// ErrInvalidChat signals that the target chat/channel no longer exists on
+// the platform — a 404 on send (deleted channel, removed bot, unknown user).
+// Senders wrap it with InvalidChatError so callers can distinguish a
+// permanently-invalid destination from a transient failure via
+// errors.Is(err, ErrInvalidChat): retrying a 404 is pointless and only
+// hammers the platform API (the reminder scheduler fast-paths it instead of
+// burning its bounded retries).
+var ErrInvalidChat = errors.New("chat no longer exists on the platform")
+
+// InvalidChatError is the structured wrapper of ErrInvalidChat. Gateway is
+// the gateway name ("telegram", "discord"), ChatID the identifier that 404'd
+// (the value the caller passed to Send), and Cause the underlying platform
+// API error.
+type InvalidChatError struct {
+	Gateway string
+	ChatID  string
+	Cause   error
+}
+
+// Error renders the invalid-chat condition with its context. The cause text
+// comes from the platform API error body, which can carry credentials —
+// callers logging it should redact first (see notify.RedactWebhookURLInError).
+func (e *InvalidChatError) Error() string {
+	if e.Cause == nil {
+		return fmt.Sprintf("%s: %s chat %s: %v", ErrInvalidChat, e.Gateway, e.ChatID, "no detail")
+	}
+	return fmt.Sprintf("%s: %s chat %s: %v", ErrInvalidChat, e.Gateway, e.ChatID, e.Cause)
+}
+
+// Is reports identity with the ErrInvalidChat sentinel so
+// errors.Is(err, gateway.ErrInvalidChat) matches this error directly.
+func (e *InvalidChatError) Is(target error) bool {
+	return target == ErrInvalidChat
+}
+
+// Unwrap exposes the underlying platform API error.
+func (e *InvalidChatError) Unwrap() error { return e.Cause }
 
 // OutboundFile is a file the agent wants to deliver to a user through a
 // gateway. Name is the filename as presented to the platform (no path

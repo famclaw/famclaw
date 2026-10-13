@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +21,23 @@ import (
 	"github.com/famclaw/famclaw/internal/imageutil"
 	"github.com/famclaw/famclaw/internal/notify"
 )
+
+// wrapInvalidChat upgrades a discordgo REST 404 (channel or user no longer
+// exists) into gateway.InvalidChatError so callers can fast-path a
+// permanently-dead target instead of retrying it. Non-404 errors pass
+// through unchanged. chatID is the identifier the caller passed to Send
+// (user id for DMs, channel id for groups).
+func wrapInvalidChat(chatID string, err error) error {
+	var re *discordgo.RESTError
+	if errors.As(err, &re) && re.Response != nil && re.Response.StatusCode == http.StatusNotFound {
+		return &gateway.InvalidChatError{
+			Gateway: "discord",
+			ChatID:  chatID,
+			Cause:   err,
+		}
+	}
+	return err
+}
 
 // mimeToExtensions maps MIME types to allowed file extensions.
 var mimeToExtensions = map[string][]string{
@@ -305,12 +323,15 @@ func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
 	if b.session == nil {
 		return fmt.Errorf("discord session not initialized")
 	}
-	return b.postToUserDMChannel(channelID, func(dm string) error {
+	err := b.postToUserDMChannel(channelID, func(dm string) error {
 		if err := SendChunked(b.session, dm, text); err != nil {
 			return fmt.Errorf("sending discord message to %s: %w", dm, err)
 		}
 		return nil
 	})
+	// A 404 that survives the stale-cache recovery means the destination is
+	// genuinely gone: mark it as such so callers stop retrying it.
+	return wrapInvalidChat(channelID, err)
 }
 
 // postToUserDMChannel posts to the user's DM channel with stale-cache
@@ -364,9 +385,9 @@ func (b *Bot) SendFile(ctx context.Context, dest gateway.OutboundDestination, fi
 		return nil
 	}
 	if dest.GroupID != "" {
-		return post(dest.GroupID)
+		return wrapInvalidChat(dest.GroupID, post(dest.GroupID))
 	}
-	return b.postToUserDMChannel(dest.ExternalID, post)
+	return wrapInvalidChat(dest.ExternalID, b.postToUserDMChannel(dest.ExternalID, post))
 }
 
 // dmChannelID returns the DM channel ID for the given recipient user ID,

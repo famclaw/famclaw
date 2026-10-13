@@ -284,3 +284,45 @@ func TestShouldSkipUpdate(t *testing.T) {
 		})
 	}
 }
+
+// TestSendMessageInvalidChat verifies that Send wraps a dead-destination
+// failure (a 404, or the 400 "chat not found" the Bot API returns for an
+// unknown/removed chat) in gateway.InvalidChatError, and that other API
+// failures (auth errors, 5xx) are plain transient errors.
+func TestSendMessageInvalidChat(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		body        string
+		wantInvalid bool
+	}{
+		{"404 not found", http.StatusNotFound, `{"ok":false,"error_code":404,"description":"Not Found"}`, true},
+		{"400 chat not found", http.StatusBadRequest, `{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}`, true},
+		{"401 unauthorized", http.StatusUnauthorized, `{"ok":false,"error_code":401,"description":"Unauthorized"}`, false},
+		{"500 server error", http.StatusInternalServerError, `{"ok":false,"error_code":500,"description":"Internal Server Error"}`, false},
+		{"400 parse error", http.StatusBadRequest, `{"ok":false,"error_code":400,"description":"Bad Request: parse entity failed"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			bot := &Bot{
+				token:    "test-token",
+				endpoint: server.URL,
+				client:   server.Client(),
+			}
+			err := bot.Send(context.Background(), "12345", "hello")
+			if err == nil {
+				t.Fatal("expected an error from a failing send")
+			}
+			if got := errors.Is(err, gateway.ErrInvalidChat); got != tc.wantInvalid {
+				t.Errorf("errors.Is(ErrInvalidChat) = %v, want %v (err=%v)", got, tc.wantInvalid, err)
+			}
+		})
+	}
+}
