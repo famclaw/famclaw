@@ -574,3 +574,106 @@ func TestResolveDestinationNoLinkedGateway(t *testing.T) {
 		t.Fatalf("error = %q, want substring %q", err.Error(), "no linked gateway account")
 	}
 }
+
+// TestResolveDestinations lists every initiable gateway most-recent first so
+// a caller (e.g. the reminder scheduler) can skip the destination that just
+// failed and take the next reachable route.
+func TestResolveDestinations(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name    string
+		seed    func(t *testing.T, db *store.DB)
+		wantErr bool
+		want    []Candidate
+	}{
+		{
+			name:    "no linked accounts",
+			seed:    func(t *testing.T, db *store.DB) {},
+			wantErr: true,
+		},
+		{
+			name: "telegram never messaged is not initiable",
+			seed: func(t *testing.T, db *store.DB) {
+				if err := db.LinkGatewayAccount("julia", "telegram", "tg-1"); err != nil {
+					t.Fatalf("LinkGatewayAccount: %v", err)
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "discord only is initiable without prior message",
+			seed: func(t *testing.T, db *store.DB) {
+				if err := db.LinkGatewayAccount("julia", "discord", "dc-9"); err != nil {
+					t.Fatalf("LinkGatewayAccount: %v", err)
+				}
+			},
+			want: []Candidate{{Gateway: "discord", ExternalID: "dc-9"}},
+		},
+		{
+			name: "both gateways, discord most recent first",
+			seed: func(t *testing.T, db *store.DB) {
+				linkUser(t, db, "julia", "telegram", "tg-1")
+				linkUser(t, db, "julia", "discord", "dc-1")
+				// Backdate only the Telegram row (created_at is
+				// second-granular, so an explicit value is the only
+				// deterministic way to make Discord the most recently used).
+				if _, err := db.SQL().Exec(`UPDATE messages SET created_at = '2026-01-01 00:00:00' WHERE conversation_id = 'conv-julia' AND gateway = 'telegram'`); err != nil {
+					t.Fatalf("backdating telegram message: %v", err)
+				}
+			},
+			want: []Candidate{
+				{Gateway: "discord", ExternalID: "dc-1"},
+				{Gateway: "telegram", ExternalID: "tg-1"},
+			},
+		},
+		{
+			name: "failed-gateway skip: telegram dead, discord reachable",
+			seed: func(t *testing.T, db *store.DB) {
+				linkUser(t, db, "julia", "telegram", "tg-1")
+				linkUser(t, db, "julia", "discord", "dc-1")
+				// Make Telegram the most recently used — a caller that just
+				// failed on telegram/tg-1 must take discord/dc-1 next. Both
+				// linkUser calls share one conversation id, so the row is
+				// distinguished by gateway (created_at is second-granular, so
+				// an explicit value is the only deterministic way to order).
+				if _, err := db.SQL().Exec(`UPDATE messages SET created_at = '2026-01-01 00:00:00' WHERE conversation_id = 'conv-julia' AND gateway = 'discord'`); err != nil {
+					t.Fatalf("backdating discord message: %v", err)
+				}
+			},
+			want: []Candidate{
+				{Gateway: "telegram", ExternalID: "tg-1"},
+				{Gateway: "discord", ExternalID: "dc-1"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, cleanup := newTestDB(t)
+			defer cleanup()
+			tc.seed(t, db)
+
+			cands, err := ResolveDestinations(ctx, db, "julia")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %v", cands)
+				}
+				if !strings.Contains(err.Error(), "julia") {
+					t.Errorf("error should name the user, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveDestinations: %v", err)
+			}
+			if len(cands) != len(tc.want) {
+				t.Fatalf("got %d candidates, want %d: %v", len(cands), len(tc.want), cands)
+			}
+			for i := range tc.want {
+				if cands[i] != tc.want[i] {
+					t.Errorf("candidate[%d] = %v, want %v", i, cands[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

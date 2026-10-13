@@ -55,7 +55,7 @@ FamClaw talks to any OpenAI-compatible endpoint:
 
 ```yaml
 llm:
-  base_url: "http://192.168.1.10:11434"  # Ollama on your Mac Mini
+  base_url: "http://<your-host>:11434"  # Ollama on your LAN device
   model: "llama3.2:3b"
   # Per-call LLM request timeout in seconds. Each chat/tool call gets its
   # own context deadline. Default: 300 (5 minutes).
@@ -386,7 +386,7 @@ Enable in `config.yaml`:
 tools:
   transcription:
     enabled: true
-    endpoint: "http://192.168.1.10:8092"   # base URL of your /v1/audio/transcriptions service
+    endpoint: "http://<your-host>:8092"   # base URL of your /v1/audio/transcriptions service
     model: "whisper-1"                       # model name sent to the service
     max_bytes: 26214400                      # cap on downloaded audio; default 25 MB
     timeout_seconds: 30                      # per-request timeout; default 30
@@ -423,6 +423,7 @@ When `enabled` is not set (or `false`), a voice message is **not** silently drop
 | **Web UI** | Chat, parent dashboard, 5-step wizard with AI profiles, PIN-gated skill install/remove |
 | **Web auth** | Cookie-based web sessions + machine-bound credential vault (`internal/credstore`, `internal/web/middleware`); see [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) |
 | **Family state** | Shared per-family memory (`internal/familystate`): allergies, dietary restrictions, important dates, pets + custom parent-managed categories. Safety-critical entries auto-injected into every system prompt via `<family_safety>` block; rest read on-demand via `get_family_state` tool. Kid proposals queue parent approval; parents auto-apply (OPA-gated). Web dashboard at `/family-state.html` + JSON API at `/api/family-state/*`. |
+| **Reminders** | Per-user scheduled reminders (`internal/reminder`). A delivery failure is never silent: a dead target (404 — deleted channel, removed bot) fast-paths with the target marked invalid for the process (no 404 storm), the reminder's content is recorded in the `undelivered_reminders` table, and the user is notified on an alternate reachable gateway when one exists (e.g. dead Discord channel → Telegram). Transient failures keep bounded retries (3 attempts). Parents can query what was missed at `/api/reminders/undelivered`. |
 | **Telegram + Discord** | Fully wired gateway bots, message chunking past per-platform limits (4096/2000 chars) |
 | **Unknown-account backend** | Strangers messaging the bot are recorded against a parent-controlled queue, never auto-promoted to a user (issue #111 backend) |
 | **MCP tools** | Multi-transport (stdio/HTTP/SSE), unified tool registry |

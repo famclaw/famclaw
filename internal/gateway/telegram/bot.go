@@ -382,9 +382,45 @@ func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		// A 404, or the 400 "chat not found" the Bot API returns for an
+		// unknown/removed chat id, means the destination no longer exists:
+		// surface it as an invalid chat so callers (e.g. the reminder
+		// scheduler) fast-path it instead of burning bounded retries.
+		if isStaleChat(resp.StatusCode, tgAPIErrorDescription(body)) {
+			return &gateway.InvalidChatError{
+				Gateway: "telegram",
+				ChatID:  strconv.FormatInt(chatID, 10),
+				Cause:   fmt.Errorf("telegram send error %d: %s", resp.StatusCode, string(body)),
+			}
+		}
 		return fmt.Errorf("telegram send error %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+// isStaleChat reports whether a Telegram Bot API send failure means the
+// destination no longer exists: a 404, or the 400 "chat not found" error the
+// API returns for an unknown or removed chat id. Retrying such a target is
+// pointless — callers fast-path it (gateway.ErrInvalidChat) instead of
+// hammering the API.
+func isStaleChat(status int, description string) bool {
+	if status == http.StatusNotFound {
+		return true
+	}
+	return status == http.StatusBadRequest && strings.Contains(description, "chat not found")
+}
+
+// tgAPIErrorDescription extracts the Bot API error description from a
+// response body like {"ok":false,"error_code":400,"description":"Bad Request:
+// chat not found"}. Returns "" when the body is not such an error.
+func tgAPIErrorDescription(body []byte) string {
+	var apiErr struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &apiErr); err != nil {
+		return ""
+	}
+	return apiErr.Description
 }
 
 // Send implements gateway.Sender for outbound messages (e.g., reminders).

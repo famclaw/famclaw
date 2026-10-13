@@ -133,8 +133,15 @@ func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[s
 	return fmt.Sprintf("Message sent to %s via %s", to, gatewayName), nil
 }
 
-// ResolveDestination chooses a linked gateway that can actually be INITIATED
-// for a proactive delivery to to, returning its name and platform external_id.
+// Candidate is one linked gateway that a caller can proactively initiate for
+// a user, in the shape delivery callers need.
+type Candidate struct {
+	Gateway    string
+	ExternalID string
+}
+
+// ResolveDestinations returns every gateway that can be INITIATED for a
+// proactive delivery to to, most-recent first.
 //
 // A family member being "linked" (a row in gateway_accounts) is necessary but
 // not sufficient for proactive delivery: not every linked gateway can be
@@ -148,27 +155,32 @@ func Handle(ctx context.Context, db DB, cfg *config.Config, senderRegistry map[s
 //     permanently. So a linked Telegram account is initiable only when our
 //     messages table shows prior inbound activity on that gateway.
 //
-// Resolution prefers an initiable gateway; among several initiable ones it
-// keeps the existing most-recent-message preference (NULL last-message time
-// sorts oldest, so a never-messaged-but-always-initiable Discord loses to a
-// used Telegram).
+// Resolution prefers an initiable gateway; among several initable ones it
+// keeps the most-recent-message preference (NULL last-message time sorts
+// oldest, so a never-messaged-but-always-initiable Discord loses to a used
+// Telegram).
 //
-// When no linked gateway can be initiated, the returned error names the person,
-// lists the gateways they ARE linked on, explains why each cannot be
+// When no linked gateway can be initiated, the returned error names the
+// person, lists the gateways they ARE linked on, explains why each cannot be
 // initiated, and says what would unblock it. This replaces the opaque
 // "X has not sent any messages yet" failure with something actionable.
 //
+// The existing ResolveDestination is the take-the-best form of this; callers
+// that need an ALTERNATE route (e.g. the reminder scheduler notifying a user
+// that their reminder target is dead) use the full list to skip the
+// destination that just failed.
+//
 // To add a third gateway, extend canInitiate / cannotInitiateReason below.
-func ResolveDestination(ctx context.Context, db DB, to string) (gateway, externalID string, err error) {
+func ResolveDestinations(ctx context.Context, db DB, to string) ([]Candidate, error) {
 	linked, err := db.GatewayAccountsByUserWithLastMsg(ctx, to)
 	if err != nil {
-		return "", "", fmt.Errorf("resolving reachable gateway for %s: %w", to, err)
+		return nil, fmt.Errorf("resolving reachable gateway for %s: %w", to, err)
 	}
 	if len(linked) == 0 {
-		return "", "", fmt.Errorf("%s has no linked gateway account to send through, so I don't know how to reach them on any gateway", to)
+		return nil, fmt.Errorf("%s has no linked gateway account to send through, so I don't know how to reach them on any gateway", to)
 	}
 
-	// Partition into initiable / not. hasMsg is derived from lastMsgAt, which
+	// Partition into initable / not. hasMsg is derived from lastMsgAt, which
 	// is the messages-table lookup that decides Telegram iniability.
 	initable := make([]candidate, 0, len(linked))
 	not := make([]candidate, 0, len(linked))
@@ -183,15 +195,33 @@ func ResolveDestination(ctx context.Context, db DB, to string) (gateway, externa
 	}
 
 	if len(initable) == 0 {
-		return "", "", unresolvableError(to, not)
+		return nil, unresolvableError(to, not)
 	}
 
 	// Prefer most-recent; NULL lastMsg sorts oldest (stable tiebreak on name).
 	sort.Slice(initable, func(i, j int) bool {
 		return candidateIsNewer(initable[i], initable[j])
 	})
-	best := initable[0]
-	return best.gw, best.ext, nil
+	out := make([]Candidate, len(initable))
+	for i, c := range initable {
+		out[i] = Candidate{Gateway: c.gw, ExternalID: c.ext}
+	}
+	return out, nil
+}
+
+// ResolveDestination chooses the single best gateway that can actually be
+// INITIATED for a proactive delivery to to, returning its name and platform
+// external_id. See ResolveDestinations for the platform initiation rules.
+func ResolveDestination(ctx context.Context, db DB, to string) (gateway, externalID string, err error) {
+	cands, err := ResolveDestinations(ctx, db, to)
+	if err != nil {
+		return "", "", err
+	}
+	if len(cands) == 0 {
+		return "", "", fmt.Errorf("%s has no gateway that can be initiated for a proactive message", to)
+	}
+	best := cands[0]
+	return best.Gateway, best.ExternalID, nil
 }
 
 // candidateIsNewer reports whether a is more recently messaged than b, for

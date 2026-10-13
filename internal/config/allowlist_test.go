@@ -19,7 +19,7 @@ func TestNormalizeAllowlistHost(t *testing.T) {
 		{name: "http scheme", input: "http://example.com", want: "example.com"},
 		{name: "subdomain kept", input: "blog.example.com", want: "blog.example.com"},
 		{name: "single-label host", input: "localhost", want: "localhost"},
-		{name: "ipv4 literal", input: "192.168.1.10", want: "192.168.1.10"},
+		{name: "ipv4 literal", input: "198.51.100.10", want: "198.51.100.10"},
 		{name: "ipv4 with port", input: "http://10.0.0.5:11434", want: "10.0.0.5"},
 		{name: "hyphenated label", input: "my-site.example", want: "my-site.example"},
 

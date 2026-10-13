@@ -43,7 +43,7 @@ If you have a Pi or Mac running Ollama:
 
 ```yaml
 llm:
-  base_url: "http://192.168.1.50:11434"   # your Pi/Mac's IP
+  base_url: "http://<your-host>:11434"   # the device running Ollama
   model: "llama3.2:3b"
   # no api_key needed for Ollama
 ```

@@ -1312,7 +1312,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 
 	// Empty allowlist = deny-all. The previous "empty means any host"
 	// semantic was an SSRF footgun on home networks — a misconfigured
-	// deployment could let a jailbroken LLM reach 192.168.1.1/admin or
+	// deployment could let a jailbroken LLM reach 198.51.100.10/admin or
 	// other LAN services. Operators must explicitly list the hosts they
 	// want web_fetch to reach.
 	if len(cfg.URLAllowlist) == 0 {
