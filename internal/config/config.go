@@ -85,13 +85,37 @@ type BrowserConfig struct {
 }
 
 // WebSearchConfig controls the built-in web_search tool. Disabled by default;
-// when enabled the LLM may query a SearXNG (or compatible) JSON endpoint
-// and receive structured title/url/snippet results. The endpoint host is
-// still gated by tools.web_fetch.url_allowlist — add the search host
-// (e.g. "localhost") to that list to use this tool.
+// when enabled the LLM may query a search backend and receive structured
+// title/url/snippet results.
+//
+// Provider selection (config, not code — the accepted web-retrieval plan
+// makes Exa/Brave/Firecrawl later additions a config change):
+//
+//	Provider ""/ "searxng" (DEFAULT) — a SearXNG (or compatible) JSON
+//	endpoint. The endpoint host is still gated by
+//	tools.web_fetch.url_allowlist — add the search host (e.g.
+//	"localhost") to that list to use this tool. Zero vendor, all on-LAN.
+//
+//	Provider "tavily" — the hosted Tavily API (one signup, free monthly
+//	credits). The key comes from the FAMCLAW_WEB_SEARCH_API_KEY env var or
+//	TavilyAPIKey in YAML (env wins — see resolveWebSearchAPIKey). Enabling
+//	it sends the query text to Tavily; the endpoint host is a fixed vendor
+//	constant and is NOT an entry for tools.web_fetch.url_allowlist (that
+//	gate covers user-supplied web_fetch targets, a different surface).
 type WebSearchConfig struct {
-	Enabled      bool     `yaml:"enabled"`
-	Endpoint     string   `yaml:"endpoint,omitempty"`        // e.g. "http://localhost:8888"; required when Enabled
+	Enabled bool `yaml:"enabled"`
+	// Provider selects the search backend. Empty or "searxng" (default)
+	// keeps the existing SearXNG behavior byte-for-byte; "tavily" switches
+	// to the hosted Tavily API. Any other value is a configuration error.
+	Provider string `yaml:"provider,omitempty"`
+	// Endpoint is the SearXNG (or compatible) JSON endpoint; required when
+	// Enabled and Provider is searxng. e.g. "http://localhost:8888".
+	Endpoint string `yaml:"endpoint,omitempty"`
+	// TavilyAPIKey is the Tavily API key for Provider "tavily" (option B).
+	// Prefer the FAMCLAW_WEB_SEARCH_API_KEY env var; a YAML-set value logs
+	// a warning (the key itself never is). Never put this in an example
+	// config.
+	TavilyAPIKey string   `yaml:"tavily_api_key,omitempty"`
 	AllowedRoles []string `yaml:"allowed_roles,omitempty"`   // default ["parent"]
 	MaxResults   int      `yaml:"max_results,omitempty"`     // default 8, hard-capped at 16
 	TimeoutSec   int      `yaml:"timeout_seconds,omitempty"` // default 30
@@ -400,6 +424,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	resolveLLMAPIKey(&cfg)
+	resolveWebSearchAPIKey(&cfg)
 	applyDefaults(&cfg)
 	return &cfg, nil
 }
@@ -421,6 +446,27 @@ func resolveLLMAPIKey(c *Config) {
 	}
 	if c.LLM.APIKey != "" {
 		log.Printf("[config] llm.api_key: loaded from plaintext YAML config — prefer FAMCLAW_LLM_API_KEY environment variable")
+	}
+}
+
+// resolveWebSearchAPIKey applies the env-var-over-YAML precedence for the
+// web_search provider API key, mirroring resolveLLMAPIKey. Precedence
+// (highest wins):
+//
+//  1. FAMCLAW_WEB_SEARCH_API_KEY environment variable
+//  2. YAML tools.web_search.tavily_api_key field
+//
+// If the env var is set it overrides the YAML value silently. If only YAML
+// is set (and non-empty) a warning is logged — the key is never logged
+// itself. When both are empty the field is left untouched; validation
+// (Validate) rejects a hosted provider without a key at startup.
+func resolveWebSearchAPIKey(c *Config) {
+	if envKey := os.Getenv("FAMCLAW_WEB_SEARCH_API_KEY"); envKey != "" {
+		c.Tools.WebSearch.TavilyAPIKey = envKey
+		return
+	}
+	if c.Tools.WebSearch.TavilyAPIKey != "" {
+		log.Printf("[config] tools.web_search.tavily_api_key: loaded from plaintext YAML config — prefer FAMCLAW_WEB_SEARCH_API_KEY environment variable")
 	}
 }
 
@@ -591,11 +637,29 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.Tools.WebSearch.Enabled {
-		if strings.TrimSpace(c.Tools.WebSearch.Endpoint) == "" {
-			return fmt.Errorf("tools.web_search.endpoint must be set when enabled (e.g. http://localhost:8888)")
-		}
-		if !c.Tools.WebFetch.Enabled {
-			return fmt.Errorf("tools.web_search requires tools.web_fetch.enabled=true (it reuses the web_fetch URL allowlist as its host gate)")
+		provider := strings.ToLower(strings.TrimSpace(c.Tools.WebSearch.Provider))
+		switch provider {
+		case "", "searxng":
+			// Default path: behavior is byte-identical to before the
+			// provider boundary existed — endpoint required, host gated
+			// by the web_fetch url_allowlist.
+			if strings.TrimSpace(c.Tools.WebSearch.Endpoint) == "" {
+				return fmt.Errorf("tools.web_search.endpoint must be set when enabled (e.g. http://localhost:8888)")
+			}
+			if !c.Tools.WebFetch.Enabled {
+				return fmt.Errorf("tools.web_search requires tools.web_fetch.enabled=true (it reuses the web_fetch URL allowlist as its host gate)")
+			}
+		case "tavily":
+			// Hosted provider (option B in the operator options guide):
+			// the endpoint is a fixed vendor constant, so no
+			// tools.web_search.endpoint or url_allowlist entry is needed.
+			// Enabling this sends the query text to Tavily — an explicit
+			// operator choice (web-retrieval plan §4, item 7).
+			if strings.TrimSpace(c.Tools.WebSearch.TavilyAPIKey) == "" {
+				return fmt.Errorf("tools.web_search.tavily_api_key must be set (or FAMCLAW_WEB_SEARCH_API_KEY env var) when provider is tavily")
+			}
+		default:
+			return fmt.Errorf("tools.web_search.provider %q is not supported (supported: searxng [default], tavily)", c.Tools.WebSearch.Provider)
 		}
 		if c.Tools.WebSearch.MaxResults < 0 {
 			return fmt.Errorf("tools.web_search.max_results must be >= 0 (got %d)", c.Tools.WebSearch.MaxResults)

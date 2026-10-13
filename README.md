@@ -240,7 +240,7 @@ Research subagents run asynchronously: the parent acknowledges the task immediat
 
 ## Web fetch (`web_fetch`)
 
-Off by default. When enabled, the LLM gets a `web_fetch` tool that retrieves a URL and returns extracted text — `text/html` is parsed via `golang.org/x/net/html` and stripped of `<script>`/`<style>`/`<head>`; `text/plain` and `application/json` pass through. Useful for "what's the weather", "look up the docs page for X", and similar fetches.
+Off by default. When enabled, the LLM gets a `web_fetch` tool that retrieves a URL and returns extracted text — `text/html` is parsed via `golang.org/x/net/html` and stripped of `<script>`/`<style>`/`<head>`; `text/plain` and `application/json` pass through; `application/pdf` has its text layer extracted with a pure-Go parser (so `CGO_ENABLED=0` is preserved). A scanned/image-only PDF has no text layer — the tool returns a neutral note instead of failing, so the assistant knows it's a coverage limit, not a broken fetch; a PDF truncated to `tools.web_fetch.max_bytes` is an explicit, actionable error. Useful for "what's the weather", "look up the docs page for X", and similar fetches.
 
 Enable in `config.yaml`:
 
@@ -275,9 +275,11 @@ For JS-heavy sites where HTML→text extraction yields too little content, `web_
 
 When the fallback is active and the plain fetch returns fewer than `fallback_min_text_length` chars, the browser navigates and extracts rendered text. Every failure path returns a distinct, honest error — a nil/unavailable browser pool, a browser fetch failure, or an empty rendered result — so an empty page is never silently returned as a successful fetch. Integration tests for the live browser path live behind the `integration` build tag (`go test -tags integration ./internal/agent/ -run TestFetchWithBrowser_Integration`), skipped cleanly where no Playwright server is available.
 
+**Bot-blocked fetches trigger the same fallback.** A direct fetch to an allowlisted host that fails with HTTP 403 or 429 (an upstream engine or CDN bot-blocking the plain HTTP client — the page itself is usually fine in a real browser) retries through the headless browser, when `fallback_to_browser` is on and the browser pool is reachable. No new gate is added: the host allowlist is re-checked against the final URL after redirects, so a 403/429 on an allowlisted host can never widen the fetch surface. 404, 5xx, and transport-level failures are not bot-blocking, so the fallback deliberately does not fire for them — the original error is surfaced as-is (both attempts are logged). If the browser attempt also fails, the original HTTP error is returned.
+
 ## Web search (`web_search`)
 
-Off by default. When enabled, the LLM gets a `web_search` tool that queries a SearXNG (or compatible) JSON endpoint and returns structured title/url/snippet results. Use it before `web_fetch` when you don't already know an exact URL — results carry concrete URLs and snippets you can answer from directly.
+Off by default. When enabled, the LLM gets a `web_search` tool that queries a search **provider** and returns structured title/url/snippet results. Use it before `web_fetch` when you don't already know an exact URL — results carry concrete URLs and snippets you can answer from directly.
 
 Enable in `config.yaml`:
 
@@ -286,21 +288,35 @@ tools:
   web_fetch:
     enabled: true              # required — web_search reuses web_fetch's host allowlist
     url_allowlist:
-      - localhost              # your SearXNG host
+      - localhost              # your SearXNG host (SearXNG provider only)
       - wikipedia.org
   web_search:
     enabled: true
     allowed_roles: [parent]    # role gate — checked when registering the tool
-    endpoint: "http://localhost:8888"   # SearXNG JSON search URL
+    provider: searxng          # searxng (default) | tavily — see "Providers" below
+    endpoint: "http://localhost:8888"   # SearXNG JSON search URL (SearXNG only)
+    # tavily_api_key: "..."    # optional; the FAMCLAW_WEB_SEARCH_API_KEY env var wins
     max_results: 8             # default 8, hard-capped at 16
     timeout_seconds: 30        # default 30 — raises the old 10s default for self-hosted SearXNG fanning out to multiple upstreams
 ```
 
-**Host gate:** `web_search` is not independent — it requires `tools.web_fetch.enabled=true` and reuses the `tools.web_fetch.url_allowlist` as its host gate. The search endpoint host (e.g. `localhost`) must be allowlisted; an empty allowlist denies all searches.
+**Providers — the operator options.** The web-retrieval plan defines five operator options (A–E); A and B are implemented now, C/D are the same shape and arrive later, and E is not a search provider at all:
 
-**Dependency:** a running SearXNG instance (or any OpenSearch-compatible JSON search endpoint). Install SearXNG via Docker or run it locally; point `endpoint` at its `search` JSON URL.
+- **Option A — SearXNG (default, private, $0).** A self-hosted JSON relay; keep it as the default. One honest caveat: SearXNG fans out to upstream engines, and engines that bot-block relay traffic (429/CAPTCHA) shrink its pool — a live audit of a typical home instance in October 2026 found 5 of 7 engines blocked (brave 429, DuckDuckGo CAPTCHA, Mojeek/Mwmbl/Qwant access-denied), with only Bing, Wikipedia, and Wiby surviving. A correctly configured SearXNG is therefore a **best-effort private floor** (100% on-LAN, zero vendors), not a reliability guarantee — results can be sparse depending on your instance.
+- **Option B — Tavily (hosted, `provider: tavily`).** A hosted search API — one signup, no card, 1,000 free credits/month, and the same key later covers hosted extraction (option E). No `endpoint` and no allowlist entry: the request goes to a fixed vendor endpoint constant (`api.tavily.com/search`), which is deliberately *not* an `url_allowlist` host — that gate covers user-supplied `web_fetch` targets, and adding the vendor host there would conflate the two. **Data-flow disclosure:** enabling a hosted provider sends the user's query text to that provider's API. The key comes from the `FAMCLAW_WEB_SEARCH_API_KEY` environment variable (preferred) or `tools.web_search.tavily_api_key` in YAML (env wins; a YAML-set key is logged as a warning, not an error).
+- **Options C/D — Exa / Brave.** The same provider interface is designed for these second hosted indexes with the identical config shape (`provider` + API key); the adapters have not landed yet. An unimplemented (or unknown) `provider` value is a config error listing what is supported, so a typo never silently falls back to a different backend.
+- **Option E — hosted extraction (e.g. Firecrawl)** is a later *extraction* strengthening, not a `web_search` provider: it would send fetched page content to a hosted API only when the local fetch and the browser fallback both fail. It is not part of the search config today.
 
-**Failure behavior:** if the search backend is unreachable (connection refused, timeout, wrong content type, non-2xx), `web_search` returns an explicit unavailable error rather than an empty result set — the LLM is instructed to relay this honestly ("I could not search right now") instead of inventing results. A zero-hit response is still a normal "no results" outcome, distinct from an unavailable backend. FamClaw also logs a `WARNING` at startup if the configured endpoint cannot be reached, so a dead SearXNG is never silently "configured but dead."
+**Host gate (SearXNG provider):** `web_search` is not independent — the default SearXNG provider requires `tools.web_fetch.enabled=true` and reuses the `tools.web_fetch.url_allowlist` as its host gate. The search endpoint host (e.g. `localhost`) must be allowlisted; an empty allowlist denies all searches. A hosted provider (`tavily`) has no operator-supplied endpoint, so neither `tools.web_fetch.enabled` nor a `url_allowlist` entry applies — the host gate covers user-supplied `web_fetch` targets, not the vendor's own API.
+
+**Dependency:** a running SearXNG instance (or any OpenSearch-compatible JSON search endpoint) for the default provider — install SearXNG via Docker or run it locally and point `endpoint` at its `search` JSON URL. For `provider: tavily`, no endpoint at all — just the `FAMCLAW_WEB_SEARCH_API_KEY` env var.
+
+**Failure behavior — class-specific, honest, and visible.** `web_search` never returns an empty result set when the backend is down, and it never invents results: the LLM is instructed to relay the failure honestly ("I could not search right now"). The details:
+
+- **Bounded retry.** Transient failures (HTTP 429, 5xx, timeout) are retried — up to 3 attempts total — honoring the provider's `Retry-After` when present and bounded by the request timeout. Non-transient classes (401/403, malformed payload, connection refused) are not retried.
+- **Class-specific markers.** Each failure class maps to a short neutral marker the LLM can relay in the user's language: "rate limited", "search backend error" (5xx), "search timed out", "search backend unreachable" (connection), "search backend auth or config error" (401/403), "invalid search backend response" (malformed), with a generic "unavailable" fallback. Config problems surface distinctly too: an unknown/unsupported `provider` value or a hosted provider without a key is a "provider not configured" error, and a non-allowlisted endpoint host is a "host not permitted" error. No internal endpoint detail is ever echoed into chat (the logs carry the sanitized endpoint; a Tavily key is never logged).
+- **Zero hits are normal.** A 200 with no hits is a legitimate "no results" outcome, distinct from an unavailable backend.
+- **A real startup probe, not just a reachability ping.** At boot, FamClaw issues an actual `format=json` search request (a recognizable marker query, greppable in your SearXNG logs) and verifies the response is a usable JSON payload with a `results` field — not merely any HTTP status. Failures log a `WARNING` with an actionable, class-specific message: a 200 that is not JSON means the endpoint answers but JSON is disabled ("is `format=json` enabled on SearXNG?"), 401/403 is auth/config, 429 means upstream engine bot-blocking (see the SearXNG caveat under Options), 5xx is a provider server error, and a timeout says "slow, not necessarily down" — distinct from a connection failure. The probe is best-effort and never blocks startup; a hosted provider has no local endpoint to probe, so it is skipped with a note.
 
 ---
 
@@ -397,8 +413,8 @@ When `enabled` is not set (or `false`), a voice message is **not** silently drop
 | **Smart tool selection** | Token-budget-aware filtering, role+skill scoping |
 | **Context compression** | Tiered truncation keeping system prompt + pinned messages |
 | **Tool-result spillover cache** | Large tool results (>head budget, ~8.5 KB at 128k ctx — 2% of the context window, floored at 512 B and capped at 64 KB) spill to a per-user file cache with TTL + LRU eviction; smaller results stay inline. `builtin__tool_result_more` reads the tail | **Agent dispatch** | `spawn_agent` builtin tool — parent LLM delegates to a different profile (default-deny MCP tools, per-call timeout, scheduled with concurrency cap) |
-| **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text, role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps. Optional headless-browser fallback for JS-heavy sites (`fallback_to_browser`, off by default; requires `tools.browser.enabled` AND a reachable browser pool) |
-| **Web search** | `web_search` builtin tool (off by default) — query a SearXNG JSON endpoint; requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate; default 30s timeout |
+| **Web fetch** | `web_fetch` builtin tool (off by default) — fetch a URL and return extracted text (HTML→text, plain/JSON passthrough, PDF text layer), role-gated + OPA `tool_policy` + per-host allowlist + size/timeout caps. Optional headless-browser fallback for JS-heavy sites **and on 403/429 bot-block** (`fallback_to_browser`, off by default; requires `tools.browser.enabled` AND a reachable browser pool; the host allowlist is re-checked on the final URL) |
+| **Web search** | `web_search` builtin tool (off by default) — query a search provider: SearXNG (default; requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate) or hosted Tavily (`provider: tavily` + `FAMCLAW_WEB_SEARCH_API_KEY` env var; query text goes to the vendor); 30s timeout; bounded retry (3 attempts, Retry-After aware); class-specific honest error markers + a real `format=json` startup probe |
 | **Voice transcription** | `transcription` builtin (off by default) — transcribes Telegram/Discord voice notes via a local `/v1/audio/transcriptions` service; default 25 MB cap, 30s timeout. See [docs/GATEWAYS.md](./docs/GATEWAYS.md) |
 | **Skill adapters** | FamClaw (SKILL.md), OpenClaw (SOUL.md), Claude Code (.md) |
 | **Skill install** | From parent dashboard Skills tab; HoneyBadger-scanned at install time |

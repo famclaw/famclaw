@@ -39,7 +39,7 @@ func NewHostNotAllowedError(host string) *HostNotAllowedError {
 // defaultAllowedTypes returns a fresh slice each call so callers cannot
 // mutate a shared package-level default. Project policy: no global state.
 func defaultAllowedTypes() []string {
-	return []string{"text/html", "text/plain", "application/json", "application/xhtml+xml"}
+	return []string{"text/html", "text/plain", "application/json", "application/xhtml+xml", "application/pdf"}
 }
 
 // Options controls a single Fetch call.
@@ -210,6 +210,19 @@ func Fetch(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 		text, err := ExtractText(body)
 		if err != nil {
 			return res, fmt.Errorf("web fetch: extract: %w", err)
+		}
+		res.Text = text
+	case "application/pdf":
+		text, err := ExtractPDFText(body)
+		if err != nil {
+			if res.Truncated {
+				// A body cut at MaxBytes loses the xref table at the end
+				// of the file, so a partial PDF cannot be parsed. Say so
+				// explicitly — the cap was applied (Truncated above), and
+				// this is a size problem, not a network or page problem.
+				return res, fmt.Errorf("web fetch: pdf is larger than the %d-byte cap and a truncated PDF cannot be parsed: fetch a smaller document or raise tools.web_fetch.max_bytes", opts.MaxBytes)
+			}
+			return res, err
 		}
 		res.Text = text
 	default:

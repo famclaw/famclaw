@@ -404,10 +404,39 @@ func TestFormatHits_Numbered(t *testing.T) {
 	}
 }
 
+// TestFormatHits_SkipsEmptyFields is the (folded W4, web-retrieval plan
+// Slice 4) regression: a hit with no URL and no content no longer renders as
+// a bare title. The missing-URL guard renders an explicit placeholder so the
+// model is never tempted to invent a source URL; the empty content field is
+// still skipped (no stray blank line).
 func TestFormatHits_SkipsEmptyFields(t *testing.T) {
 	got := FormatHits([]Hit{{Title: "OnlyTitle"}})
-	if got != "1. OnlyTitle" {
-		t.Errorf("FormatHits = %q, want %q", got, "1. OnlyTitle")
+	want := "1. OnlyTitle\n   (source URL not provided by provider)"
+	if got != want {
+		t.Errorf("FormatHits = %q, want %q", got, want)
+	}
+}
+
+// TestFormatHits_MissingURL (folded W4): SearXNG occasionally returns a hit
+// whose URL is empty (or whitespace-only). FormatHits must render the
+// placeholder instead of dropping the URL line, preserving the hit number,
+// title and snippet — never inviting the model to fabricate a source URL.
+func TestFormatHits_MissingURL(t *testing.T) {
+	got := FormatHits([]Hit{{Title: "NoLink", URL: "   ", Content: "snippet text"}})
+	want := "1. NoLink\n   (source URL not provided by provider)\n   snippet text"
+	if got != want {
+		t.Errorf("FormatHits = %q, want %q", got, want)
+	}
+}
+
+// TestFormatHits_EmptyContent (regression): an empty snippet is skipped while
+// the title and source URL are still rendered — the W4 guard must not change
+// the empty-content behavior.
+func TestFormatHits_EmptyContent(t *testing.T) {
+	got := FormatHits([]Hit{{Title: "B", URL: "http://b", Content: ""}})
+	want := "1. B\n   http://b"
+	if got != want {
+		t.Errorf("FormatHits = %q, want %q", got, want)
 	}
 }
 

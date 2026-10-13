@@ -21,7 +21,10 @@ require (
 	golang.org/x/sys v0.49.0
 )
 
-require github.com/fsnotify/fsnotify v1.10.1
+require (
+	github.com/fsnotify/fsnotify v1.10.1
+	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
+)
 
 require google.golang.org/protobuf v1.36.12 // indirect
 
