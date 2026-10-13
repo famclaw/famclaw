@@ -1658,8 +1658,12 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 //
 // Host-not-allowed errors and configuration gaps (unknown provider, hosted
 // provider without a key) are translated into sanitized result strings so
-// the tool loop does not format them as "Error: <msg>". Other genuine
-// errors pass through as ("", err) for the tool loop to surface.
+// the tool loop does not format them as "Error: <msg>". Both pre-request
+// checks key on typed sentinels, never message text, so an upstream rework
+// of the wording cannot change the classification: errors.As on
+// *webfetch.HostNotAllowedError, and errors.Is on
+// websearch.ErrProviderNotConfigured. Other genuine errors pass through as
+// ("", err) for the tool loop to surface.
 func webSearchError(err error, endpoint string) (string, error) {
 	if err == nil {
 		return "", nil
@@ -1668,7 +1672,10 @@ func webSearchError(err error, endpoint string) (string, error) {
 	if errors.As(err, &hostErr) {
 		return "web_search: host not permitted", nil
 	}
-	if strings.Contains(err.Error(), "API key is set") || strings.Contains(err.Error(), "unknown provider") {
+	// Provider-boundary configuration gaps (web-retrieval plan, Slice 1):
+	// unknown provider name or hosted provider without a key. Classified by
+	// the sentinel, so upstream rewording cannot break the mapping.
+	if errors.Is(err, websearch.ErrProviderNotConfigured) {
 		return "web_search: provider not configured", nil
 	}
 	// Classified backend failures (web-retrieval plan, Slice 2): check the

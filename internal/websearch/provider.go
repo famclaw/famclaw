@@ -70,6 +70,11 @@ type ProviderConfig struct {
 // tools.web_search.endpoint behaves byte-identically to before this
 // boundary existed.
 //
+// Configuration errors (unsupported provider name, missing Tavily key) wrap
+// ErrProviderNotConfigured so callers classify them via errors.Is — never
+// by message text, so upstream rewording cannot break the mapping; the
+// agent maps the sentinel to its "provider not configured" marker.
+//
 // Config shapes for the operator options guide (all config additions — no
 // code rework, per the accepted web-retrieval plan §5):
 //
@@ -95,11 +100,11 @@ func ProviderFor(pc ProviderConfig) (Provider, error) {
 		}}, maxRetries: defaultMaxRetries}, nil
 	case "tavily":
 		if strings.TrimSpace(pc.TavilyAPIKey) == "" {
-			return nil, fmt.Errorf("web_search: tavily provider selected but no API key is set (env FAMCLAW_WEB_SEARCH_API_KEY or tools.web_search.tavily_api_key)")
+			return nil, fmt.Errorf("%w: tavily provider selected but no API key is set (env FAMCLAW_WEB_SEARCH_API_KEY or tools.web_search.tavily_api_key)", ErrProviderNotConfigured)
 		}
 		return &retryingProvider{inner: NewTavilyProvider(TavilyConfig{APIKey: pc.TavilyAPIKey, Timeout: pc.Timeout}), maxRetries: defaultMaxRetries}, nil
 	default:
-		return nil, fmt.Errorf("web_search: unknown provider %q (supported: searxng [default], tavily)", pc.Name)
+		return nil, fmt.Errorf("%w: unknown provider %q (supported: searxng [default], tavily)", ErrProviderNotConfigured, pc.Name)
 	}
 }
 

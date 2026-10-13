@@ -27,14 +27,26 @@ import (
 // webSearchError) keep working, and new code matches the specific sentinel.
 // It also remains the "could not determine which" fallback for statuses that
 // map to no specific class.
+//
+// ErrProviderNotConfigured is the ONE exception that does not wrap
+// ErrUnavailable: it is not a backend failure, it is an operator
+// configuration gap detected at the provider boundary (ProviderFor) — an
+// unsupported provider name, or a hosted provider selected without its API
+// key. Unlike ErrAuthConfig (a 401/403 answered by a backend that was
+// actually reached), the request never goes out: the tool cannot be
+// configured yet, and the operator fixes the config (provider name / API
+// key). It is never transient — retrying cannot fix a config gap — so it
+// stays out of isTransient. Callers (the agent's webSearchError) match it
+// via errors.Is, never by message text.
 var (
-	ErrUnavailable = errors.New("web_search: search backend unavailable")
-	ErrAuthConfig  = errors.New("web_search: provider auth/config error (bad/missing key, 401/403)")
-	ErrRateLimited = errors.New("web_search: provider rate limit (429)")
-	ErrProvider5xx = errors.New("web_search: provider server error (5xx)")
-	ErrMalformed   = errors.New("web_search: provider returned malformed/non-JSON response")
-	ErrConnection  = errors.New("web_search: connection failure (refused/DNS/reset)")
-	ErrTimeout     = errors.New("web_search: search timed out")
+	ErrUnavailable           = errors.New("web_search: search backend unavailable")
+	ErrProviderNotConfigured = errors.New("web_search: provider not configured")
+	ErrAuthConfig            = errors.New("web_search: provider auth/config error (bad/missing key, 401/403)")
+	ErrRateLimited           = errors.New("web_search: provider rate limit (429)")
+	ErrProvider5xx           = errors.New("web_search: provider server error (5xx)")
+	ErrMalformed             = errors.New("web_search: provider returned malformed/non-JSON response")
+	ErrConnection            = errors.New("web_search: connection failure (refused/DNS/reset)")
+	ErrTimeout               = errors.New("web_search: search timed out")
 )
 
 // searchError is the concrete search failure. It wraps BOTH the

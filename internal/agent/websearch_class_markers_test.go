@@ -118,9 +118,10 @@ func TestWebSearchError_ClassMarkers(t *testing.T) {
 }
 
 // providerForGap builds the real configuration-gap error via the same path
-// the tool uses at runtime, so this test exercises the actual message
-// (including the "API key is set" / "unknown provider" wording the marker
-// branch matches on) rather than a copy of it.
+// the tool uses at runtime, so this test exercises the actual
+// sentinel-wrapped error (not a copy of its message): the marker branch
+// classifies by websearch.ErrProviderNotConfigured via errors.Is, and this
+// helper proves the real error carries it.
 func providerForGap(t *testing.T, name string) error {
 	t.Helper()
 	_, err := websearch.ProviderFor(websearch.ProviderConfig{Name: name})
@@ -165,4 +166,43 @@ func TestWebSearchError_NoPanicOnNil(t *testing.T) {
 	if msg != "" {
 		t.Errorf("nil in, got marker %q, want empty", msg)
 	}
+}
+
+// TestWebSearchError_SentinelSurvivesReworkedWording: the
+// "provider not configured" mapping keys on the
+// websearch.ErrProviderNotConfigured sentinel, never on message text.
+// Re-wrapping the configuration gap with new wording (what an upstream
+// rework would produce) must still land on the marker; conversely, an error
+// carrying the historical wording but no sentinel must NOT be treated as a
+// configuration gap — it did not come from the provider boundary, so it
+// passes through for the tool loop to surface.
+func TestWebSearchError_SentinelSurvivesReworkedWording(t *testing.T) {
+	t.Run("re-wrapped with new wording still maps to the marker", func(t *testing.T) {
+		inner := providerForGap(t, "tavily")
+		// Simulate an upstream rework: entirely new wording, same sentinel.
+		reworked := fmt.Errorf("web_search: provider setup failed: %w", inner)
+		msg, err := webSearchError(reworked, "http://10.0.0.7:8080")
+		if err != nil {
+			t.Fatalf("expected a sanitized marker, got error %v", err)
+		}
+		if msg != "web_search: provider not configured" {
+			t.Errorf("marker = %q, want %q — classification must key on the sentinel, not the wording",
+				msg, "web_search: provider not configured")
+		}
+	})
+
+	t.Run("historical wording without the sentinel passes through", func(t *testing.T) {
+		// The literal text the old string-match branch keyed on, built as a
+		// plain error. Without the sentinel it is not a provider-boundary
+		// configuration gap and must pass through (surfaced by the tool
+		// loop), not be silently labelled one.
+		plain := fmt.Errorf("web_search: tavily provider selected but no API key is set (env FAMCLAW_WEB_SEARCH_API_KEY or tools.web_search.tavily_api_key)")
+		msg, err := webSearchError(plain, "")
+		if err == nil {
+			t.Fatalf("expected the error to pass through, got marker %q", msg)
+		}
+		if msg != "" {
+			t.Errorf("passthrough must keep an empty result, got %q", msg)
+		}
+	})
 }

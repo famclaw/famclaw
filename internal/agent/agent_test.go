@@ -2008,7 +2008,13 @@ func TestWebSearchError(t *testing.T) {
 	})
 
 	t.Run("tavily provider without a key → provider not configured", func(t *testing.T) {
-		provErr := fmt.Errorf("web_search: tavily provider selected but no API key is set (env FAMCLAW_WEB_SEARCH_API_KEY or tools.web_search.tavily_api_key)")
+		// Real path: the error comes from ProviderFor wrapping
+		// websearch.ErrProviderNotConfigured — not a copy of its message,
+		// so the test breaks if the sentinel wrapping is dropped.
+		_, provErr := websearch.ProviderFor(websearch.ProviderConfig{Name: "tavily"})
+		if provErr == nil {
+			t.Fatal("expected ProviderFor to fail for tavily without a key")
+		}
 		msg, err := webSearchError(provErr, "")
 		if err != nil {
 			t.Fatalf("expected nil error (sanitized result), got %v", err)
@@ -2019,7 +2025,10 @@ func TestWebSearchError(t *testing.T) {
 	})
 
 	t.Run("unknown provider → provider not configured", func(t *testing.T) {
-		provErr := fmt.Errorf("web_search: unknown provider %q (supported: searxng [default], tavily)", "bogus")
+		_, provErr := websearch.ProviderFor(websearch.ProviderConfig{Name: "bogus"})
+		if provErr == nil {
+			t.Fatal("expected ProviderFor to fail for an unknown provider name")
+		}
 		msg, err := webSearchError(provErr, "http://localhost:8888")
 		if err != nil {
 			t.Fatalf("expected nil error (sanitized result), got %v", err)

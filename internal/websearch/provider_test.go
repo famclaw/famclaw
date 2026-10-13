@@ -1,6 +1,7 @@
 package websearch
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -61,6 +62,12 @@ func TestProviderFor_DefaultSearXNG(t *testing.T) {
 		if !strings.Contains(err.Error(), "no API key") {
 			t.Errorf("error should mention the missing API key, got %v", err)
 		}
+		if !errors.Is(err, ErrProviderNotConfigured) {
+			t.Errorf("missing-key error must wrap ErrProviderNotConfigured (errors.Is classification), got %v", err)
+		}
+		if errors.Is(err, ErrUnavailable) {
+			t.Errorf("a config gap is not a backend failure; it must not wrap the ErrUnavailable umbrella: %v", err)
+		}
 	})
 
 	t.Run("unknown provider is a configuration error", func(t *testing.T) {
@@ -70,6 +77,12 @@ func TestProviderFor_DefaultSearXNG(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "unknown provider") {
 			t.Errorf("error should mention the unknown provider, got %v", err)
+		}
+		if !errors.Is(err, ErrProviderNotConfigured) {
+			t.Errorf("unknown-provider error must wrap ErrProviderNotConfigured (errors.Is classification), got %v", err)
+		}
+		if errors.Is(err, ErrUnavailable) {
+			t.Errorf("a config gap is not a backend failure; it must not wrap the ErrUnavailable umbrella: %v", err)
 		}
 	})
 }
