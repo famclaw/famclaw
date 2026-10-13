@@ -55,7 +55,7 @@ FamClaw talks to any OpenAI-compatible endpoint:
 
 ```yaml
 llm:
-  base_url: "http://192.168.1.10:11434"  # Ollama on your Mac Mini
+  base_url: "http://<your-host>:11434"  # Ollama on your LAN device
   model: "llama3.2:3b"
   # Per-call LLM request timeout in seconds. Each chat/tool call gets its
   # own context deadline. Default: 300 (5 minutes).
@@ -370,7 +370,7 @@ Enable in `config.yaml`:
 tools:
   transcription:
     enabled: true
-    endpoint: "http://192.168.1.10:8092"   # base URL of your /v1/audio/transcriptions service
+    endpoint: "http://<your-host>:8092"   # base URL of your /v1/audio/transcriptions service
     model: "whisper-1"                       # model name sent to the service
     max_bytes: 26214400                      # cap on downloaded audio; default 25 MB
     timeout_seconds: 30                      # per-request timeout; default 30

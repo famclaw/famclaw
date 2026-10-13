@@ -83,7 +83,7 @@ The first-boot wizard appears automatically. Set up:
 
 | Backend | URL |
 |---------|-----|
-| Ollama on LAN | `http://192.168.1.10:11434` |
+| Ollama on LAN | `http://<your-host>:11434` |
 | OpenAI | `https://api.openai.com/v1` |
 | Anthropic | `https://api.anthropic.com/v1` |
 | OpenRouter | `https://openrouter.ai/api/v1` |

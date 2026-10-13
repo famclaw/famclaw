@@ -179,7 +179,7 @@ skills:
   mcp_servers:
     remote-tools:
       transport: http
-      url: "http://192.168.1.10:3001/mcp"
+      url: "http://<your-host>:3001/mcp"
       headers:
         Authorization: "Bearer ${MCP_TOKEN}"
 ```
@@ -191,7 +191,7 @@ skills:
   mcp_servers:
     legacy:
       transport: sse
-      url: "http://192.168.1.10:3002/sse"
+      url: "http://<your-host>:3002/sse"
 ```
 
 Servers are enabled by default. Add `disabled: true` to skip without removing.
