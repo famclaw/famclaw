@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -94,8 +95,11 @@ type Agent struct {
 	cache *toolcache.Cache
 
 	// browserPool drives the builtin__browser_* tools when configured.
+	// Typed as the BrowserFetcher interface (not the concrete *browser.Pool)
+	// so the web_fetch 403/429 browser-fallback path is testable with a
+	// fake (see browser_fallback_test.go); *browser.Pool satisfies it.
 	// nil = browser tools disabled.
-	browserPool *browser.Pool
+	browserPool BrowserFetcher
 
 	// todoStore is the per-user todo store.
 	todoStore *todo.Store
@@ -1367,9 +1371,42 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	}
 
 	result, err := a.webFetcher(ctx, rawURL, opts)
+	// browserTried records that the browser fallback already ran for this
+	// call. On the 403/429 path it stops the thin-fetch fallback below from
+	// re-navigating a page we just rendered — a browser render is
+	// authoritative; a second render would add latency, not text.
+	browserTried := false
 	if err != nil {
 		log.Printf("[agent][%s] web_fetch url=%q err=%v", a.user.Name, rawURL, err)
-		return "", fmt.Errorf("web_fetch failed for %s: %v", rawURL, err)
+		// F7 fix (web-retrieval plan, slice 3b): a 403/429 is usually
+		// upstream bot-blocking of this client, not a dead page — the same
+		// URL often renders fine in a real browser. When the browser
+		// fallback is enabled and a pool exists, retry through the EXISTING
+		// host gate before surfacing the HTTP error. fetchWithBrowser
+		// re-validates the host (builtin__browser_navigate re-checks the
+		// final URL after redirects), so no new gate is introduced.
+		// 404/5xx, connection, and allowlist failures keep their original
+		// error: the fallback exists for bot-blocked content only.
+		if result != nil && isBotBlockStatus(result.StatusCode) &&
+			cfg.FallbackToBrowser && a.browserPool != nil {
+			directStatus := result.StatusCode
+			log.Printf("[agent][%s] web_fetch: direct fetch got HTTP %d for %s; trying browser fallback",
+				a.user.Name, directStatus, rawURL)
+			browserResult, fbErr := a.fetchWithBrowser(ctx, a.browserPool, rawURL, hostAllowed)
+			if fbErr != nil {
+				log.Printf("[agent][%s] web_fetch: browser fallback after HTTP %d failed for %s; returning original error: %v",
+					a.user.Name, directStatus, rawURL, fbErr)
+			} else {
+				result = browserResult
+				err = nil
+				browserTried = true
+				log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback after HTTP %d)",
+					a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated, directStatus)
+			}
+		}
+		if err != nil {
+			return "", fmt.Errorf("web_fetch failed for %s: %v", rawURL, err)
+		}
 	}
 	if result != nil {
 		log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v",
@@ -1379,7 +1416,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		if minLength == 0 {
 			minLength = 10
 		}
-		if len(text) < minLength && a.cfg.Tools.WebFetch.FallbackToBrowser {
+		if len(text) < minLength && a.cfg.Tools.WebFetch.FallbackToBrowser && !browserTried {
 			if a.browserPool != nil {
 				// Attempt browser fallback for JS-heavy sites. fetchWithBrowser
 				// guarantees a non-empty result on success — every failure mode
@@ -1463,6 +1500,15 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 // exercise failure paths without a live Playwright server.
 type BrowserFetcher interface {
 	Exec(ctx context.Context, in browser.ExecInput) (string, error)
+}
+
+// isBotBlockStatus reports whether an HTTP status is the kind of failure the
+// browser fallback should absorb on a web_fetch error: 403 (bot-blocked) and
+// 429 (rate-limited). 404, 5xx, and transport-level failures are not
+// bot-blocking — the fallback must not fire for them, or a genuinely missing
+// page would be "fixed" by re-rendering it in a browser.
+func isBotBlockStatus(status int) bool {
+	return status == http.StatusForbidden || status == http.StatusTooManyRequests
 }
 
 // fetchWithBrowser runs the browser fallback for JS-heavy sites: it navigates

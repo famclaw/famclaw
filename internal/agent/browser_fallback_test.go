@@ -1,13 +1,16 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/browser"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
 // fakeBrowserPool is a BrowserFetcher for unit-testing the web_fetch browser
@@ -157,5 +160,204 @@ func TestFetchWithBrowser_Success(t *testing.T) {
 	}
 	if !extractSeen {
 		t.Error("extract was not called")
+	}
+}
+
+// newBotBlockAgent builds an agent for the 403/429 browser-fallback dispatch
+// tests: web_fetch enabled with a non-empty allowlist (example.com), a stub
+// webFetcher that returns the given HTTP status (plus a webfetch-style
+// non-2xx error when status != 0), and an optional fake browser pool. A nil
+// fake leaves browserPool a true nil (the "no pool" paths).
+func newBotBlockAgent(status int, fallback bool, fake *fakeBrowserPool) *Agent {
+	a := &Agent{
+		user: &config.UserConfig{Name: "testuser", Role: "parent"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{
+				WebFetch: config.WebFetchConfig{
+					Enabled:               true,
+					URLAllowlist:          []string{"example.com"},
+					MaxBytes:              256 * 1024,
+					TimeoutSec:            5,
+					FallbackToBrowser:     fallback,
+					FallbackMinTextLength: 10,
+				},
+			},
+		},
+		webFetcher: func(context.Context, string, webfetch.Options) (*webfetch.Result, error) {
+			if status != 0 {
+				// Mirrors webfetch.Fetch: non-2xx returns the result (with
+				// the status) plus an error.
+				return &webfetch.Result{URL: "https://example.com/x", StatusCode: status, ContentType: "text/html"},
+					fmt.Errorf("web fetch: non-2xx status %d", status)
+			}
+			return &webfetch.Result{URL: "https://example.com/x", StatusCode: status, ContentType: "text/plain", Text: "ok"}, nil
+		},
+	}
+	if fake != nil {
+		a.browserPool = fake
+	}
+	return a
+}
+
+// TestHandleWebFetch_BotBlockedBrowserFallback covers the F7 fix: a 403 or
+// 429 bot-blocked page must reach the EXISTING browser fallback when
+// fallback_to_browser is on and a pool exists, and the rendered text must be
+// returned. It also asserts the fallback URL was gated by the same host
+// allowlist (the navigate ExecInput carries a HostCheck that accepts an
+// allowlisted host and rejects a non-allowlisted one).
+func TestHandleWebFetch_BotBlockedBrowserFallback(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+	}{
+		{"403 bot-blocked page", 403},
+		{"429 rate-limited page", 429},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const rendered = "Browser-rendered text of the bot-blocked page"
+			var gateChecked bool
+			fake := &fakeBrowserPool{
+				execFn: func(_ context.Context, in browser.ExecInput) (string, error) {
+					if in.ToolName == "builtin__browser_navigate" {
+						if in.HostCheck == nil {
+							t.Error("navigate must carry a HostCheck (the existing host gate)")
+							return "", fmt.Errorf("no host gate")
+						}
+						if err := in.HostCheck("example.com"); err != nil {
+							t.Errorf("allowlisted host rejected by fallback gate: %v", err)
+						}
+						if err := in.HostCheck("evil.example"); err == nil {
+							t.Error("non-allowlisted host accepted by fallback gate")
+						}
+						gateChecked = true
+						return "", nil
+					}
+					return rendered, nil
+				},
+			}
+			a := newBotBlockAgent(tt.status, true, fake)
+			out, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+			if err != nil {
+				t.Fatalf("want browser text, got error: %v", err)
+			}
+			if !strings.Contains(out, rendered) {
+				t.Errorf("output missing browser-rendered text: %q", out)
+			}
+			if len(fake.calls) != 2 {
+				t.Errorf("want exactly navigate+extract (2 calls), got %d", len(fake.calls))
+			}
+			if !gateChecked {
+				t.Error("host gate was never checked during navigate")
+			}
+		})
+	}
+}
+
+// TestHandleWebFetch_BotBlockedNoFallbackForOtherStatuses verifies the
+// fallback fires ONLY for 403/429: a 404 or 5xx returns the original error
+// and never calls the browser pool (0 calls observed).
+func TestHandleWebFetch_BotBlockedNoFallbackForOtherStatuses(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+	}{
+		{"404 not found", 404},
+		{"503 server error", 503},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeBrowserPool{}
+			a := newBotBlockAgent(tt.status, true, fake)
+			_, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+			if err == nil {
+				t.Fatalf("expected the original HTTP %d error, got nil", tt.status)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%d", tt.status)) {
+				t.Errorf("error should carry the original status %d, got: %v", tt.status, err)
+			}
+			if len(fake.calls) != 0 {
+				t.Errorf("browser fallback must NOT fire for HTTP %d; got %d pool calls", tt.status, len(fake.calls))
+			}
+		})
+	}
+}
+
+// TestHandleWebFetch_BotBlocked403NoPool verifies the no-pool degradation: a
+// 403 with fallback enabled but no browser pool returns the 403 error
+// honestly (and logs it) — no panic, no empty success.
+func TestHandleWebFetch_BotBlocked403NoPool(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prevOut)
+
+	a := newBotBlockAgent(403, true, nil)
+	_, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("want the original 403 error, got: %v", err)
+	}
+	if !strings.Contains(logBuf.String(), "web_fetch") {
+		t.Errorf("expected the fetch failure to be logged, got: %q", logBuf.String())
+	}
+}
+
+// TestHandleWebFetch_BotBlocked403FallbackDisabled verifies that with
+// fallback_to_browser=false a 403 never touches the browser pool — the
+// original error is returned.
+func TestHandleWebFetch_BotBlocked403FallbackDisabled(t *testing.T) {
+	fake := &fakeBrowserPool{}
+	a := newBotBlockAgent(403, false, fake)
+	_, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("want the original 403 error, got: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Errorf("fallback disabled; got %d pool calls, want 0", len(fake.calls))
+	}
+}
+
+// TestHandleWebFetch_BotBlocked403FallbackFailsOriginalError verifies that
+// when the browser fallback itself fails (navigate error), the ORIGINAL 403
+// error is returned — no empty masking, no fallback error substitution.
+func TestHandleWebFetch_BotBlocked403FallbackFailsOriginalError(t *testing.T) {
+	fake := &fakeBrowserPool{
+		execFn: func(_ context.Context, in browser.ExecInput) (string, error) {
+			return "", fmt.Errorf("playwright: browser unavailable")
+		},
+	}
+	a := newBotBlockAgent(403, true, fake)
+	_, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("want the original 403 error, got: %v", err)
+	}
+	if len(fake.calls) == 0 {
+		t.Error("the browser pool should have been attempted before giving up")
+	}
+}
+
+// TestHandleWebFetch_BotBlockedShortRenderNotRetried verifies the
+// no-double-render guard: after a 403 fallback produced a (short) non-empty
+// browser render, the thin-fetch fallback must NOT navigate a second time —
+// the browser render is authoritative for this call.
+func TestHandleWebFetch_BotBlockedShortRenderNotRetried(t *testing.T) {
+	fake := &fakeBrowserPool{
+		execFn: func(_ context.Context, in browser.ExecInput) (string, error) {
+			if in.ToolName == "builtin__browser_navigate" {
+				return "", nil
+			}
+			return "ok", nil // non-empty but below the 10-char thin threshold
+		},
+	}
+	a := newBotBlockAgent(403, true, fake)
+	out, err := a.handleWebFetch(context.Background(), map[string]any{"url": "https://example.com/x"})
+	if err != nil {
+		t.Fatalf("short non-empty browser render is a success, got: %v", err)
+	}
+	if !strings.Contains(out, "ok") {
+		t.Errorf("output missing the browser text: %q", out)
+	}
+	if len(fake.calls) != 2 {
+		t.Errorf("a short browser render must not re-trigger the fallback; got %d pool calls, want exactly 2 (navigate+extract)", len(fake.calls))
 	}
 }
