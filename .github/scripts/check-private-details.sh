@@ -29,6 +29,13 @@ HOME_PATH='/(home|Users)/[A-Za-z_][A-Za-z0-9_.-]*/'
 PRIVATE_IP='192\.168\.[0-9]{1,3}\.[0-9]{1,3}'
 ALLOWED_IP='192\.168\.(0\.1|1\.(1|2|10|50|100))([^0-9]|$)'
 
+# Internal project names. Each leading letter is a character class so this file
+# never contains one of them as plaintext, and stays clean under its own checks.
+CODENAME='([Ff]irstmate|[Ff]leet|[Ll]una|[Ss]park|[Pp]ragent|pr[-_]?agent|no[-_]?mistakes|[Cc]rew)'
+# Credential shapes, scoped to repo fixture and documentation patterns.
+CREDENTIAL='(-----BEGIN [A-Z0-9 ]*PRIVATE KEY|(AKIA|ASIA|AGPA|AIDA|ANPA|ANVA)[0-9A-Z]{16}|\bsk-[A-Za-z0-9_-]{16,}|\bgh[pousr]_[A-Za-z0-9]{16,}|\bgithub_pat_[A-Za-z0-9_]{16,}|\bxox[bao]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,}|(Bearer|Bot) [A-Za-z0-9._-]*[0-9][A-Za-z0-9._-]{12,}|([Pp]assword|[Ss]ecret|api[_-]?[Kk]ey|API[_-]?KEY|auth[_-]?[Tt]oken|access[_-]?[Tt]oken|bot[_-]?[Tt]oken)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'])'
+SYNTHETIC='(changeme|change[-_]?me|dummy|xxx|your[_-][a-z0-9_]*|[Ff]ake|test[-_ ]|sk[-_](from|test|fake|dummy|example|sample|mock|dev|detect)|WILL_BE|GENERATED|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Z_]+|["'"'"']{2,3}|\.\.\.|eyJhbGciOi|0123456789abcdef)'
+
 # scan_file <label> <file>
 # One FAIL per offending match: label, line number, pattern name — no value dump.
 # The single check used by both the tracked-files loop and the PR-metadata path,
@@ -42,6 +49,15 @@ scan_file() {
         | sed 's/^\([0-9][0-9]*\):.*/\1 (HOME_PATH)/'
       grep -nE "$PRIVATE_IP" "$file" 2>/dev/null | grep -vE "$ALLOWED_IP" \
         | sed 's/^\([0-9][0-9]*\):.*/\1 (PRIVATE_IP)/'
+      case "$file" in
+        internal/classifier/testdata/*) ;;
+        *)
+          grep -nE "$CODENAME" "$file" 2>/dev/null | grep -vE "$SYNTHETIC" \
+            | sed 's/^\([0-9][0-9]*\):.*/\1 (CODENAME)/'
+          grep -nE "$CREDENTIAL" "$file" 2>/dev/null | grep -vE "$SYNTHETIC" \
+            | sed 's/^\([0-9][0-9]*\):.*/\1 (CREDENTIAL)/'
+          ;;
+      esac
     } | sort -u
   )
   if [ -n "$hits" ]; then
@@ -56,7 +72,8 @@ scan_file() {
 exit_code=0
 while IFS= read -r f; do
   case "$f" in
-    .github/workflows/*|.github/scripts/check-private-details.sh) continue ;;
+    # Developer instruction docs and the guard itself reference project names by design; they are meta-content, not application content.
+    .github/workflows/*|.github/scripts/check-private-details.sh|AGENTS.md|CLAUDE.md) continue ;;
   esac
   [ -f "$f" ] || continue
   scan_file "$f" "$f" || exit_code=1
