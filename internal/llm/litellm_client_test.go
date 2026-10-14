@@ -24,7 +24,7 @@ type litellmCase struct {
 }
 
 func TestLiteLLMClientMergeSettings(t *testing.T) {
-	// The live fleet gateway shape: /v1/model/info carries the full
+	// The live gateway shape: /v1/model/info carries the full
 	// litellm_params, including an explicit false for unflagged models.
 	modelInfoBody := `{
 		"object": "list",
@@ -60,7 +60,7 @@ func TestLiteLLMClientMergeSettings(t *testing.T) {
 		},
 		{
 			name:   "auth header sent when key set",
-			apiKey: "sk-fleet",
+			apiKey: "sk-test",
 			handler: func(w http.ResponseWriter, _ *http.Request, count *atomic.Int32) {
 				count.Add(1)
 				w.Write([]byte(`{"data":[]}`))

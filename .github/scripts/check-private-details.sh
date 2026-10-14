@@ -7,6 +7,17 @@
 # Allowed: generic placeholder home paths (/home/user, /Users/you, CI's /home/runner),
 # the example addresses this project documents, and the 10.x / 172.16-31.x ranges,
 # which are widely used as synthetic test data.
+#
+# Two further classes are checked (their specific names never appear as prose in
+# this file, so the script stays clean under its own checks even when scanned):
+#   - internal project names (CODENAME). Written as bracket-class regex only, and
+#     exempted only for the multilingual NLP test corpus, where natural-language
+#     words (e.g. the word for "moon" in Spanish) are not leaks.
+#   - credential shapes (CREDENTIAL): a focused complement to gitleaks, which the
+#     committed scanner already runs with its full default ruleset.
+# The placeholder allowlist (SYNTHETIC) covers synthetic test values only:
+# fake-*/test-*/xxx/changeme/your-*/sk-<placeholder>/ellipsis/empty quoted values.
+# It is deliberately narrow; a real value must never need it.
 set -uo pipefail
 
 PLACEHOLDER='/(home|Users)/(user|username|youruser|you|USER|runner)(/|$)'
@@ -19,6 +30,24 @@ HOME_PATH='/(home|Users)/[A-Za-z_][A-Za-z0-9_.-]*/'
 PRIVATE_IP='192\.168\.[0-9]{1,3}\.[0-9]{1,3}'
 ALLOWED_IP='192\.168\.(0\.1|1\.(1|2|10|50|100))([^0-9]|$)'
 
+# Internal project names. Each leading letter is a character class so this file
+# never contains one of them as plaintext, and stays clean under its own checks.
+CODENAME='([Ff]irstmate|[Ff]leet|[Ll]una|[Ss]park|[Pp]ragent|pr[-_]?agent|no[-_]?mistakes|[Cc]rew)'
+# Credential shapes. Complements (does not duplicate) the gitleaks ruleset the
+# committed scanner runs: only the shapes this repo's fixtures and docs can
+# actually contain. Bearer/Bot values require a digit, so all-caps placeholder
+# tokens without digits do not trip it.
+CREDENTIAL='(-----BEGIN [A-Z0-9 ]*PRIVATE KEY|(AKIA|ASIA|AGPA|AIDA|ANPA|ANVA)[0-9A-Z]{16}|\bsk-[A-Za-z0-9_-]{16,}|\bgh[pousr]_[A-Za-z0-9]{16,}|\bgithub_pat_[A-Za-z0-9_]{16,}|\bxox[bao]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,}|(Bearer|Bot) [A-Za-z0-9._-]*[0-9][A-Za-z0-9._-]{12,}|([Pp]assword|[Ss]ecret|api[_-]?[Kk]ey|API[_-]?KEY|auth[_-]?[Tt]oken|access[_-]?[Tt]oken|bot[_-]?[Tt]oken)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'])'
+# Synthetic/placeholder values: a line matching any of these is test data, not a
+# leak. Covers: narrow placeholder words (changeme/change-me/dummy/xxx/your-*/
+# fake-*/test-*/sk-<placeholder>), env-var references ("${OPENAI_API_KEY}",
+# "$SECRET") which are not literal values, all-caps generated-placeholder
+# convention (WILL_BE_GENERATED...), empty quoted values, "..." elisions, and the
+# standard zero-entropy HS256 example JWT header from the public JWT docs.
+# Deliberately narrow and case-sensitive where it matters ("Test123" is still
+# flagged; "test-123" is not). A real value must never need this list.
+SYNTHETIC='(changeme|change[-_]?me|dummy|xxx|your[_-][a-z0-9_]*|[Ff]ake|test[-_ ]|sk[-_](from|test|fake|dummy|example|sample|mock|dev|detect)|WILL_BE|GENERATED|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Z_]+|["'"'"']{2,3}|\.\.\.|eyJhbGciOi)'
+
 exit_code=0
 while IFS= read -r f; do
   case "$f" in
@@ -29,6 +58,15 @@ while IFS= read -r f; do
     {
       grep -nE "$HOME_PATH" "$f" 2>/dev/null | grep -vE "$PLACEHOLDER"
       grep -nE "$PRIVATE_IP" "$f" 2>/dev/null | grep -vE "$ALLOWED_IP"
+      case "$f" in
+        # Multilingual NLP test corpus: natural-language words are not internal
+        # project names. The home-path, IP and credential checks still apply there.
+        internal/classifier/testdata/*) ;;
+        *)
+          grep -nE "$CODENAME" "$f" 2>/dev/null | grep -vE "$SYNTHETIC"
+          grep -nE "$CREDENTIAL" "$f" 2>/dev/null | grep -vE "$SYNTHETIC"
+          ;;
+      esac
     } | sort -u
   )
   if [ -n "$hits" ]; then
