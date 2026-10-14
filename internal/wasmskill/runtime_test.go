@@ -3,291 +3,111 @@ package wasmskill
 import (
 	"bytes"
 	"context"
-	"io"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-// TestBasicExecution tests that a WASM module can be instantiated and executed successfully.
-func TestBasicExecution(t *testing.T) {
-	// Create a temporary directory for the sandbox
-	sandboxDir := t.TempDir()
-
-	// Load the simple WASM module from testdata (same package testdata)
-	simpleWasm, err := os.ReadFile(filepath.Join("testdata", "simple.wasm"))
+func fixture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
 	if err != nil {
-		t.Fatalf("Failed to read simple.wasm: %v", err)
+		t.Fatalf("read fixture %s: %v", name, err)
 	}
+	return b
+}
 
-	// Create pipes for stdin/stdout
-	stdinR, stdinW := io.Pipe()
-	stdoutR, stdoutW := io.Pipe()
-	stderrR, stderrW := io.Pipe()
-
-	// Close stdinW immediately since we're not writing to it in this test
-	// This will cause reads from stdinR to return EOF immediately
-	stdinW.Close()
-
-	// Configure runtime
-	config := &Config{
-		SandboxRoot: sandboxDir,
-		Stdin:       stdinR,
-		Stdout:      stdoutW,
-		Stderr:      stderrW,
-	}
-
-	// Create runtime
-	rt, err := NewRuntime(context.Background(), simpleWasm, config)
+func TestRunStdioAndExplicitStartOnce(t *testing.T) {
+	input := []byte("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+	got, err := Run(context.Background(), fixture(t, "echo.wasm"), nil, input)
 	if err != nil {
-		t.Fatalf("Failed to create runtime: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
-	defer rt.Close(context.Background())
-
-	// Execute the module
-	err = rt.Execute(context.Background())
-	if err != nil {
-		t.Fatalf("Failed to execute module: %v", err)
+	if !bytes.Equal(got.Stdout, input) {
+		t.Fatalf("stdout = %q, want exactly one echoed request %q", got.Stdout, input)
 	}
-
-	// Close write ends to signal EOF
-	stdoutW.Close()
-	stderrW.Close()
-
-	// Read and discard output (this module doesn't produce output)
-	_, err = io.ReadAll(stdoutR)
-	if err != nil {
-		t.Fatalf("Failed to read stdout: %v", err)
-	}
-
-	// Check stderr is empty
-	_, err = io.ReadAll(stderrR)
-	if err != nil {
-		t.Fatalf("Failed to read stderr: %v", err)
+	if got.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", got.ExitCode)
 	}
 }
 
-// TestFilesystemDenyByDefault tests that the WASM module cannot access files outside the sandbox.
-func TestFilesystemDenyByDefault(t *testing.T) {
-	// Create a temporary directory for the sandbox
-	sandboxDir := t.TempDir()
-
-	// Create a file outside the sandbox that we'll try to access
-	outsideFile := filepath.Join(os.TempDir(), "famclaw-test-outside.txt")
-	outsideContent := []byte("secret data that should not be accessible")
-	if err := os.WriteFile(outsideFile, outsideContent, 0o600); err != nil {
-		t.Fatalf("Failed to create outside file: %v", err)
+func TestFilesystemDefaultDeny(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sandbox.txt"), []byte("S"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	defer os.Remove(outsideFile)
-
-	// Create a simple WASM module
-	simpleWasm, err := os.ReadFile(filepath.Join("testdata", "simple.wasm"))
+	got, err := Run(context.Background(), fixture(t, "fs-escape.wasm"), &Config{SandboxRoot: root}, []byte("probe\n"))
 	if err != nil {
-		t.Fatalf("Failed to read simple.wasm: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
-
-	// Create pipes
-	stdinR, stdinW := io.Pipe()
-	stdoutR, stdoutW := io.Pipe()
-	stderrR, stderrW := io.Pipe()
-
-	// Close stdinW immediately since we're not writing to it
-	stdinW.Close()
-
-	// Configure runtime with sandbox
-	config := &Config{
-		SandboxRoot: sandboxDir,
-		Stdin:       stdinR,
-		Stdout:      stdoutW,
-		Stderr:      stderrW,
-	}
-
-	// Create runtime
-	rt, err := NewRuntime(context.Background(), simpleWasm, config)
-	if err != nil {
-		t.Fatalf("Failed to create runtime: %v", err)
-	}
-	defer rt.Close(context.Background())
-
-	// Execute the module - should succeed (the module runs but can't access outside file)
-	err = rt.Execute(context.Background())
-	if err != nil {
-		t.Fatalf("Failed to execute module: %v", err)
-	}
-
-	// Close write ends
-	stdoutW.Close()
-	stderrW.Close()
-
-	// Read and discard output
-	_, _ = io.ReadAll(stdoutR)
-	_, _ = io.ReadAll(stderrR)
-
-	// Verify the outside file is still intact (wasn't read/modified)
-	if err := os.WriteFile(outsideFile, outsideContent, 0o600); err != nil {
-		t.Fatalf("Failed to rewrite outside file: %v", err)
-	}
-	afterContent, err := os.ReadFile(outsideFile)
-	if err != nil {
-		t.Fatalf("Failed to read outside file after test: %v", err)
-	}
-	if !bytes.Equal(afterContent, outsideContent) {
-		t.Fatalf("Outside file was modified: expected %q, got %q", outsideContent, afterContent)
+	if len(got.Stdout) != 6 || got.Stdout[0] != 0 || got.Stdout[1] == 0 || got.Stdout[2] == 0 || got.Stdout[3] != 1 || got.Stdout[4] != 'S' {
+		t.Fatalf("filesystem probe bytes = %v; expected inside preopen readable and traversal/absolute paths denied", got.Stdout)
 	}
 }
 
-// TestNoNetworkAccess tests that the WASM module cannot perform network operations.
-func TestNoNetworkAccess(t *testing.T) {
-	sandboxDir := t.TempDir()
-
-	simpleWasm, err := os.ReadFile(filepath.Join("testdata", "simple.wasm"))
-	if err != nil {
-		t.Fatalf("Failed to read simple.wasm: %v", err)
-	}
-
-	// Create pipes
-	stdinR, stdinW := io.Pipe()
-	stdoutR, stdoutW := io.Pipe()
-	stderrR, stderrW := io.Pipe()
-
-	// Close stdinW immediately since we're not writing to it
-	stdinW.Close()
-
-	// Configure runtime
-	config := &Config{
-		SandboxRoot: sandboxDir,
-		Stdin:       stdinR,
-		Stdout:      stdoutW,
-		Stderr:      stderrW,
-	}
-
-	// Create runtime
-	rt, err := NewRuntime(context.Background(), simpleWasm, config)
-	if err != nil {
-		t.Fatalf("Failed to create runtime: %v", err)
-	}
-	defer rt.Close(context.Background())
-
-	// Execute the module - should succeed (our simple module does nothing)
-	err = rt.Execute(context.Background())
-	if err != nil {
-		t.Fatalf("Expected module to execute successfully, but got error: %v", err)
-	}
-
-	// Check that we got no error
-	// Close write ends
-	stdoutW.Close()
-	stderrW.Close()
-
-	// Read stdout and stderr
-	_, _ = io.ReadAll(stdoutR)
-	_, _ = io.ReadAll(stderrR)
-}
-
-// TestEnvValidation tests that Env validation works correctly.
-func TestEnvValidation(t *testing.T) {
-	sandboxDir := t.TempDir()
-	simpleWasm, _ := os.ReadFile(filepath.Join("testdata", "simple.wasm"))
-
-	// Test odd number of Env elements (should fail)
-	config := &Config{
-		SandboxRoot: sandboxDir,
-		Env:         []string{"KEY1", "VALUE1", "KEY2"}, // Odd number
-	}
-	_, err := NewRuntime(context.Background(), simpleWasm, config)
-	if err == nil {
-		t.Fatal("Expected error for odd Env elements")
-	}
-	t.Logf("Got expected error: %v", err)
-
-	// Test even number of Env elements (should succeed)
-	config.Env = []string{"KEY1", "VALUE1", "KEY2", "VALUE2"}
-	_, err = NewRuntime(context.Background(), simpleWasm, config)
-	if err != nil {
-		t.Fatalf("Expected success for even Env elements: %v", err)
+func TestNoNetworkForeignImportRejected(t *testing.T) {
+	_, err := Run(context.Background(), fixture(t, "foreign-import.wasm"), nil, nil)
+	if !errorsIs(err, ErrDisallowedImport) {
+		t.Fatalf("error = %v, want ErrDisallowedImport", err)
 	}
 }
 
-// TestSandboxRootRequired tests that empty SandboxRoot is rejected.
-func TestSandboxRootRequired(t *testing.T) {
-	simpleWasm, _ := os.ReadFile(filepath.Join("testdata", "simple.wasm"))
-
-	config := &Config{
-		SandboxRoot: "", // Empty - should fail
-	}
-	_, err := NewRuntime(context.Background(), simpleWasm, config)
-	if err == nil {
-		t.Fatal("Expected error for empty SandboxRoot")
-	}
-	t.Logf("Got expected error: %v", err)
-}
-
-// TestImportValidation tests that modules with non-WASI imports are rejected.
-// Note: We can't easily compile WAT in tests without wat2wasm,
-// so we skip this test and rely on the import validation in NewRuntime.
-func TestImportValidation(t *testing.T) {
-	t.Skip("Skipping - requires WAT compilation in test")
-}
-
-// TestConcurrentExecute tests that Execute is thread-safe.
-func TestConcurrentExecute(t *testing.T) {
-	sandboxDir := t.TempDir()
-	simpleWasm, _ := os.ReadFile(filepath.Join("testdata", "simple.wasm"))
-
-	config := &Config{
-		SandboxRoot: sandboxDir,
-	}
-	rt, err := NewRuntime(context.Background(), simpleWasm, config)
-	if err != nil {
-		t.Fatalf("Failed to create runtime: %v", err)
-	}
-	defer rt.Close(context.Background())
-
-	// Run Execute concurrently from multiple goroutines
-	done := make(chan error, 10)
-	for i := 0; i < 10; i++ {
-		go func() {
-			done <- rt.Execute(context.Background())
-		}()
-	}
-
-	// Collect results
-	for i := 0; i < 10; i++ {
-		if err := <-done; err != nil {
-			t.Errorf("Execute failed: %v", err)
+func errorsIs(err, target error) bool {
+	for err != nil {
+		if err == target {
+			return true
 		}
+		type unwrapper interface{ Unwrap() error }
+		u, ok := err.(unwrapper)
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
 	}
+	return false
 }
 
-// TestConcurrentCloseExecute tests that Close and Execute don't race.
-func TestConcurrentCloseExecute(t *testing.T) {
-	sandboxDir := t.TempDir()
-	simpleWasm, _ := os.ReadFile(filepath.Join("testdata", "simple.wasm"))
-
-	config := &Config{
-		SandboxRoot: sandboxDir,
+func TestPolicyRejectsNonWasmAndAdmitsChecksumArtifact(t *testing.T) {
+	cases := []struct {
+		name string
+		ref  SkillRef
+		want string
+	}{
+		{name: "native artifact refused", ref: SkillRef{Name: "native", Artifact: "native.bin"}, want: TierRefused},
+		{name: "missing checksum refused", ref: SkillRef{Name: "skill.wasm", Artifact: "x.wasm"}, want: TierRefused},
+		{name: "wasm admitted", ref: SkillRef{Name: "skill.wasm", Artifact: "x.wasm", Checksum: "sha256:" + strings.Repeat("a", 64)}, want: TierWasm},
 	}
-	rt, err := NewRuntime(context.Background(), simpleWasm, config)
-	if err != nil {
-		t.Fatalf("Failed to create runtime: %v", err)
-	}
-
-	done := make(chan struct{})
-	// Run Execute in a loop
-	go func() {
-		for {
-			select {
-			case <-done:
-				return
-			default:
-				rt.Execute(context.Background())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Evaluate(tc.ref).Tier; got != tc.want {
+				t.Fatalf("tier = %q, want %q", got, tc.want)
 			}
-		}
-	}()
+		})
+	}
+	wasm := fixture(t, "simple.wasm")
+	sum := sha256.Sum256(wasm)
+	path := filepath.Join(t.TempDir(), "skill.wasm")
+	if err := os.WriteFile(path, wasm, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadWasmArtifact(SkillRef{Name: "skill.wasm", Artifact: path, Checksum: "sha256:" + hex.EncodeToString(sum[:])})
+	if err != nil {
+		t.Fatalf("LoadWasmArtifact: %v", err)
+	}
+	if !bytes.Equal(loaded, wasm) {
+		t.Fatal("loaded artifact differs")
+	}
+}
 
-	// Close after a bit
-	time.Sleep(10 * time.Millisecond)
-	close(done)
-	rt.Close(context.Background())
+func TestRunContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := Run(ctx, fixture(t, "hang.wasm"), nil, nil)
+	if err == nil {
+		t.Fatal("expected context cancellation for non-terminating module")
+	}
 }

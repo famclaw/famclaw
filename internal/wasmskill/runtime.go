@@ -47,12 +47,16 @@ func newHost(ctx context.Context) (*host, error) {
 // module).
 func admit(compiled wazero.CompiledModule) error {
 	for _, f := range compiled.ImportedFunctions() {
-		if f.ModuleName() != wasiModule {
-			return fmt.Errorf("%w: %s.%s", ErrDisallowedImport, f.ModuleName(), f.Name())
+		moduleName, name, isImport := f.Import()
+		if isImport && moduleName != wasiModule {
+			return fmt.Errorf("%w: %s.%s", ErrDisallowedImport, moduleName, name)
 		}
 	}
 	for _, m := range compiled.ImportedMemories() {
-		return fmt.Errorf("%w: imported memory from %q (index %d)", ErrDisallowedImport, m.ModuleName(), m.Index())
+		moduleName, name, isImport := m.Import()
+		if isImport {
+			return fmt.Errorf("%w: imported memory %s.%s (index %d)", ErrDisallowedImport, moduleName, name, m.Index())
+		}
 	}
 	if _, ok := compiled.ExportedFunctions()["_start"]; !ok {
 		return ErrNoStart
@@ -133,6 +137,8 @@ func Run(ctx context.Context, wasm []byte, cfg *Config, stdin []byte) (RunResult
 func moduleConfig(c Config, in io.Reader, out io.Writer, errw io.Writer) wazero.ModuleConfig {
 	mcfg := wazero.NewModuleConfig().
 		WithName(c.Name).
+		// WithStartFunctions() with no names disables wazero's default _start
+		// auto-run. Run/NewSkill call _start explicitly exactly once.
 		WithStartFunctions().
 		WithStdin(in).
 		WithStdout(out).
