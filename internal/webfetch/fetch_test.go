@@ -110,6 +110,11 @@ func TestFetch(t *testing.T) {
 		if int64(len(res.Text)) > 1024 {
 			t.Errorf("text too big: %d", len(res.Text))
 		}
+		// Bytes reports the wire size capped at MaxBytes (the server's 1 MiB
+		// body is truncated to 1024 bytes).
+		if res.Bytes != 1024 {
+			t.Errorf("Bytes = %d, want 1024 (capped wire size)", res.Bytes)
+		}
 	})
 
 	t.Run("Timeout", func(t *testing.T) {

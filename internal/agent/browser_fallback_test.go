@@ -13,19 +13,37 @@ import (
 	"github.com/famclaw/famclaw/internal/webfetch"
 )
 
-// fakeBrowserPool is a BrowserFetcher for unit-testing the web_fetch browser
-// fallback. It records every Exec call and returns whatever execFn produces.
-type fakeBrowserPool struct {
-	execFn func(ctx context.Context, in browser.ExecInput) (string, error)
-	calls  []browser.ExecInput
+// fakeNavCall records one NavigateAndExtract invocation for assertion.
+type fakeNavCall struct {
+	user      string
+	rawURL    string
+	hostCheck browser.HostValidator
 }
 
-func (f *fakeBrowserPool) Exec(ctx context.Context, in browser.ExecInput) (string, error) {
-	f.calls = append(f.calls, in)
-	if f.execFn != nil {
-		return f.execFn(ctx, in)
+// fakeBrowserPool is a BrowserFetcher for unit-testing the web_fetch browser
+// fallback. It records every NavigateAndExtract call and returns whatever
+// navFn produces (or the fixed text/bytes when navFn is nil). Exec exists to
+// satisfy the interface (the builtin__browser_* dispatch) but the fallback
+// path never calls it.
+type fakeBrowserPool struct {
+	navFn func(ctx context.Context, user, rawURL string, hostCheck browser.HostValidator) (string, int64, error)
+	calls []fakeNavCall
+	text  string
+	bytes int64
+}
+
+func (f *fakeBrowserPool) NavigateAndExtract(ctx context.Context, user, rawURL string, hostCheck browser.HostValidator) (string, int64, error) {
+	f.calls = append(f.calls, fakeNavCall{user: user, rawURL: rawURL, hostCheck: hostCheck})
+	if f.navFn != nil {
+		return f.navFn(ctx, user, rawURL, hostCheck)
 	}
-	return "", nil
+	return f.text, f.bytes, nil
+}
+
+// Exec satisfies the BrowserFetcher interface. The web_fetch fallback path
+// never dispatches builtin__browser_* through it.
+func (f *fakeBrowserPool) Exec(_ context.Context, _ browser.ExecInput) (string, error) {
+	return "", fmt.Errorf("fakeBrowserPool: Exec is not used by the web_fetch fallback path")
 }
 
 // alwaysAllowHost accepts every host — used in fallback tests where the host
@@ -52,16 +70,13 @@ func TestFetchWithBrowser_NilPool(t *testing.T) {
 	}
 }
 
-// TestFetchWithBrowser_BrowserFetchFailure verifies the browser-fetch-failure
-// path: when navigation errors, the fallback wraps and returns that error
-// rather than swallowing it.
-func TestFetchWithBrowser_BrowserFetchFailure(t *testing.T) {
+// TestFetchWithBrowser_NavigateFailure verifies the browser-fetch-failure
+// path: when the pool's navigate/extract call errors, the fallback wraps and
+// returns that error rather than swallowing it.
+func TestFetchWithBrowser_NavigateFailure(t *testing.T) {
 	fake := &fakeBrowserPool{
-		execFn: func(_ context.Context, in browser.ExecInput) (string, error) {
-			if in.ToolName == "builtin__browser_navigate" {
-				return "", fmt.Errorf("playwright: websocket closed")
-			}
-			return "irrelevant", nil
+		navFn: func(_ context.Context, _, _ string, _ browser.HostValidator) (string, int64, error) {
+			return "", 0, fmt.Errorf("playwright: websocket closed")
 		},
 	}
 	a := newFallbackAgent()
@@ -69,20 +84,17 @@ func TestFetchWithBrowser_BrowserFetchFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for browser fetch failure, got nil")
 	}
-	if !strings.Contains(err.Error(), "navigate") {
-		t.Fatalf("error should mention navigate failure, got: %v", err)
+	if !strings.Contains(err.Error(), "browser fetch") || !strings.Contains(err.Error(), "websocket closed") {
+		t.Fatalf("error should carry the underlying pool error, got: %v", err)
 	}
 }
 
-// TestFetchWithBrowser_ExtractFailure verifies that a failure during extraction
-// (after a successful navigate) is surfaced as an honest error.
+// TestFetchWithBrowser_ExtractFailure verifies that a failure during
+// extraction (mid-call) is surfaced as an honest error, not swallowed.
 func TestFetchWithBrowser_ExtractFailure(t *testing.T) {
 	fake := &fakeBrowserPool{
-		execFn: func(_ context.Context, in browser.ExecInput) (string, error) {
-			if in.ToolName == "builtin__browser_navigate" {
-				return "", nil
-			}
-			return "", fmt.Errorf("page crashed during extract")
+		navFn: func(_ context.Context, _, _ string, _ browser.HostValidator) (string, int64, error) {
+			return "", 0, fmt.Errorf("page crashed during extract")
 		},
 	}
 	a := newFallbackAgent()
@@ -100,11 +112,7 @@ func TestFetchWithBrowser_ExtractFailure(t *testing.T) {
 // error — never an empty "success" that looks like an empty page was fetched.
 func TestFetchWithBrowser_EmptyRender(t *testing.T) {
 	fake := &fakeBrowserPool{
-		execFn: func(_ context.Context, in browser.ExecInput) (string, error) {
-			// Both navigate and extract succeed, but extract yields only
-			// whitespace.
-			return "   \n\t  ", nil
-		},
+		text: "   \n\t  ", // whitespace only
 	}
 	a := newFallbackAgent()
 	_, err := a.fetchWithBrowser(context.Background(), fake, "https://example.com/page", alwaysAllowHost)
@@ -116,18 +124,15 @@ func TestFetchWithBrowser_EmptyRender(t *testing.T) {
 	}
 }
 
-// TestFetchWithBrowser_Success asserts the happy path: a non-empty rendered
-// text is returned as a populated Result, not silently dropped or truncated.
+// TestFetchWithBrowser_Success asserts the happy path and the wire-bytes
+// semantics: a non-empty rendered text is returned as a populated Result, and
+// Bytes is the pool-reported size of the navigated page's HTTP response body
+// in transferred (wire) bytes — deliberately NOT the extracted-text length
+// (issue #246 review).
 func TestFetchWithBrowser_Success(t *testing.T) {
 	const rendered = "JS-rendered content that the plain fetch could not see"
-	fake := &fakeBrowserPool{
-		execFn: func(_ context.Context, in browser.ExecInput) (string, error) {
-			if in.ToolName == "builtin__browser_navigate" {
-				return "", nil
-			}
-			return rendered, nil
-		},
-	}
+	const wireBytes = int64(4821) // the page's HTML, larger than the text
+	fake := &fakeBrowserPool{text: rendered, bytes: wireBytes}
 	a := newFallbackAgent()
 	res, err := a.fetchWithBrowser(context.Background(), fake, "https://example.com/page", alwaysAllowHost)
 	if err != nil {
@@ -142,24 +147,18 @@ func TestFetchWithBrowser_Success(t *testing.T) {
 	if res.URL != "https://example.com/page" {
 		t.Errorf("URL = %q, want %q", res.URL, "https://example.com/page")
 	}
-	if res.Bytes != int64(len(rendered)) {
-		t.Errorf("Bytes = %d, want %d", res.Bytes, len(rendered))
+	if res.Bytes != wireBytes {
+		t.Errorf("Bytes = %d, want %d (wire bytes from the pool, not the text length %d)", res.Bytes, wireBytes, len(rendered))
 	}
-	// Verify both navigate and extract were called.
-	var navigateSeen, extractSeen bool
-	for _, c := range fake.calls {
-		switch c.ToolName {
-		case "builtin__browser_navigate":
-			navigateSeen = true
-		case "builtin__browser_extract":
-			extractSeen = true
-		}
+	// One pool call does navigate and extract.
+	if len(fake.calls) != 1 {
+		t.Fatalf("want exactly 1 NavigateAndExtract call, got %d", len(fake.calls))
 	}
-	if !navigateSeen {
-		t.Error("navigate was not called")
+	if got := fake.calls[0].user; got != "testuser" {
+		t.Errorf("user = %q, want %q", got, "testuser")
 	}
-	if !extractSeen {
-		t.Error("extract was not called")
+	if got := fake.calls[0].rawURL; got != "https://example.com/page" {
+		t.Errorf("rawURL = %q, want %q", got, "https://example.com/page")
 	}
 }
 
@@ -203,7 +202,7 @@ func newBotBlockAgent(status int, fallback bool, fake *fakeBrowserPool) *Agent {
 // 429 bot-blocked page must reach the EXISTING browser fallback when
 // fallback_to_browser is on and a pool exists, and the rendered text must be
 // returned. It also asserts the fallback URL was gated by the same host
-// allowlist (the navigate ExecInput carries a HostCheck that accepts an
+// allowlist (NavigateAndExtract carries a HostCheck that accepts an
 // allowlisted host and rejects a non-allowlisted one).
 func TestHandleWebFetch_BotBlockedBrowserFallback(t *testing.T) {
 	tests := []struct {
@@ -218,22 +217,20 @@ func TestHandleWebFetch_BotBlockedBrowserFallback(t *testing.T) {
 			const rendered = "Browser-rendered text of the bot-blocked page"
 			var gateChecked bool
 			fake := &fakeBrowserPool{
-				execFn: func(_ context.Context, in browser.ExecInput) (string, error) {
-					if in.ToolName == "builtin__browser_navigate" {
-						if in.HostCheck == nil {
-							t.Error("navigate must carry a HostCheck (the existing host gate)")
-							return "", fmt.Errorf("no host gate")
-						}
-						if err := in.HostCheck("example.com"); err != nil {
-							t.Errorf("allowlisted host rejected by fallback gate: %v", err)
-						}
-						if err := in.HostCheck("evil.example"); err == nil {
-							t.Error("non-allowlisted host accepted by fallback gate")
-						}
-						gateChecked = true
-						return "", nil
+				bytes: 512,
+				navFn: func(_ context.Context, _, _ string, hostCheck browser.HostValidator) (string, int64, error) {
+					if hostCheck == nil {
+						t.Error("NavigateAndExtract must carry a HostCheck (the existing host gate)")
+						return "", 0, fmt.Errorf("no host gate")
 					}
-					return rendered, nil
+					if err := hostCheck("example.com"); err != nil {
+						t.Errorf("allowlisted host rejected by fallback gate: %v", err)
+					}
+					if err := hostCheck("evil.example"); err == nil {
+						t.Error("non-allowlisted host accepted by fallback gate")
+					}
+					gateChecked = true
+					return rendered, 512, nil
 				},
 			}
 			a := newBotBlockAgent(tt.status, true, fake)
@@ -244,11 +241,11 @@ func TestHandleWebFetch_BotBlockedBrowserFallback(t *testing.T) {
 			if !strings.Contains(out, rendered) {
 				t.Errorf("output missing browser-rendered text: %q", out)
 			}
-			if len(fake.calls) != 2 {
-				t.Errorf("want exactly navigate+extract (2 calls), got %d", len(fake.calls))
+			if len(fake.calls) != 1 {
+				t.Errorf("want exactly 1 NavigateAndExtract call, got %d", len(fake.calls))
 			}
 			if !gateChecked {
-				t.Error("host gate was never checked during navigate")
+				t.Error("host gate was never checked during the fallback")
 			}
 		})
 	}
@@ -318,12 +315,12 @@ func TestHandleWebFetch_BotBlocked403FallbackDisabled(t *testing.T) {
 }
 
 // TestHandleWebFetch_BotBlocked403FallbackFailsOriginalError verifies that
-// when the browser fallback itself fails (navigate error), the ORIGINAL 403
+// when the browser fallback itself fails (pool error), the ORIGINAL 403
 // error is returned — no empty masking, no fallback error substitution.
 func TestHandleWebFetch_BotBlocked403FallbackFailsOriginalError(t *testing.T) {
 	fake := &fakeBrowserPool{
-		execFn: func(_ context.Context, in browser.ExecInput) (string, error) {
-			return "", fmt.Errorf("playwright: browser unavailable")
+		navFn: func(_ context.Context, _, _ string, _ browser.HostValidator) (string, int64, error) {
+			return "", 0, fmt.Errorf("playwright: browser unavailable")
 		},
 	}
 	a := newBotBlockAgent(403, true, fake)
@@ -342,11 +339,8 @@ func TestHandleWebFetch_BotBlocked403FallbackFailsOriginalError(t *testing.T) {
 // the browser render is authoritative for this call.
 func TestHandleWebFetch_BotBlockedShortRenderNotRetried(t *testing.T) {
 	fake := &fakeBrowserPool{
-		execFn: func(_ context.Context, in browser.ExecInput) (string, error) {
-			if in.ToolName == "builtin__browser_navigate" {
-				return "", nil
-			}
-			return "ok", nil // non-empty but below the 10-char thin threshold
+		navFn: func(_ context.Context, _, _ string, _ browser.HostValidator) (string, int64, error) {
+			return "ok", 2, nil // non-empty but below the 10-char thin threshold
 		},
 	}
 	a := newBotBlockAgent(403, true, fake)
@@ -357,7 +351,7 @@ func TestHandleWebFetch_BotBlockedShortRenderNotRetried(t *testing.T) {
 	if !strings.Contains(out, "ok") {
 		t.Errorf("output missing the browser text: %q", out)
 	}
-	if len(fake.calls) != 2 {
-		t.Errorf("a short browser render must not re-trigger the fallback; got %d pool calls, want exactly 2 (navigate+extract)", len(fake.calls))
+	if len(fake.calls) != 1 {
+		t.Errorf("a short browser render must not re-trigger the fallback; got %d pool calls, want exactly 1", len(fake.calls))
 	}
 }
