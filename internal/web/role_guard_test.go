@@ -31,6 +31,8 @@ var adminRoutes = []struct {
 	{http.MethodGet, "/api/unknown-accounts"},
 	{http.MethodPost, "/api/unknown-accounts/link"},
 	{http.MethodPost, "/api/unknown-accounts/dismiss"},
+	{http.MethodGet, "/api/conversations"},
+	{http.MethodGet, "/api/reminders/undelivered"},
 	{http.MethodGet, "/api/settings"},
 	{http.MethodPost, "/api/settings"},
 	{http.MethodPost, "/api/users/emma/join-code"},
@@ -70,6 +72,73 @@ func TestChildSessionForbiddenOnAdminRoutes(t *testing.T) {
 				t.Errorf("%s %s: child session status = %d, want 403", rt.method, rt.path, resp.StatusCode)
 			}
 		})
+	}
+}
+
+// TestChildSessionCannotReadForeignConversations (PR #399 review, F1/F3)
+// pins the reviewer's concrete negative case: a child session gets 403 on
+// /api/conversations for ANY ?user= value (parent, sibling, and even
+// itself) and on /api/reminders/undelivered. The role gate sits in the
+// middleware before the handler, so the query parameter cannot bypass it;
+// the child's own conversation stays visible through the WS chat view
+// (handleChat), which is the child-facing surface. A parent session keeps
+// the dashboard listing (200, JSON array).
+func TestChildSessionCannotReadForeignConversations(t *testing.T) {
+	ts, deps := newJoinSecurityServer(t, "")
+
+	// emma (child) = config.Users[1] → synthesized session user ID 2.
+	childSess, err := deps.sessions.Create(context.Background(), 2, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatalf("sessions.Create (emma): %v", err)
+	}
+
+	childPaths := []string{
+		"/api/conversations?user=parent", // F1: parent's history (the reviewer's case)
+		"/api/conversations?user=olivia", // F1: sibling's history
+		"/api/conversations?user=emma",   // F1: own history via the listing endpoint (chat view remains)
+		"/api/reminders/undelivered",     // F3
+	}
+	for _, p := range childPaths {
+		t.Run(p, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, ts.URL+p, nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.AddCookie(&http.Cookie{Name: "famclaw_session", Value: childSess})
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET %s: %v", p, err)
+			}
+			defer resp.Body.Close()
+			drain(resp.Body)
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("child GET %s: status = %d, want 403", p, resp.StatusCode)
+			}
+		})
+	}
+
+	// Control: the parent session still uses the dashboard listing.
+	parentSess, err := deps.sessions.Create(context.Background(), 1, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatalf("sessions.Create (parent): %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/conversations?user=emma", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.AddCookie(&http.Cookie{Name: "famclaw_session", Value: parentSess})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/conversations?user=emma (parent): %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		drain(resp.Body)
+		t.Fatalf("parent GET /api/conversations?user=emma: status = %d, want 200", resp.StatusCode)
+	}
+	var msgs []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
+		t.Fatalf("parent conversation response is not a JSON array: %v", err)
 	}
 }
 

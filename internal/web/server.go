@@ -100,7 +100,11 @@ type SecCheckStatus struct {
 type wsClient struct {
 	conn     *websocket.Conn
 	userName string
-	writeMu  sync.Mutex
+	// parent records whether the *session* user (before any ?user= preview
+	// override) is a parent. Drives the dashboard_update PII scoping: a
+	// child session's socket never receives the unknown-accounts list.
+	parent  bool
+	writeMu sync.Mutex
 }
 
 // wsMessage is a WebSocket protocol message.
@@ -232,14 +236,19 @@ func (s *Server) Handler() http.Handler {
 
 	// ── Protected admin surface ──────────────────────────────────────────────
 	// Two tiers:
-	//   - s.protect (any valid session): the chat surface, conversation
-	//     history, family-state reads, and the SSE stream — a child session
-	//     may use these as itself.
+	//   - s.protect (any valid session): the chat surface, family-state
+	//     reads, and the SSE stream — a child session may use these as
+	//     itself.
 	//   - s.protectParent (parent session only): the management surface
-	//     (settings, approvals, skills, MCP, unknown accounts, join-code
+	//     (settings, approvals, skills, MCP, unknown accounts,
+	//     conversation history, undelivered reminders, join-code
 	//     issue/revoke). "Bind authorization to server-side identity" — a
 	//     child session must not be able to POST /api/settings any more
 	//     than it could reach the parent's admin tools over chat.
+	//     /api/conversations lists full household conversation history and
+	//     /api/reminders/undelivered the household's missed deliveries: both
+	//     are parent management surface (a child sees their own conversation
+	//     through the chat view, not a listing endpoint).
 	mux.Handle("/api/chat", s.protect(s.handleChat)) // WebSocket — identity bound to the server-side session
 	mux.Handle("/api/users", s.protectParent(s.handleUsers))
 	mux.Handle("/api/approvals", s.protectParent(s.handleApprovals))
@@ -253,8 +262,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/unknown-accounts", s.protectParent(s.handleUnknownAccounts))
 	mux.Handle("/api/unknown-accounts/link", s.protectParent(s.handleUnknownAccountLink))
 	mux.Handle("/api/unknown-accounts/dismiss", s.protectParent(s.handleUnknownAccountDismiss))
-	mux.Handle("/api/conversations", s.protect(s.handleConversations))
-	mux.Handle("/api/reminders/undelivered", s.protect(s.handleUndeliveredReminders))
+	mux.Handle("/api/conversations", s.protectParent(s.handleConversations))
+	mux.Handle("/api/reminders/undelivered", s.protectParent(s.handleUndeliveredReminders))
 	mux.Handle("/api/family-state/facts", s.protect(s.handleFamilyStateFacts))
 	mux.Handle("/api/family-state/facts/", s.protect(s.handleFamilyStateFact))
 	mux.Handle("/api/family-state/categories", s.protect(s.handleFamilyStateCategories))
@@ -488,6 +497,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown user", http.StatusForbidden)
 		return
 	}
+	// Whether the *session* user (before the ?user= preview override below)
+	// is a parent. Drives the dashboard_update PII scoping below: a child
+	// session's socket never receives the unknown-accounts list, even
+	// though the household badge count still reaches every session.
+	sessionIsParent := userCfg.Role == "parent"
 
 	// A parent session may preview another household member's chat via
 	// ?user=<name> (the web UI's user chooser). The privilege check uses the
@@ -514,7 +528,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	client := &wsClient{conn: conn, userName: userCfg.Name}
+	client := &wsClient{conn: conn, userName: userCfg.Name, parent: sessionIsParent}
 	s.clientsMu.Lock()
 	s.clients[conn] = client
 	s.clientsMu.Unlock()
@@ -1090,15 +1104,25 @@ func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 	if s.skillRegistry != nil {
 		installedSkills, _ = s.skillRegistry.List()
 	}
-	payload, _ := json.Marshal(map[string]any{
-		"pending_count":    len(pending),
-		"unknown_accounts": unknown,
-		"installed_skills": installedSkills,
-	})
-
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()
 	for _, client := range s.clients {
+		unknownForClient := unknown
+		if !client.parent {
+			// Child sessions keep the household pending-approval badge (the
+			// same count the SSE stream already sends to every session) but
+			// never the unknown-accounts PII (names, gateway, external ID) —
+			// that list is parent management surface. Household-level
+			// installed_skills remain visible to all household members.
+			// Residual item: if installed_skills is later judged
+			// sensitive, redact it for non-parent clients here too.
+			unknownForClient = nil
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"pending_count":    len(pending),
+			"unknown_accounts": unknownForClient,
+			"installed_skills": installedSkills,
+		})
 		client.writeMu.Lock()
 		_ = client.conn.WriteJSON(WsMessage{Type: "dashboard_update", Payload: payload})
 		client.writeMu.Unlock()
@@ -1106,7 +1130,8 @@ func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
 }
 
 // handleConversations returns recent messages for a user (parent dashboard).
-// Mounted behind s.protect(...); the session middleware enforces auth.
+// Mounted behind s.protectParent: conversation history is parent management
+// surface — child sessions get 403. The session middleware enforces auth.
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	userName := r.URL.Query().Get("user")
 	if userName == "" {

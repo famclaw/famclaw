@@ -8,8 +8,11 @@ import (
 
 // handleUndeliveredReminders lists reminders that could not be delivered
 // (dead channel, exhausted retries) — newest first — so a delivery failure
-// is never silently lost and the user can see what they missed. Auth is
-// enforced by the session middleware on the protected route.
+// is never silently lost and the parent can see what was missed. Mounted
+// behind s.protectParent (not s.protect): the list is household-wide and
+// not scoped to the caller, matching the other household-level listings —
+// a child session gets 403. Auth is enforced by the session middleware on
+// the protected route.
 func (s *Server) handleUndeliveredReminders(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
