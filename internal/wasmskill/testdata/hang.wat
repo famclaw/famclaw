@@ -14,7 +14,7 @@
     (call $fd_write)
     (drop)
     (block
-      (loop (br 1))
+      (loop (br 0))
     )
   )
   (func $read_byte_until_lf

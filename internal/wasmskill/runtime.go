@@ -113,6 +113,7 @@ func Run(ctx context.Context, wasm []byte, cfg *Config, stdin []byte) (RunResult
 	}()
 	go func() {
 		_, _ = inW.Write(stdin)
+		_ = inW.Close()
 	}()
 
 	start := mod.ExportedFunction("_start")
