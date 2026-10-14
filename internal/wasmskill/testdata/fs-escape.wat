@@ -6,7 +6,7 @@
   ;;   ok = 1 iff e1 == 0; data = first byte read from sandbox.txt when ok
   (import "wasi_snapshot_preview1" "fd_write" (func $fd_write (param i32 i32 i32 i32) (result i32)))
   (import "wasi_snapshot_preview1" "fd_read" (func $fd_read (param i32 i32 i32 i32) (result i32)))
-  (import "wasi_snapshot_preview1" "path_open" (func $path_open (param i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "path_open" (func $path_open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
   (import "wasi_snapshot_preview1" "fd_close" (func $fd_close (param i32) (result i32)))
   (memory (export "memory") 1)
 
@@ -49,6 +49,7 @@
 
   (func $probe
     (i32.const 3)
+    (i32.const 0)
     (i32.const 3000)
     (i32.const 11)
     (i32.const 0)
@@ -84,6 +85,7 @@
       (drop)
     ))
     (i32.const 3)
+    (i32.const 0)
     (i32.const 3011)
     (i32.const 10)
     (i32.const 0)
@@ -94,6 +96,7 @@
     (call $path_open)
     (i32.store (i32.const 2049))
     (i32.const 3)
+    (i32.const 0)
     (i32.const 3021)
     (i32.const 8)
     (i32.const 1)

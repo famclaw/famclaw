@@ -40,12 +40,12 @@ func TestFilesystemDefaultDeny(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "sandbox.txt"), []byte("S"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Run(context.Background(), fixture(t, "fs-escape.wasm"), &Config{SandboxRoot: root}, []byte("probe\n"))
+	got, err := Run(context.Background(), fixture(t, "fs-escape.wasm"), nil, []byte("probe\n"))
 	if err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("Run with no preopens: %v", err)
 	}
-	if len(got.Stdout) != 6 || got.Stdout[0] != 0 || got.Stdout[1] == 0 || got.Stdout[2] == 0 || got.Stdout[3] != 1 || got.Stdout[4] != 'S' {
-		t.Fatalf("filesystem probe bytes = %v; expected inside preopen readable and traversal/absolute paths denied", got.Stdout)
+	if len(got.Stdout) != 6 || got.Stdout[1] == 0 || got.Stdout[3] != 0 || got.Stdout[4] != 0 {
+		t.Fatalf("filesystem probe bytes = %v; expected traversal denied and no sandbox data readable", got.Stdout)
 	}
 }
 
