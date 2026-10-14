@@ -1,125 +1,148 @@
 #!/usr/bin/env bash
-# .github/scripts/test-check-private-details.sh
+# End-to-end test for check-private-details.sh.
 #
-# Executes the private-details leak guard (.github/scripts/check-private-details.sh)
-# against synthetic fixtures in a throwaway git repo, proving:
-#   1. a clean repo passes (tracked-files-only baseline),
-#   2. a tracked-file leak still fails (guard behavior preserved),
-#   3. a leak in PR title / PR body metadata FAILS the guard even though the
-#      equivalent tracked-files-only check passes (the metadata gap this guards),
-#   4. documented placeholders and allowed example addresses still pass,
-#   5. failure output names label/line/pattern only — never the offending value.
+# Builds throwaway git repos in a temp dir, installs the guard, commits fixture
+# files (leak-shaped values plus synthetic values that must stay clean), runs the
+# guard, and asserts the exact pass/fail set. It then re-checks this file itself
+# under the guard, and the guard under a non-excluded path, proving both scripts
+# stay clean under their own checks.
 #
-# NO-LEAK: the fixtures are real patterns (a home path, a planted PRIVATE_IP
-# sample) but obviously synthetic (fixtureperson / TEST-NET-style, never a host
-# here). They are built at runtime via obf() so this harness file itself — a
-# tracked file the guard scans — matches none of its own patterns.
+# Every sensitive literal below is assembled from split fragments at runtime, so
+# no fixture value, internal project name, or home path ever appears as a
+# contiguous string in this file: the harness is itself clean under the guard it
+# tests.
 #
-# Requires: bash, git. Run: .github/scripts/test-check-private-details.sh
-set -euo pipefail
+# Run: bash .github/scripts/test-check-private-details.sh
+set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GUARD="${SCRIPT_DIR}/check-private-details.sh"
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+GUARD="$SCRIPT_DIR/check-private-details.sh"
+[ -f "$GUARD" ] || { echo "FAIL guard script not found: $GUARD" >&2; exit 2; }
 
-if [ ! -f "$GUARD" ]; then
-  echo "FAIL: guard script not found at $GUARD" >&2
-  exit 1
-fi
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+fail_count=0
+fail() { echo "ASSERT FAIL: $1" >&2; fail_count=$((fail_count + 1)); }
 
-# --- test helpers -----------------------------------------------------------
-pass=0
-fail=0
-ok()    { printf '  \033[32m✓\033[0m %s\n' "$1"; pass=$((pass + 1)); }
-bad()   { printf '  \033[31m✗\033[0m %s\n' "$1" >&2; fail=$((fail + 1)); }
-assert_zero()    { if [ "$2" -eq 0 ]; then ok "$1"; else bad "$1 (expected 0, got $2)"; fi; }
-assert_nonzero() { if [ "$2" -ne 0 ]; then ok "$1"; else bad "$1 (expected non-zero, got $2)"; fi; }
-assert_contains() {
-  if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else bad "$1 (missing: $2)"; fi
-}
-assert_not_contains() {
-  if printf '%s' "$3" | grep -qF "$2"; then bad "$1 (found: $2)"; else ok "$1"; fi
-}
+# --- sensitive literals, assembled from fragments (see header) ---
+ip='192.168.1.';       ip="${ip}77"                      # unlisted 192.168 address
+exip='192.168.';       exip="${exip}1.50"                # documented example address
+hp='/home/';           hp="${hp}dep/notes.md"            # personal home path
+hp2='/home/';          hp2="${hp2}runner/ci job"         # placeholder home path
+up='/Users/';          up="${up}you/notes"               # placeholder home path
+c1='first';            c1="${c1}mate"                    # internal project name (1)
+c2='fle';              c2="${c2}et"                      # internal project name (2)
+c3='no-mis';           c3="${c3}takes"                   # internal project name (3)
+c4='cr';               c4="${c4}ew"                      # internal project name (4)
+sk='sk-';              sk="${sk}abcdefghij1234K9"        # 20-char sk- style key
+fake='sk-fake';        fake="${fake}1234567890abcd"      # synthetic sk- style key
+gh='ghp_';             gh="${gh}1234567890abcdef12"      # 18-char ghp style token
+jwt='eyJabc123.';      jwt="${jwt}def456.ghi789"         # 3-part JWT
+bear='Bearer ';        bear="${bear}tok1234567890abcd"   # Bearer header value
+pem='-----BEGIN RSA P'; pem="${pem}RIVATE KEY-----"      # PEM block header
+aws='AKIA';            aws="${aws}1234567890ABCDEF"      # AWS style key id
+kv='passwor';          kv="${kv}d: \"abc123real\""       # key/value credential line
 
-obf() { printf '%s' "$1" | tr -d 'X'; }
-
-CLEANUP=()
-# Invoked indirectly via the trap below. SC2329 (function never invoked) and
-# SC2317 (body unreachable, flagged by 0.9.0) are both false positives here.
-# shellcheck disable=SC2317,SC2329
-cleanup() { for p in "${CLEANUP[@]:-}"; do rm -rf "$p"; done; }
-trap cleanup EXIT
-
-# Synthetic leak values (see NO-LEAK note above). X sentinel is stripped by tr.
-LEAK_IP=$(obf '192.168X.127.8')
-LEAK_PATH=$(obf '/hoXme/fixtureperson/projects/private-notes.md')
-LEAK_IP_ALT=$(obf '192.168X.127.9')
-
-# --- fixture repo -----------------------------------------------------------
-REPO="$(mktemp -d)"
-CLEANUP+=("$REPO")
-git -C "$REPO" init -q
-cat > "$REPO/README.md" <<'EOF'
-Placeholder paths like /home/user/app and /Users/you/app and CI's /home/runner
-are fine, as are the documented example addresses 192.168.0.1 and 192.168.1.50.
+# --- repo 1: every leak line must fail, every clean line must pass ---
+repo="$tmp/leakrepo"; mkdir -p "$repo/.github/scripts"
+git -C "$repo" init -q
+git -C "$repo" config user.email guard@test.local
+git -C "$repo" config user.name guard
+cp "$GUARD" "$repo/.github/scripts/check-private-details.sh"
+cat > "$repo/leaks.txt" <<EOF
+host ${ip} is here
+path ${hp} backup
+model ${c1} notes
+gateway ${c2} notes
+reviewer ${c3} passed
+the ${c4} stood by
+key ${sk} stored
+token ${gh} stored
+${jwt} pasted
+${bear} sent
+${kv}
+${pem}
+${aws} id
 EOF
-git -C "$REPO" add README.md
+cat > "$repo/clean.txt" <<EOF
+${exip} documented example
+${hp2}
+${up}
+password: ""
+api_key: "sk-..."
+token: "${fake}"
+"Bearer <REDACTED>"
+test run with your-key-here
+Bot FAKE_DISCORD_BOT_SHORT
+sk-openai-key and sk-yaml-value
+10.0.0.42 and 172.16.5.5
+EOF
+git -C "$repo" add -A
+git -C "$repo" commit -qm fixtures
 
-# run_guard [PR_TITLE_FILE] [PR_BODY_FILE] — runs the guard inside the fixture
-# repo, captures combined output in GUARD_OUT and the exit code in RC.
-run_guard() {
-  GUARD_OUT=""
-  local title="${1:-}" body="${2:-}"
-  RC=0
-  GUARD_OUT=$( cd "$REPO" && \
-    PR_TITLE_FILE="$title" PR_BODY_FILE="$body" bash "$GUARD" 2>&1 ) || RC=$?
-}
+out=$(cd "$repo" && bash .github/scripts/check-private-details.sh 2>&1); rc=$?
+[ "$rc" -eq 1 ] || fail "expected exit 1, got $rc (output: $out)"
+for n in 1 2 3 4 5 6 7 8 9 10 11 12 13; do
+  grep -q "leaks.txt:$n " <<<"$out" || fail "leaks.txt line $n not flagged"
+done
+grep -q "leaks.txt:3 (CODENAME)" <<<"$out" || fail "codename pattern label missing"
+for n in 1 2 3 4 5 6 7 8 9 10 11; do
+  grep -q "clean.txt:$n " <<<"$out" && fail "clean.txt line $n wrongly flagged"
+done
+grep -q "check-private-details.sh" <<<"$out" && fail "guard script flagged itself"
 
-# --- 1. clean repo passes ----------------------------------------------------
-run_guard
-assert_zero "clean repo passes tracked-files-only check" "$RC"
+# --- repo 2: this harness alone, under the guard, must be clean ---
+repo2="$tmp/selfrepo"; mkdir -p "$repo2"
+git -C "$repo2" init -q
+git -C "$repo2" config user.email guard@test.local
+git -C "$repo2" config user.name guard
+cp "$0" "$repo2/test-check-private-details.sh"
+git -C "$repo2" add -A
+git -C "$repo2" commit -qm selfcheck
+out2=$(cd "$repo2" && bash "$GUARD" 2>&1); rc2=$?
+[ "$rc2" -eq 0 ] || fail "harness not clean under the guard: $out2"
+grep -q "FAIL" <<<"$out2" && fail "harness produced FAIL lines: $out2"
+grep -q "^OK" <<<"$out2" || fail "harness self-check missing OK line: $out2"
 
-# --- 2. tracked-file leak still fails ----------------------------------------
-printf 'router host: %s, notes at %s\n' "$LEAK_IP" "$LEAK_PATH" > "$REPO/config.md"
-git -C "$REPO" add config.md
-run_guard
-assert_nonzero "tracked-file leak fails the guard" "$RC"
-assert_contains "tracked leak names HOME_PATH pattern" "(HOME_PATH)" "$GUARD_OUT"
-assert_contains "tracked leak names PRIVATE_IP pattern" "(PRIVATE_IP)" "$GUARD_OUT"
-assert_not_contains "tracked leak output hides the IP" "$LEAK_IP" "$GUARD_OUT"
-assert_not_contains "tracked leak output hides the path" "$LEAK_PATH" "$GUARD_OUT"
-rm "$REPO/config.md"
-git -C "$REPO" reset -q -- config.md
+# --- repo 2b: PR metadata coverage ---
+printf 'Fix %s exposure on %s; model %s\n' "$hp" "$ip" "$c1" > "$tmp/meta-title.txt"
+printf 'Repro: see %s then read %s\n' "$ip" "$hp" > "$tmp/meta-body.txt"
+outm=$(cd "$repo2" && PR_TITLE_FILE="$tmp/meta-title.txt" PR_BODY_FILE="$tmp/meta-body.txt" \
+  bash "$GUARD" 2>&1); rcm=$?
+[ "$rcm" -eq 1 ] || fail "metadata leak did not fail the guard: $outm"
+grep -qF "PR title:" <<<"$outm" || fail "metadata leak missing PR title label"
+grep -qF "PR body:" <<<"$outm" || fail "metadata leak missing PR body label"
+grep -qF "$hp" <<<"$outm" && fail "metadata output leaked the home path"
+grep -qF "$ip" <<<"$outm" && fail "metadata output leaked the IP"
+printf 'clean /home/user body\n' > "$tmp/meta-clean-body.txt"
+outm2=$(cd "$repo2" && PR_TITLE_FILE="$tmp/meta-title.txt" PR_BODY_FILE="$tmp/meta-clean-body.txt" \
+  bash "$GUARD" 2>&1); rcm2=$?
+[ "$rcm2" -eq 1 ] || fail "title-only metadata leak did not fail: $outm2"
+printf 'peers: %s and /home/user/notes\n' "$exip" > "$tmp/meta-allow-title.txt"
+printf 'docs example /Users/you/docs\n' > "$tmp/meta-allow-body.txt"
+outm3=$(cd "$repo2" && PR_TITLE_FILE="$tmp/meta-allow-title.txt" PR_BODY_FILE="$tmp/meta-allow-body.txt" \
+  bash "$GUARD" 2>&1); rcm3=$?
+[ "$rcm3" -eq 0 ] || fail "allowlisted metadata should pass: $outm3"
+outm4=$(cd "$repo2" && PR_TITLE_FILE="/nonexistent-meta" PR_BODY_FILE="$tmp/meta-allow-body.txt" \
+  bash "$GUARD" 2>&1); rcm4=$?
+[ "$rcm4" -eq 0 ] || fail "missing metadata file must be skipped: $outm4"
 
-# --- 3. PR metadata leak fails where tracked-files-only passes ---------------
-printf 'Fix %s exposure on %s\n' "$LEAK_PATH" "$LEAK_IP_ALT" > "$REPO/leak-title.txt"
-printf 'Repro: ssh %s then read %s\n' "$LEAK_IP_ALT" "$LEAK_PATH" > "$REPO/leak-body.txt"
-run_guard "$REPO/leak-title.txt" "$REPO/leak-body.txt"
-assert_nonzero "PR metadata leak fails the guard" "$RC"
-assert_contains "metadata leak labels PR title" "PR title:" "$GUARD_OUT"
-assert_contains "metadata leak labels PR body" "PR body:" "$GUARD_OUT"
-assert_not_contains "metadata leak output hides the IP" "$LEAK_IP_ALT" "$GUARD_OUT"
-assert_not_contains "metadata leak output hides the path" "$LEAK_PATH" "$GUARD_OUT"
+# --- repo 3: the guard itself under a NON-excluded path, must still be clean ---
+repo3="$tmp/guardrepo"; mkdir -p "$repo3/tools"
+git -C "$repo3" init -q
+git -C "$repo3" config user.email guard@test.local
+git -C "$repo3" config user.name guard
+cp "$GUARD" "$repo3/tools/check-private-details.sh"
+git -C "$repo3" add -A
+git -C "$repo3" commit -qm guardselfcheck
+out3=$(cd "$repo3" && bash tools/check-private-details.sh 2>&1); rc3=$?
+[ "$rc3" -eq 0 ] || fail "guard not clean when scanned: $out3"
+grep -q "FAIL" <<<"$out3" && fail "guard produced FAIL lines on itself: $out3"
+grep -q "^OK" <<<"$out3" || fail "guard self-check missing OK line: $out3"
 
-# title-only leak (body clean) must still fail
-printf 'Clean body mentions /home/user only.\n' > "$REPO/clean-body.txt"
-run_guard "$REPO/leak-title.txt" "$REPO/clean-body.txt"
-assert_nonzero "PR title-only leak fails the guard" "$RC"
-
-# same repo with no metadata files passes (the gap being closed)
-run_guard
-assert_zero "same repo passes without PR metadata (gap baseline)" "$RC"
-
-# --- 4. allow-list regression ------------------------------------------------
-printf 'Copy from /home/user/notes, /Users/you/app, /home/runner/work; peers: 192.168.0.1, 192.168.1.50, 192.168.1.10\n' > "$REPO/allowed-title.txt"
-printf 'Docs example 192.168.0.1 and placeholder /Users/USER/docs stay allowed.\n' > "$REPO/allowed-body.txt"
-run_guard "$REPO/allowed-title.txt" "$REPO/allowed-body.txt"
-assert_zero "placeholders + documented examples still pass" "$RC"
-
-# --- 5. missing / unset metadata files are skipped, not fatal ----------------
-run_guard "/nonexistent-title-file" "$REPO/allowed-body.txt"
-assert_zero "missing title file is skipped" "$RC"
-
-# --- summary ------------------------------------------------------------------
-printf '\n%d passed, %d failed\n' "$pass" "$fail"
-[ "$fail" -eq 0 ] || exit 1
-exit 0
+if [ "$fail_count" -eq 0 ]; then
+  echo "OK - guard behavior, harness self-cleanliness, and guard self-cleanliness all verified"
+  exit 0
+fi
+echo "FAIL - $fail_count assertion(s) failed" >&2
+exit 1
