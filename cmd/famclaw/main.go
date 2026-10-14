@@ -368,11 +368,8 @@ func main() {
 	cfg, err := config.Load(*cfgPath)
 	must(err, "config")
 
-	// Generate secret if not set (first boot)
-	if cfg.Server.Secret == "" {
-		cfg.Server.Secret = generateSecret()
-		log.Printf("Generated server secret (persisted to config file)")
-	}
+	// Auto-generate a first-boot secret — but only for non-wildcard binds.
+	maybeGenerateSecret(cfg)
 
 	// Validate config — fail fast with plain-language errors
 	if err := cfg.Validate(); err != nil {
@@ -1157,6 +1154,28 @@ func printStartGuide(cfg *config.Config) {
   Then open http://<IP>:%d on any device on your LAN.
 ────────────────────────────────────────────────────────
 `, cfg.Server.Port, cfg.Server.Port)
+}
+
+// maybeGenerateSecret fills an empty server.secret at boot — but only for
+// non-wildcard binds. A wildcard bind (0.0.0.0/::, the default) is
+// deliberately left without a secret: a randomly generated secret on a
+// LAN-reachable server would defeat the P0 control documented in
+// docs/SECURITY_MODEL.md, because the operator never chose it and never sees
+// it. With the secret left empty, Config.Validate (validateServer) fails the
+// boot with an actionable message until the operator sets a real 32+ char
+// server.secret or restricts the bind to loopback.
+//
+// A generated secret lives in memory only; it reaches the config file when
+// the server next persists settings (s.writeConfig on a settings save).
+func maybeGenerateSecret(cfg *config.Config) {
+	if cfg.Server.Secret != "" {
+		return
+	}
+	if config.IsWildcardHost(cfg.Server.Host) {
+		return
+	}
+	cfg.Server.Secret = generateSecret()
+	log.Printf("Generated server secret (in memory; persisted to the config file on the next settings save)")
 }
 
 func generateSecret() string {

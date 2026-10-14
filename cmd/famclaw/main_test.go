@@ -394,3 +394,59 @@ func TestProbeSearchEndpoint_Timeout(t *testing.T) {
 		t.Errorf("timeout must not be labeled 'unreachable' (endpoint was slow, not down), got: %v", err)
 	}
 }
+
+// TestMaybeGenerateSecret pins the first-boot secret decision (PR #399 F2):
+// a non-wildcard bind (e.g. 127.0.0.1) with no operator-provided secret gets
+// a strong 43-char base64url secret generated IN MEMORY so a default
+// local-only boot still has HMAC protection (the secret persists on the next
+// settings save). For a wildcard bind (0.0.0.0 / :: / *) the generation is
+// deliberately SKIPPED so the P0 gate in Config.Validate (SECURITY_MODEL.md:
+// "Config.Validate fails boot otherwise") genuinely fires — a default
+// 0.0.0.0 install must fail boot and force the operator to either set
+// FAMCLAW_SECRET or restrict the bind, instead of auto-booting exposed.
+func TestMaybeGenerateSecret(t *testing.T) {
+	t.Run("non-wildcard empty secret is generated in memory", func(t *testing.T) {
+		cfg := &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}}
+		maybeGenerateSecret(cfg)
+		if len(cfg.Server.Secret) != 43 {
+			t.Fatalf("generated secret length = %d, want 43 (base64url of 32 random bytes, no padding)", len(cfg.Server.Secret))
+		}
+		if strings.ContainsAny(cfg.Server.Secret, "+/=") {
+			t.Errorf("generated secret is not base64url-safe: %q", cfg.Server.Secret)
+		}
+		// Generation must be random, not a constant.
+		other := &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}}
+		maybeGenerateSecret(other)
+		if cfg.Server.Secret == other.Server.Secret {
+			t.Error("two generated secrets are identical — generation is not random")
+		}
+	})
+
+	t.Run("existing operator secret is left untouched", func(t *testing.T) {
+		secret := strings.Repeat("x", 43)
+		cfg := &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080, Secret: secret}}
+		maybeGenerateSecret(cfg)
+		if cfg.Server.Secret != secret {
+			t.Fatalf("existing secret replaced: got %q, want %q", cfg.Server.Secret, secret)
+		}
+	})
+
+	for _, host := range []string{"0.0.0.0", "::", "*"} {
+		t.Run("wildcard "+host+" skips generation so Validate fails boot", func(t *testing.T) {
+			cfg := &config.Config{Server: config.ServerConfig{Host: host, Port: 8080}}
+			maybeGenerateSecret(cfg)
+			if cfg.Server.Secret != "" {
+				t.Fatalf("host %q: secret %q generated at boot, want empty (the wildcard gate must force operator action)", host, cfg.Server.Secret)
+			}
+			// The boot path is maybeGenerateSecret(cfg) → cfg.Validate(): the
+			// wildcard must surface as the actionable P0 error.
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("host %q: Validate() passed, want the P0 wildcard error", host)
+			}
+			if !strings.Contains(err.Error(), "binds to all interfaces") {
+				t.Fatalf("host %q: Validate() error = %v, want the actionable 'binds to all interfaces' message", host, err)
+			}
+		})
+	}
+}

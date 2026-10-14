@@ -602,6 +602,14 @@ func applyDefaults(c *Config) {
 	}
 }
 
+// IsWildcardHost reports whether the effective server host binds all
+// interfaces (i.e. the web UI is reachable beyond the local machine). Shared
+// by validateServer (the P0 wildcard gate) and the boot-time secret decision
+// in cmd/famclaw — one definition, one rule.
+func IsWildcardHost(host string) bool {
+	return host == "0.0.0.0" || host == "::" || host == "*"
+}
+
 // validateServer checks the server bind and the WebSocket origin policy.
 // It operates on the *effective* config (post applyDefaults), so the host is
 // already "0.0.0.0" when the operator left it empty.
@@ -625,7 +633,7 @@ func validateServer(srv ServerConfig) error {
 		)
 	}
 	host := srv.Host
-	wildcard := host == "0.0.0.0" || host == "::" || host == "*"
+	wildcard := IsWildcardHost(host)
 	if !wildcard {
 		if ip := net.ParseIP(host); ip == nil {
 			return fmt.Errorf("server.host %q is not a valid IP address (e.g. \"127.0.0.1\" for loopback-only)", host)
