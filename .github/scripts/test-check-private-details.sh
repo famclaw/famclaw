@@ -43,8 +43,9 @@ assert_not_contains() {
 obf() { printf '%s' "$1" | tr -d 'X'; }
 
 CLEANUP=()
-# Invoked indirectly via the trap below (SC2329 is a false positive here).
-# shellcheck disable=SC2329
+# Invoked indirectly via the trap below. SC2329 (function never invoked) and
+# SC2317 (body unreachable, flagged by 0.9.0) are both false positives here.
+# shellcheck disable=SC2317,SC2329
 cleanup() { for p in "${CLEANUP[@]:-}"; do rm -rf "$p"; done; }
 trap cleanup EXIT
 
