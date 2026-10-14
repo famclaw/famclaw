@@ -74,8 +74,11 @@ func TestValidate_WebSearchProvider(t *testing.T) {
 	// web_search branch under test (LLM timeout set; nothing else enabled).
 	base := func() *Config {
 		return &Config{
-			LLM:   LLMConfig{TimeoutSeconds: 30},
-			Tools: ToolsConfig{},
+			// Loopback bind keeps this test focused on the web_search rules;
+			// the bind/secret matrix is covered by TestValidate_ServerHost.
+			Server: ServerConfig{Host: "127.0.0.1", Port: 8080},
+			LLM:    LLMConfig{TimeoutSeconds: 30},
+			Tools:  ToolsConfig{},
 		}
 	}
 
