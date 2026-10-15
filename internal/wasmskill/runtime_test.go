@@ -1,10 +1,13 @@
 package wasmskill
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,5 +125,18 @@ func TestRunContextDeadline(t *testing.T) {
 	_, err := Run(ctx, fixture(t, "hang.wasm"), nil, nil)
 	if err == nil {
 		t.Fatal("expected context cancellation for non-terminating module")
+	}
+}
+
+func TestReadLinePropagatesEOFForPartialResponse(t *testing.T) {
+	guestExit := errors.New("guest exited")
+	s := &Skill{out: bufio.NewReader(strings.NewReader(`{"jsonrpc":"2.0","id":1}`)), done: make(chan struct{}), startErr: guestExit}
+	close(s.done)
+	line, err := s.readLine(context.Background())
+	if !errors.Is(err, io.EOF) || len(line) == 0 {
+		t.Fatalf("readLine = %q, %v; want partial line and EOF", line, err)
+	}
+	if got := s.sessionErr(); !errors.Is(got, guestExit) {
+		t.Fatalf("sessionErr = %v, want guest-exit cause %v", got, guestExit)
 	}
 }

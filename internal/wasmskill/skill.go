@@ -313,14 +313,21 @@ func (s *Skill) Close(ctx context.Context) error {
 // context expires before a full line arrives, the guest is killed (its
 // stdout closes and the read returns). The caller must hold s.mu.
 func (s *Skill) readLine(ctx context.Context) ([]byte, error) {
-	ch := make(chan []byte, 1)
+	type readResult struct {
+		line []byte
+		err  error
+	}
+	ch := make(chan readResult, 1)
 	go func() {
-		line, _ := s.out.ReadString('\n')
-		ch <- []byte(line)
+		line, err := s.out.ReadString('\n')
+		ch <- readResult{line: []byte(line), err: err}
 	}()
 	select {
-	case line := <-ch:
-		return line, nil
+	case result := <-ch:
+		if result.err != nil && !bytes.HasSuffix(result.line, []byte("\n")) {
+			return result.line, result.err
+		}
+		return result.line, nil
 	case <-ctx.Done():
 		s.kill()
 		select {
