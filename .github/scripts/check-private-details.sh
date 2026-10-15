@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fail if a tracked file contains private developer details.
+# Fail if a tracked file or PR metadata contains private developer details.
 #
 # A maintainer's real home LAN address once sat in a public repo for over a week,
 # past every human review. This is the mechanical backstop for that class of leak.
@@ -7,6 +7,16 @@
 # Allowed: generic placeholder home paths (/home/user, /Users/you, CI's /home/runner),
 # the example addresses this project documents, and the 10.x / 172.16-31.x ranges,
 # which are widely used as synthetic test data.
+#
+# PR metadata: on a pull_request run, ci.yml writes the PR title and body to files
+# and points at them via PR_TITLE_FILE / PR_BODY_FILE. Prose in PR metadata never
+# lands in a tracked file, so the tracked-files loop below cannot see it — a leak
+# there survives every later scan. No separate pass over the PR diff is needed:
+# every line a PR adds is part of a tracked file of the PR head commit, which this
+# checkout already covers.
+#
+# Failure output is deliberately public-repo-safe: label + line number + pattern
+# name only, never the offending text.
 set -uo pipefail
 
 PLACEHOLDER='/(home|Users)/(user|username|youruser|you|USER|runner)(/|$)'
@@ -19,27 +29,47 @@ HOME_PATH='/(home|Users)/[A-Za-z_][A-Za-z0-9_.-]*/'
 PRIVATE_IP='192\.168\.[0-9]{1,3}\.[0-9]{1,3}'
 ALLOWED_IP='192\.168\.(0\.1|1\.(1|2|10|50|100))([^0-9]|$)'
 
+# scan_file <label> <file>
+# One FAIL per offending match: label, line number, pattern name — no value dump.
+# The single check used by both the tracked-files loop and the PR-metadata path,
+# so the pattern rules live in exactly one place.
+scan_file() {
+  local label="$1" file="$2"
+  local hits
+  hits=$(
+    {
+      grep -nE "$HOME_PATH" "$file" 2>/dev/null | grep -vE "$PLACEHOLDER" \
+        | sed 's/^\([0-9][0-9]*\):.*/\1 (HOME_PATH)/'
+      grep -nE "$PRIVATE_IP" "$file" 2>/dev/null | grep -vE "$ALLOWED_IP" \
+        | sed 's/^\([0-9][0-9]*\):.*/\1 (PRIVATE_IP)/'
+    } | sort -u
+  )
+  if [ -n "$hits" ]; then
+    while IFS= read -r hit; do
+      echo "FAIL ${label}:${hit}"
+    done <<< "$hits"
+    return 1
+  fi
+  return 0
+}
+
 exit_code=0
 while IFS= read -r f; do
   case "$f" in
     .github/workflows/*|.github/scripts/check-private-details.sh) continue ;;
   esac
   [ -f "$f" ] || continue
-  hits=$(
-    {
-      grep -nE "$HOME_PATH" "$f" 2>/dev/null | grep -vE "$PLACEHOLDER"
-      grep -nE "$PRIVATE_IP" "$f" 2>/dev/null | grep -vE "$ALLOWED_IP"
-    } | sort -u
-  )
-  if [ -n "$hits" ]; then
-    while IFS= read -r line; do
-      echo "FAIL $f:$line"
-    done <<< "$hits"
-    exit_code=1
-  fi
+  scan_file "$f" "$f" || exit_code=1
 done < <(git ls-files)
 
+if [ -n "${PR_TITLE_FILE:-}" ] && [ -f "${PR_TITLE_FILE}" ]; then
+  scan_file "PR title" "$PR_TITLE_FILE" || exit_code=1
+fi
+if [ -n "${PR_BODY_FILE:-}" ] && [ -f "${PR_BODY_FILE}" ]; then
+  scan_file "PR body" "$PR_BODY_FILE" || exit_code=1
+fi
+
 if [ "$exit_code" -eq 0 ]; then
-  echo "OK - no private developer details in tracked files"
+  echo "OK - no private developer details in tracked files or PR metadata"
 fi
 exit "$exit_code"
