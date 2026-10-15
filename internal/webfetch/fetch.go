@@ -68,11 +68,14 @@ type Result struct {
 	URL         string `json:"url"`
 	StatusCode  int    `json:"status_code"`
 	ContentType string `json:"content_type"`
-	// Bytes is the size of the fetched content. It is path-dependent and
-	// intended for operator logging only — not for cache or quota accounting:
-	// on the HTTP fetch path it is the response-body (wire) byte count; on the
-	// browser-fallback path it is the byte length of the extracted text, which
-	// is all the browser.extract tool returns. See issue #246.
+	// Bytes is the size of the fetched content in transferred (wire) bytes.
+	// It is intended for operator logging only — not for cache or quota
+	// accounting. On the HTTP fetch path it is the response-body (wire) byte
+	// count (capped at MaxBytes when truncated); on the browser-fallback
+	// path it is the navigated page's HTTP response body size — the
+	// Content-Length header, or the sum of the chunk payloads for a chunked
+	// transfer-encoding response — as reported by the browser. It is never
+	// the extracted-text length. See issue #246.
 	Bytes     int64  `json:"bytes"`
 	Truncated bool   `json:"truncated"`
 	Text      string `json:"text"`

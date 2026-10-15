@@ -75,8 +75,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck
-          shellcheck -x scripts/install-rpi.sh scripts/test-install-rpi.sh
+          shellcheck -x scripts/install-rpi.sh scripts/test-install-rpi.sh .github/scripts/check-private-details.sh .github/scripts/test-check-private-details.sh
           ./scripts/test-install-rpi.sh
+          .github/scripts/test-check-private-details.sh
 
       - name: Unit tests
         run: go test ./... -v -coverprofile=coverage.out
@@ -84,7 +85,27 @@ jobs:
           CGO_ENABLED: 0
 
       - name: No private developer details
-        run: bash .github/scripts/check-private-details.sh
+        # On a pull_request run the event payload carries the PR title and body
+        # (body truncated to 1024 chars by GitHub for pull_request events; the
+        # rest of the PR — every added line of every file — is a tracked file of
+        # the head commit, which the same guard already scans). push/merge_group
+        # runs have no PR metadata and are tracked-files-only.
+        #
+        # The title/body are extracted from $GITHUB_EVENT_PATH with jq and
+        # written straight to files — no PR-metadata value is ever interpolated
+        # into shell script text, so an adversarial PR title or body (including
+        # a column-0 "EOF" line) cannot close a heredoc or execute code before
+        # the guard runs.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            jq -r '.pull_request.title // ""' "$GITHUB_EVENT_PATH" > "${RUNNER_TEMP}/pr-title.txt"
+            jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "${RUNNER_TEMP}/pr-body.txt"
+            PR_TITLE_FILE="${RUNNER_TEMP}/pr-title.txt" \
+            PR_BODY_FILE="${RUNNER_TEMP}/pr-body.txt" \
+              bash .github/scripts/check-private-details.sh
+          else
+            bash .github/scripts/check-private-details.sh
+          fi
 
       - name: Coverage check (>80% on critical packages)
         run: |
