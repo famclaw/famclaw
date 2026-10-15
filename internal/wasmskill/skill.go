@@ -83,6 +83,7 @@ func classifyGuest(g *GuestError) *SkillError {
 // bound each call.
 type Skill struct {
 	mu       sync.Mutex
+	readMu   sync.Mutex // bufio.Reader is not safe for concurrent reads.
 	cfg      Config
 	host     *host
 	mod      api.Module
@@ -296,7 +297,9 @@ func (s *Skill) Close(ctx context.Context) error {
 		}
 		got := make(chan struct{})
 		go func() {
+			s.readMu.Lock()
 			_, _ = s.out.ReadString('\n')
+			s.readMu.Unlock()
 			close(got)
 		}()
 		select {
@@ -329,7 +332,9 @@ func (s *Skill) readLine(ctx context.Context) ([]byte, error) {
 	}
 	ch := make(chan readResult, 1)
 	go func() {
+		s.readMu.Lock()
 		line, err := s.out.ReadString('\n')
+		s.readMu.Unlock()
 		ch <- readResult{line: []byte(line), err: err}
 	}()
 	select {
@@ -348,8 +353,9 @@ func (s *Skill) readLine(ctx context.Context) ([]byte, error) {
 	}
 }
 
-// writeLine writes one NDJSON request line to the guest stdin. The caller
-// must hold s.mu.
+// writeLine writes one NDJSON request line to the guest stdin. Callers
+// serialize session operations with s.mu; Close's cleanup write is safe
+// without s.mu because it marks the session closed before writing.
 func (s *Skill) writeLine(req rpcRequest) error {
 	b, err := encodeLine(req)
 	if err != nil {
