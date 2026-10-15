@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Fail if a tracked file or PR metadata contains private developer details.
+# Scans both tracked repo files and PR metadata (title + body) on pull_request runs.
 #
 # A maintainer's real home LAN address once sat in a public repo for over a week,
 # past every human review. This is the mechanical backstop for that class of leak.
