@@ -24,12 +24,10 @@ require (
 require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
+	github.com/tetratelabs/wazero v1.12.0
 )
 
-require (
-	github.com/tetratelabs/wazero v1.12.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
-)
+require google.golang.org/protobuf v1.36.12 // indirect
 
 require (
 	github.com/agnivade/levenshtein v1.2.1 // indirect
