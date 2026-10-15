@@ -225,8 +225,10 @@ func TestValidate_SandboxRootDefaultCreatesDir(t *testing.T) {
 		Tools: ToolsConfig{
 			SandboxRoot: "",
 		},
+		// Loopback bind: this test exercises the sandbox default, not the
+		// bind rules (see TestValidate_ServerHost).
 		Server: ServerConfig{
-			Host: "0.0.0.0",
+			Host: "127.0.0.1",
 			Port: 8080,
 		},
 		LLM: LLMConfig{
@@ -306,9 +308,10 @@ func TestSandboxEnabled_IsEnabled(t *testing.T) {
 }
 
 func TestValidate_SandboxRootErrors(t *testing.T) {
-	// Common config fields
+	// Loopback bind keeps this test focused on the sandbox root rules;
+	// the bind/secret matrix is covered by TestValidate_ServerHost.
 	serverCfg := ServerConfig{
-		Host: "0.0.0.0",
+		Host: "127.0.0.1",
 		Port: 8080,
 	}
 	llmCfg := LLMConfig{
@@ -481,6 +484,9 @@ func TestLLMTimeoutValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &Config{
+				// Loopback bind keeps this test focused on the LLM timeout
+				// rule; the bind/secret matrix is TestValidate_ServerHost.
+				Server: ServerConfig{Host: "127.0.0.1", Port: 8080},
 				LLM: LLMConfig{
 					BaseURL:        "http://localhost:11434",
 					Model:          "llama3",
@@ -806,4 +812,68 @@ func TestLLMProfileLabelRoundTrip(t *testing.T) {
 			t.Errorf("literal \"label:\" key did not land on LLMProfile.Label: %+v", want)
 		}
 	})
+}
+
+// TestValidateServer_WildcardSecretGate pins the P0 wildcard gate
+// (SECURITY_MODEL.md): a wildcard bind (0.0.0.0 / :: / *) requires a 32+
+// char server secret — without one, validation fails with the actionable
+// "binds to all interfaces" message instead of auto-booting. Loopback binds
+// have no extra requirement (the secret is still checked for length when
+// set, in Validate). The same IsWildcardHost rule drives the boot-time
+// secret decision in cmd/famclaw (PR #399 F2): one definition, one rule.
+func TestValidateServer_WildcardSecretGate(t *testing.T) {
+	strong := strings.Repeat("a", 43)
+	cases := []struct {
+		name    string
+		host    string
+		secret  string
+		policy  string
+		wantErr string // "" = ok; otherwise the error must contain this
+	}{
+		{"wildcard 0.0.0.0 no secret", "0.0.0.0", "", "", "binds to all interfaces"},
+		{"wildcard :: no secret", "::", "", "", "binds to all interfaces"},
+		{"wildcard * no secret", "*", "", "", "binds to all interfaces"},
+		{"wildcard short secret", "0.0.0.0", "too-short", "", "binds to all interfaces"},
+		{"wildcard strong secret ok", "0.0.0.0", strong, "", ""},
+		{"wildcard :: strong secret ok", "::", strong, "", ""},
+		{"loopback no secret ok", "127.0.0.1", "", "", ""},
+		{"loopback ::1 no secret ok", "::1", "", "", ""},
+		{"specific interface ok", "10.0.0.5", strong, "", ""},
+		{"invalid host", "not-an-ip", "", "", "not a valid IP"},
+		{"bad origin policy", "127.0.0.1", "", "permissive", "ws_origin_policy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := ServerConfig{Host: tc.host, Port: 8080, Secret: tc.secret, WSOriginPolicy: tc.policy}
+			err := validateServer(srv)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateServer() error = %v, want none", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateServer() error = nil, want message containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("validateServer() error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestIsWildcardHost pins the shared wildcard rule (PR #399 F2): the same
+// helper feeds both validateServer and the cmd/famclaw boot-time secret
+// decision, so the two cannot drift apart.
+func TestIsWildcardHost(t *testing.T) {
+	for _, host := range []string{"0.0.0.0", "::", "*"} {
+		if !IsWildcardHost(host) {
+			t.Errorf("IsWildcardHost(%q) = false, want true", host)
+		}
+	}
+	for _, host := range []string{"", "127.0.0.1", "::1", "10.0.0.5"} {
+		if IsWildcardHost(host) {
+			t.Errorf("IsWildcardHost(%q) = true, want false", host)
+		}
+	}
 }
