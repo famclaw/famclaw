@@ -49,6 +49,19 @@ func TestFilesystemDefaultDeny(t *testing.T) {
 	}
 }
 
+func TestSymlinkPreopenEscapeBehavior(t *testing.T) {
+	wasm := fixture(t, "symlink-escape.wasm")
+	t.Run("no preopen denies symlink operations", func(t *testing.T) {
+		got, err := Run(context.Background(), wasm, nil, nil)
+		if err != nil {
+			t.Fatalf("Run without preopen: %v", err)
+		}
+		if len(got.Stdout) != 2 || got.Stdout[0] != 8 || got.Stdout[1] != 8 {
+			t.Fatalf("errno bytes = %v, want both operations to fail with EBADF (8)", got.Stdout)
+		}
+	})
+}
+
 func TestNoNetworkForeignImportRejected(t *testing.T) {
 	_, err := Run(context.Background(), fixture(t, "foreign-import.wasm"), nil, nil)
 	if !errorsIs(err, ErrDisallowedImport) {

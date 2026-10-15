@@ -1,0 +1,22 @@
+(module
+  ;; Emits path_symlink and path_open errno bytes. With a mounted preopen,
+  ;; the second operation follows ../outside-target outside the mount.
+  (import "wasi_snapshot_preview1" "path_symlink" (func $path_symlink (param i32 i32 i32 i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "path_open" (func $path_open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "fd_write" (func $fd_write (param i32 i32 i32 i32) (result i32)))
+  (memory (export "memory") 1)
+  (func (export "_start")
+    (i32.store (i32.const 0) (i32.const 256))
+    (i32.store (i32.const 4) (i32.const 2))
+    (i32.const 256) (i32.const 300) (i32.const 17) (i32.const 3) (i32.const 320) (i32.const 4)
+    (call $path_symlink) (i32.store8)
+    (i32.const 257) (i32.const 3) (i32.const 0) (i32.const 320) (i32.const 4) (i32.const 1)
+    (i64.const 1) (i64.const 2) (i32.const 0) (i32.const 324)
+    (call $path_open) (i32.store8)
+    (i32.store (i32.const 8) (i32.const 2))
+    (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 12)
+    (call $fd_write) (drop)
+  )
+  (data (i32.const 300) "../outside-target")
+  (data (i32.const 320) "link")
+)
