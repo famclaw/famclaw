@@ -40,17 +40,17 @@ type InitResult struct {
 
 // ToolDef is one tool a skill exposes.
 type ToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 	// InputSchema is the JSON Schema the guest validates args against.
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
 // InvokeRequest is the "skill_invoke" params object.
 type InvokeRequest struct {
-	Tool string             `json:"tool"`
-	Args map[string]any     `json:"args"`
-	Meta InvokeMeta         `json:"meta"`
+	Tool string         `json:"tool"`
+	Args map[string]any `json:"args"`
+	Meta InvokeMeta     `json:"meta"`
 }
 
 // InvokeMeta carries per-call context the guest may use.
@@ -62,8 +62,8 @@ type InvokeMeta struct {
 
 // Result is the "skill_invoke" result object.
 type Result struct {
-	OK      bool          `json:"ok"`
-	Content ResultContent `json:"content"`
+	OK      bool           `json:"ok"`
+	Content ResultContent  `json:"content"`
 	Data    map[string]any `json:"data"`
 }
 
