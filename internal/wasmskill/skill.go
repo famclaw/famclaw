@@ -237,7 +237,14 @@ func (s *Skill) Invoke(ctx context.Context, req InvokeRequest) (Result, error) {
 	if err := s.writeLine(rpcRequest{JSONRPC: "2.0", ID: s.seq, Method: MethodInvoke, Params: req}); err != nil {
 		return Result{}, newSkillError(ErrClassInternal, true, fmt.Errorf("wasmskill: writing to guest: %w", err))
 	}
+	// The guest-exit goroutine needs s.mu to publish startErr and close stdout.
+	// Do not hold the session lock while waiting for that stdout read.
+	s.mu.Unlock()
 	line, err := s.readLine(inCtx)
+	s.mu.Lock()
+	if s.closed {
+		return Result{}, newSkillError(ErrClassInternal, false, ErrSessionClosed)
+	}
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return Result{}, newSkillError(ErrClassInternal, true, fmt.Errorf("wasmskill: invoke deadline: %w", err))
@@ -264,11 +271,14 @@ func (s *Skill) Invoke(ctx context.Context, req InvokeRequest) (Result, error) {
 // Close is always finite and idempotent.
 func (s *Skill) Close(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
+	// Session shutdown waits for the guest to finish. Its goroutine needs
+	// s.mu to publish the exit error, so do not hold the lock while waiting.
+	s.mu.Unlock()
 
 	if !s.dead() {
 		// Best-effort cleanup probe.
@@ -311,7 +321,7 @@ func (s *Skill) Close(ctx context.Context) error {
 
 // readLine reads one NDJSON line from the guest, bounded by ctx: when the
 // context expires before a full line arrives, the guest is killed (its
-// stdout closes and the read returns). The caller must hold s.mu.
+// stdout closes and the read returns). It does not require s.mu.
 func (s *Skill) readLine(ctx context.Context) ([]byte, error) {
 	type readResult struct {
 		line []byte

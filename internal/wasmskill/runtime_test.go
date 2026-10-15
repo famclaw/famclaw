@@ -140,3 +140,42 @@ func TestReadLinePropagatesEOFForPartialResponse(t *testing.T) {
 		t.Fatalf("sessionErr = %v, want guest-exit cause %v", got, guestExit)
 	}
 }
+
+func TestInvokeImmediateGuestExitIsSessionDeath(t *testing.T) {
+	s, err := NewSkill(context.Background(), fixture(t, "immediate-exit.wasm"), nil, InitRequest{})
+	if err != nil {
+		t.Fatalf("NewSkill: %v", err)
+	}
+	defer s.Close(context.Background())
+
+	_, err = s.Invoke(context.Background(), InvokeRequest{Tool: "record_fact"})
+	if err == nil {
+		t.Fatal("Invoke succeeded; want guest session-death error")
+	}
+	if errors.Is(err, ErrBadGuestResponse) {
+		t.Fatalf("Invoke error = %v; must not classify guest exit as malformed response", err)
+	}
+	var skillErr *SkillError
+	if !errors.As(err, &skillErr) || skillErr.Class != ErrClassInternal {
+		t.Fatalf("Invoke error = %v; want internal session error", err)
+	}
+	if !skillErr.Retryable || !strings.Contains(err.Error(), "guest exited with code 7") {
+		t.Fatalf("Invoke error = %v; want retryable session-death classification for proc_exit code 7", err)
+	}
+}
+
+func TestInvokeCompleteResponseThenGuestExit(t *testing.T) {
+	s, err := NewSkill(context.Background(), fixture(t, "complete-exit.wasm"), nil, InitRequest{})
+	if err != nil {
+		t.Fatalf("NewSkill: %v", err)
+	}
+	defer s.Close(context.Background())
+
+	got, err := s.Invoke(context.Background(), InvokeRequest{Tool: "record_fact"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if got.Content.Text != "ok" {
+		t.Fatalf("Invoke result = %#v; want content %q", got, "ok")
+	}
+}
