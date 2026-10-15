@@ -145,6 +145,9 @@ func moduleConfig(c Config, in io.Reader, out io.Writer, errw io.Writer) wazero.
 		WithStdout(out).
 		WithStderr(errw)
 	if c.SandboxRoot != "" {
+		// WARNING: wazero v1.12.0 preopens are vulnerable to symlink-follow
+		// traversal; see doc.go. P2 must keep SandboxRoot unset pending a
+		// hardening decision before any P3 sandboxed execution ships.
 		mcfg = mcfg.WithFSConfig(wazero.NewFSConfig().WithDirMount(c.SandboxRoot, "/"))
 	}
 	for _, kv := range c.Env {

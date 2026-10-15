@@ -12,9 +12,17 @@
 //
 //   - Deny-by-default filesystem: a module gets no preopened directory
 //     unless Config.SandboxRoot is set, in which case exactly one directory
-//     is preopened, mounted at "/". wazero's preopen path resolution rejects
-//     absolute and ".." paths, so the guest cannot name a file outside the
-//     root; there is no escape.
+//     is preopened, mounted at "/". Do not treat a WithDirMount preopen as
+//     a containment boundary with wazero v1.12.0: a guest can create a
+//     relative symlink with path_symlink (for example "../outside-target")
+//     and escape on path_open with LOOKUP_SYMLINK_FOLLOW. The upstream
+//     internal/sysfs/dirfs.go join() has a TODO to enforce the directory
+//     boundary; out-of-root read, write, and truncation were demonstrated.
+//     P2 configures no preopens by default, so this vector is not reachable
+//     in P2. P3 sandboxed skill execution MUST NOT ship on v1.12.0 without an
+//     explicit hardening decision (for example a dedicated low-privilege
+//     user, a sandbox root at its own mount point so ".." cannot climb,
+//     and/or an upstream wazero upgrade after the TODO is fixed).
 //   - Import allowlist: only functions in the "wasi_snapshot_preview1"
 //     module may be imported. No clock, no random, no socket - a Wasm skill
 //     has no network access.
