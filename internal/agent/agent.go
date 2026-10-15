@@ -1495,11 +1495,21 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		result.URL, result.StatusCode, result.ContentType, result.Truncated, result.Text), nil
 }
 
-// BrowserFetcher is the subset of *browser.Pool that the web_fetch browser
-// fallback needs. *browser.Pool satisfies it; tests substitute a fake to
-// exercise failure paths without a live Playwright server.
+// BrowserFetcher is the subset of *browser.Pool the agent uses: the
+// builtin__browser_* tool dispatch (Exec) and the web_fetch browser fallback
+// (NavigateAndExtract). *browser.Pool satisfies it; tests substitute a fake
+// to exercise the fallback without a live Playwright server.
 type BrowserFetcher interface {
+	// Exec dispatches a builtin__browser_* tool through the pool.
 	Exec(ctx context.Context, in browser.ExecInput) (string, error)
+
+	// NavigateAndExtract navigates the pool's page to rawURL (http/https
+	// only, the host gate before and after redirects) and returns the
+	// rendered body text plus the size of the navigated document's HTTP
+	// response body in transferred (wire) bytes — the Content-Length header
+	// or the sum of chunks for a chunked response; 0 when it could not be
+	// determined.
+	NavigateAndExtract(ctx context.Context, user, rawURL string, hostCheck browser.HostValidator) (string, int64, error)
 }
 
 // isBotBlockStatus reports whether an HTTP status is the kind of failure the
@@ -1511,19 +1521,24 @@ func isBotBlockStatus(status int) bool {
 	return status == http.StatusForbidden || status == http.StatusTooManyRequests
 }
 
-// fetchWithBrowser runs the browser fallback for JS-heavy sites: it navigates
-// the browser pool to rawURL and extracts rendered text. The same host
-// allowlist is applied to navigation (builtin__browser_navigate re-checks the
-// final URL after redirects).
+// fetchWithBrowser runs the browser fallback for JS-heavy sites: it
+// navigates the browser pool to rawURL and extracts rendered text. The same
+// host allowlist is applied to navigation (the pool re-checks the final URL
+// after redirects).
 //
-// Lifecycle is acquire-use-release through the pool: navigate acquires/reuses
-// a per-user page, extract reads it, and the pool's idle-sweeper releases the
-// session when idle — no new browser is spawned per fetch.
+// Lifecycle is acquire-use-release through the pool: NavigateAndExtract
+// acquires/reuses a per-user page, reads it, and the pool's idle-sweeper
+// releases the session when idle — no new browser is spawned per fetch.
+//
+// Bytes reports the page's actual size in transferred (wire) bytes — the
+// HTTP response's Content-Length header, or the sum of chunks for a chunked
+// transfer-encoding response — as reported by the pool; it is deliberately
+// not the length of the extracted text (issue #246 review decision).
 //
 // Every failure path returns a distinct, honest error — the caller never
 // receives an empty "success":
 //   - nil/unavailable pool: "browser fetch: browser pool is not configured"
-//   - browser fetch failure: "browser fetch: <stage> <url>: <err>"
+//   - navigate/extract failure: "browser fetch: <stage> <url>: <err>"
 //   - empty rendered result: "browser fetch: rendered content empty for <url>"
 func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawURL string, hostAllowed func(string) bool) (*webfetch.Result, error) {
 	if pool == nil {
@@ -1535,26 +1550,16 @@ func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawUR
 		}
 		return nil
 	}
-	if _, err := pool.Exec(ctx, browser.ExecInput{
-		User:      a.user.Name,
-		ToolName:  "builtin__browser_navigate",
-		Args:      map[string]any{"url": rawURL},
-		HostCheck: hostCheck,
-	}); err != nil {
-		return nil, fmt.Errorf("browser fetch: navigate %s: %w", rawURL, err)
-	}
-	out, err := pool.Exec(ctx, browser.ExecInput{
-		User:      a.user.Name,
-		ToolName:  "builtin__browser_extract",
-		Args:      map[string]any{"mode": "text"},
-		HostCheck: hostCheck,
-	})
+	// One pool call does the navigate (host gate before and after redirects)
+	// and the rendered-text extract, and reports the page's actual wire size
+	// rather than the extracted-text length.
+	out, wireBytes, err := pool.NavigateAndExtract(ctx, a.user.Name, rawURL, hostCheck)
 	if err != nil {
-		return nil, fmt.Errorf("browser fetch: extract %s: %w", rawURL, err)
+		return nil, fmt.Errorf("browser fetch: %w", err)
 	}
 	// The browser extract tool returns plain text; status/content-type are not
-	// available from the browser path, so use sensible defaults. An empty render
-	// is an honest failure — never a silent empty success.
+	// available from the browser path, so use sensible defaults. An empty
+	// render is an honest failure — never a silent empty success.
 	text := strings.TrimSpace(out)
 	if text == "" {
 		return nil, fmt.Errorf("browser fetch: rendered content empty for %s", rawURL)
@@ -1563,7 +1568,7 @@ func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawUR
 		URL:         rawURL,
 		StatusCode:  200,
 		ContentType: "text/plain",
-		Bytes:       int64(len(text)),
+		Bytes:       wireBytes,
 		Truncated:   false,
 		Text:        text,
 	}, nil

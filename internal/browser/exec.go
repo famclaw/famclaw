@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,25 +167,40 @@ func (p *Pool) doNavigate(_ context.Context, sess *userSession, args map[string]
 	if raw == "" {
 		return "", fmt.Errorf("browser_navigate requires 'url'")
 	}
+	timeout := argInt(args, "timeout_ms", 20000)
+	if _, err := p.navigate(sess, raw, hostCheck, timeout); err != nil {
+		return "", fmt.Errorf("browser_navigate: %w", err)
+	}
+	return p.snapshotReply(sess)
+}
+
+// navigate is the navigation core shared by builtin__browser_navigate and
+// NavigateAndExtract: URL parse, http/https scheme enforcement, the host
+// gate before navigation, page.Goto (which follows 3xx redirects), the
+// host gate again on the final URL (mirroring the redirect-time host check
+// the HTTP web_fetch path enforces), and a reset of the session's ref
+// table (navigation invalidates ref continuity). It returns the
+// navigation's HTTP response — nil when the browser reported none — so
+// callers can inspect response metadata such as the body size.
+func (p *Pool) navigate(sess *userSession, raw string, hostCheck HostValidator, timeoutMS int) (playwright.Response, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", fmt.Errorf("browser_navigate: parse url: %w", err)
+		return nil, fmt.Errorf("parse url: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("browser_navigate: scheme %q not allowed", u.Scheme)
+		return nil, fmt.Errorf("scheme %q not allowed", u.Scheme)
 	}
 	if hostCheck != nil {
 		if cerr := hostCheck(u.Hostname()); cerr != nil {
-			return "", cerr
+			return nil, cerr
 		}
 	}
-	timeout := argInt(args, "timeout_ms", 20000)
-	_, err = sess.page.Goto(raw, playwright.PageGotoOptions{
-		Timeout:   playwright.Float(float64(timeout)),
+	resp, err := sess.page.Goto(raw, playwright.PageGotoOptions{
+		Timeout:   playwright.Float(float64(timeoutMS)),
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 	})
 	if err != nil {
-		return "", fmt.Errorf("browser_navigate: %w", err)
+		return nil, err
 	}
 	// Re-validate the host after any redirects: page.Goto follows 3xx redirects,
 	// so an allowlisted initial URL could land on a disallowed host. Mirrors the
@@ -192,12 +208,52 @@ func (p *Pool) doNavigate(_ context.Context, sess *userSession, args map[string]
 	if hostCheck != nil {
 		if finalURL, perr := url.Parse(sess.page.URL()); perr == nil {
 			if cerr := hostCheck(finalURL.Hostname()); cerr != nil {
-				return "", fmt.Errorf("browser_navigate: redirected to disallowed host: %w", cerr)
+				return nil, fmt.Errorf("redirected to disallowed host: %w", cerr)
 			}
 		}
 	}
 	sess.prevRefs = nil // page navigation invalidates ref continuity
-	return p.snapshotReply(sess)
+	return resp, nil
+}
+
+// NavigateAndExtract is the web_fetch browser-fallback entry point. It
+// navigates the user's page to rawURL under the same constraints as
+// builtin__browser_navigate (http/https only, the host gate before and
+// after redirects) and extracts the rendered body text with the same
+// semantics as builtin__browser_extract in text mode (trimmed, 8000-char
+// cap). It also returns the size of the navigated document's HTTP response
+// body in transferred (wire) bytes: the Content-Length header when
+// present, otherwise the length of the received body (the sum of chunk
+// payloads for a chunked transfer-encoding response); 0 when the browser
+// reported no response or the size could not be determined. The page is
+// left at rawURL; the per-user session is released by the idle sweeper,
+// the same acquire-use-release lifecycle as Exec.
+func (p *Pool) NavigateAndExtract(_ context.Context, user, rawURL string, hostCheck HostValidator) (string, int64, error) {
+	user = strings.TrimSpace(user)
+	if user == "" {
+		return "", 0, fmt.Errorf("browser: user is required")
+	}
+	raw := strings.TrimSpace(rawURL)
+	if raw == "" {
+		return "", 0, fmt.Errorf("browser: url is required")
+	}
+	sess, err := p.getOrCreateSession(user)
+	if err != nil {
+		return "", 0, err
+	}
+	resp, err := p.navigate(sess, raw, hostCheck, 20000)
+	if err != nil {
+		return "", 0, fmt.Errorf("navigate %s: %w", raw, err)
+	}
+	wireBytes, err := responseWireBytes(resp)
+	if err != nil {
+		return "", 0, fmt.Errorf("navigate %s: %w", raw, err)
+	}
+	bodyText, err := sess.page.Locator("body").TextContent()
+	if err != nil {
+		return "", 0, fmt.Errorf("extract %s: %w", raw, err)
+	}
+	return capExtracted(strings.TrimSpace(bodyText)), wireBytes, nil
 }
 
 func (p *Pool) doSnapshot(sess *userSession) (string, error) {
@@ -288,23 +344,72 @@ func (p *Pool) doExtract(sess *userSession, args map[string]any) (string, error)
 		if err != nil {
 			return "", fmt.Errorf("browser_extract text: %w", err)
 		}
-		out := strings.TrimSpace(txt)
-		if len(out) > 8000 {
-			out = out[:8000] + "\n[truncated]"
-		}
-		return out, nil
+		return capExtracted(strings.TrimSpace(txt)), nil
 	case "html":
 		html, err := loc.InnerHTML()
 		if err != nil {
 			return "", fmt.Errorf("browser_extract html: %w", err)
 		}
-		if len(html) > 8000 {
-			html = html[:8000] + "\n[truncated]"
-		}
-		return html, nil
+		return capExtracted(html), nil
 	default:
 		return "", fmt.Errorf("browser_extract: unknown mode %q (want text|html)", mode)
 	}
+}
+
+// capExtracted truncates rendered content to the browser_extract tool's
+// 8000-char cap, appending a marker when truncated.
+func capExtracted(s string) string {
+	if len(s) > 8000 {
+		return s[:8000] + "\n[truncated]"
+	}
+	return s
+}
+
+// contentLength parses the response's Content-Length header. The bool is
+// false when the header is absent or not a valid non-negative integer —
+// both mean "fall back to the received-body size".
+func contentLength(headers map[string]string) (int64, bool) {
+	raw, ok := headers["content-length"]
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// wireBodyBytes returns the size of an HTTP response body in transferred
+// (wire) bytes: the Content-Length header when present and parseable as a
+// non-negative integer, otherwise the length of the received body — which
+// is the sum of the chunk payloads when the response was sent with a
+// chunked transfer encoding.
+func wireBodyBytes(headers map[string]string, bodyLen int) int64 {
+	if n, ok := contentLength(headers); ok {
+		return n
+	}
+	return int64(bodyLen)
+}
+
+// responseWireBytes returns the size of resp's body in transferred (wire)
+// bytes. A nil resp (the browser reported no response, e.g. a coalesced
+// navigation) yields 0. When Content-Length is present the body is not
+// fetched; otherwise the received body is read and its length used (the
+// sum of chunk payloads for a chunked transfer-encoding response).
+func responseWireBytes(resp playwright.Response) (int64, error) {
+	if resp == nil {
+		return 0, nil
+	}
+	headers := resp.Headers()
+	if n, ok := contentLength(headers); ok {
+		return n, nil
+	}
+	body, err := resp.Body()
+	if err != nil {
+		return 0, fmt.Errorf("read response body: %w", err)
+	}
+	return wireBodyBytes(headers, len(body)), nil
 }
 
 func (p *Pool) doWaitFor(sess *userSession, args map[string]any) (string, error) {

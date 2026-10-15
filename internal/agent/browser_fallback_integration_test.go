@@ -74,4 +74,13 @@ func TestFetchWithBrowser_Integration(t *testing.T) {
 	if strings.Contains(res.Text, preJS) {
 		t.Errorf("result should not contain pre-JS text %q, got: %q", preJS, res.Text)
 	}
+	// The browser path reports the page's actual size in transferred (wire)
+	// bytes — the response body's Content-Length, or the sum of chunks for a
+	// chunked response — not the extracted-text length (issue #246 review).
+	if res.Bytes < 0 {
+		t.Fatalf("Bytes = %d, want >= 0", res.Bytes)
+	}
+	if res.Bytes == int64(len(res.Text)) {
+		t.Fatalf("Bytes %d equals len(text) %d: the page's wire size (which includes the HTML markup) should differ from the extracted-text length", res.Bytes, len(res.Text))
+	}
 }
