@@ -368,7 +368,7 @@ func (s *Skill) writeLine(req rpcRequest) error {
 }
 
 // dead reports whether the guest's _start has returned (always true after
-// Close). The caller must hold s.mu.
+// Close). It only observes s.done and does not require s.mu.
 func (s *Skill) dead() bool {
 	select {
 	case <-s.done:
@@ -378,8 +378,9 @@ func (s *Skill) dead() bool {
 	}
 }
 
-// sessionErr classifies the death of the session. The caller must hold
-// s.mu.
+// sessionErr classifies the death of the session. Callers must hold s.mu
+// while the guest may still be running; after s.done is closed, its close
+// synchronizes access to startErr.
 func (s *Skill) sessionErr() *SkillError {
 	if s.startErr == nil {
 		return newSkillError(ErrClassInternal, true, errors.New("wasmskill: guest exited the session"))
@@ -391,8 +392,9 @@ func (s *Skill) sessionErr() *SkillError {
 	return newSkillError(ErrClassInternal, true, s.startErr)
 }
 
-// teardown kills the guest and closes the runtime. The caller must hold
-// s.mu.
+// teardown kills the guest and closes the runtime. Do not hold s.mu when
+// calling teardown: it waits for the guest goroutine, which needs s.mu to
+// publish its exit error.
 func (s *Skill) teardown() {
 	s.kill()
 	<-s.done
