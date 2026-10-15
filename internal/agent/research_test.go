@@ -81,7 +81,7 @@ func TestClassifySubagentResult(t *testing.T) {
 	}{
 		{name: "success", result: subagent.Result{Output: "ok"}, ctx: context.Background(), wantState: store.ResearchStatusCompleted},
 		{name: "error not timeout", result: subagent.Result{Error: fmt.Errorf("boom")}, ctx: context.Background(), wantState: store.ResearchStatusFailed},
-		{name: "timeout takes precedence", result: subagent.Result{Error: fmt.Errorf("deadline exceeded")}, ctx: deadlineCtx, wantState: store.ResearchStatusTimedOut},
+		{name: "timeout takes precedence", result: subagent.Result{Error: fmt.Errorf("subagent: %w", context.DeadlineExceeded)}, ctx: deadlineCtx, wantState: store.ResearchStatusTimedOut},
 		{name: "cancelled context is failed not timeout", result: subagent.Result{Error: fmt.Errorf("context canceled")}, ctx: cancelCtx, wantState: store.ResearchStatusFailed},
 	}
 	for _, tc := range tests {
