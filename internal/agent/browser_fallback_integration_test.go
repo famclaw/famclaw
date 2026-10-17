@@ -20,9 +20,8 @@ import (
 // Playwright server. It serves a JS-heavy page (pre-render text differs from
 // post-render text) and asserts the fallback returns the JS-rendered content.
 //
-// Skipped when FAMCLAW_PLAYWRIGHT_WS is unset or the browser pool cannot be
-// created, so the unit suite (go test ./...) is green without browser
-// infrastructure. Run with:
+// Skipped when FAMCLAW_PLAYWRIGHT_WS is unset; a configured but unreachable
+// Playwright endpoint is a test failure. Run with:
 //
 //	go test -tags integration ./internal/agent/ -run TestFetchWithBrowser_Integration -v
 func TestFetchWithBrowser_Integration(t *testing.T) {
