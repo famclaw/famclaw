@@ -9,6 +9,7 @@ import (
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/honeybadger"
 )
 
 const toolNameMCPAdd = "builtin__mcp_add"
@@ -26,7 +27,7 @@ func MCPAddDefinition() agentcore.Tool {
 			"An MCP server exposes tools to the assistant. Specify a 'name' for " +
 			"the server, and either a stdio 'command' (+ optional 'args') or " +
 			"an 'url' for http/sse transport. The server will be saved to " +
-			"config and its tools become available on the next turn. " +
+			"config; if its connection succeeds, its tools become available immediately. " +
 			"Example: mcp_add(name=\"playwright\", command=\"npx\", args=\"-y @modelcontextprotocol/server-playwright\")",
 		InputSchema: map[string]any{
 			"type": "object",
@@ -102,6 +103,29 @@ func HandleMCPAdd(ctx context.Context, deps Deps, args map[string]any) (string, 
 		return "", fmt.Errorf("mcp_add: an MCP server named %q already exists", name)
 	}
 
+	// Scan the executable/endpoint before persisting. MCP servers can execute code.
+	if deps.Cfg.SecCheck.Enabled {
+		if deps.Scanner == nil || !deps.Scanner.Available() {
+			return "", fmt.Errorf("mcp_add: install refused: honeybadger scanner is unavailable")
+		}
+		target := mcpCfg.URL
+		offline := false
+		if target == "" {
+			target = mcpCfg.Command
+			offline = true
+		}
+		result, err := deps.Scanner.Scan(ctx, target, honeybadger.ScanOptions{Paranoia: deps.Cfg.SecCheck.Paranoia, Offline: offline})
+		if err != nil {
+			return "", fmt.Errorf("mcp_add: security scan failed: %w", err)
+		}
+		if result == nil || result.Verdict == "SKIP" {
+			return "", fmt.Errorf("mcp_add: security scan did not produce a verdict")
+		}
+		if result.Verdict == "FAIL" && deps.Cfg.SecCheck.BlockOnFail {
+			return "", fmt.Errorf("mcp_add: server rejected by security scan: %s", result.Reasoning)
+		}
+	}
+
 	// Add to in-memory config.
 	if deps.Cfg.Skills.MCPServers == nil {
 		deps.Cfg.Skills.MCPServers = make(map[string]config.MCPServerConfig)
@@ -126,9 +150,18 @@ func HandleMCPAdd(ctx context.Context, deps Deps, args map[string]any) (string, 
 	// that the tools are missing. See issue #312 / honest-failure work.
 	poolNote := ""
 	if deps.MCP != nil {
-		if err := deps.MCP.ReloadConfig(deps.Cfg); err != nil {
-			log.Printf("[admin] mcp_add: pool reload warning for %q: %v", name, err)
-			poolNote = fmt.Sprintf(" However, the running MCP pool could not load it: %v. The server is saved to config and will be available after a restart or once the issue is fixed.", err)
+		results := deps.MCP.ReloadConfig(deps.Cfg)
+		if err, ok := results[name]; ok && err != nil {
+			poolNote = fmt.Sprintf(" Start failed: %v. The server is saved to config.", err)
+		} else if _, ok := results[name]; ok {
+			poolNote = " Server started successfully."
+		} else if len(results) == 0 {
+			poolNote = " Server configuration reloaded."
+		}
+		for server, err := range results {
+			if err != nil {
+				log.Printf("[admin] mcp_add: pool start failed for %q: %v", server, err)
+			}
 		}
 	} else {
 		log.Printf("[admin] mcp_add: no MCP pool configured, server added to config only")
@@ -147,5 +180,5 @@ func HandleMCPAdd(ctx context.Context, deps Deps, args map[string]any) (string, 
 		log.Printf("[admin] audit log failed for %s: %v", toolNameMCPAdd, err)
 	}
 
-	return fmt.Sprintf("✅ MCP server %q registered (transport=%s). Its tools will be available on the next turn.%s", name, mcpCfg.Transport, poolNote), nil
+	return fmt.Sprintf("✅ MCP server %q registered (transport=%s).%s", name, mcpCfg.Transport, poolNote), nil
 }

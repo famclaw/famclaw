@@ -7,20 +7,25 @@ import (
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
 // mockMCPManager is a no-op MCPManager for testing mcp_add/mcp_list.
 type mockMCPManager struct {
-	reloaded  bool
-	lastCfg   *config.Config
-	reloadErr error
+	reloaded   bool
+	lastCfg    *config.Config
+	reloadErr  error
+	serverName string
 }
 
-func (m *mockMCPManager) ReloadConfig(cfg *config.Config) error {
+func (m *mockMCPManager) ReloadConfig(cfg *config.Config) map[string]error {
 	m.reloaded = true
 	m.lastCfg = cfg
-	return m.reloadErr
+	if m.reloadErr != nil {
+		return map[string]error{m.serverName: m.reloadErr}
+	}
+	return map[string]error{}
 }
 
 func newMCPTestDeps(t *testing.T) Deps {
@@ -259,7 +264,7 @@ func TestHandleMCPAdd_NilPoolSkipsReload(t *testing.T) {
 func TestHandleMCPAdd_PoolReloadFailureSurfacesToUser(t *testing.T) {
 	deps := newMCPTestDeps(t)
 	deps.ConfigPath = "/tmp/nonexistent-config.yaml" // won't be reached, pool fails first
-	mock := &mockMCPManager{reloadErr: fmt.Errorf("connection refused")}
+	mock := &mockMCPManager{reloadErr: fmt.Errorf("connection refused"), serverName: "flaky"}
 	deps.MCP = mock
 
 	out, err := HandleMCPAdd(context.Background(), deps, map[string]any{
@@ -274,7 +279,7 @@ func TestHandleMCPAdd_PoolReloadFailureSurfacesToUser(t *testing.T) {
 	if !strings.Contains(out, "registered") {
 		t.Errorf("output %q missing 'registered'", out)
 	}
-	if !strings.Contains(out, "could not load it") {
+	if !strings.Contains(out, "Start failed") {
 		t.Errorf("output %q missing pool reload failure notice", out)
 	}
 	if !strings.Contains(out, "saved to config") {
@@ -303,5 +308,49 @@ func TestMCPAddAndListDefinitions(t *testing.T) {
 	}
 	if len(listDef.Roles) != 1 || listDef.Roles[0] != "parent" {
 		t.Errorf("expected parent-only role, got %v", listDef.Roles)
+	}
+}
+
+type fakeMCPScanner struct {
+	available bool
+	result    *honeybadger.ScanResult
+	err       error
+}
+
+func (f fakeMCPScanner) Available() bool { return f.available }
+func (f fakeMCPScanner) Scan(context.Context, string, honeybadger.ScanOptions) (*honeybadger.ScanResult, error) {
+	return f.result, f.err
+}
+
+func TestHandleMCPAddSecurityGate(t *testing.T) {
+	tests := []struct {
+		name    string
+		scanner fakeMCPScanner
+		want    string
+	}{
+		{name: "unavailable fails closed", scanner: fakeMCPScanner{}, want: "scanner is unavailable"},
+		{name: "FAIL verdict rejected", scanner: fakeMCPScanner{available: true, result: &honeybadger.ScanResult{Verdict: "FAIL", Reasoning: "unsafe"}}, want: "rejected by security scan"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := newMCPTestDeps(t)
+			deps.Cfg.SecCheck.Enabled = true
+			deps.Cfg.SecCheck.BlockOnFail = true
+			deps.Scanner = tt.scanner
+			_, err := HandleMCPAdd(context.Background(), deps, map[string]any{"name": "blocked", "command": "echo"})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+			if _, exists := deps.Cfg.Skills.MCPServers["blocked"]; exists {
+				t.Fatal("server config mutated despite rejected installation")
+			}
+		})
+	}
+}
+
+func TestMCPRemoveDefinitionParentOnly(t *testing.T) {
+	def := MCPRemoveDefinition()
+	if def.Name != "builtin__mcp_remove" || len(def.Roles) != 1 || def.Roles[0] != "parent" {
+		t.Fatalf("unexpected remove definition: %#v", def)
 	}
 }

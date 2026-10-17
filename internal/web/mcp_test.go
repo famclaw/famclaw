@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/mcp"
 )
 
 func newMCPSignalTestServer(t *testing.T) (*Server, string) {
@@ -45,12 +46,18 @@ func TestMCP_ListEmpty(t *testing.T) {
 		t.Errorf("expected status OK, got %d", rec.Code)
 		return
 	}
-	var resp map[string][]string
+	var resp struct {
+		Servers []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Tools  int    `json:"tools"`
+		} `json:"servers"`
+	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode JSON: %v", err)
 	}
-	if len(resp["servers"]) != 0 {
-		t.Errorf("expected empty servers list, got %v", resp["servers"])
+	if len(resp.Servers) != 0 {
+		t.Errorf("expected empty servers list, got %v", resp.Servers)
 	}
 }
 
@@ -72,18 +79,27 @@ func TestMCP_ListWithServers(t *testing.T) {
 		t.Errorf("expected status OK, got %d", rec.Code)
 		return
 	}
-	var resp map[string][]string
+	var resp struct {
+		Servers []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Tools  int    `json:"tools"`
+		} `json:"servers"`
+	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode JSON: %v", err)
 	}
 	// Expect sorted list: bar, foo
 	expected := []string{"bar", "foo"}
-	if len(resp["servers"]) != len(expected) {
-		t.Errorf("expected %d servers, got %d", len(expected), len(resp["servers"]))
+	if len(resp.Servers) != len(expected) {
+		t.Errorf("expected %d servers, got %d", len(expected), len(resp.Servers))
 	}
 	for i, v := range expected {
-		if resp["servers"][i] != v {
-			t.Errorf("server[%d]: expected %s, got %s", i, v, resp["servers"][i])
+		if resp.Servers[i].Name != v {
+			t.Errorf("server[%d]: expected %s, got %s", i, v, resp.Servers[i].Name)
+		}
+		if resp.Servers[i].Status != "pending" {
+			t.Errorf("server %s status = %q, want pending", v, resp.Servers[i].Status)
 		}
 	}
 }
@@ -163,7 +179,7 @@ func TestMCPAdd_HappyPath(t *testing.T) {
 		t.Errorf("expected 200 OK, got %d", rec.Code)
 		return
 	}
-	var resp map[string]string
+	var resp map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode JSON: %v", err)
 	}
@@ -232,7 +248,7 @@ func TestMCPRemove_HappyPath(t *testing.T) {
 		t.Errorf("expected 200 OK, got %d", rec.Code)
 		return
 	}
-	var resp map[string]string
+	var resp map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode JSON: %v", err)
 	}
@@ -265,7 +281,7 @@ func TestMCPRemove_NonExistent(t *testing.T) {
 		t.Errorf("expected 200 OK, got %d", rec.Code)
 		return
 	}
-	var resp map[string]string
+	var resp map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode JSON: %v", err)
 	}
@@ -274,5 +290,60 @@ func TestMCPRemove_NonExistent(t *testing.T) {
 	}
 	if resp["name"] != "nonexistent" {
 		t.Errorf("expected name 'nonexistent', got %s", resp["name"])
+	}
+}
+
+func TestMCPAddReturnsPoolFailureStatus(t *testing.T) {
+	s, _ := newMCPSignalTestServer(t)
+	s.pool = mcp.NewPool(t.TempDir(), false, false)
+	body, err := json.Marshal(map[string]any{"name": "broken", "config": map[string]any{"transport": "stdio", "command": "/not/a/real/mcp-server"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/mcp/add", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleMCPAdd(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		PoolStatus string `json:"pool_status"`
+		Error      string `json:"error"`
+		Tools      int    `json:"tools"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.PoolStatus != "failed" || response.Error == "" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/mcp", nil)
+	rec = httptest.NewRecorder()
+	s.handleMCP(rec, req)
+	var list struct {
+		Servers []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"servers"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Servers) != 1 || list.Servers[0].Name != "broken" || list.Servers[0].Status != "failed" {
+		t.Fatalf("unexpected server states: %#v", list)
+	}
+}
+
+func TestMCPAddFailsClosedWithoutScanner(t *testing.T) {
+	s, _ := newMCPSignalTestServer(t)
+	s.cfg.SecCheck.Enabled = true
+	body, _ := json.Marshal(map[string]any{"name": "blocked", "config": map[string]any{"transport": "stdio", "command": "echo"}})
+	rec := httptest.NewRecorder()
+	s.handleMCPAdd(rec, httptest.NewRequest(http.MethodPost, "/api/mcp/add", bytes.NewReader(body)))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if _, exists := s.cfg.Skills.MCPServers["blocked"]; exists {
+		t.Fatal("server config mutated despite unavailable scanner")
 	}
 }
