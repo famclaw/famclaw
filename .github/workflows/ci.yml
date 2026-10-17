@@ -222,6 +222,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test]
     steps:
+      # GitHub Actions service containers cannot specify a post-image command.
+      # Start the pinned browser image directly so its server command is explicit.
+      - name: Start Playwright service
+        run: >-
+          docker run --detach --name playwright-service --network host
+          --entrypoint /bin/bash mcr.microsoft.com/playwright:v1.57.0-jammy
+          -lc 'npx --yes playwright@1.57.0 run-server --port 3000'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -229,10 +236,30 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Wait for Playwright service
+        run: |
+          for attempt in $(seq 1 30); do
+            if timeout 1 bash -c '</dev/tcp/localhost/3000' 2>/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "playwright service did not become ready" >&2
+          exit 1
+
+      - name: Install Playwright Go driver
+        run: |
+          npm install --prefix "$RUNNER_TEMP/playwright-driver-source" --no-save playwright@1.57.0
+          mkdir -p "$RUNNER_TEMP/playwright-driver/package"
+          ln -s "$(command -v node)" "$RUNNER_TEMP/playwright-driver/node"
+          ln -s "$RUNNER_TEMP/playwright-driver-source/node_modules/playwright-core/cli.js" "$RUNNER_TEMP/playwright-driver/package/cli.js"
+          echo "PLAYWRIGHT_DRIVER_PATH=$RUNNER_TEMP/playwright-driver" >> "$GITHUB_ENV"
+
       - name: Integration tests
-        run: go test -tags integration ./... -v -timeout 120s
+        run: go test -tags integration ./... -v -timeout 300s
         env:
           CGO_ENABLED: 0
+          FAMCLAW_PLAYWRIGHT_WS: ws://localhost:3000/
 
   race:
     name: Race detector (gateway/router + agent)
