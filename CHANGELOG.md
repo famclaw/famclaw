@@ -3,13 +3,29 @@
 All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## v0.14.0 — 2026-10-17
 
 ### Added
 - **The assistant can send files back to users on Discord.** A new built-in tool, `send_file`, delivers a file from the current conversation's workspace into the user's own chat (group channel or DM). This closes the outbound half of the file story: inbound attachments have always landed in the per-conversation sandbox, but `gateway.Reply` carried text only, so a file the assistant produced (via `file_write` or an MCP tool) could never reach the user. The tool confines the path to the conversation sandbox (sharing the exact containment rule of `file_read`), caps delivery at 25 MiB (Discord's default bot upload limit), rejects non-regular files and separator-bearing filenames, times out a stuck gateway after 30 s, and audit-logs every delivery (path, name, size, caption — never content). OPA `tool_policy` pins the allow for both roles (the file goes to the requester's own channel; there is no cross-user targeting), and on gateways without a file sender the tool fails honestly with "file delivery is not available on this gateway yet".
+- **MCP servers accept per-server environment variables.** `MCPServerConfig` gains an optional `env` field (list of `KEY=VALUE` strings) passed to the child process environment when spawning a stdio MCP server. Blocked keys (e.g. `PATH`, `HOME`, `FAMCLAW_CONFIG`) are rejected at validation time so a config file cannot override the host's runtime environment. (#405)
+- **First-party WASM skill runtime.** A new `wasmskill` package loads and executes first-party skills compiled to WebAssembly, giving the agent a sandboxed native extension point without a Go plugin ABI. (#402)
+- **Pluggable web-search providers.** `web_search` now resolves its backend through a provider registry: SearXNG (default) and Tavily. The active provider is selected from config; an unreachable or misconfigured provider is reported honestly at startup instead of silently falling back.
+
+### Changed
+- **CI runs live browser-fallback integration tests.** The integration job now spins up a pinned Playwright service container and runs the browser-fallback test suite (empty-render, host-gate) on merge-queue runs with a 300-second timeout. Fail-fast if the service cannot initialize. (#403)
 
 ### Fixed
 - **An undelivered reminder is never silently lost (follow-up to #332).** A reminder whose delivery keeps failing is no longer dropped when its bounded retries exhaust: the original content is recorded in the `undelivered_reminders` table (parents can query what their family missed at `/api/reminders/undelivered`) and the user is notified on another reachable gateway when one exists (e.g. a dead Discord channel goes out over Telegram, reusing `send_message`'s initiable-gateway rules with the just-failed target skipped). A 404 — deleted channel, removed bot, unknown user — no longer burns the full retry budget: the senders now surface a typed `gateway.InvalidChatError` (Telegram's 404 / 400 "chat not found"; Discord's 404 REST error) so the scheduler fast-paths it, marks the target invalid for the rest of the process (a shared dead channel stops hammering the API — the multi-thousand-line 404 storm), and the user gets a first-class "your reminder is pointed at a dead channel; update or re-point" notice with the reminder's content intact. Transient failures (5xx, transport errors) keep #332's bounded retry (3 attempts), and the reminder content is redacted from user-facing notices and log lines so a platform error body can never leak a bot token.
+- **Hot-added MCP servers now actually start.** `mcp_add` was persisting the config but never calling the pool's load path, so a newly added server sat inert until process restart. The add path now triggers an immediate load and reports the result. (#404)
+- **Web chat sessions are authenticated.** Every web chat identity now requires a valid session token; admin routes are gated to the parent role. The WebSocket upgrade enforces same-origin.
+- **True wire bytes reported from browser fetch fallback.** The web_fetch browser-fallback path now reports the actual content-length received from the network, not the post-decode byte count.
+
+### Security
+- **Private LAN IP literals scrubbed from defaults, docs, tests, and build artifacts.** No `192.168.*` or `10.*` addresses ship in the binary or documentation.
+- **CI private-details guard extended to PR title and body.** The scrub now checks PR metadata, not just diffs. (#398)
+
+### Dependencies
+- Bumped `github.com/mark3labs/mcp-go` from 0.58.0 to 1.3.0, `golang.org/x/crypto` to 0.55.0, `golang.org/x/net` to 0.58.0, `golang.org/x/image` to 0.45.0, `golang.org/x/text` to 0.41.0 (go-minor-patch group).
 
 ## v0.13.0 — 2026-08-21
 
