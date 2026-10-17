@@ -274,6 +274,21 @@ func TestValidateMCPServer(t *testing.T) {
 	}
 }
 
+func TestValidateMCPServerRejectsBlockedEnvKey(t *testing.T) {
+	const blockedKey = "SOME_TOKEN"
+	err := config.ValidateMCPServer("test", config.MCPServerConfig{
+		Transport: "stdio",
+		Command:   "echo",
+		Env:       map[string]string{blockedKey: "secret"},
+	})
+	if err == nil {
+		t.Fatal("expected blocked env key to fail validation")
+	}
+	if !strings.Contains(err.Error(), blockedKey) {
+		t.Fatalf("validation error %q does not name blocked key %q", err, blockedKey)
+	}
+}
+
 func TestPoolRegisterFromConfig(t *testing.T) {
 	pool := NewPool("", false, false)
 	servers := map[string]config.MCPServerConfig{

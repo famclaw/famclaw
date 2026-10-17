@@ -9,7 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
-	"strings"
+
 	"time"
 
 	"github.com/elastic/go-seccomp-bpf"
@@ -234,45 +234,11 @@ func (c *Client) Stop() {
 // receives.  No secrets live in this list.
 var baseAllowlist = []string{"HOME", "LANG", "PATH", "TZ"}
 
-// blockedKeys are environment variable names that are never forwarded to a
-// skill subprocess, regardless of any allowlist.  They guard against future
-// allowlist mistakes and cover every credential famclaw holds.
-var blockedKeys = map[string]struct{}{
-	"FAMCLAW_LLM_API_KEY":   {},
-	"FAMCLAW_HMAC_SECRET":   {},
-	"FAMCLAW_PARENT_PIN":    {},
-	"FAMCLAW_SMTP_PASSWORD": {},
-	"FAMCLAW_TWILIO_TOKEN":  {},
-	"FAMCLAW_VAULT_SALT":    {},
-	"DISCORD_TOKEN":         {},
-	"TELEGRAM_TOKEN":        {},
-	"WHATSAPP_TOKEN":        {},
-	"HMAC_SECRET":           {},
-	"LLM_API_KEY":           {},
-	"OPENAI_API_KEY":        {},
-	"ANTHROPIC_API_KEY":     {},
-	"SENDGRID_API_KEY":      {},
-	"SMTP_PASSWORD":         {},
-	"TWILIO_TOKEN":          {},
-	"VAULT_SALT":            {},
-}
-
 // envKeyBlocked reports whether name is a blocked environment variable.
-// Matching is case-insensitive to block both FAMCLAW_LLM_API_KEY and
-// variations like FAmClAw_LlM_aPi_KeY.
+// It delegates to config so config-time validation and runtime filtering share
+// exactly the same security policy.
 func envKeyBlocked(name string) bool {
-	if _, ok := blockedKeys[name]; ok {
-		return true
-	}
-	upper := strings.ToUpper(name)
-	if _, ok := blockedKeys[upper]; ok {
-		return true
-	}
-	// Block anything ending with _BOT_TOKEN (Telegram/Discord/WhatsApp/etc.)
-	if strings.HasSuffix(upper, "_BOT_TOKEN") || strings.HasSuffix(upper, "_TOKEN") {
-		return true
-	}
-	return false
+	return config.IsBlockedMCPEnvKey(name)
 }
 
 // BuildAllowlist returns an env []string for os/exec that contains only the
@@ -284,7 +250,7 @@ func envKeyBlocked(name string) bool {
 // same minimal environment it forwards to syscall.Exec — without the
 // launcher having to import os/env-parsing logic of its own.
 //
-// Strict secret-blocklist: see blockedKeys / envKeyBlocked. Skills never
+// Strict secret-blocklist: see envKeyBlocked. Skills never
 // receive FAMCLAW_* tokens, *_BOT_TOKEN, *_TOKEN, LLM_API_KEY, etc.
 func BuildAllowlist(credKeys map[string]string) []string {
 	var result []string
