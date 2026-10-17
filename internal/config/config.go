@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -388,6 +389,7 @@ type MCPServerConfig struct {
 	Transport string            `yaml:"transport"`          // stdio | http | sse
 	Command   string            `yaml:"command,omitempty"`  // stdio only
 	Args      []string          `yaml:"args,omitempty"`     // stdio only
+	Env       map[string]string `yaml:"env,omitempty"`      // additional stdio child environment; names are security-filtered
 	URL       string            `yaml:"url,omitempty"`      // http/sse only
 	Headers   map[string]string `yaml:"headers,omitempty"`  // http/sse only
 	Disabled  bool              `yaml:"disabled,omitempty"` // false = enabled (default)
@@ -395,6 +397,19 @@ type MCPServerConfig struct {
 
 // ValidateMCPServer checks that an MCP server config has the required fields for its transport.
 func ValidateMCPServer(name string, cfg MCPServerConfig) error {
+	envKeys := make([]string, 0, len(cfg.Env))
+	for key := range cfg.Env {
+		envKeys = append(envKeys, key)
+	}
+	sort.Strings(envKeys)
+	for _, key := range envKeys {
+		if strings.TrimSpace(key) == "" || strings.Contains(key, "=") || strings.HasPrefix(key, "-") {
+			return fmt.Errorf("MCP server %q: invalid env key %q", name, key)
+		}
+		if IsBlockedMCPEnvKey(key) {
+			return fmt.Errorf("MCP server %q: env key %q is blocked for security reasons", name, key)
+		}
+	}
 	transport := cfg.Transport
 	if transport == "" {
 		if cfg.Command != "" {
@@ -418,6 +433,26 @@ func ValidateMCPServer(name string, cfg MCPServerConfig) error {
 		return fmt.Errorf("MCP server %q: unknown transport %q (use stdio, http, or sse)", name, transport)
 	}
 	return nil
+}
+
+var blockedMCPEnvKeys = map[string]struct{}{
+	"FAMCLAW_LLM_API_KEY": {}, "FAMCLAW_HMAC_SECRET": {},
+	"FAMCLAW_PARENT_PIN": {}, "FAMCLAW_SMTP_PASSWORD": {},
+	"FAMCLAW_TWILIO_TOKEN": {}, "FAMCLAW_VAULT_SALT": {},
+	"DISCORD_TOKEN": {}, "TELEGRAM_TOKEN": {}, "WHATSAPP_TOKEN": {},
+	"HMAC_SECRET": {}, "LLM_API_KEY": {}, "OPENAI_API_KEY": {},
+	"ANTHROPIC_API_KEY": {}, "SENDGRID_API_KEY": {}, "SMTP_PASSWORD": {},
+	"TWILIO_TOKEN": {}, "VAULT_SALT": {},
+}
+
+// IsBlockedMCPEnvKey reports whether name is sensitive and must not be
+// forwarded to an MCP server. Matching is case-insensitive.
+func IsBlockedMCPEnvKey(name string) bool {
+	upper := strings.ToUpper(name)
+	if _, ok := blockedMCPEnvKeys[upper]; ok {
+		return true
+	}
+	return strings.HasSuffix(upper, "_BOT_TOKEN") || strings.HasSuffix(upper, "_TOKEN")
 }
 
 // Load reads and parses the config file, expanding environment variables.

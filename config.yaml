@@ -154,6 +154,9 @@ skills:
   #     transport: stdio
   #     command: seccheck
   #     args: ["--json"]
+  #     # Optional child environment (stdio-only in practice); use paths/non-secrets, never raw secrets.
+  #     env:
+  #       GOOGLE_SERVICE_ACCOUNT_KEY: "${GOOGLE_SERVICE_ACCOUNT_KEY_PATH}"
   #   remote-tools:
   #     transport: http
   #     url: "http://<your-host>:3001/mcp"
