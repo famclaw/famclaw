@@ -249,21 +249,12 @@ jobs:
 
       - name: Install Playwright Go driver
         run: |
-          cat > "$RUNNER_TEMP/install-playwright-driver.go" <<'EOF'
-          package main
-
-          import (
-            "log"
-            "github.com/playwright-community/playwright-go"
-          )
-
-          func main() {
-            if err := playwright.Install(&playwright.RunOptions{SkipInstallBrowsers: true}); err != nil {
-              log.Fatal(err)
-            }
-          }
-          EOF
-          go run "$RUNNER_TEMP/install-playwright-driver.go"
+          npm install --prefix "$RUNNER_TEMP/playwright-driver-source" --no-save playwright@1.57.0
+          mkdir -p "$RUNNER_TEMP/playwright-driver/package"
+          ln -s "$(command -v node)" "$RUNNER_TEMP/playwright-driver/node"
+          ln -s "$RUNNER_TEMP/playwright-driver-source/node_modules/playwright-core/cli.js" \\
+            "$RUNNER_TEMP/playwright-driver/package/cli.js"
+          echo "PLAYWRIGHT_DRIVER_PATH=$RUNNER_TEMP/playwright-driver" >> "$GITHUB_ENV"
 
       - name: Integration tests
         run: go test -tags integration ./... -v -timeout 300s
