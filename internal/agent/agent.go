@@ -824,11 +824,14 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 				GroupID:    a.msgContext.GroupID,
 			}, a.effectiveSandboxRoot, path, caption)
 		case "builtin__mcp_list":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath, Scanner: a.scanner}
 			return admin.HandleMCPList(ctx, deps, args)
 		case "builtin__mcp_add":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath, Scanner: a.scanner}
 			return admin.HandleMCPAdd(ctx, deps, args)
+		case "builtin__mcp_remove":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath}
+			return admin.HandleMCPRemove(ctx, deps, args)
 		case "builtin__allowlist_list":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
 			return admin.HandleAllowlistList(ctx, deps, args)

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strings"
@@ -723,5 +724,51 @@ func TestPool_UpdateFromConfig(t *testing.T) {
 		if mc.env != nil && len(mc.env) > 0 {
 			t.Error("server4 should have nil or empty env with nil credentials input")
 		}
+	}
+}
+
+func TestReloadConfig_StartFailureAndState(t *testing.T) {
+	pool := NewPool(t.TempDir(), false, false)
+	cfg := &config.Config{}
+	cfg.Skills.MCPServers = map[string]config.MCPServerConfig{"broken": {Transport: "stdio", Command: "/definitely/not/a/real/mcp-server"}}
+	results := pool.ReloadConfig(cfg)
+	if results["broken"] == nil {
+		t.Fatal("expected per-server start error")
+	}
+	states := pool.ServerStates()
+	if len(states) != 1 || states[0].Name != "broken" || states[0].Status != "failed" || states[0].Error == "" {
+		t.Fatalf("unexpected server state: %#v", states)
+	}
+	cfg.Skills.MCPServers = map[string]config.MCPServerConfig{}
+	pool.ReloadConfig(cfg)
+	if states := pool.ServerStates(); len(states) != 0 {
+		t.Fatalf("removed server remains: %#v", states)
+	}
+}
+
+func TestReloadConfigStartsNewServerAndExposesTools(t *testing.T) {
+	httpServer := httptest.NewServer(server.NewStreamableHTTPServer(newMockServer()))
+	defer httpServer.Close()
+	pool := NewPool(t.TempDir(), false, false)
+	defer pool.StopAll()
+	cfg := &config.Config{}
+	cfg.Skills.MCPServers = map[string]config.MCPServerConfig{"fixture": {Transport: "http", URL: httpServer.URL}}
+	results := pool.ReloadConfig(cfg)
+	if err, ok := results["fixture"]; !ok || err != nil {
+		t.Fatalf("reload result = %#v", results)
+	}
+	if tools := pool.ListToolInfos(); len(tools) != 2 {
+		t.Fatalf("hot-added tools = %d, want 2: %#v", len(tools), tools)
+	}
+	states := pool.ServerStates()
+	if len(states) != 1 || states[0].Status != "started" || states[0].Tools != 2 {
+		t.Fatalf("unexpected state: %#v", states)
+	}
+	result, err := pool.CallTool(context.Background(), "echo", map[string]any{"text": "hello"})
+	if err != nil {
+		t.Fatalf("CallTool after hot-add: %v", err)
+	}
+	if got := result.Content[0].(mcp.TextContent).Text; got != "hello" {
+		t.Fatalf("tool result = %q, want hello", got)
 	}
 }

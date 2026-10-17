@@ -25,6 +25,7 @@ import (
 	"github.com/famclaw/famclaw/internal/credstore"
 	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/gateway"
+	"github.com/famclaw/famclaw/internal/honeybadger"
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/llm/claudecli"
@@ -52,8 +53,9 @@ type Server struct {
 	skills        []*skillbridge.Skill  // injected into agent system prompt
 	skillRegistry *skillbridge.Registry // backs POST /api/skills/install + /remove
 	pool          *mcp.Pool             // MCP tool pool for agent tool calls
-	familyState   *familystate.Store    // Phase 3.3 — nil disables /api/family-state/*
-	staticHandler http.Handler          // embedded static file server
+	mcpScanner    skillbridge.Scanner
+	familyState   *familystate.Store // Phase 3.3 — nil disables /api/family-state/*
+	staticHandler http.Handler       // embedded static file server
 	upgrader      websocket.Upgrader
 	cfgMu         sync.RWMutex                  // guards cfg during settings reads/writes
 	clients       map[*websocket.Conn]*wsClient // conn → client (writeMu serializes writes to that conn)
@@ -115,6 +117,8 @@ type WsMessage struct {
 
 // UpdateConfig replaces the server's configuration with the provided config.
 // It locks the config mutex internally, so callers must NOT already hold it.
+func (s *Server) SetMCPScanner(scanner skillbridge.Scanner) { s.mcpScanner = scanner }
+
 func (s *Server) UpdateConfig(newCfg *config.Config) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
@@ -907,13 +911,38 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	var names []string
-	for name := range s.cfg.Skills.MCPServers {
-		names = append(names, name)
+	servers := make(map[string]config.MCPServerConfig, len(s.cfg.Skills.MCPServers))
+	for name, cfg := range s.cfg.Skills.MCPServers {
+		servers[name] = cfg
 	}
-	sort.Strings(names)
-	jsonOK(w, map[string][]string{"servers": names})
+	s.cfgMu.RUnlock()
+	states := make(map[string]mcp.ServerState)
+	if s.pool != nil {
+		for _, state := range s.pool.ServerStates() {
+			states[state.Name] = state
+		}
+	}
+	result := make([]mcp.ServerState, 0, len(servers))
+	for name, cfg := range servers {
+		if cfg.Disabled {
+			continue
+		}
+		state, ok := states[name]
+		if !ok {
+			transport := cfg.Transport
+			if transport == "" {
+				if cfg.Command != "" {
+					transport = "stdio"
+				} else {
+					transport = "http"
+				}
+			}
+			state = mcp.ServerState{Name: name, Transport: transport, Status: "pending"}
+		}
+		result = append(result, state)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	jsonOK(w, map[string]any{"servers": result})
 }
 
 func (s *Server) handleMCPAdd(w http.ResponseWriter, r *http.Request) {
@@ -938,9 +967,35 @@ func (s *Server) handleMCPAdd(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, err, http.StatusBadRequest)
 		return
 	}
+	s.cfgMu.RLock()
+	secCheck := s.cfg.SecCheck
+	s.cfgMu.RUnlock()
+	if secCheck.Enabled {
+		if s.mcpScanner == nil || !s.mcpScanner.Available() {
+			jsonErr(w, fmt.Errorf("install refused: honeybadger scanner is unavailable"), http.StatusServiceUnavailable)
+			return
+		}
+		target, offline := body.Config.URL, false
+		if target == "" {
+			target, offline = body.Config.Command, true
+		}
+		result, err := s.mcpScanner.Scan(r.Context(), target, honeybadger.ScanOptions{Paranoia: secCheck.Paranoia, Offline: offline})
+		if err != nil {
+			jsonErr(w, fmt.Errorf("security scan failed: %w", err), http.StatusBadGateway)
+			return
+		}
+		if result == nil || result.Verdict == "SKIP" {
+			jsonErr(w, fmt.Errorf("security scan did not produce a verdict"), http.StatusBadGateway)
+			return
+		}
+		if result.Verdict == "FAIL" && secCheck.BlockOnFail {
+			jsonErr(w, fmt.Errorf("server rejected by security scan: %s", result.Reasoning), http.StatusForbidden)
+			return
+		}
+	}
 	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
 	if _, exists := s.cfg.Skills.MCPServers[name]; exists {
+		s.cfgMu.Unlock()
 		jsonErr(w, fmt.Errorf("an MCP server named %q already exists", name), http.StatusBadRequest)
 		return
 	}
@@ -949,10 +1004,32 @@ func (s *Server) handleMCPAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfg.Skills.MCPServers[name] = body.Config
 	if err := s.cfg.Save(s.cfgPath); err != nil {
+		delete(s.cfg.Skills.MCPServers, name)
+		s.cfgMu.Unlock()
 		jsonErr(w, fmt.Errorf("saving config: %w", err), http.StatusInternalServerError)
 		return
 	}
-	jsonOK(w, map[string]string{"status": "saved"})
+	cfg := s.cfg
+	s.cfgMu.Unlock()
+	response := map[string]any{"status": "saved", "server": name, "pool_status": "pending", "tools": 0}
+	if s.pool != nil {
+		results := s.pool.ReloadConfig(cfg)
+		if err, ok := results[name]; ok {
+			if err != nil {
+				response["pool_status"] = "failed"
+				response["error"] = err.Error()
+			} else {
+				response["pool_status"] = "started"
+			}
+		}
+		for _, state := range s.pool.ServerStates() {
+			if state.Name == name {
+				response["tools"] = state.Tools
+				break
+			}
+		}
+	}
+	jsonOK(w, response)
 }
 
 func (s *Server) handleMCPRemove(w http.ResponseWriter, r *http.Request) {
@@ -973,15 +1050,29 @@ func (s *Server) handleMCPRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
-	if s.cfg.Skills.MCPServers != nil {
-		delete(s.cfg.Skills.MCPServers, name)
-	}
+	previous, existed := s.cfg.Skills.MCPServers[name]
+	delete(s.cfg.Skills.MCPServers, name)
 	if err := s.cfg.Save(s.cfgPath); err != nil {
+		if existed {
+			s.cfg.Skills.MCPServers[name] = previous
+		}
+		s.cfgMu.Unlock()
 		jsonErr(w, fmt.Errorf("saving config: %w", err), http.StatusInternalServerError)
 		return
 	}
-	jsonOK(w, map[string]string{"status": "removed", "name": name})
+	cfg := s.cfg
+	s.cfgMu.Unlock()
+	response := map[string]any{"status": "removed", "name": name, "pool_status": "pending"}
+	if s.pool != nil {
+		results := s.pool.ReloadConfig(cfg)
+		if err, ok := results[name]; ok && err != nil {
+			response["pool_status"] = "failed"
+			response["error"] = err.Error()
+		} else {
+			response["pool_status"] = "removed"
+		}
+	}
+	jsonOK(w, response)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

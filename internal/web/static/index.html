@@ -129,7 +129,7 @@ header .mode-btn:hover{background:rgba(255,255,255,.3)}
 .skill-item:last-child{border-bottom:none}
 .skill-icon{font-size:24px}
 .skill-body{flex:1}
-.skill-name{font-weight:600;font-size:14px}
+.mcp-status{margin-left:10px;font-size:.82em;opacity:.8}.mcp-status-failed{color:var(--danger,#d44)}.mcp-status-started{color:var(--success,#2a7)}.mcp-error{color:var(--danger,#d44);font-size:.82em;overflow-wrap:anywhere}.skill-name{font-weight:600;font-size:14px}
 .skill-desc{font-size:13px;color:var(--c-muted)}
 .verdict-badge{padding:3px 10px;border-radius:99px;font-size:12px;font-weight:600}
 .verdict-PASS{background:#dcfce7;color:#15803d}
@@ -1280,7 +1280,8 @@ function renderMcpServers(servers) {
     list.appendChild(empty);
     return;
   }
-  for (const name of servers) {
+  for (const server of servers) {
+    const name = typeof server === 'string' ? server : server.name;
     const row = document.createElement('div');
     row.className = 'skill-item';
     const body = document.createElement('div');
@@ -1289,6 +1290,13 @@ function renderMcpServers(servers) {
     nameEl.className = 'skill-name';
     nameEl.textContent = name;
     body.appendChild(nameEl);
+    if (typeof server !== 'string') {
+      const status = document.createElement('span');
+      status.className = 'mcp-status mcp-status-' + server.status;
+      status.textContent = server.status + (server.tools ? ' · ' + server.tools + ' tools' : '');
+      body.appendChild(status);
+      if (server.error) { const error = document.createElement('div'); error.className = 'mcp-error'; error.textContent = server.error; body.appendChild(error); }
+    }
     const btn = document.createElement('button');
     btn.textContent = '🗑️';
     btn.addEventListener('click', () => removeMcpServer(name));
@@ -1326,7 +1334,8 @@ async function addMcpServer() {
     document.getElementById('mcp-args-input').value = '';
     document.getElementById('mcp-url-input').value = '';
     await loadDashboard();
-    showToast('Added.');
+    const result = await r.json();
+    showToast(result.pool_status === 'started' ? 'Added and connected (' + result.tools + ' tools).' : 'Saved; server status: ' + result.pool_status + (result.error ? ' — ' + result.error : ''));
   } catch (e) { showToast('Add failed: ' + e.message); }
 }
 
@@ -1341,8 +1350,9 @@ async function removeMcpServer(name) {
     });
     if (r.status === 401) { window.location.href = '/login'; return; }
     if (!r.ok) { showToast('Remove failed: ' + (await r.text())); return; }
+    const result = await r.json();
     await loadDashboard();
-    showToast('Removed.');
+    showToast(result.pool_status === 'removed' ? 'Removed.' : 'Removed from config; pool status: ' + result.pool_status + (result.error ? ' — ' + result.error : ''));
   } catch (e) { showToast('Remove failed: ' + e.message); }
 }
 
