@@ -221,15 +221,14 @@ jobs:
     if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     needs: [test]
-    services:
-      # playwright-go v0.5700.1 pairs with Playwright 1.57.0.
-      playwright:
-        image: mcr.microsoft.com/playwright:v1.57.0-jammy
-        options: --entrypoint playwright
-        command: ["server", "--port", "3000"]
-        ports:
-          - 3000:3000
     steps:
+      # GitHub Actions service containers cannot specify a post-image command.
+      # Start the pinned browser image directly so its server command is explicit.
+      - name: Start Playwright service
+        run: >-
+          docker run --detach --name playwright-service --publish 3000:3000
+          --entrypoint /bin/bash mcr.microsoft.com/playwright:v1.57.0-jammy
+          -lc 'npx --yes playwright@1.57.0 run-server --port 3000'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
