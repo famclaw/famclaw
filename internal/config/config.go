@@ -388,6 +388,7 @@ type MCPServerConfig struct {
 	Transport string            `yaml:"transport"`          // stdio | http | sse
 	Command   string            `yaml:"command,omitempty"`  // stdio only
 	Args      []string          `yaml:"args,omitempty"`     // stdio only
+	Env       map[string]string `yaml:"env,omitempty"`      // additional stdio child environment; names are security-filtered
 	URL       string            `yaml:"url,omitempty"`      // http/sse only
 	Headers   map[string]string `yaml:"headers,omitempty"`  // http/sse only
 	Disabled  bool              `yaml:"disabled,omitempty"` // false = enabled (default)
@@ -395,6 +396,11 @@ type MCPServerConfig struct {
 
 // ValidateMCPServer checks that an MCP server config has the required fields for its transport.
 func ValidateMCPServer(name string, cfg MCPServerConfig) error {
+	for key := range cfg.Env {
+		if strings.TrimSpace(key) == "" || strings.Contains(key, "=") || strings.HasPrefix(key, "-") {
+			return fmt.Errorf("MCP server %q: invalid env key %q", name, key)
+		}
+	}
 	transport := cfg.Transport
 	if transport == "" {
 		if cfg.Command != "" {

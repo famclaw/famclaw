@@ -105,7 +105,14 @@ func (c *Client) Start(ctx context.Context) error {
 		// per-skill credentials.  Never passes os.Environ() — a skill inherits
 		// only the variables explicitly named in its allowlist (or the base set
 		// if the skill declares none), plus its own injected credentials.
-		allowlist := BuildAllowlist(c.env)
+		credentials := make(map[string]string, len(c.env)+len(c.cfg.Env))
+		for key, value := range c.env {
+			credentials[key] = value
+		}
+		for key, value := range c.cfg.Env {
+			credentials[key] = value
+		}
+		allowlist := BuildAllowlist(credentials)
 		var opts []transport.StdioOption
 		// Sandbox decision: when the deployment enabled Tools.Sandbox the
 		// stdio server must launch through the landlock+seccomp launcher.
@@ -294,7 +301,7 @@ func BuildAllowlist(credKeys map[string]string) []string {
 	sort.Strings(credNames)
 	for _, n := range credNames {
 		v := credKeys[n]
-		if v != "" {
+		if v != "" && !envKeyBlocked(n) {
 			result = append(result, n+"="+v)
 		}
 	}

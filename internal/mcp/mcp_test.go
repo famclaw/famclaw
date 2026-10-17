@@ -256,6 +256,9 @@ func TestValidateMCPServer(t *testing.T) {
 		{"http missing url", config.MCPServerConfig{Transport: "http"}, true},
 		{"unknown transport", config.MCPServerConfig{Transport: "grpc"}, true},
 		{"empty config", config.MCPServerConfig{}, true},
+		{"invalid empty env key", config.MCPServerConfig{Transport: "stdio", Command: "echo", Env: map[string]string{" ": "x"}}, true},
+		{"invalid equals env key", config.MCPServerConfig{Transport: "stdio", Command: "echo", Env: map[string]string{"BAD=KEY": "x"}}, true},
+		{"invalid dash env key", config.MCPServerConfig{Transport: "stdio", Command: "echo", Env: map[string]string{"-BAD": "x"}}, true},
 	}
 
 	for _, tt := range tests {
@@ -485,6 +488,8 @@ func TestStdioEnvIsolation(t *testing.T) {
 		`  eval "val=\${$v:-}"` + "\n" +
 		`  if [ -n "$val" ]; then echo "LEAKED:$v"; LEAK=1; fi` + "\n" +
 		"done\n" +
+		`if [ "$MCP_CONFIG_PATH" != "operator-path" ]; then echo "MISSING:MCP_CONFIG_PATH"; LEAK=1; fi` + "\n" +
+		`if [ -n "${FOO_TOKEN:-}" ]; then echo "LEAKED:FOO_TOKEN"; LEAK=1; fi` + "\n" +
 		"exit $LEAK\n"
 
 	scriptPath := "envcheck_test.sh"
@@ -496,14 +501,21 @@ func TestStdioEnvIsolation(t *testing.T) {
 	c := &Client{
 		name:          "envisolation-test",
 		transportType: "stdio",
-		cfg:           config.MCPServerConfig{Command: "./" + scriptPath},
+		cfg:           config.MCPServerConfig{Command: "./" + scriptPath, Env: map[string]string{"MCP_CONFIG_PATH": "operator-path", "FOO_TOKEN": "must-not-pass"}},
 		env:           map[string]string{"MY_CUSTOM_CRED": "trusted-value"},
 	}
 
-	// Verify buildAllowlist does not leak any sensitive vars.
-	allowlist := buildAllowlist(c.env)
+	// Verify configured server variables are merged and blocked names are filtered.
+	credentials := make(map[string]string, len(c.env)+len(c.cfg.Env))
+	for key, value := range c.env {
+		credentials[key] = value
+	}
+	for key, value := range c.cfg.Env {
+		credentials[key] = value
+	}
+	allowlist := buildAllowlist(credentials)
 	allowlistStr := fmt.Sprintf("%v", allowlist)
-	for _, bad := range []string{"FAMCLAW_LLM_API_KEY", "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "HMAC_SECRET", "SMTP_PASSWORD"} {
+	for _, bad := range []string{"FAMCLAW_LLM_API_KEY", "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "HMAC_SECRET", "SMTP_PASSWORD", "FOO_TOKEN"} {
 		if strings.Contains(allowlistStr, bad) {
 			t.Errorf("buildAllowlist leaked %q into allowlist: %v", bad, allowlist)
 		}
