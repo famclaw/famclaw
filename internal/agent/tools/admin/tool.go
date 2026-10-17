@@ -11,6 +11,7 @@ import (
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/familystate"
+	"github.com/famclaw/famclaw/internal/skillbridge"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -39,6 +40,7 @@ type Deps struct {
 	// ConfigPath is the on-disk path to config.yaml, used by mcp_add
 	// to persist new MCP server entries so they survive restarts.
 	ConfigPath string
+	Scanner    skillbridge.Scanner
 }
 
 // MCPManager abstracts MCP server lifecycle management needed by the
@@ -46,7 +48,7 @@ type Deps struct {
 type MCPManager interface {
 	// ReloadConfig synchronizes the pool's MCP servers with the given
 	// config. Called after mcp_add mutates the config in-memory.
-	ReloadConfig(cfg *config.Config) error
+	ReloadConfig(cfg *config.Config) map[string]error
 }
 
 // isKnownSubject reports whether subject is one of the configured user
@@ -102,6 +104,7 @@ func AllMutatingDefinitions() []agentcore.Tool {
 		AddFamilyCategoryDefinition(),
 		DeleteFamilyCategoryDefinition(),
 		MCPAddDefinition(),
+		MCPRemoveDefinition(),
 		AllowlistAddDefinition(),
 		AllowlistRemoveDefinition(),
 	}

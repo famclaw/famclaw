@@ -2,9 +2,12 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -21,6 +24,7 @@ const MaxToolCallIterations = 10
 type Pool struct {
 	clients     map[string]*managedClient // server name + tool name → client
 	mu          sync.RWMutex
+	reloadMu    sync.Mutex
 	SandboxRoot string
 	// Sandbox == true means every stdio MCP server is **required** to be
 	// launched inside the sandbox-restricted child process (landlock +
@@ -40,14 +44,27 @@ type Pool struct {
 
 // UpdateFromConfig synchronizes the pool's MCP servers with the provided configuration.
 // It adds new servers, updates existing ones that have changed, and removes servers
-// that are no longer present in the configuration.
-func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, credentials map[string]map[string]string) {
+// that are no longer present in the configuration. It returns names that need a start.
+func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, credentials map[string]map[string]string) []string {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	changed := make([]string, 0)
+	// Remove old tool aliases before mutating server clients; otherwise aliases
+	// can continue pointing at stopped clients after a configuration change.
+	for key, mc := range p.clients {
+		if mc != nil && mc.name != key {
+			delete(p.clients, key)
+		}
+	}
 
 	// First, update or add servers that are in the new config
 	for name, newCfg := range servers {
 		if newCfg.Disabled {
+			if mc, exists := p.clients[name]; exists && mc.name == name {
+				mc.mu.Lock()
+				mc.client.Stop()
+				mc.mu.Unlock()
+				delete(p.clients, name)
+			}
 			continue
 		}
 		if err := config.ValidateMCPServer(name, newCfg); err != nil {
@@ -57,14 +74,17 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 
 		if mc, exists := p.clients[name]; exists {
 			// Check if the config has changed
-			if mc.cfg.Command != newCfg.Command ||
+			if mc.cfg.Transport != newCfg.Transport ||
+				mc.cfg.Command != newCfg.Command ||
 				!sliceEqual(mc.cfg.Args, newCfg.Args) ||
 				mc.cfg.URL != newCfg.URL ||
 				!mapEqual(mc.cfg.Headers, newCfg.Headers) ||
 				!mapEqual(mc.env, credentials[name]) {
 
-				// Stop the existing client
+				// Stop the existing client without racing a tool call or start.
+				mc.mu.Lock()
 				mc.client.Stop()
+				mc.mu.Unlock()
 
 				// Create a new client with the updated config
 				c := NewTransportClient(name, newCfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
@@ -77,6 +97,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 					cfg:    newCfg,
 					env:    c.env,
 				}
+				changed = append(changed, name)
 			}
 			// If config hasn't changed, we keep the existing client
 		} else {
@@ -91,6 +112,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 				cfg:    newCfg,
 				env:    c.env,
 			}
+			changed = append(changed, name)
 		}
 	}
 
@@ -100,10 +122,13 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		if mc.name != name {
 			continue
 		}
-		if _, exists := servers[name]; !exists {
+		cfg, exists := servers[name]
+		if !exists || cfg.Disabled {
 			// Stop and remove the server
 			if mc != nil {
+				mc.mu.Lock()
 				mc.client.Stop()
+				mc.mu.Unlock()
 				delete(p.clients, name)
 			}
 		}
@@ -129,13 +154,99 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		}
 		p.clients[toolName] = mc
 	}
+	p.mu.Unlock()
+	return changed
 }
 
-// ReloadConfig implements reload.Reloader. It synchronizes the pool's
-// MCP servers with the provided configuration.
-func (p *Pool) ReloadConfig(cfg *config.Config) error {
-	p.UpdateFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
-	return nil
+// ReloadConfig synchronizes server registrations and starts changed servers outside the pool lock.
+func (p *Pool) ReloadConfig(cfg *config.Config) map[string]error {
+	p.reloadMu.Lock()
+	defer p.reloadMu.Unlock()
+	changed := p.UpdateFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
+	results := make(map[string]error, len(changed))
+	var wg sync.WaitGroup
+	var resultMu sync.Mutex
+	for _, name := range changed {
+		p.mu.RLock()
+		mc := p.clients[name]
+		p.mu.RUnlock()
+		if mc == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(name string, mc *managedClient) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			mc.mu.Lock()
+			err := mc.client.Start(ctx)
+			mc.lastError = err
+			mc.mu.Unlock()
+			resultMu.Lock()
+			results[name] = err
+			resultMu.Unlock()
+		}(name, mc)
+	}
+	wg.Wait()
+	p.refreshToolAliases()
+	return results
+}
+
+// refreshToolAliases rebuilds tool-name lookups after clients have started.
+func (p *Pool) refreshToolAliases() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	aliases := make(map[string]*managedClient)
+	for name, mc := range p.clients {
+		if mc == nil || mc.name != name {
+			continue
+		}
+		mc.mu.Lock()
+		tools := mc.client.Tools()
+		mc.mu.Unlock()
+		for _, tool := range tools {
+			aliases[tool.Name] = mc
+		}
+	}
+	for name, mc := range aliases {
+		if existing, ok := p.clients[name]; ok && existing.name == name {
+			continue
+		}
+		p.clients[name] = mc
+	}
+}
+
+// ServerState describes the connection state for a configured server.
+type ServerState struct {
+	Name      string `json:"name"`
+	Transport string `json:"transport"`
+	Status    string `json:"status"`
+	Tools     int    `json:"tools"`
+	Error     string `json:"error,omitempty"`
+}
+
+// ServerStates returns sorted lifecycle snapshots without exposing credentials.
+func (p *Pool) ServerStates() []ServerState {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	states := make([]ServerState, 0, len(p.clients))
+	for name, mc := range p.clients {
+		if mc == nil || mc.name != name {
+			continue
+		}
+		mc.mu.Lock()
+		state := ServerState{Name: name, Transport: mc.client.transportType, Status: "pending", Tools: len(mc.client.Tools())}
+		if mc.client.inner != nil {
+			state.Status = "started"
+		} else if mc.lastError != nil {
+			state.Status = "failed"
+			state.Error = mc.lastError.Error()
+		}
+		mc.mu.Unlock()
+		states = append(states, state)
+	}
+	sort.Slice(states, func(i, j int) bool { return states[i].Name < states[j].Name })
+	return states
 }
 
 // sliceEqual compares two slices for equality.
@@ -166,6 +277,7 @@ func mapEqual(a, b map[string]string) bool {
 
 type managedClient struct {
 	mu         sync.Mutex
+	lastError  error
 	client     *Client
 	name       string
 	cfg        config.MCPServerConfig
@@ -268,9 +380,11 @@ func (p *Pool) StartAll(ctx context.Context) error {
 	toolAliases := make(map[string]*managedClient)
 	for name, mc := range p.clients {
 		if err := mc.client.Start(ctx); err != nil {
+			mc.lastError = err
 			log.Printf("[mcp-pool] failed to start %s: %v", name, err)
 			continue
 		}
+		mc.lastError = nil
 		for _, tool := range mc.client.Tools() {
 			toolAliases[tool.Name] = mc
 		}
@@ -349,7 +463,10 @@ func (p *Pool) ListTools() []string {
 	seen := make(map[string]bool)
 	var names []string
 	for _, mc := range p.clients {
-		for _, tool := range mc.client.Tools() {
+		mc.mu.Lock()
+		tools := mc.client.Tools()
+		mc.mu.Unlock()
+		for _, tool := range tools {
 			if !seen[tool.Name] {
 				seen[tool.Name] = true
 				names = append(names, tool.Name)
@@ -375,8 +492,13 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 
 	seen := make(map[string]bool)
 	var infos []ToolInfo
-	for serverName, mc := range p.clients {
-		for _, tool := range mc.client.Tools() {
+	for _, mc := range p.clients {
+		mc.mu.Lock()
+		tools := mc.client.Tools()
+		cfg := mc.cfg
+		name := mc.name
+		mc.mu.Unlock()
+		for _, tool := range tools {
 			if seen[tool.Name] {
 				continue
 			}
@@ -390,15 +512,15 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 				}
 			}
 			// ScanTarget: use HTTP/SSE URL if available, else command path
-			scanTarget := mc.cfg.URL
+			scanTarget := cfg.URL
 			if scanTarget == "" {
-				scanTarget = mc.cfg.Command
+				scanTarget = cfg.Command
 			}
 			infos = append(infos, ToolInfo{
 				Name:        tool.Name,
 				Description: tool.Description,
 				InputSchema: schema,
-				ServerName:  serverName,
+				ServerName:  name,
 				ScanTarget:  scanTarget,
 			})
 		}
@@ -418,4 +540,18 @@ func (p *Pool) StopAll() {
 			stopped[mc.client] = true
 		}
 	}
+}
+
+// ReloadReloader adapts per-server reload results to the generic registry.
+type ReloadReloader struct{ Pool *Pool }
+
+func (r ReloadReloader) ReloadConfig(cfg *config.Config) error {
+	results := r.Pool.ReloadConfig(cfg)
+	var errs []error
+	for name, err := range results {
+		if err != nil {
+			errs = append(errs, fmt.Errorf("starting MCP server %q: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
 }

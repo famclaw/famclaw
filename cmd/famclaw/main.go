@@ -903,6 +903,7 @@ func main() {
 
 	// Web server
 	srv := web.NewServer(cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
+	srv.SetMCPScanner(hbScanner)
 	srv.SetVaultMismatch(vaultMismatch)
 	srv.SetMCPSkipped(skippedMCPs)
 	// Surface the scanner state through /api/health so the outcome is
@@ -940,7 +941,7 @@ func main() {
 	reloadRegistry := reload.NewRegistry()
 	reloadRegistry.Register("router", router)
 	reloadRegistry.Register("web-server", srv)
-	reloadRegistry.Register("mcp-pool", mcpPool)
+	reloadRegistry.Register("mcp-pool", mcp.ReloadReloader{Pool: mcpPool})
 	reloadRegistry.Register("transcriber", voiceTranscriber)
 	// Components that are built once at startup and cannot be hot-rebuilt
 	// are declared as requiring a restart. This is honest reporting: instead
