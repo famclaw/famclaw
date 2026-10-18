@@ -39,16 +39,22 @@ The darwin signing gate is **conditional on credentials being present**:
     satisfies the kernel's signature requirement, so there is no exit 137
     (#311 applies only to *unsigned* binaries);
   - a **browser-downloaded binary is blocked by Gatekeeper on first run**
-    (#214). The workaround is right-click the binary → **Open** (then
-    "Open" again in the dialog), or
-    `xattr -d com.apple.quarantine <binary>`.
+    (#214). This is not a supported end-user install path: install macOS
+    builds from a terminal — `scripts/install-macos-dev.sh`, or by hand with
+    `xattr -c famclaw && codesign -f -s - famclaw` before first run
+    (`docs/MACOS.md`).
   - `scripts/update.sh` is unaffected: it installs via a checksum-verified
     curl download + atomic rename and never goes through Gatekeeper's
     browser-download path, so the updater works identically for both the
     ad-hoc and the Developer ID-signed binaries.
 
-Add the credentials (below) to move future releases onto the signed path; an
-ad-hoc fallback release is a valid, supported release in the meantime.
+**Project decision on #214:** the project does not hold — and does not
+currently plan to purchase — an Apple Developer ID, so releases go down the
+ad-hoc path and **macOS builds are developers-only**: a Mac is not a supported
+FamClaw end-user platform (end users get the Raspberry Pi SD image), and the
+terminal install in `docs/MACOS.md` is the only documented macOS install path.
+The credential machinery below stays documented in case credentials are ever
+added; an ad-hoc release is a valid, supported release, not a degraded one.
 
 ## Signing credentials (injected at release time)
 
@@ -140,16 +146,18 @@ partial set — still succeeds and ships ad-hoc-signed darwin binaries
    ```
    Then download the same tarball in a **browser** (so it carries
    `com.apple.quarantine`) and run it. On the signed path Gatekeeper must
-   not block it. On the ad-hoc fallback path Gatekeeper blocks the first
-   run by design — verify the workaround instead: right-click → Open (→
-   Open again in the dialog).
+   not block it. On the ad-hoc path Gatekeeper blocks the browser-downloaded
+   first run by design (macOS is developers-only, #214) — verify the
+   documented terminal remedy instead: `xattr -c famclaw && codesign -f -s -
+   famclaw` (or `scripts/install-macos-dev.sh`), then run it.
 6. **Verify integrity of all assets:** `sha256sum -c checksums.txt`, the cosign
    bundle, and `gh attestation verify` — exact commands are in the
    post-release job summary.
 7. **Close the darwin issues with this evidence:** #311 (exit-137 — the
    `./famclaw --version` check passes on both paths) and #214 (browser
    download — the notarized install path on signed releases; on ad-hoc
-   fallback releases, the right-click → Open workaround instead).
+   releases, the documented terminal install path in `docs/MACOS.md`, per
+   the developers-only decision).
 
 ## Troubleshooting
 

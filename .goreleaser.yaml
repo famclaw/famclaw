@@ -95,5 +95,18 @@ changelog:
 
 release:
   prerelease: auto
+  # Stamped at the top of every GitHub release body. macOS builds are
+  # developer-only (issue #214: the project ships no Apple Developer ID, so
+  # darwin binaries are ad-hoc-signed and un-notarized) — a macOS user must
+  # see the terminal install path up front, before the changelog.
+  header: |
+    > **macOS builds are for developers only.** Darwin release binaries are
+    > ad-hoc-signed and not notarized by Apple, so a browser download is
+    > blocked by Gatekeeper — that is not a supported install path. Install
+    > from a terminal instead: `bash install-macos-dev.sh` (attached below),
+    > or run `xattr -c famclaw && codesign -f -s - famclaw` on a manually
+    > downloaded copy before running it. Details: `docs/MACOS.md`. Raspberry
+    > Pi SD images and Linux binaries need none of this.
   extra_files:
     - glob: scripts/install-rpi.sh
+    - glob: scripts/install-macos-dev.sh

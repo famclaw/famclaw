@@ -109,7 +109,7 @@ http://<your-pi-ip>:8080
 > reliably on Windows or many home routers. Use the device's IP address
 > from your router's DHCP leases page or `ip addr` on the Pi.
 
-### Mac / Linux
+### Mac / Linux (macOS: developer terminal only)
 Download the binary for your platform from the [latest release](https://github.com/famclaw/famclaw/releases/latest):
 
 | Platform | Artifact |
@@ -120,8 +120,15 @@ Download the binary for your platform from the [latest release](https://github.c
 | Linux arm64 | `famclaw-linux-arm64.tar.xz` |
 | Linux arm (32-bit, e.g. RPi 3/Zero) | `famclaw-linux-armv7.tar.xz` |
 
+Download from a terminal with `curl`, not a browser: darwin binaries are
+ad-hoc-signed and **not notarized by Apple** — the project ships no Developer
+ID, so macOS builds are for developers only (#214) — and Gatekeeper blocks any
+browser-downloaded copy. The supported macOS install path is the terminal
+procedure in `docs/MACOS.md`; `scripts/install-macos-dev.sh` does the checksum
+verification, `xattr -c`, and local `codesign -f -s -` re-signing for you.
+
 ```bash
-tar -xJf famclaw-darwin-arm64.tar.xz
+tar -xJf famclaw-darwin-arm64.tar.xz   # Mac (any arch): read docs/MACOS.md first
 touch config.yaml   # start empty — the web wizard fills it in
 ./famclaw --config config.yaml
 ```
@@ -129,11 +136,7 @@ touch config.yaml   # start empty — the web wizard fills it in
 Then open `http://<host>:8080` and complete the setup wizard (it writes the
 rest of the config for you).
 
-Release darwin binaries are Developer ID-signed and notarized when signing
-credentials are configured; without them the release falls back to
-ad-hoc-signed darwin binaries (a browser download needs Gatekeeper's
-right-click → Open on first run — `docs/RELEASE.md`). The tarballs verify
-against `checksums.txt` plus a cosign signature bundle.
+The tarballs verify against `checksums.txt` plus a cosign signature bundle.
 Upgrading an existing installation (atomic swap + service restart, never an
 in-place overwrite):
 
