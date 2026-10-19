@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/open-policy-agent/opa v1.21.1
+	github.com/open-policy-agent/opa v1.21.2
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1 // pure Go SQLite — no CGO, cross-compiles to arm/arm64
 )
@@ -13,11 +13,11 @@ require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/elastic/go-seccomp-bpf v1.6.0
 	github.com/landlock-lsm/go-landlock v0.10.1
-	github.com/mark3labs/mcp-go v1.2.1
+	github.com/mark3labs/mcp-go v1.3.0
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.60.0
+	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0
 )
 
