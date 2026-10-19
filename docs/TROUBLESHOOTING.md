@@ -36,6 +36,9 @@ process was still running. The new binary looks valid but exits immediately with
      ticket) or `Authority=adhoc` (ad-hoc fallback releases —
      `docs/RELEASE.md`); a binary with *no* signature at all is not a
      supported release artifact and is a genuine exit-137 cause.
+3. A manually installed macOS build (developers-only installs,
+   `docs/MACOS.md`) whose shipped ad-hoc signature was broken by a plain
+   `cp` is fixed by re-signing locally: `codesign -f -s - famclaw`.
 
 **Why it happens:** `cp` writes *through* the existing inode. The running process
 keeps its pages, but the path's content no longer matches what was validated, so

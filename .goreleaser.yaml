@@ -21,8 +21,9 @@ builds:
         # pre-v0.13.0 ad-hoc path: it warns and publishes the binary
         # ad-hoc-signed (it still runs on Apple Silicon — an *unsigned*
         # arm64 binary is SIGKILLed on launch, exit 137, #311 — but a
-        # browser-downloaded copy is blocked by Gatekeeper until
-        # right-click -> Open, #214). Credentials come from the
+        # browser-downloaded copy is blocked by Gatekeeper: macOS builds are
+        # developers-only and install from a terminal, docs/MACOS.md, #214).
+        # Credentials come from the
         # FAMCLAW_APPLE_* / FAMCLAW_NOTARY_* environment variables — see
         # docs/RELEASE.md. Requires the macos-latest runner
         # (codesign/notarytool are macOS-only); linux targets are skipped
@@ -95,5 +96,18 @@ changelog:
 
 release:
   prerelease: auto
+  # Stamped at the top of every GitHub release body. macOS builds are
+  # developer-only (issue #214: the project ships no Apple Developer ID, so
+  # darwin binaries are ad-hoc-signed and un-notarized) — a macOS user must
+  # see the terminal install path up front, before the changelog.
+  header: |
+    > **macOS builds are for developers only.** Darwin release binaries are
+    > ad-hoc-signed and not notarized by Apple, so a browser download is
+    > blocked by Gatekeeper — that is not a supported install path. Install
+    > from a terminal instead: `bash install-macos-dev.sh` (attached below),
+    > or run `xattr -c famclaw && codesign -f -s - famclaw` on a manually
+    > downloaded copy before running it. Details: `docs/MACOS.md`. Raspberry
+    > Pi SD images and Linux binaries need none of this.
   extra_files:
     - glob: scripts/install-rpi.sh
+    - glob: scripts/install-macos-dev.sh

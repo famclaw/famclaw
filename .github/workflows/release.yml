@@ -17,8 +17,9 @@ jobs:
   # missing secrets and the darwin binaries ship ad-hoc-signed — the
   # pre-v0.13.0 path. They still run on Apple Silicon (an *unsigned* arm64
   # binary is killed on launch, exit 137, #311), but a browser-downloaded
-  # copy is blocked by Gatekeeper until the user right-clicks -> Open
-  # (#214). linux binaries are cross-compiled here (CGO_ENABLED=0) exactly
+  # copy is blocked by Gatekeeper — macOS builds are developers-only and
+  # install from a terminal (#214; docs/MACOS.md). linux binaries are
+  # cross-compiled here (CGO_ENABLED=0) exactly
   # as before.
   goreleaser:
     name: Build & Publish

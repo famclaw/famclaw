@@ -23,7 +23,8 @@
 #     ad-hoc path: the binary ships ad-hoc-signed. It still runs on Apple
 #     Silicon (ad-hoc signing satisfies the kernel, #311), but a
 #     browser-downloaded copy is blocked by Gatekeeper on first run until
-#     the user right-clicks -> Open (#214).
+#     the quarantine attribute is cleared from a terminal (#214 — macOS
+#     builds are developers-only; see docs/MACOS.md).
 #
 # Credentials are injected at release time as environment variables (GitHub
 # repository secrets with the same names; see docs/RELEASE.md). Never commit
@@ -89,9 +90,10 @@ warn_adhoc_fallback() {
     echo "The darwin release binaries will ship AD-HOC SIGNED (the pre-v0.13.0 fallback):"
     echo "  * ad-hoc signing satisfies the kernel, so the binaries still run on Apple"
     echo "    Silicon (exit 137, issue #311, only hits *unsigned* binaries);"
-    echo "  * a browser-downloaded binary is blocked by Gatekeeper on first run"
-    echo "    (issue #214) — workaround: right-click the binary -> Open (-> Open again"
-    echo "    in the dialog), or 'xattr -d com.apple.quarantine <binary>'."
+    echo "  * a browser-downloaded binary is blocked by Gatekeeper on first run (issue"
+    echo "    #214) — macOS builds are developers-only: install from a terminal,"
+    echo "    'xattr -c famclaw && codesign -f -s - famclaw' before first run, or run"
+    echo "    scripts/install-macos-dev.sh (docs/MACOS.md)."
     echo ""
     echo "To ship Developer ID-signed + notarized binaries instead, set the missing"
     echo "variables as GitHub repository secrets (same names) and re-run the release."
