@@ -93,6 +93,7 @@ func ProviderFor(pc ProviderConfig) (Provider, error) {
 	switch name {
 	case "", "searxng":
 		return &retryingProvider{inner: &searxngProvider{endpoint: pc.Endpoint, opts: Options{
+			Endpoint:             pc.Endpoint,
 			MaxResults:           pc.MaxResults,
 			Timeout:              pc.Timeout,
 			HostValidator:        pc.HostValidator,
