@@ -4,62 +4,133 @@
   <meta charset="utf-8">
   <title>Family state — FamClaw</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#6366f1">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; color: #222; }
-    h1 { margin-bottom: 0.2em; }
-    nav a { margin-right: 1em; color: #2a6; text-decoration: none; }
-    section { margin-top: 2em; }
-    table { border-collapse: collapse; width: 100%; margin-top: 0.5em; }
-    th, td { padding: 0.4em 0.6em; border-bottom: 1px solid #eee; text-align: left; }
-    th { background: #fafafa; }
-    button { padding: 0.4em 0.8em; cursor: pointer; }
-    .danger { color: #c33; }
-    .builtin { color: #888; font-size: 0.9em; }
-    .err { color: #c33; margin: 0.5em 0; }
-    input, select { padding: 0.3em; }
-    form { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5em; margin-top: 0.5em; }
-    form input[name="value"] { grid-column: 1 / 3; }
-    form button { grid-column: 1 / 3; }
+    /* Design tokens mirror index.html — keep in sync. */
+    *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+    :root{
+      --c-primary:#6366f1;--c-primary-dark:#4f46e5;
+      --c-surface:#fff;--c-bg:#f1f5f9;--c-border:#e2e8f0;
+      --c-text:#1e293b;--c-muted:#64748b;--c-danger:#ef4444;--c-success:#22c55e;
+      --radius:12px;
+    }
+    html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+      background:var(--c-bg);color:var(--c-text);font-size:16px;line-height:1.5}
+
+    header{background:linear-gradient(135deg,var(--c-primary),#8b5cf6);
+      color:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px;
+      box-shadow:0 2px 8px rgba(99,102,241,.3);user-select:none}
+    header .logo{font-size:24px}
+    header h1{font-size:18px;font-weight:700;flex:1}
+    header .nav-btn{background:rgba(255,255,255,.2);border:none;color:#fff;
+      padding:6px 14px;border-radius:20px;cursor:pointer;font-size:13px;font-weight:600;
+      text-decoration:none}
+    header .nav-btn:hover{background:rgba(255,255,255,.3)}
+
+    main{max-width:920px;margin:0 auto;padding:24px 16px 48px}
+    section{background:var(--c-surface);border-radius:var(--radius);
+      box-shadow:0 1px 4px rgba(0,0,0,.06);overflow:hidden;margin-bottom:24px}
+    .sec-head{padding:16px 20px 0}
+    .sec-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
+      color:var(--c-muted)}
+    .table-scroll{overflow-x:auto;margin-top:12px}
+    table{border-collapse:collapse;width:100%;min-width:560px}
+    th,td{padding:12px 20px;text-align:left;font-size:14px}
+    th{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+      color:var(--c-muted);background:var(--c-bg);border-top:1px solid var(--c-border);
+      border-bottom:1px solid var(--c-border)}
+    td{border-bottom:1px solid var(--c-bg);vertical-align:middle}
+    tr:last-child td{border-bottom:none}
+    tbody tr:hover td{background:#f8fafc}
+    td.value{font-weight:500;overflow-wrap:anywhere}
+
+    .builtin{display:inline-block;background:var(--c-bg);color:var(--c-muted);
+      padding:3px 10px;border-radius:99px;font-size:11px;font-weight:600;white-space:nowrap}
+    .danger{background:none;border:1px solid var(--c-danger);color:#fff;
+      background:var(--c-danger);padding:5px 12px;border-radius:8px;font-size:12px;
+      font-weight:600;cursor:pointer;transition:opacity .15s;white-space:nowrap}
+    .danger:hover{opacity:.85}
+    .danger:active{opacity:.7}
+
+    .err{margin:0;padding:10px 20px;background:#fee2e2;color:#991b1b;font-size:14px}
+    .err:empty{display:none}
+
+    .sub-form{padding:20px;border-top:1px solid var(--c-bg)}
+    .sub-form h3{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+      color:var(--c-muted);margin-bottom:12px}
+    form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    input{width:100%;padding:10px 12px;border:1.5px solid var(--c-border);border-radius:8px;
+      font-size:14px;font-family:inherit;outline:none;background:var(--c-bg)}
+    input:focus{border-color:var(--c-primary)}
+    input[name="value"]{grid-column:1/3}
+    form button{grid-column:1/3;padding:10px;border:none;border-radius:8px;
+      background:var(--c-primary);color:#fff;font-size:14px;font-weight:600;cursor:pointer;
+      transition:background .15s}
+    form button:hover{background:var(--c-primary-dark)}
+    form button:active{opacity:.7}
+    #cat-form input[name="name"]{grid-column:1}
+    #cat-form label{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--c-muted);
+      padding:10px 0;cursor:pointer}
+    #cat-form input[type="checkbox"]{width:auto;padding:0;margin:0;accent-color:var(--c-primary)}
+    #cat-form input[name="description"]{grid-column:1/3}
+
+    @media (max-width:560px){
+      form{grid-template-columns:1fr}
+      form button,#cat-form input[name="description"],input[name="value"]{grid-column:1}
+      #cat-form input[name="name"]{grid-column:1}
+      th,td{padding:10px 14px}
+    }
   </style>
 </head>
 <body>
   <header>
+    <span class="logo">🏠</span>
     <h1>Family state</h1>
-    <nav><a href="/">← Dashboard</a></nav>
+    <a class="nav-btn" href="/">← Dashboard</a>
   </header>
 
-  <section id="categories">
-    <h2>Categories</h2>
-    <div id="cat-err" class="err"></div>
-    <table id="cat-table">
-      <thead><tr><th>Name</th><th>Description</th><th>Always inject</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <h3>Add custom category</h3>
-    <form id="cat-form">
-      <input name="name" placeholder="category_name (lowercase, [a-z0-9_]+)" required>
-      <label><input type="checkbox" name="always_inject"> always inject</label>
-      <input name="description" placeholder="description" required style="grid-column:1/3">
-      <button type="submit">Add</button>
-    </form>
-  </section>
+  <main>
+    <section id="categories">
+      <div class="sec-head"><span class="sec-title">Categories</span></div>
+      <div id="cat-err" class="err"></div>
+      <div class="table-scroll">
+        <table id="cat-table">
+          <thead><tr><th>Name</th><th>Description</th><th>Always inject</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="sub-form">
+        <h3>Add custom category</h3>
+        <form id="cat-form">
+          <input name="name" placeholder="category_name (lowercase, [a-z0-9_]+)" required>
+          <label><input type="checkbox" name="always_inject"> always inject</label>
+          <input name="description" placeholder="description" required>
+          <button type="submit">Add</button>
+        </form>
+      </div>
+    </section>
 
-  <section id="facts">
-    <h2>Facts</h2>
-    <div id="fact-err" class="err"></div>
-    <table id="fact-table">
-      <thead><tr><th>Category</th><th>Subject</th><th>Label</th><th>Value</th><th>By</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <h3>Add fact</h3>
-    <form id="fact-form">
-      <input name="category" placeholder="category" required>
-      <input name="subject" placeholder="subject (member name or 'family')" required>
-      <input name="label" placeholder="label" required>
-      <input name="value" placeholder="value" required>
-      <button type="submit">Add / update</button>
-    </form>
-  </section>
+    <section id="facts">
+      <div class="sec-head"><span class="sec-title">Facts</span></div>
+      <div id="fact-err" class="err"></div>
+      <div class="table-scroll">
+        <table id="fact-table">
+          <thead><tr><th>Category</th><th>Subject</th><th>Label</th><th>Value</th><th>By</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="sub-form">
+        <h3>Add fact</h3>
+        <form id="fact-form">
+          <input name="category" placeholder="category" required>
+          <input name="subject" placeholder="subject (member name or 'family')" required>
+          <input name="label" placeholder="label" required>
+          <input name="value" placeholder="value" required>
+          <button type="submit">Add / update</button>
+        </form>
+      </div>
+    </section>
+  </main>
 
 <script>
 async function api(path, init) {
@@ -126,7 +197,9 @@ async function refreshFacts() {
       tr.appendChild(cell(f.Category));
       tr.appendChild(cell(f.Subject));
       tr.appendChild(cell(f.Label));
-      tr.appendChild(cell(f.Value));
+      const valueCell = cell(f.Value);
+      valueCell.className = 'value';
+      tr.appendChild(valueCell);
       tr.appendChild(cell(f.CreatedBy));
       const actionCell = document.createElement('td');
       actionCell.appendChild(makeDeleteButton('delete', 'data-id', String(f.ID)));
