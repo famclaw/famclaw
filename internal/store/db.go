@@ -448,6 +448,56 @@ func (d *DB) migrate() error {
 		}
 	}
 
+	// Tier 1 conversation recall (search_conversations): FTS5 external-content
+	// index over messages. External content means the index never duplicates
+	// message text; the three triggers below keep it in sync with every
+	// INSERT/UPDATE/DELETE on messages. The DB handle is a single writer
+	// (SetMaxOpenConns(1)) under WAL, so this trigger set sees every message
+	// write across all paths (agent, web-UI, gateway) without touching
+	// SaveMessage.
+	//
+	// One-shot backfill: CREATE VIRTUAL TABLE IF NOT EXISTS gives no
+	// created-or-not signal, so we pre-check sqlite_master. The 'rebuild'
+	// command only runs when messages_fts did not exist before this Open,
+	// indexing rows written before the triggers existed; repeated Opens
+	// never re-scan the corpus.
+	var ftsExists int
+	if err := d.sql.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='messages_fts'`).Scan(&ftsExists); err != nil {
+		return fmt.Errorf("migrate fts pre-check: %w", err)
+	}
+	ftsCreated := ftsExists == 0
+	if ftsCreated {
+		if _, err := d.sql.Exec(`
+			CREATE VIRTUAL TABLE messages_fts USING fts5(
+				content,
+				content='messages',
+				content_rowid='id',
+				tokenize='porter unicode61')`); err != nil {
+			return fmt.Errorf("migrate create messages_fts: %w", err)
+		}
+	}
+	// Sync triggers — idempotent, and also cover a partially-migrated DB
+	// where the table exists but a trigger was dropped.
+	if _, err := d.sql.Exec(`
+		CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+			INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+		END;
+		CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+			INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+		END;
+		CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+			INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+			INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+		END;`); err != nil {
+		return fmt.Errorf("migrate fts triggers: %w", err)
+	}
+	if ftsCreated {
+		// Index the rows that predate the triggers (few MB at current size;
+		// measured ~44 ms over 2.4k rows).
+		if _, err := d.sql.Exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`); err != nil {
+			return fmt.Errorf("migrate fts backfill: %w", err)
+		}
+	}
 	return nil
 }
 
