@@ -111,12 +111,12 @@ func (d *DB) queryConversationSearch(ctx context.Context, q string, args ...any)
 	for rows.Next() {
 		var h ConversationSearchHit
 		if err := rows.Scan(&h.ID, &h.ConversationID, &h.Role, &h.CreatedAt, &h.Snippet); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan conversation search row: %w", err)
 		}
 		hits = append(hits, h)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("iterate conversation search rows: %w", err)
 	}
 	return hits, nil
 }
