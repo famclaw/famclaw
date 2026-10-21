@@ -4,6 +4,11 @@ All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
+## v0.14.2 — 2026-10-21
+
+### Fixed
+- **First-boot wizard 403.** On a fresh install with no users in config, the PIN bootstrap session could not save settings: the new parent-role gate (`protectParent`) on `/api/settings` had no parent entry to resolve yet, so the wizard's own settings save got 403 and first boot was stuck. The PIN/unlock bootstrap now seeds a placeholder parent entry (under the config lock, read and write in one acquisition) so the gate passes, and the wizard's settings save overwrites it with the real user list. Hotfix for v0.14.1. (#413, #414)
+
 ## v0.14.1 — 2026-10-21
 
 ### Added
