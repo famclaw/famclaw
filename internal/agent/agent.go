@@ -29,6 +29,7 @@ import (
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/compress"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/convmem"
 	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/filesend"
 	"github.com/famclaw/famclaw/internal/gateway"
@@ -750,6 +751,15 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			category, _ := args["category"].(string)
 			label, _ := args["label"].(string)
 			return usermemory.HandleForget(ctx, a.userMemory, a.user.Name, category, label)
+		case "builtin__search_conversations":
+			query, _ := args["query"].(string)
+			fromDate, _ := args["from_date"].(string)
+			toDate, _ := args["to_date"].(string)
+			var maxResults int
+			if v, ok := args["max_results"].(float64); ok {
+				maxResults = int(v)
+			}
+			return convmem.HandleSearch(ctx, a.db, a.user.Name, query, fromDate, toDate, maxResults)
 		case "builtin__list_pending_approvals":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway}
 			return admin.HandleListPendingApprovals(ctx, deps, args)

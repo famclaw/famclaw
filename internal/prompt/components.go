@@ -120,6 +120,8 @@ func capabilitiesComponent(c BuildContext) (string, bool) {
 				hints = append(hints, "Search the web via web_search — pass a plain-English query and get back a numbered list of title/url/snippet hits. Use it FIRST whenever you don't already have a specific URL; the snippets are often enough to answer directly, so cite the URLs. Do NOT use web_fetch to search — call web_search first, then web_fetch only when a snippet isn't enough.")
 			case "web_fetch":
 				hints = append(hints, "Fetch a URL and read its text content via web_fetch — useful for current events, weather, or public docs.")
+			case "search_conversations":
+				hints = append(hints, "Recall the user's own earlier conversations via search_conversations — pass keywords or a double-quoted exact phrase, plus optional from_date/to_date (YYYY-MM-DD). It only returns that user's own messages, best match first.")
 			default:
 				hints = append(hints, fmt.Sprintf("Use the %s tool when relevant.", tool))
 			}

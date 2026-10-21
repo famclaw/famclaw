@@ -1,3 +1,7 @@
+-- FamClaw schema golden file. Regenerate with:
+--   go test -tags dumpschema -run TestDumpSchema ./internal/store/
+-- (or set UPDATE_SCHEMA_GOLDEN=1 and run TestSchemaGolden)
+
 CREATE INDEX idx_approvals_status ON approvals(status);
 
 CREATE INDEX idx_approvals_user ON approvals(user_name);
@@ -143,6 +147,20 @@ CREATE TABLE messages (
 		gateway         TEXT NOT NULL DEFAULT 'unknown',  -- telegram | discord | whatsapp | web
 		created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+				content,
+				content='messages',
+				content_rowid='id',
+				tokenize='porter unicode61');
+
+CREATE TABLE 'messages_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID;
+
+CREATE TABLE 'messages_fts_data'(id INTEGER PRIMARY KEY, block BLOB);
+
+CREATE TABLE 'messages_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB);
+
+CREATE TABLE 'messages_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID;
 
 CREATE TABLE quarantine (
 		scan_target  TEXT PRIMARY KEY,

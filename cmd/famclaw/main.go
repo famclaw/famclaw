@@ -27,6 +27,7 @@ import (
 	"github.com/famclaw/famclaw/internal/browser"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/convmem"
 	"github.com/famclaw/famclaw/internal/credstore"
 	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/filesend"
@@ -671,6 +672,11 @@ func main() {
 		usermemory.ForgetDefinition(),
 	)
 	registered = append(registered, "remember_user_memory", "recall_user_memory", "forget_user_memory")
+	// Phase 4.1 — conversation recall (Tier 1): FTS5 keyword search over the
+	// user's own message history. Available to all roles; scoping to the
+	// caller's own history is enforced server-side in the handler.
+	builtinTools = append(builtinTools, convmem.SearchDefinition())
+	registered = append(registered, "search_conversations")
 	if cfg.Tools.WebSearch.Enabled {
 		builtinTools = append(builtinTools, websearch.Tool(cfg.Tools.WebSearch.AllowedRoles))
 		registered = append(registered, "web_search")
