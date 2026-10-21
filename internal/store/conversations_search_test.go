@@ -383,3 +383,75 @@ func TestFts5MatchExpr(t *testing.T) {
 		})
 	}
 }
+
+// TestFts5IsSyntaxError proves the FTS5 syntax-error classifier routes a
+// genuine FTS5 MATCH parse failure to the fallback path while rejecting
+// errors that are not FTS5 syntax failures: a real database/sql scan
+// failure, a driver SQLITE_ERROR that is not FTS5-related (missing
+// table), and nil.
+//
+// The errors are produced by the real driver (malformed MATCH supplied as
+// a query parameter, not a hand-built string), so the test pins the
+// behaviour against modernc.org/sqlite v1.60.1 error shape: a
+// *sqlite.Error with Code()==1 (SQLITE_ERROR) and FTS5-specific wording.
+func TestFts5IsSyntaxError(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := db.SaveMessage("conv-fts5cls", "alice", "user", "seed row for scan", "", "", "web"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// (a) Genuine FTS5 MATCH syntax failure. The malformed MATCH expression
+	// is passed as a real query parameter so the driver produces the
+	// error; classification must hold both unwrapped and wrapped the same
+	// way queryConversationSearch wraps driver errors.
+	_, err := db.sql.QueryContext(ctx, `SELECT * FROM messages_fts WHERE messages_fts MATCH ?`, "foo AND (")
+	if err == nil {
+		t.Fatalf("expected an FTS5 syntax error, got nil")
+	}
+	if !fts5IsSyntaxError(err) {
+		t.Fatalf("unwrapped genuine FTS5 syntax error not detected: %v", err)
+	}
+	if wrapped := fmt.Errorf("search conversations: %w", err); !fts5IsSyntaxError(wrapped) {
+		t.Fatalf("wrapped genuine FTS5 syntax error not routed to fallback: %v", wrapped)
+	}
+
+	// (b) A real scan failure (database/sql arity mismatch) is not an FTS5
+	// syntax error and must NOT trigger the fallback.
+	rows, err := db.sql.QueryContext(ctx, `SELECT id, conversation_id FROM messages`)
+	if err != nil {
+		t.Fatalf("query for scan failure: %v", err)
+	}
+	// NOTE: pool is SetMaxOpenConns(1) - close rows explicitly before any
+	// further query on db.sql, or the next QueryContext deadlocks on the
+	// single connection.
+	if !rows.Next() {
+		t.Fatalf("expected a seeded row to scan")
+	}
+	var a, b, c int
+	var d, e string
+	scanErr := rows.Scan(&a, &b, &c, &d, &e)
+	_ = rows.Close()
+	if scanErr == nil {
+		t.Fatalf("expected a scan arity error, got nil")
+	}
+	if fts5IsSyntaxError(scanErr) {
+		t.Fatalf("real scan failure misclassified as FTS5 syntax error: %v", scanErr)
+	}
+
+	// (c) A driver SQLITE_ERROR that is not FTS5 (missing table) shares
+	// Code()==1 with FTS5 parse failures; it must not be treated as one.
+	_, err = db.sql.QueryContext(ctx, `SELECT * FROM no_such_table_probe_xyz`)
+	if err == nil {
+		t.Fatalf("expected a no-such-table error, got nil")
+	}
+	if fts5IsSyntaxError(err) {
+		t.Fatalf("non-FTS5 SQLITE_ERROR misclassified as FTS5 syntax error: %v", err)
+	}
+
+	// (d) nil is never a syntax error.
+	if fts5IsSyntaxError(nil) {
+		t.Fatalf("nil classified as FTS5 syntax error")
+	}
+}

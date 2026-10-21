@@ -2,9 +2,12 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"modernc.org/sqlite"
 )
 
 // ConversationSearchHit is one FTS5 match returned by SearchConversations.
@@ -135,13 +138,54 @@ func normalizeSearchDate(s string) string {
 }
 
 // fts5IsSyntaxError reports whether err is an FTS5 MATCH syntax failure.
+//
+// Detection is anchored on the driver's typed error, not on raw error text.
+// The pinned driver (modernc.org/sqlite v1.60.1) surfaces SQL failures as a
+// *sqlite.Error whose Code() is the SQLite result code; we require err to be
+// (or wrap) such a driver error in the SQLITE_ERROR class before it can be a
+// candidate. A database/sql scan failure or a foreign wrapped error is not a
+// driver error and is rejected outright.
+//
+// The result code alone does NOT isolate FTS5 parse failures: the generic
+// SQLITE_ERROR code is shared by other conditions such as "no such table"
+// (verified against a real error on v1.60.1, where an FTS5 syntax failure and
+// a missing table both report Code()==1). So the FTS5 class is still pinned
+// by its specific message wording; that wording match remains the
+// authoritative discriminator, reached only after the structured Code() check,
+// and it targets modernc.org/sqlite v1.60.1 FTS5 error wording -
+// re-check on driver upgrade.
 func fts5IsSyntaxError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		// Not a driver-typed error (e.g. a database/sql scan failure or a
+		// foreign wrapped error): it cannot be an FTS5 MATCH parse failure.
+		return false
+	}
+	if se.Code() != sqliteErrorGeneric { // SQLITE_ERROR
+		return false
+	}
+	return isFTS5SyntaxMessage(se.Error())
+}
+
+// isFTS5SyntaxMessage matches the FTS5 parser's error wording.
+//
+// targets modernc.org/sqlite v1.60.1 FTS5 error wording; re-check on upgrade.
+// This narrow wording match (rather than a broad scan of arbitrary error text)
+// is the authoritative FTS5-syntax discriminator, because the SQLite result
+// code alone cannot distinguish an FTS5 parse failure from other
+// SQLITE_ERROR conditions.
+func isFTS5SyntaxMessage(msg string) bool {
 	return strings.Contains(msg, "malformed MATCH") || strings.Contains(msg, "fts5: syntax")
 }
+
+// sqliteErrorGeneric is the SQLite SQLITE_ERROR result code (generic error).
+// The modernc.org/sqlite driver does not re-export the result-code constants
+// at its top level, so the value is named here. FTS5 MATCH parse failures
+// report this code (verified against modernc.org/sqlite v1.60.1).
+const sqliteErrorGeneric = 1
 
 // fts5SyntaxChars are the characters with special meaning in an FTS5 MATCH
 // expression (operators, phrase quotes, prefix star, boost caret, grouping
