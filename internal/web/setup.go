@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/hardware"
 	"github.com/famclaw/famclaw/internal/notify"
 )
@@ -261,6 +262,23 @@ func (s *Server) handleSetupPIN(w http.ResponseWriter, r *http.Request) {
 		userID = 1
 	}
 
+	// First-boot sentinel: seed a placeholder parent so protectParent
+	// resolves for the bootstrap session. The wizard's POST /api/settings
+	// overwrites this with the real user list on save. The emptiness check
+	// is held under cfgMu: cfg.Users is written elsewhere under the same
+	// lock, so the read must not race those writers.
+	// Note: config.UserConfig has no ID field; protectParent resolves
+	// userID=1 by index (getUserByID -> cfg.Users[0]), so this zero-value
+	// placeholder is the first-boot parent entry.
+	s.cfgMu.Lock()
+	if userID == 1 && len(s.cfg.Users) == 0 {
+		s.cfg.Users = append(s.cfg.Users, config.UserConfig{
+			Name: "parent",
+			Role: "parent",
+		})
+	}
+	s.cfgMu.Unlock()
+
 	sid, err := s.sessions.Create(ctx, userID, clientIP(r), r.Header.Get("User-Agent"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -399,6 +417,22 @@ func (s *Server) handleSetupUnlock(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[setup] resolveParentUserID failed during unlock, using fallback userID=1: %v", err)
 		userID = 1
 	}
+
+	// Same first-boot sentinel as handleSetupPIN: if the config has no users
+	// yet, seed a placeholder parent so the re-seated bootstrap session can
+	// pass protectParent. The wizard's settings save replaces it. The
+	// emptiness check is held under cfgMu for the same reason as above.
+	// Note: config.UserConfig has no ID field; protectParent resolves
+	// userID=1 by index (getUserByID -> cfg.Users[0]), so this zero-value
+	// placeholder is the first-boot parent entry.
+	s.cfgMu.Lock()
+	if userID == 1 && len(s.cfg.Users) == 0 {
+		s.cfg.Users = append(s.cfg.Users, config.UserConfig{
+			Name: "parent",
+			Role: "parent",
+		})
+	}
+	s.cfgMu.Unlock()
 
 	sid, err := s.sessions.Create(ctx, userID, ip, r.Header.Get("User-Agent"))
 	if err != nil {
