@@ -264,15 +264,17 @@ func (s *Server) handleSetupPIN(w http.ResponseWriter, r *http.Request) {
 
 	// First-boot sentinel: seed a placeholder parent so protectParent
 	// resolves for the bootstrap session. The wizard's POST /api/settings
-	// overwrites this with the real user list on save.
+	// overwrites this with the real user list on save. The emptiness check
+	// is held under cfgMu: cfg.Users is written elsewhere under the same
+	// lock, so the read must not race those writers.
+	s.cfgMu.Lock()
 	if userID == 1 && len(s.cfg.Users) == 0 {
-		s.cfgMu.Lock()
 		s.cfg.Users = append(s.cfg.Users, config.UserConfig{
 			Name: "parent",
 			Role: "parent",
 		})
-		s.cfgMu.Unlock()
 	}
+	s.cfgMu.Unlock()
 
 	sid, err := s.sessions.Create(ctx, userID, clientIP(r), r.Header.Get("User-Agent"))
 	if err != nil {
@@ -415,15 +417,16 @@ func (s *Server) handleSetupUnlock(w http.ResponseWriter, r *http.Request) {
 
 	// Same first-boot sentinel as handleSetupPIN: if the config has no users
 	// yet, seed a placeholder parent so the re-seated bootstrap session can
-	// pass protectParent. The wizard's settings save replaces it.
+	// pass protectParent. The wizard's settings save replaces it. The
+	// emptiness check is held under cfgMu for the same reason as above.
+	s.cfgMu.Lock()
 	if userID == 1 && len(s.cfg.Users) == 0 {
-		s.cfgMu.Lock()
 		s.cfg.Users = append(s.cfg.Users, config.UserConfig{
 			Name: "parent",
 			Role: "parent",
 		})
-		s.cfgMu.Unlock()
 	}
+	s.cfgMu.Unlock()
 
 	sid, err := s.sessions.Create(ctx, userID, ip, r.Header.Get("User-Agent"))
 	if err != nil {
