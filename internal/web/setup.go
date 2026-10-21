@@ -267,6 +267,9 @@ func (s *Server) handleSetupPIN(w http.ResponseWriter, r *http.Request) {
 	// overwrites this with the real user list on save. The emptiness check
 	// is held under cfgMu: cfg.Users is written elsewhere under the same
 	// lock, so the read must not race those writers.
+	// Note: config.UserConfig has no ID field; protectParent resolves
+	// userID=1 by index (getUserByID -> cfg.Users[0]), so this zero-value
+	// placeholder is the first-boot parent entry.
 	s.cfgMu.Lock()
 	if userID == 1 && len(s.cfg.Users) == 0 {
 		s.cfg.Users = append(s.cfg.Users, config.UserConfig{
@@ -419,6 +422,9 @@ func (s *Server) handleSetupUnlock(w http.ResponseWriter, r *http.Request) {
 	// yet, seed a placeholder parent so the re-seated bootstrap session can
 	// pass protectParent. The wizard's settings save replaces it. The
 	// emptiness check is held under cfgMu for the same reason as above.
+	// Note: config.UserConfig has no ID field; protectParent resolves
+	// userID=1 by index (getUserByID -> cfg.Users[0]), so this zero-value
+	// placeholder is the first-boot parent entry.
 	s.cfgMu.Lock()
 	if userID == 1 && len(s.cfg.Users) == 0 {
 		s.cfg.Users = append(s.cfg.Users, config.UserConfig{
