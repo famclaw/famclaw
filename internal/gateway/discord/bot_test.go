@@ -580,7 +580,7 @@ func TestSendFile(t *testing.T) {
 }
 
 // TestSendFileStaleDMChannelRecovery is the regression test for the
-// stale-DM-cache asymmetry the first no-mistakes review flagged: Send used
+// stale-DM-cache asymmetry the first review flagged: Send used
 // to invalidate a cached DM channel only on text-send failure, so a file
 // delivery to a user who had removed-and-re-added the bot would keep hitting
 // the dead cached channel forever. SendFile now shares Send's recovery:

@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// validSecret is a 64-char hex value (2× openssl rand -hex 32) that passes
+// validHex is a 64-char hex value (2× openssl rand -hex 32) that passes
 // the secret-length check so the table rows below exercise the bind and
 // origin-policy rules in isolation.
-const validSecret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // TestValidate_ServerHost covers the bind matrix (design-note cases T18–T21):
 // a wildcard bind requires a 32+ char secret, loopback does not, and a host
@@ -29,7 +29,7 @@ func TestValidate_ServerHost(t *testing.T) {
 		{
 			name:        "wildcard 0.0.0.0 with valid secret",
 			host:        "0.0.0.0",
-			secret:      validSecret,
+			secret:      validHex,
 			wantErrSubs: nil,
 		},
 		{
@@ -68,7 +68,7 @@ func TestValidate_ServerHost(t *testing.T) {
 		{
 			name:        "garbage host",
 			host:        "not-an-ip",
-			secret:      validSecret,
+			secret:      validHex,
 			wantErrSubs: []string{"server.host", "not-an-ip"},
 		},
 	}

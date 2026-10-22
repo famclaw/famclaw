@@ -196,7 +196,7 @@ First-party skills (like `family-knowledge`) are maintained in `skills-repo/fami
 
 ## Code review focus / recurring pitfalls
 
-famclaw code must be correct, efficient, tested, and idiomatic Go. The bug classes below recur in famclaw PRs (from CodeRabbit + no-mistakes review history) — avoid introducing them; reviewers should watch for them.
+famclaw code must be correct, efficient, tested, and idiomatic Go. The bug classes below recur in famclaw PRs (from CodeRabbit + internal review history) — avoid introducing them; reviewers should watch for them.
 
 **Correctness**
 - Brittle string comparisons for logic decisions (e.g. `turn.Output != raw`) — use structured/normalized comparison, not raw string equality. (PR #182)
@@ -233,7 +233,7 @@ famclaw code must be correct, efficient, tested, and idiomatic Go. The bug class
 ## Build
 - `make cross` (all targets, CGO_ENABLED=0)
 
-## Crew workflow discipline
+## Team workflow discipline
 - Commit early and often; don't sit on uncommitted work.
 - One concern per PR — keep changes focused and reviewable.
 - Resolve EVERY code-review comment: either fix it, or reply on the PR with a clear rationale (out-of-scope / false-positive / accepted-tradeoff). Never leave a review comment silently unaddressed.
