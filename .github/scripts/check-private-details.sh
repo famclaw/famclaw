@@ -67,9 +67,9 @@ scan_file() {
   hits=$(
     {
       grep -nE "$HOME_PATH" "$file" 2>/dev/null | grep -vE "$PLACEHOLDER" \
-        | sed 's/^\([0-9][0-9]*\):.*/\1 (HOME_PATH)/'
+        | sed 's/^\([0-9][0-9]*\):.*/\1:(HOME_PATH)/'
       grep -nE "$PRIVATE_IP" "$file" 2>/dev/null | grep -vE "$ALLOWED_IP" \
-        | sed 's/^\([0-9][0-9]*\):.*/\1 (PRIVATE_IP)/'
+        | sed 's/^\([0-9][0-9]*\):.*/\1:(PRIVATE_IP)/'
     } | sort -u
   )
   if [ -n "$hits" ]; then
@@ -96,9 +96,9 @@ while IFS= read -r f; do
       c_hits=$(
         {
           grep -nE "$CODENAME" "$f" 2>/dev/null | grep -vE "$SYNTHETIC" \
-            | sed 's/^\([0-9][0-9]*\):.*/\1 (CODENAME)/'
+            | sed 's/^\([0-9][0-9]*\):.*/\1:(CODENAME)/'
           grep -nE "$CREDENTIAL" "$f" 2>/dev/null | grep -vE "$SYNTHETIC" \
-            | sed 's/^\([0-9][0-9]*\):.*/\1 (CREDENTIAL)/'
+            | sed 's/^\([0-9][0-9]*\):.*/\1:(CREDENTIAL)/'
         } | sort -u
       )
       if [ -n "$c_hits" ]; then
