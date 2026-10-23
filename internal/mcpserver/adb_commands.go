@@ -186,6 +186,44 @@ func (e *ADBExecutor) Swipe(ctx context.Context, x1, y1, x2, y2, ms int) error {
 	return errwrap("swipe", err)
 }
 
+// ErrNoLauncher is returned by ResolveLauncher when the package has no
+// launchable (MAIN/LAUNCHER) activity — e.g. a helper or service-only app.
+var ErrNoLauncher = errors.New("no launchable activity")
+
+// lastNonEmptyLine returns the last non-blank, trimmed line of s ("" if none).
+// resolve-activity `--brief` puts the component on one line, but some build
+// flavors prepend a header, so we anchor on the final content line.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+// ResolveLauncher resolves a package to its launchable component
+// ("pkg/activity") by asking the device's package manager for the
+// MAIN/LAUNCHER intent (design §4 open_app row). This is the half of open_app
+// that turns a bare package name into the component `am start` needs.
+func (e *ADBExecutor) ResolveLauncher(ctx context.Context, pkg string) (string, error) {
+	serial, err := e.resolveSerial(ctx)
+	if err != nil {
+		return "", err
+	}
+	out, err := e.run(ctx, serial, "shell", "cmd", "package", "resolve-activity",
+		"--brief", "-c", "android.intent.category.LAUNCHER", pkg)
+	if err != nil {
+		return "", fmt.Errorf("resolve-activity: %w", err)
+	}
+	comp := lastNonEmptyLine(string(out))
+	if comp == "" {
+		return "", fmt.Errorf("resolve launcher for %q: %w", pkg, ErrNoLauncher)
+	}
+	return comp, nil
+}
+
 // StartApp launches pkg/Activity via `am start -W` and returns the raw
 // output (stage 3 validates the component against the allowlist first).
 func (e *ADBExecutor) StartApp(ctx context.Context, component string) (string, error) {

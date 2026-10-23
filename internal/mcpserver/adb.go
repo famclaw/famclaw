@@ -105,6 +105,13 @@ type ADBExecutor struct {
 	dumpXML string
 	dumpAt  time.Time
 	dumpTTL time.Duration
+
+	// TypePrecheck, when non-nil, is called with the full text before the type
+	// tool issues any `input text` command; a returned error refuses the
+	// action and no command is issued. Stage 4 wires the credential/OTP/
+	// passcode content hard-stop (design §5.1) into this hook point; stage 3
+	// only defines the seam so the type path already consults it.
+	TypePrecheck func(text string) error
 }
 
 // NewADBExecutor builds an executor. alias is the policy device-alias (the

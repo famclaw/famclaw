@@ -104,24 +104,20 @@ func TestToolList_ShellOn(t *testing.T) {
 	}
 }
 
-func TestDispatch_ReturnsNotImplemented(t *testing.T) {
-	c := inProcessClient(t, initPolicy(false))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	// tap is a mutating tool: still a stub until the policy/safety card, so
-	// it exercises the not-implemented path without touching adb.
-	req := mcp.CallToolRequest{}
-	req.Params.Name = "tap"
-	res, err := c.CallTool(ctx, req)
+// TestDispatch_UnknownTool checks the dispatch default branch: an unknown
+// tool name returns a soft "unknown tool" result instead of panicking, and
+// never touches adb.
+func TestDispatch_UnknownTool(t *testing.T) {
+	fake := newFakeADB()
+	res, err := dispatch(context.Background(), newTestExecutor(t, fake), "frobnicate", nil)
 	if err != nil {
-		t.Fatalf("CallTool: %v", err)
+		t.Fatalf("dispatch(unknown): %v", err)
 	}
-	if res.IsError {
-		t.Errorf("expected success result, got error: %+v", res)
+	if got := resultText(res); !strings.Contains(got, "unknown tool") {
+		t.Errorf("want 'unknown tool' guidance, got: %q", got)
 	}
-	text := resultText(res)
-	if !strings.Contains(text, "not implemented") {
-		t.Errorf("expected 'not implemented' in result, got: %q", text)
+	if n := len(fake.calls()); n != 0 {
+		t.Errorf("unknown tool must not touch adb, got %d calls", n)
 	}
 }
 

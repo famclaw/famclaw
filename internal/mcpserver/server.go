@@ -35,7 +35,8 @@ func NewWithExecutor(policy *PolicyConfig, version string, adb *ADBExecutor) *se
 
 // addTools registers all v1 tool handlers on the server.
 // Every tool routes through dispatch — the single entry point where the
-// policy check (later card) and adb execution are inserted.
+// policy/safety checks (stage 4: allowlists, screen-state gating, rate
+// limit, credential guard, audit) and adb execution are inserted.
 func addTools(srv *server.MCPServer, policy *PolicyConfig, adb *ADBExecutor) {
 	h := func(name string) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -59,9 +60,12 @@ func addTools(srv *server.MCPServer, policy *PolicyConfig, adb *ADBExecutor) {
 	), h("find"))
 
 	srv.AddTool(mcp.NewTool("tap",
-		mcp.WithDescription("Tap at screen coordinates. Coordinates should come from a prior find call."),
-		mcp.WithNumber("x", mcp.Required(), mcp.Description("X coordinate in pixels")),
-		mcp.WithNumber("y", mcp.Required(), mcp.Description("Y coordinate in pixels")),
+		mcp.WithDescription("Tap a screen element. Provide a selector (text / content_desc / resource_id) to tap the first matching element's center, resolved from the live UI hierarchy; or explicit x/y pixel coordinates when no selector is given. Selector takes precedence."),
+		mcp.WithString("text", mcp.Description("Visible text of the element to tap (selector)")),
+		mcp.WithString("content_desc", mcp.Description("Content description of the element to tap (selector)")),
+		mcp.WithString("resource_id", mcp.Description("Android resource-id of the element to tap (selector)")),
+		mcp.WithNumber("x", mcp.Description("X pixel coordinate (used when no selector is given)")),
+		mcp.WithNumber("y", mcp.Description("Y pixel coordinate (used when no selector is given)")),
 	), h("tap"))
 
 	srv.AddTool(mcp.NewTool("type",
@@ -97,10 +101,11 @@ func addTools(srv *server.MCPServer, policy *PolicyConfig, adb *ADBExecutor) {
 	}
 }
 
-// dispatch routes a tool call. Read tools (device.status, screenshot, find)
-// run through the adb executor; mutating tools stay stubbed until the
-// policy/safety card (stage 3) wires allowlists, screen-state gating,
-// rate limit, credential guard, and audit.
+// dispatch routes a tool call to its handler. Read tools (device.status,
+// screenshot, find) and action tools (tap, type, keyevent, swipe, open_app,
+// shell) all run through the adb executor. Stage 4 inserts the policy/safety
+// checks (allowlists, screen-state gating, rate limit, credential guard,
+// audit) above each handler in this function.
 func dispatch(ctx context.Context, adb *ADBExecutor, tool string, args map[string]any) (*mcp.CallToolResult, error) {
 	switch tool {
 	case "device.status":
@@ -109,9 +114,21 @@ func dispatch(ctx context.Context, adb *ADBExecutor, tool string, args map[strin
 		return handleScreenshot(ctx, adb)
 	case "find":
 		return handleFind(ctx, adb, args)
+	case "tap":
+		return handleTap(ctx, adb, args)
+	case "type":
+		return handleType(ctx, adb, args)
+	case "keyevent":
+		return handleKeyEvent(ctx, adb, args)
+	case "swipe":
+		return handleSwipe(ctx, adb, args)
+	case "open_app":
+		return handleOpenApp(ctx, adb, args)
+	case "shell":
+		return handleShell(ctx, adb, args)
 	default:
 		return mcp.NewToolResultText(
-			fmt.Sprintf("[android-control] %s: not implemented yet (skeleton). This tool is registered but the adb backend is not wired.", tool),
+			fmt.Sprintf("[android-control] %s: unknown tool.", tool),
 		), nil
 	}
 }
