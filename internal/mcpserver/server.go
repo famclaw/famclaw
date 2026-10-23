@@ -10,10 +10,16 @@ import (
 
 // New builds the android-control MCP server with all v1 tools registered.
 // The policy controls which tools are exposed (shell is gated behind
-// policy.Tools.Shell, default off). In this skeleton card the dispatch body
-// returns a "not implemented" stub; the tool registry and JSON schemas are
-// final so the server already lists correctly over stdio.
+// policy.Tools.Shell, default off). Production wiring: the executor shells
+// out to the host adb binary.
 func New(policy *PolicyConfig, version string) *server.MCPServer {
+	adb := NewRealADBExecutor(policy.DeviceAlias, policy.DeviceSerial)
+	return NewWithExecutor(policy, version, adb)
+}
+
+// NewWithExecutor builds the server with an injected executor so tests can
+// back it with a fake adb runner (design §6.1 fake-adb seam).
+func NewWithExecutor(policy *PolicyConfig, version string, adb *ADBExecutor) *server.MCPServer {
 	srv := server.NewMCPServer("android-control", version,
 		server.WithInstructions(
 			"Control an Android device via ADB. "+
@@ -23,17 +29,17 @@ func New(policy *PolicyConfig, version string) *server.MCPServer {
 		),
 	)
 
-	addTools(srv, policy)
+	addTools(srv, policy, adb)
 	return srv
 }
 
 // addTools registers all v1 tool handlers on the server.
 // Every tool routes through dispatch — the single entry point where the
-// policy check (later card) and adb execution will be inserted.
-func addTools(srv *server.MCPServer, policy *PolicyConfig) {
+// policy check (later card) and adb execution are inserted.
+func addTools(srv *server.MCPServer, policy *PolicyConfig, adb *ADBExecutor) {
 	h := func(name string) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return dispatch(ctx, name, req.GetArguments())
+			return dispatch(ctx, adb, name, req.GetArguments())
 		}
 	}
 
@@ -91,12 +97,21 @@ func addTools(srv *server.MCPServer, policy *PolicyConfig) {
 	}
 }
 
-// dispatch is the single entry point every tool handler calls. In this
-// skeleton card it returns a "not implemented" stub; the next card inserts
-// the policy check (allowlist, screen-state, rate-limit, credential guard)
-// and the adb execution here.
-func dispatch(_ context.Context, tool string, _ map[string]any) (*mcp.CallToolResult, error) {
-	return mcp.NewToolResultText(
-		fmt.Sprintf("[android-control] %s: not implemented yet (skeleton). This tool is registered but the adb backend is not wired.", tool),
-	), nil
+// dispatch routes a tool call. Read tools (device.status, screenshot, find)
+// run through the adb executor; mutating tools stay stubbed until the
+// policy/safety card (stage 3) wires allowlists, screen-state gating,
+// rate limit, credential guard, and audit.
+func dispatch(ctx context.Context, adb *ADBExecutor, tool string, args map[string]any) (*mcp.CallToolResult, error) {
+	switch tool {
+	case "device.status":
+		return handleStatus(ctx, adb)
+	case "screenshot":
+		return handleScreenshot(ctx, adb)
+	case "find":
+		return handleFind(ctx, adb, args)
+	default:
+		return mcp.NewToolResultText(
+			fmt.Sprintf("[android-control] %s: not implemented yet (skeleton). This tool is registered but the adb backend is not wired.", tool),
+		), nil
+	}
 }

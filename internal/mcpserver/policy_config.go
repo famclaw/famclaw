@@ -22,8 +22,14 @@ import (
 type PolicyConfig struct {
 	// DeviceAlias is the stable name shown in logs and audit entries.
 	// The real adb serial is resolved internally and never appears in
-	// config, logs, or MCP responses.
+	// logs or MCP responses.
 	DeviceAlias string `yaml:"device_alias"`
+
+	// DeviceSerial optionally pins the adb serial for DeviceAlias
+	// (design §5.4: "or pinned in config"). Empty = auto-detect: with
+	// exactly one online device it is used; with several, calls fail
+	// closed until a pin is set.
+	DeviceSerial string `yaml:"device_serial"`
 
 	// ScreenPolicy: "refuse_when_off" (v1 default) or "wake_on_request".
 	ScreenPolicy string `yaml:"screen_policy"`

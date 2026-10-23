@@ -31,10 +31,10 @@ deny: [com.android.chrome]
 `
 
 	tests := []struct {
-		name      string
-		content   string
-		wantErr   bool
-		validate  func(t *testing.T, cfg *PolicyConfig)
+		name     string
+		content  string
+		wantErr  bool
+		validate func(t *testing.T, cfg *PolicyConfig)
 	}{
 		{
 			name:    "empty path returns safe defaults",

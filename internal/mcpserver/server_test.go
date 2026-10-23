@@ -29,6 +29,24 @@ func inProcessClient(t *testing.T, policy *PolicyConfig) *client.Client {
 	if err != nil {
 		t.Fatalf("NewInProcessClient: %v", err)
 	}
+	return initInProcessClient(t, c)
+}
+
+// inProcessClientWithExecutor builds the in-process client against a
+// fake-adb-backed executor (design §6.1 fake-adb seam) so dispatch tests
+// never touch a real device.
+func inProcessClientWithExecutor(t *testing.T, policy *PolicyConfig, adb *ADBExecutor) *client.Client {
+	t.Helper()
+	srv := NewWithExecutor(policy, "test", adb)
+	c, err := client.NewInProcessClient(srv)
+	if err != nil {
+		t.Fatalf("NewInProcessClient: %v", err)
+	}
+	return initInProcessClient(t, c)
+}
+
+func initInProcessClient(t *testing.T, c *client.Client) *client.Client {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	initReq := mcp.InitializeRequest{}
@@ -90,8 +108,10 @@ func TestDispatch_ReturnsNotImplemented(t *testing.T) {
 	c := inProcessClient(t, initPolicy(false))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// tap is a mutating tool: still a stub until the policy/safety card, so
+	// it exercises the not-implemented path without touching adb.
 	req := mcp.CallToolRequest{}
-	req.Params.Name = "device.status"
+	req.Params.Name = "tap"
 	res, err := c.CallTool(ctx, req)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
