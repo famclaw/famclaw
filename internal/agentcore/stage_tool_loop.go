@@ -184,6 +184,12 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			// produces a different URL than the last known one.
 			pageChanged := false
 
+			// batchImages is reset per-batch and holds base64 data URIs from
+			// MCP image content (android-control screenshots). It never
+			// reaches llmMsgs: the describe step below consumes it and only
+			// text continues.
+			var batchImages []string
+
 			for _, tc := range pendingCalls {
 				// Abort remaining queued calls if an earlier mutating action
 				// changed the page — those refs are now stale.
@@ -426,9 +432,31 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						Duration: duration,
 					})
 				} else {
+					var images []string
 					if result != nil && len(result.Content) > 0 {
-						resultJSON, _ := json.Marshal(result.Content)
-						toolText = string(resultJSON)
+						toolText, images = splitMCPContent(result.Content)
+					}
+					if len(images) > 0 {
+						// MCP image results (android-control screenshots)
+						// must never be JSON-stringified into the transcript
+						// (the old behaviour), nor appended to llmMsgs as raw
+						// image_url parts: image+tools in one request makes
+						// local multimodal models silently drop tool calls
+						// (data/fc-vision-plus-tools), base64 blows the
+						// context window, and a tool-role image is invisible
+						// to the vision path. Instead the raw base64 stays in
+						// this loop-local buffer: after the batch we run the
+						// no-tools describe step once (describeBatchImages)
+						// and only its text description continues into the
+						// follow-up call, history rebuild, compression and
+						// any audit copy. The base64 reaches exactly one
+						// place: the describe request.
+						batchImages = append(batchImages, images...)
+						note := fmt.Sprintf("[screenshot returned by %s; vision description follows]", tc.Function.Name)
+						if toolText != "" {
+							note += ": " + toolText
+						}
+						toolText = note
 					}
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName: tc.Function.Name,
@@ -456,12 +484,25 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				}
 			}
 
+			// Vision describe: MCP image tool results (android-control
+			// screenshots) are consumed here — one no-tools describe call for
+			// the whole batch — so only a text description continues into
+			// the follow-up LLM call. Never send image parts alongside tool
+			// definitions in this loop (see data/fc-vision-plus-tools).
+			var visionNote string
+			if len(batchImages) > 0 {
+				visionNote = describeBatchImages(ctx, client, deps.Temperature, batchImages)
+			}
+
 			if deps.RebuildHistory {
 				// Collect tool results from this iteration and append a history item.
 				iterResults := turn.ToolCalls[tcStart:]
 				resultStrs := make([]string, 0, len(iterResults))
 				for _, tr := range iterResults {
 					resultStrs = append(resultStrs, rebuildResultLine(tr))
+				}
+				if visionNote != "" {
+					resultStrs = append(resultStrs, visionNote)
 				}
 				eval, memory, nextGoal := ParseSelfSummary(lastModelText)
 				if eval == "" {
@@ -519,6 +560,13 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					)
 					llmMsgs = compressToLLM(compressed, llmMsgs)
 				}
+			}
+
+			// Legacy path: hand the vision description to the follow-up call
+			// as a user-role message (text only — the image parts were
+			// consumed by the describe step and never enter this buffer).
+			if visionNote != "" && !deps.RebuildHistory {
+				llmMsgs = append(llmMsgs, llm.Message{Role: "user", Content: visionNote})
 			}
 
 			// Call LLM again with tool results

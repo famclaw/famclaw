@@ -265,6 +265,21 @@ The sandbox launcher is the FamClaw binary itself, re-executed with the `-sandbo
 
 If the host kernel lacks landlock or seccomp support, FamClaw refuses to start rather than run an unsandboxed subprocess (fail-closed behavior). Operators who genuinely want unconfined subprocesses must explicitly set `tools.sandbox.enabled: false`.
 
+### MCP internal policy as compensating boundary
+
+On hosts where kernel sandboxing is unavailable — macOS has no landlock or seccomp; on Linux a sandboxed adb server cannot bind its local sockets — operators set `tools.sandbox.allow_unconfined: true` so that stdio MCP servers launch without the OS sandbox. This is an explicit, logged opt-out, and it removes the kernel-level filesystem and network isolation around the MCP subprocess.
+
+For `android-control` (the family phone driver) this is compensated by the MCP server's **own policy engine**, which is the containment boundary in unconfined mode:
+
+- **Default-deny app allowlist** with per-app modes (`full`, `read_only`, `deny`); a named `deny` entry always wins. Actions only execute against the current foreground package and only when that package is allowed for that mode.
+- **Per-tool kill-switches** (`tools:` map in the policy file); `shell` (arbitrary `adb shell`) is off by default and never exposed to the LLM.
+- **Device-state guardrails**: mutating tools refuse unless the screen is on and unlocked (`refuse_when_off` is the v1 default).
+- **Rate limiting** (`max_actions_per_turn`, `min_interval_ms`) bounds how fast the device can be driven.
+- **No credential-shaped input**: `type` payloads matching OTP/PIN/password patterns are rejected with a fixed message.
+- **No-leak scrubbing**: the device serial is replaced with a placeholder in all tool results and errors; the device is addressed by a stable alias, never a serial.
+
+Policy-level containment constrains *which adb commands the server will execute*; it is not kernel isolation, so an unconfined host grants the subprocess its full host-level filesystem and network access. Run `allow_unconfined` only on a host whose compromise is acceptable to the family (the v1 target host is the operator's own machine with an authorized adb connection to the family phone).
+
 ### Built-in file tool confinement
 
 The built-in file tools (`file_read`, `file_write`, `file_stat`, `file_list`) are confined to the sandbox root via path resolution in the agent layer. Any attempt to access a path outside the sandbox root results in an error.
