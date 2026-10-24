@@ -107,9 +107,9 @@ func (blockingRunner) Run(ctx context.Context, argv ...string) ([]byte, error) {
 }
 
 func TestOnlineDevices(t *testing.T) {
-	out := "List of devices attached\n\nemulator-5554\tdevice\n192.168.1.9:5555\tdevice\noffline1\toffline\nunauth\tunauthorized\n"
+	out := "List of devices attached\n\nemulator-5554	device\n192.168.1.50:5555	device\noffline1	offline\nunauth	unauthorized\n"
 	got := onlineDevices(out)
-	want := []string{"emulator-5554", "192.168.1.9:5555"}
+	want := []string{"emulator-5554", "192.168.1.50:5555"}
 	if len(got) != len(want) {
 		t.Fatalf("want %v, got %v", want, got)
 	}
