@@ -39,3 +39,6 @@ dispatches/
 # Private planning docs — never commit
 docs/superpowers/
 /famclaw
+
+# Root-level Go build artifacts (from `go build` of the main package at root)
+/android-control

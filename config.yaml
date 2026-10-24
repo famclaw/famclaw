@@ -162,6 +162,18 @@ skills:
   #     url: "http://<your-host>:3001/mcp"
   #     headers:
   #       Authorization: "Bearer ${MCP_TOKEN}"
+  #   # Android phone control (separate binary: go build -o android-control ./cmd/android-control)
+  #   android-control:
+  #     transport: stdio
+  #     command: android-control
+  #     env:
+  #       ANDROID_CONTROL_POLICY_FILE: "/etc/famclaw/android-control.yaml"  # 0600, read by the server only
+  #     # macOS note: famclaw's stdio sandbox is kernel landlock+seccomp (Linux).
+  #     # On a host without that support the MCP pool refuses to start stdio
+  #     # servers unless tools.sandbox.allow_unconfined: true is set; on macOS
+  #     # that opt-in is therefore required. The android-control server's own
+  #     # policy engine then acts as the containment boundary — see
+  #     # docs/SECURITY_MODEL.md ("MCP internal policy as compensating boundary").
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 storage:
