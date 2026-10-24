@@ -78,8 +78,6 @@ func TestRedactSerial(t *testing.T) {
 }
 
 func TestRun_Timeout(t *testing.T) {
-	fake := newFakeADB()
-	fake.setDevices("emulator-5554")
 	// A runner that always blocks and never observes the deadline: the
 	// executor's own context.WithTimeout must produce a controlled message.
 	blocking := &blockingRunner{}
@@ -95,7 +93,6 @@ func TestRun_Timeout(t *testing.T) {
 	if strings.Contains(err.Error(), "emulator-5554") {
 		t.Fatalf("timeout error leaks serial: %v", err)
 	}
-	_ = fake
 }
 
 // blockingRunner blocks until ctx is done, then reports the cancellation.
