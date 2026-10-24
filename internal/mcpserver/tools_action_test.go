@@ -59,10 +59,17 @@ func withTypePrecheck(fn func(text string) error) func(*ADBExecutor) {
 	return func(e *ADBExecutor) { e.TypePrecheck = fn }
 }
 
+// mutationFixtures registers every fixture a mutating tool call needs to
+// clear PolicyEngine.Guard (devices list, screen ON, full-mode app in
+// foreground), on top of which the test adds its own action fixtures.
+func mutationFixtures(f *fakeADB) {
+	guardFixtures(f)
+}
+
 // tapDumpFixtures registers the fixtures a selector-based tap needs:
-// devices, the uiautomator dump and its retrieval.
+// guard probes plus the uiautomator dump and its retrieval.
 func tapDumpFixtures(f *fakeADB) {
-	f.setDevices(testSerial)
+	mutationFixtures(f)
 	f.Set("-s emulator-5554 shell uiautomator dump /sdcard/ui.xml", "")
 	f.Set("-s emulator-5554 exec-out cat /sdcard/ui.xml", findDump)
 }
@@ -75,7 +82,6 @@ func TestDispatch_Tap(t *testing.T) {
 		wantSub   string // substring that must appear in the result text
 		wantTap   string // exact input-tap signature that must be logged
 		wantNoTap bool   // assert that no input tap was issued
-		noADB     bool   // expect zero adb calls at all
 	}{
 		{
 			name:     "selector text match",
@@ -109,23 +115,21 @@ func TestDispatch_Tap(t *testing.T) {
 			name: "coordinates fallback",
 			args: map[string]any{"x": 500, "y": 600},
 			fixtures: func(f *fakeADB) {
-				f.setDevices(testSerial)
+				mutationFixtures(f)
 				f.Set("-s emulator-5554 shell input tap 500 600", "")
 			},
 			wantSub: "tapped (500, 600)",
 			wantTap: "-s emulator-5554 shell input tap 500 600",
 		},
 		{
-			name:    "no args is a soft error, no adb",
+			name:    "no args is a soft error, no tap issued",
 			args:    map[string]any{},
 			wantSub: "tap requires either a selector",
-			noADB:   true,
 		},
 		{
-			name:    "single coordinate is a soft error, no adb",
+			name:    "single coordinate is a soft error, no tap issued",
 			args:    map[string]any{"x": 500},
 			wantSub: "tap requires either a selector",
-			noADB:   true,
 		},
 	}
 	for _, tc := range cases {
@@ -133,6 +137,10 @@ func TestDispatch_Tap(t *testing.T) {
 			fake := newFakeADB()
 			if tc.fixtures != nil {
 				tc.fixtures(fake)
+			}
+			// Guard probes run even when the handler will soft-error.
+			if tc.fixtures == nil {
+				mutationFixtures(fake)
 			}
 			if tc.wantTap != "" {
 				fake.Set(tc.wantTap, "")
@@ -150,11 +158,6 @@ func TestDispatch_Tap(t *testing.T) {
 			if tc.wantNoTap && fake.countOf("-s emulator-5554 shell input tap") != 0 {
 				t.Errorf("expected no input tap, got: %#v", fake.calls())
 			}
-			if tc.noADB {
-				if n := len(fake.calls()); n != 0 {
-					t.Errorf("expected no adb calls, got %d: %#v", n, fake.calls())
-				}
-			}
 		})
 	}
 }
@@ -162,7 +165,7 @@ func TestDispatch_Tap(t *testing.T) {
 func TestDispatch_Type(t *testing.T) {
 	t.Run("plain text is typed per character", func(t *testing.T) {
 		fake := newFakeADB()
-		fake.setDevices(testSerial)
+		mutationFixtures(fake)
 		fake.Set("-s emulator-5554 shell input text h", "")
 		fake.Set("-s emulator-5554 shell input text i", "")
 		c := inProcessClientWithExecutor(t, initPolicy(false), newTestExecutor(t, fake))
@@ -178,7 +181,7 @@ func TestDispatch_Type(t *testing.T) {
 
 	t.Run("special characters survive the device shell", func(t *testing.T) {
 		fake := newFakeADB()
-		fake.setDevices(testSerial)
+		mutationFixtures(fake)
 		fake.Set("-s emulator-5554 shell input text a", "")
 		fake.Set("-s emulator-5554 shell input text ' '", "")
 		fake.Set("-s emulator-5554 shell input text b", "")
@@ -193,9 +196,9 @@ func TestDispatch_Type(t *testing.T) {
 		}
 	})
 
-	t.Run("precheck refusal blocks all typing", func(t *testing.T) {
+	t.Run("executor precheck hook still refuses before any input", func(t *testing.T) {
 		fake := newFakeADB()
-		fake.setDevices(testSerial)
+		mutationFixtures(fake)
 		e := newTestExecutor(t, fake, withTypePrecheck(func(text string) error {
 			return errors.New("credential-looking input is not allowed")
 		}))
@@ -206,21 +209,22 @@ func TestDispatch_Type(t *testing.T) {
 		if !strings.Contains(got, "Refused:") || !strings.Contains(got, "credential-looking input is not allowed") {
 			t.Errorf("result: %q", got)
 		}
-		if n := len(fake.calls()); n != 0 {
-			t.Errorf("precheck must refuse before any adb call, got %d: %#v", n, fake.calls())
+		if fake.countOf("-s emulator-5554 shell input text") != 0 {
+			t.Errorf("precheck must refuse before any input text call: %#v", fake.calls())
 		}
 	})
 
-	t.Run("empty text is a soft error, no adb", func(t *testing.T) {
+	t.Run("empty text is a soft error, no input issued", func(t *testing.T) {
 		fake := newFakeADB()
+		mutationFixtures(fake)
 		c := inProcessClientWithExecutor(t, initPolicy(false), newTestExecutor(t, fake))
 
 		res := callTool(t, c, "type", map[string]any{})
 		if got := resultText(res); !strings.Contains(got, "type requires a non-empty text argument.") {
 			t.Errorf("result: %q", got)
 		}
-		if n := len(fake.calls()); n != 0 {
-			t.Errorf("expected no adb calls, got %d", n)
+		if fake.countOf("-s emulator-5554 shell input text") != 0 {
+			t.Errorf("expected no input text calls: %#v", fake.calls())
 		}
 	})
 }
@@ -231,20 +235,19 @@ func TestDispatch_KeyEvent(t *testing.T) {
 		args    map[string]any
 		wantSub string
 		wantKey string // exact keyevent signature that must be logged
-		noADB   bool   // expect zero adb calls at all
 	}{
 		{name: "home", args: map[string]any{"key": "home"}, wantSub: "sent keyevent", wantKey: "-s emulator-5554 shell input keyevent 3"},
 		{name: "back", args: map[string]any{"key": "back"}, wantSub: "sent keyevent", wantKey: "-s emulator-5554 shell input keyevent 4"},
 		{name: "recents", args: map[string]any{"key": "recents"}, wantSub: "sent keyevent", wantKey: "-s emulator-5554 shell input keyevent 187"},
 		{name: "menu", args: map[string]any{"key": "menu"}, wantSub: "sent keyevent", wantKey: "-s emulator-5554 shell input keyevent 82"},
-		{name: "unknown key is a soft error, no adb", args: map[string]any{"key": "volumeup"}, wantSub: `unknown key "volumeup"`, noADB: true},
-		{name: "missing key is a soft error, no adb", args: map[string]any{}, wantSub: "keyevent requires a key argument", noADB: true},
+		{name: "unknown key is a soft error", args: map[string]any{"key": "volumeup"}, wantSub: `unknown key "volumeup"`},
+		{name: "missing key is a soft error", args: map[string]any{}, wantSub: "keyevent requires a key argument"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := newFakeADB()
-			if !tc.noADB {
-				fake.setDevices(testSerial)
+			mutationFixtures(fake)
+			if tc.wantKey != "" {
 				fake.Set(tc.wantKey, "")
 			}
 			c := inProcessClientWithExecutor(t, initPolicy(false), newTestExecutor(t, fake))
@@ -257,10 +260,8 @@ func TestDispatch_KeyEvent(t *testing.T) {
 			if tc.wantKey != "" && !callLogged(fake, tc.wantKey) {
 				t.Errorf("missing keyevent call %q; calls: %#v", tc.wantKey, fake.calls())
 			}
-			if tc.noADB {
-				if n := len(fake.calls()); n != 0 {
-					t.Errorf("expected no adb calls, got %d: %#v", n, fake.calls())
-				}
+			if tc.wantKey == "" && fake.countOf("-s emulator-5554 shell input keyevent") != 0 {
+				t.Errorf("expected no keyevent call: %#v", fake.calls())
 			}
 		})
 	}
@@ -272,7 +273,6 @@ func TestDispatch_Swipe(t *testing.T) {
 		args    map[string]any
 		wantSub string
 		wantSig string // exact swipe signature that must be logged
-		noADB   bool   // expect zero adb calls at all
 	}{
 		{
 			name:    "default duration",
@@ -287,17 +287,16 @@ func TestDispatch_Swipe(t *testing.T) {
 			wantSig: "-s emulator-5554 shell input swipe 10 20 100 200 500",
 		},
 		{
-			name:    "missing coordinates is a soft error, no adb",
+			name:    "missing coordinates is a soft error",
 			args:    map[string]any{"x1": 10, "y1": 20},
 			wantSub: "swipe requires x1, y1, x2, y2.",
-			noADB:   true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := newFakeADB()
-			if !tc.noADB {
-				fake.setDevices(testSerial)
+			mutationFixtures(fake)
+			if tc.wantSig != "" {
 				fake.Set(tc.wantSig, "")
 			}
 			c := inProcessClientWithExecutor(t, initPolicy(false), newTestExecutor(t, fake))
@@ -310,10 +309,8 @@ func TestDispatch_Swipe(t *testing.T) {
 			if tc.wantSig != "" && !callLogged(fake, tc.wantSig) {
 				t.Errorf("missing swipe call %q; calls: %#v", tc.wantSig, fake.calls())
 			}
-			if tc.noADB {
-				if n := len(fake.calls()); n != 0 {
-					t.Errorf("expected no adb calls, got %d: %#v", n, fake.calls())
-				}
+			if tc.wantSig == "" && fake.countOf("-s emulator-5554 shell input swipe") != 0 {
+				t.Errorf("expected no swipe call: %#v", fake.calls())
 			}
 		})
 	}
@@ -324,7 +321,7 @@ func TestDispatch_OpenApp(t *testing.T) {
 
 	t.Run("resolves launcher then launches", func(t *testing.T) {
 		fake := newFakeADB()
-		fake.setDevices(testSerial)
+		mutationFixtures(fake)
 		fake.Set(resolveSig, "com.example.app/.MainActivity\n")
 		fake.Set("-s emulator-5554 shell am start -W -n com.example.app/.MainActivity", "Status: ok\n")
 		c := inProcessClientWithExecutor(t, initPolicy(false), newTestExecutor(t, fake))
@@ -343,7 +340,7 @@ func TestDispatch_OpenApp(t *testing.T) {
 
 	t.Run("no launchable activity is an error", func(t *testing.T) {
 		fake := newFakeADB()
-		fake.setDevices(testSerial)
+		mutationFixtures(fake)
 		fake.Set(resolveSig, "\n") // blank output → ErrNoLauncher
 		c := inProcessClientWithExecutor(t, initPolicy(false), newTestExecutor(t, fake))
 
@@ -359,16 +356,45 @@ func TestDispatch_OpenApp(t *testing.T) {
 		}
 	})
 
-	t.Run("missing package is a soft error, no adb", func(t *testing.T) {
+	t.Run("read-only app is refused by the guard", func(t *testing.T) {
 		fake := newFakeADB()
+		mutationFixtures(fake)
+		c := inProcessClientWithExecutor(t, initPolicy(false), newTestExecutor(t, fake))
+
+		res := callTool(t, c, "open_app", map[string]any{"package": "com.example.banking"})
+		if got := resultText(res); !strings.Contains(got, `"read_only" mode`) {
+			t.Errorf("result: %q", got)
+		}
+		if fake.countOf("-s emulator-5554 shell am start") != 0 {
+			t.Errorf("must not launch a read-only app: %#v", fake.calls())
+		}
+	})
+
+	t.Run("deny-listed app is refused by the guard", func(t *testing.T) {
+		fake := newFakeADB()
+		mutationFixtures(fake)
+		c := inProcessClientWithExecutor(t, initPolicy(false), newTestExecutor(t, fake))
+
+		res := callTool(t, c, "open_app", map[string]any{"package": "com.example.vault"})
+		if got := resultText(res); !strings.Contains(got, `"deny" mode`) {
+			t.Errorf("result: %q", got)
+		}
+		if fake.countOf("-s emulator-5554 shell am start") != 0 {
+			t.Errorf("must not launch a deny-listed app: %#v", fake.calls())
+		}
+	})
+
+	t.Run("missing package is refused, no launch", func(t *testing.T) {
+		fake := newFakeADB()
+		mutationFixtures(fake)
 		c := inProcessClientWithExecutor(t, initPolicy(false), newTestExecutor(t, fake))
 
 		res := callTool(t, c, "open_app", map[string]any{})
-		if got := resultText(res); !strings.Contains(got, "open_app requires a package argument.") {
+		if got := resultText(res); !strings.Contains(got, "open_app requires a package argument") {
 			t.Errorf("result: %q", got)
 		}
-		if n := len(fake.calls()); n != 0 {
-			t.Errorf("expected no adb calls, got %d", n)
+		if fake.countOf("-s emulator-5554 shell am start") != 0 {
+			t.Errorf("must not launch without a package: %#v", fake.calls())
 		}
 	})
 }
@@ -376,7 +402,7 @@ func TestDispatch_OpenApp(t *testing.T) {
 func TestDispatch_Shell(t *testing.T) {
 	t.Run("executes the command and returns its output", func(t *testing.T) {
 		fake := newFakeADB()
-		fake.setDevices(testSerial)
+		mutationFixtures(fake)
 		fake.Set("-s emulator-5554 shell uptime", " 01:02:03 up 1 day\n")
 		c := inProcessClientWithExecutor(t, initPolicy(true), newTestExecutor(t, fake))
 
@@ -389,16 +415,57 @@ func TestDispatch_Shell(t *testing.T) {
 		}
 	})
 
-	t.Run("missing cmd is a soft error, no adb", func(t *testing.T) {
+	t.Run("destructive command is refused by the guard", func(t *testing.T) {
 		fake := newFakeADB()
+		mutationFixtures(fake)
+		c := inProcessClientWithExecutor(t, initPolicy(true), newTestExecutor(t, fake))
+
+		res := callTool(t, c, "shell", map[string]any{"cmd": "reboot"})
+		if got := resultText(res); !strings.Contains(got, "destructive") {
+			t.Errorf("result: %q", got)
+		}
+		if fake.countOf("-s emulator-5554 shell reboot") != 0 {
+			t.Errorf("must not run destructive shell: %#v", fake.calls())
+		}
+	})
+
+	t.Run("shell disabled by policy: tool not registered", func(t *testing.T) {
+		fake := newFakeADB()
+		c := inProcessClientWithExecutor(t, initPolicy(false), newTestExecutor(t, fake))
+
+		// When the shell tool is disabled, the MCP server does not register
+		// it at all (server.go gates AddTool on policy.Tools["shell"]), so
+		// the client gets a JSON-RPC "tool not found" error before any
+		// adb call.
+		shellReq := mcp.CallToolRequest{}
+		shellReq.Params.Name = "shell"
+		shellReq.Params.Arguments = map[string]any{"cmd": "uptime"}
+		_, callErr := c.CallTool(context.Background(), shellReq)
+		if callErr == nil || !strings.Contains(callErr.Error(), "not found") {
+			t.Errorf("expected JSON-RPC tool-not-found error, got: %v", callErr)
+		}
+		if n := len(fake.calls()); n != 0 {
+			t.Errorf("must not make any adb call for an unregistered tool, got %d: %#v", n, fake.calls())
+		}
+	})
+
+	t.Run("missing cmd is a soft error, no shell issued", func(t *testing.T) {
+		fake := newFakeADB()
+		mutationFixtures(fake)
 		c := inProcessClientWithExecutor(t, initPolicy(true), newTestExecutor(t, fake))
 
 		res := callTool(t, c, "shell", map[string]any{})
 		if got := resultText(res); !strings.Contains(got, "shell requires a cmd argument.") {
 			t.Errorf("result: %q", got)
 		}
-		if n := len(fake.calls()); n != 0 {
-			t.Errorf("expected no adb calls, got %d", n)
+		// Guard's own dumpsys probes are allowed; a user shell command is not.
+		for _, c := range fake.calls() {
+			s := sig(c...)
+			if strings.HasPrefix(s, "-s emulator-5554 shell ") &&
+				!strings.HasSuffix(s, "dumpsys power") &&
+				!strings.HasSuffix(s, "dumpsys activity activities") {
+				t.Errorf("user shell command issued despite missing cmd: %#v", c)
+			}
 		}
 	})
 }

@@ -45,7 +45,7 @@ func main() {
 
 	srv := mcpserver.New(policy, version)
 	log.Printf("android-control: server ready (policy=%q device=%s shell_enabled=%v apps=%d)",
-		orDash(policyPath), policy.DeviceAlias, policy.Tools.Shell, len(policy.Apps))
+		orDash(policyPath), policy.DeviceAlias, policy.Tools != nil && policy.Tools["shell"], len(policy.Apps))
 
 	if err := mcpgo_server.ServeStdio(srv); err != nil && err != fmt.Errorf("server has not been initialized") {
 		log.Fatalf("serving MCP stdio: %v", err)

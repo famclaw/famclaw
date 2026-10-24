@@ -11,13 +11,31 @@ import (
 )
 
 func initPolicy(shellEnabled bool) *PolicyConfig {
+	tools := map[string]bool{}
+	if shellEnabled {
+		tools["shell"] = true
+	}
 	return &PolicyConfig{
 		DeviceAlias:  "test-device",
+		DeviceSerial: "emulator-5554",
 		ScreenPolicy: "refuse_when_off",
-		Tools: ToolFlags{
-			Shell: shellEnabled,
+		Tools:        tools,
+		Apps: []AppEntry{
+			{Package: "com.example.app", Mode: ModeFull},
 		},
+		Deny: []string{"com.example.vault"},
 	}
+}
+
+// guardFixtures makes every PolicyEngine.Guard probe pass on emulator-5554:
+// one online device, screen ON, com.example.app (full mode in initPolicy)
+// in the foreground. Action-tool tests use this so the guard reaches the
+// code paths under test instead of failing at a missing probe fixture.
+func guardFixtures(f *fakeADB) {
+	f.setDevices("emulator-5554")
+	f.Set("-s emulator-5554 shell dumpsys power", "Display Power: state=ON")
+	f.Set("-s emulator-5554 shell dumpsys activity activities",
+		"mResumedActivity=ActivityRecord{abc u0 com.example.app/.MainActivity t42}")
 }
 
 // inProcessClient spins up a server, initializes an in-process client, and
@@ -109,7 +127,8 @@ func TestToolList_ShellOn(t *testing.T) {
 // never touches adb.
 func TestDispatch_UnknownTool(t *testing.T) {
 	fake := newFakeADB()
-	res, err := dispatch(context.Background(), newTestExecutor(t, fake), "frobnicate", nil)
+	pe := NewPolicyEngine(initPolicy(false), newTestExecutor(t, fake))
+	res, err := dispatch(context.Background(), pe, "frobnicate", nil)
 	if err != nil {
 		t.Fatalf("dispatch(unknown): %v", err)
 	}

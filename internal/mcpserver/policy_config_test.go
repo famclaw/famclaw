@@ -40,7 +40,7 @@ deny: [com.android.chrome]
 			name:    "empty path returns safe defaults",
 			content: "", // special-cased: empty path, not empty file
 			validate: func(t *testing.T, cfg *PolicyConfig) {
-				if cfg.Tools.Shell {
+				if cfg.Tools != nil && cfg.Tools["shell"] {
 					t.Errorf("default shell should be off")
 				}
 				if cfg.ScreenPolicy != "refuse_when_off" {
@@ -64,7 +64,7 @@ deny: [com.android.chrome]
 				if cfg.ScreenPolicy != "wake_on_request" {
 					t.Errorf("screen policy = %q", cfg.ScreenPolicy)
 				}
-				if !cfg.Tools.Shell {
+				if !(cfg.Tools != nil && cfg.Tools["shell"]) {
 					t.Errorf("shell should be enabled")
 				}
 				if len(cfg.Apps) != 2 {

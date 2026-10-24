@@ -81,6 +81,35 @@ func (e *ADBExecutor) DeviceStatus(ctx context.Context) (DeviceStatus, error) {
 	return st, nil
 }
 
+// ScreenOn reports whether the display is on, via `dumpsys power`
+// (design §5.1 screen gate). Cheaper than DeviceStatus: one adb call.
+func (e *ADBExecutor) ScreenOn(ctx context.Context) (bool, error) {
+	serial, err := e.resolveSerial(ctx)
+	if err != nil {
+		return false, err
+	}
+	out, err := e.run(ctx, serial, "shell", "dumpsys", "power")
+	if err != nil {
+		return false, fmt.Errorf("power state: %w", err)
+	}
+	return strings.Contains(string(out), "Display Power: state=ON"), nil
+}
+
+// ForegroundPackage returns the foreground app's package name, via
+// `dumpsys activity activities` (design §5.2 cross-app gate). Empty string
+// when no mResumedActivity line is present.
+func (e *ADBExecutor) ForegroundPackage(ctx context.Context) (string, error) {
+	serial, err := e.resolveSerial(ctx)
+	if err != nil {
+		return "", err
+	}
+	out, err := e.run(ctx, serial, "shell", "dumpsys", "activity", "activities")
+	if err != nil {
+		return "", fmt.Errorf("foreground app: %w", err)
+	}
+	return foregroundPackage(string(out)), nil
+}
+
 // Screenshot returns the device screen as PNG bytes (design §3.3).
 func (e *ADBExecutor) Screenshot(ctx context.Context) ([]byte, error) {
 	serial, err := e.resolveSerial(ctx)

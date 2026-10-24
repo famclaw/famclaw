@@ -37,8 +37,9 @@ type PolicyConfig struct {
 	// RateLimit bounds device-action throughput per agent turn.
 	RateLimit RateLimit `yaml:"rate_limit"`
 
-	// Tools carries per-tool kill-switches.
-	Tools ToolFlags `yaml:"tools"`
+	// Tools carries per-tool kill-switches. A tool not present defaults to
+	// enabled; shell is the exception (defaults off).
+	Tools map[string]bool `yaml:"tools"`
 
 	// Apps is the allowlist. Each entry specifies an Android package
 	// and its access mode.
@@ -52,11 +53,6 @@ type PolicyConfig struct {
 type RateLimit struct {
 	MaxActionsPerTurn int `yaml:"max_actions_per_turn"`
 	MinIntervalMs     int `yaml:"min_interval_ms"`
-}
-
-// ToolFlags carries per-tool kill-switches.
-type ToolFlags struct {
-	Shell bool `yaml:"shell"`
 }
 
 // AppEntry is one row in the app allowlist.
@@ -172,4 +168,38 @@ func (a AppEntry) NormalisedMode() string {
 		return ModeReadOnly
 	}
 	return m
+}
+
+// ToolEnabled reports whether the named tool is enabled by the tools map.
+// Shell defaults to off (explicit opt-in required); every other tool
+// defaults to on when its key is absent.
+func (c *PolicyConfig) ToolEnabled(name string) bool {
+	if name == "shell" {
+		return c.Tools != nil && c.Tools["shell"]
+	}
+	if c.Tools == nil {
+		return true
+	}
+	enabled, ok := c.Tools[name]
+	if !ok {
+		return true
+	}
+	return enabled
+}
+
+// AppMode returns the effective mode for the given Android package:
+// ModeDeny, ModeReadOnly, or ModeFull. Deny-list entries win over allowlist
+// entries; unlisted packages default to read-only (design §5.2).
+func (c *PolicyConfig) AppMode(pkg string) string {
+	for _, d := range c.Deny {
+		if d == pkg {
+			return ModeDeny
+		}
+	}
+	for _, app := range c.Apps {
+		if app.Package == pkg {
+			return app.NormalisedMode()
+		}
+	}
+	return ModeReadOnly
 }

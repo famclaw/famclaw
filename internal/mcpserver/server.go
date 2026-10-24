@@ -35,12 +35,13 @@ func NewWithExecutor(policy *PolicyConfig, version string, adb *ADBExecutor) *se
 
 // addTools registers all v1 tool handlers on the server.
 // Every tool routes through dispatch — the single entry point where the
-// policy/safety checks (stage 4: allowlists, screen-state gating, rate
-// limit, credential guard, audit) and adb execution are inserted.
+// policy engine guards each call (allowlists, screen-state gating, rate
+// limit, credential guard, no-leak) before adb execution.
 func addTools(srv *server.MCPServer, policy *PolicyConfig, adb *ADBExecutor) {
+	pe := NewPolicyEngine(policy, adb)
 	h := func(name string) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return dispatch(ctx, adb, name, req.GetArguments())
+			return dispatch(ctx, pe, name, req.GetArguments())
 		}
 	}
 
@@ -92,8 +93,8 @@ func addTools(srv *server.MCPServer, policy *PolicyConfig, adb *ADBExecutor) {
 		mcp.WithString("package", mcp.Required(), mcp.Description("Android package name, e.g. com.example.app")),
 	), h("open_app"))
 
-	// shell — gated behind policy.Tools.Shell (default: off).
-	if policy.Tools.Shell {
+	// shell — gated behind policy.Tools["shell"] (default: off).
+	if policy.Tools != nil && policy.Tools["shell"] {
 		srv.AddTool(mcp.NewTool("shell",
 			mcp.WithDescription("Execute an arbitrary adb shell command. Operator-only; enabled by policy config."),
 			mcp.WithString("cmd", mcp.Required(), mcp.Description("Shell command to execute on device")),
@@ -103,32 +104,49 @@ func addTools(srv *server.MCPServer, policy *PolicyConfig, adb *ADBExecutor) {
 
 // dispatch routes a tool call to its handler. Read tools (device.status,
 // screenshot, find) and action tools (tap, type, keyevent, swipe, open_app,
-// shell) all run through the adb executor. Stage 4 inserts the policy/safety
-// checks (allowlists, screen-state gating, rate limit, credential guard,
-// audit) above each handler in this function.
-func dispatch(ctx context.Context, adb *ADBExecutor, tool string, args map[string]any) (*mcp.CallToolResult, error) {
+// shell) all run through the adb executor. Every call is first guarded by
+// the PolicyEngine (allowlists, screen-state gating, foreground-package
+// check, credential hard-stop, rate limit, shell destructive refuse); the
+// result passes through the no-leak sanitizer before it returns.
+func dispatch(ctx context.Context, pe *PolicyEngine, tool string, args map[string]any) (*mcp.CallToolResult, error) {
+	// Stage 4: the policy gate runs before any tool reaches ADB.
+	if err := pe.Guard(ctx, tool, args); err != nil {
+		return mcp.NewToolResultText(
+			fmt.Sprintf("[android-control] policy: %s", pe.sanitizeError(err).Error()),
+		), nil
+	}
+
+	adb := pe.ADB()
+	var res *mcp.CallToolResult
+	var err error
 	switch tool {
 	case "device.status":
-		return handleStatus(ctx, adb)
+		res, err = handleStatus(ctx, adb)
 	case "screenshot":
-		return handleScreenshot(ctx, adb)
+		res, err = handleScreenshot(ctx, adb)
 	case "find":
-		return handleFind(ctx, adb, args)
+		res, err = handleFind(ctx, adb, args)
 	case "tap":
-		return handleTap(ctx, adb, args)
+		res, err = handleTap(ctx, adb, args)
 	case "type":
-		return handleType(ctx, adb, args)
+		res, err = handleType(ctx, adb, args)
 	case "keyevent":
-		return handleKeyEvent(ctx, adb, args)
+		res, err = handleKeyEvent(ctx, adb, args)
 	case "swipe":
-		return handleSwipe(ctx, adb, args)
+		res, err = handleSwipe(ctx, adb, args)
 	case "open_app":
-		return handleOpenApp(ctx, adb, args)
+		res, err = handleOpenApp(ctx, adb, args)
 	case "shell":
-		return handleShell(ctx, adb, args)
+		res, err = handleShell(ctx, adb, args)
 	default:
 		return mcp.NewToolResultText(
 			fmt.Sprintf("[android-control] %s: unknown tool.", tool),
 		), nil
 	}
+	if err != nil {
+		// Defense in depth: handler errors carry executor text that may
+		// include the serial; redact before it reaches the MCP error path.
+		return res, pe.sanitizeError(err)
+	}
+	return pe.SanitizeResult(res), nil
 }
