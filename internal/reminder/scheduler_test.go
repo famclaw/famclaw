@@ -197,10 +197,12 @@ func TestDispatcherNoSender(t *testing.T) {
 		DueAt:      time.Now().UTC(),
 	}
 
-	// Should not error, just silently skip
+	// R1 fix: with no sender registered for the gateway, Dispatch must surface
+	// an error instead of returning nil. The scheduler treats nil as success and
+	// would otherwise mark the reminder dispatched even though nothing was sent.
 	err := d.Dispatch(ctx, r)
-	if err != nil {
-		t.Errorf("expected no error, got %v", err)
+	if err == nil {
+		t.Errorf("expected an error when no sender is registered, got nil")
 	}
 }
 
