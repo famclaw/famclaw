@@ -95,7 +95,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, r *store.Reminder) error {
 	d.mu.RUnlock()
 
 	if !ok {
-		return nil // no sender for this gateway (e.g., WhatsApp placeholder)
+		return fmt.Errorf("no sender registered for gateway %q", r.Gateway)
 	}
 
 	// Use external_id as the chat ID for DMs, or group_id for groups
