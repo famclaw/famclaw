@@ -55,7 +55,7 @@ sudo apt-get install -y curl
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Install FamClaw
-sudo apt-get install -y famclaw/tap/famclaw
+brew install famclaw/tap/famclaw
 ```
 
 #### Option B: Manual Installation
@@ -146,8 +146,8 @@ ollama list
 ### Updates
 Regularly update FamClaw:
 ```bash
-sudo apt-get update
-sudo apt-get install famclaw/tap/famclaw
+brew update
+brew upgrade famclaw
 ```
 
 ### Backup Strategy

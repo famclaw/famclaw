@@ -117,9 +117,11 @@ Household data backup and restore is critical for maintaining family information
    chown -R user:user /home/user/famclaw-data
    chown -R user:user /home/user/.config/famclaw
    
-   # Set correct permissions
-   chmod -R 600 /home/user/famclaw-data/*
-   chmod -R 600 /home/user/.config/famclaw/*
+   # Set correct permissions (dirs need execute bit; files do not)
+   find /home/user/famclaw-data -type d -exec chmod 700 {} \;
+   find /home/user/famclaw-data -type f -exec chmod 600 {} \;
+   find /home/user/.config/famclaw -type d -exec chmod 700 {} \;
+   find /home/user/.config/famclaw -type f -exec chmod 600 {} \;
    ```
 
 4. **Verify Restore**
@@ -195,7 +197,7 @@ echo "Backup complete: ${BACKUP_DIR}/famclaw-backup-${DATE}.tar.gz"
 #!/bin/bash
 # Automated FamClaw restore script
 
-BACKUP_FILE="/home/user/backups/famclaw-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+BACKUP_FILE="${1:?Usage: $0 <backup-file>}"
 
 echo "Starting FamClaw restore..."
 
