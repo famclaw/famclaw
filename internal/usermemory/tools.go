@@ -15,7 +15,6 @@ const (
 	toolNameRemember         = "builtin__remember_user_memory"
 	toolNameRecall           = "builtin__recall_user_memory"
 	toolNameForget           = "builtin__forget_user_memory"
-	toolNameEdit             = "builtin__edit_user_memory"
 	toolNameShare            = "builtin__share_user_memory"
 	toolNameListShared       = "builtin__list_shared_family_facts"
 )
