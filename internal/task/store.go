@@ -219,21 +219,27 @@ func (s *Store) ListOutstandingTasks(ctx context.Context, owner string) ([]*Shar
 func scanSharedTask(row scanner) (*SharedTask, error) {
 	var t SharedTask
 	var dueAtStr string
-	
+	var createdAt, updatedAt int64
+
 	err := row.Scan(
-		&t.ID, &t.Owner, &t.Text, &dueAtStr, &t.Source, &t.Completed, 
-		&t.CreatedAt, &t.UpdatedAt, &t.Accepted, &t.Declined, &t.HandedBack,
+		&t.ID, &t.Owner, &t.Text, &dueAtStr, &t.Source, &t.Completed,
+		&createdAt, &updatedAt, &t.Accepted, &t.Declined, &t.HandedBack,
 	)
 	if err != nil {
 		return nil, err
 	}
-	
-	// Parse the due_at timestamp
+
+	// due_at is stored as an RFC3339 TEXT string.
 	t.DueAt, err = time.Parse(time.RFC3339, dueAtStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse due_at: %w", err)
 	}
-	
+
+	// created_at and updated_at are stored as INTEGER Unix seconds; database/sql
+	// does not convert int64 -> time.Time, so convert explicitly.
+	t.CreatedAt = time.Unix(createdAt, 0)
+	t.UpdatedAt = time.Unix(updatedAt, 0)
+
 	return &t, nil
 }
 
