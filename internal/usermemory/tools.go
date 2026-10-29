@@ -12,9 +12,12 @@ import (
 
 // Tool names for the builtin user memory tools.
 const (
-	toolNameRemember = "builtin__remember_user_memory"
-	toolNameRecall   = "builtin__recall_user_memory"
-	toolNameForget   = "builtin__forget_user_memory"
+	toolNameRemember         = "builtin__remember_user_memory"
+	toolNameRecall           = "builtin__recall_user_memory"
+	toolNameForget           = "builtin__forget_user_memory"
+	toolNameEdit             = "builtin__edit_user_memory"
+	toolNameShare            = "builtin__share_user_memory"
+	toolNameListShared       = "builtin__list_shared_family_facts"
 )
 
 // RememberDefinition returns the tool definition for remembering a user memory.
@@ -65,6 +68,38 @@ func ForgetDefinition() agentcore.Tool {
 				"label":    map[string]any{"type": "string", "description": "Label of the memory to forget."},
 			},
 			"required": []string{"category", "label"},
+		},
+		Source: "builtin",
+		Roles:  []string{"parent", "child", "age_8_12", "age_13_17", "under_8"},
+	}
+}
+
+// ShareDefinition returns the tool definition for sharing a user memory with the family.
+func ShareDefinition() agentcore.Tool {
+	return agentcore.Tool{
+		Name:        toolNameShare,
+		Description: "Promote a user memory to shared scope with the family. This makes the memory visible to all family members.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"category": map[string]any{"type": "string", "description": "Category of the memory to share."},
+				"label":    map[string]any{"type": "string", "description": "Label of the memory to share."},
+			},
+			"required": []string{"category", "label"},
+		},
+		Source: "builtin",
+		Roles:  []string{"parent", "child", "age_8_12", "age_13_17", "under_8"},
+	}
+}
+
+// ListSharedDefinition returns the tool definition for listing shared family facts.
+func ListSharedDefinition() agentcore.Tool {
+	return agentcore.Tool{
+		Name:        toolNameListShared,
+		Description: "List all memories that have been promoted to shared scope with the family.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{},
 		},
 		Source: "builtin",
 		Roles:  []string{"parent", "child", "age_8_12", "age_13_17", "under_8"},
