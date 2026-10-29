@@ -571,14 +571,17 @@ func TestBuildMessages_OperatorOverrideIncludesCapabilities(t *testing.T) {
 }
 
 func TestHandleWebFetch(t *testing.T) {
-	newAgent := func(allowlist []string, fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
+	newAgent := func(allowlist, denylist []string, policy string,
+		fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
 		return &Agent{
 			user: &config.UserConfig{Name: "testuser", Role: "parent"},
 			cfg: &config.Config{
 				Tools: config.ToolsConfig{
 					WebFetch: config.WebFetchConfig{
 						Enabled:      true,
+						URLPolicy:    policy,
 						URLAllowlist: allowlist,
+						URLDenylist:  denylist,
 						MaxBytes:     256 * 1024,
 						TimeoutSec:   5,
 					},
@@ -597,6 +600,8 @@ func TestHandleWebFetch(t *testing.T) {
 	tests := []struct {
 		name        string
 		allowlist   []string
+		denylist    []string
+		policy      string
 		args        map[string]any
 		fetcherErr  error
 		fetcherRes  *webfetch.Result
@@ -635,10 +640,42 @@ func TestHandleWebFetch(t *testing.T) {
 			wantCalled: true,
 		},
 		{
-			name:       "empty allowlist denied (SSRF guard)",
+			name:       "empty allowlist resolves to denylist: public host allowed (zero-config fix)",
 			allowlist:  nil,
 			args:       map[string]any{"url": "https://example.com/x"},
-			wantErrSub: "url_allowlist is empty",
+			fetcherRes: &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "denylist mode: host on url_denylist blocked",
+			policy:     "denylist",
+			denylist:   []string{"bad.example.com"},
+			args:       map[string]any{"url": "https://bad.example.com/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "denylist mode: subdomain of denylisted host blocked",
+			policy:     "denylist",
+			denylist:   []string{"bad.example.com"},
+			args:       map[string]any{"url": "https://sub.bad.example.com/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:        "denylist mode: public host not on denylist allowed",
+			policy:      "denylist",
+			denylist:    []string{"bad.example.com"},
+			args:        map[string]any{"url": "https://good.example.com/x"},
+			fetcherRes:  &webfetch.Result{URL: "https://good.example.com/x", StatusCode: 200, ContentType: "text/html", Text: "ok"},
+			wantOutSub:  "ok",
+			wantCalled:  true,
+		},
+		{
+			name:       "explicit allowlist + empty list: still deny-all (SSRF guard kept)",
+			policy:     "allowlist",
+			allowlist:  nil,
+			args:       map[string]any{"url": "https://example.com/x"},
+			wantErrSub: "url_allowlist",
 		},
 		{
 			name:       "non-http scheme rejected before fetcher",
@@ -696,7 +733,7 @@ func TestHandleWebFetch(t *testing.T) {
 				}
 				return tt.fetcherRes, nil
 			}
-			a := newAgent(tt.allowlist, fetcher)
+			a := newAgent(tt.allowlist, tt.denylist, tt.policy, fetcher)
 
 			out, err := a.handleWebFetch(context.Background(), tt.args)
 

@@ -1298,12 +1298,86 @@ func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gat
 	return true, nil
 }
 
+// canonicalizeHost lowercases a host, trims surrounding whitespace and a
+// trailing dot, so "EXAMPLE.com." matches "example.com". It is the same
+// comparison form the legacy allowlist gates used, so host matching stays
+// byte-for-byte unchanged in allowlist mode.
+func canonicalizeHost(h string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+}
+
+// hostDecision is the single source of truth for the web_fetch host gate,
+// shared by web_fetch, web_search, the browser-fallback path, and
+// browser_navigate (design §1.2 — replaces the duplicated per-call-site
+// hostAllowed closures). It branches on the resolved URL policy mode:
+//
+//	allowlist: allowed iff host matches a url_allowlist entry (exact or
+//	            subdomain). An empty allowlist denies all (legacy SSRF guard).
+//	denylist:  allowed for any host unless it matches a url_denylist entry
+//	            (exact or subdomain).
+//
+// The scheme gate, redirect re-validation, and the dialer's private-IP vetting
+// are orthogonal and remain applied in both modes (design §1.4); hostDecision
+// only makes the host-level allow/deny decision. It returns (allowed, reason)
+// where reason is a short class ("allowlist" | "denylist") when !allowed.
+func (a *Agent) hostDecision(host string) (bool, string) {
+	host = canonicalizeHost(host)
+	fcfg := a.cfg.Tools.WebFetch
+	switch fcfg.ResolvedURLPolicy() {
+	case "allowlist":
+		for _, allowed := range fcfg.URLAllowlist {
+			allowed = canonicalizeHost(allowed)
+			if allowed == "" {
+				continue
+			}
+			if host == allowed || strings.HasSuffix(host, "."+allowed) {
+				return true, ""
+			}
+		}
+		return false, "allowlist"
+	default: // "denylist"
+		for _, denied := range fcfg.URLDenylist {
+			denied = canonicalizeHost(denied)
+			if denied == "" {
+				continue
+			}
+			if host == denied || strings.HasSuffix(host, "."+denied) {
+				return false, "denylist"
+			}
+		}
+		return true, ""
+	}
+}
+
+// hostGateError builds the typed, sanitized error for a rejected host, using
+// the reason class to pick the butler-facing wording without ever leaking the
+// full allow/deny list (design §1.2, §3.3). It returns a
+// *webfetch.HostNotAllowedError so the errors.As classification that separates
+// configuration blocks from network failures keeps working across web_fetch,
+// web_search, and the browser paths.
+func (a *Agent) hostGateError(host, reason string) error {
+	if reason == "denylist" {
+		return webfetch.NewHostDeniedError(host, "denylist")
+	}
+	return webfetch.NewHostNotAllowedError(host)
+}
+
+// hostValidator is the host-gate callback passed to webfetch.Fetch, the
+// search provider, and the browser pool: typed error on rejection, nil when
+// the host passes. All redirect re-checks therefore use one decision.
+func (a *Agent) hostValidator(host string) error {
+	if ok, reason := a.hostDecision(host); !ok {
+		return a.hostGateError(host, reason)
+	}
+	return nil
+}
+
 // handleWebFetch dispatches the builtin__web_fetch tool. Auth boundary:
-// validates scheme, enforces the per-host URL allowlist (must be non-empty
-// — empty list is treated as deny-all to prevent SSRF into the home LAN),
-// and propagates the same allowlist into webfetch.Fetch as a HostValidator
-// so it is re-applied to every redirect target. webfetch.Fetch additionally
-// blocks private/loopback/link-local IPs at the dialer.
+// validates scheme, enforces the mode-aware host gate (allowlist or denylist,
+// see hostDecision), and propagates the same gate into webfetch.Fetch as a
+// HostValidator so it is re-applied to every redirect target.
+// webfetch.Fetch additionally vetoes private/loopback/link-local IPs at the
+// dialer when block_private_networks is set.
 func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string, error) {
 	rawURL, _ := args["url"].(string)
 	if rawURL == "" {
@@ -1323,35 +1397,19 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		return "", fmt.Errorf("web_fetch only supports http(s) URLs, got %q", u.Scheme)
 	}
 
-	// Empty allowlist = deny-all. The previous "empty means any host"
-	// semantic was an SSRF footgun on home networks — a misconfigured
-	// deployment could let a jailbroken LLM reach 198.51.100.10/admin or
-	// other LAN services. Operators must explicitly list the hosts they
-	// want web_fetch to reach.
-	if len(cfg.URLAllowlist) == 0 {
-		return "", fmt.Errorf("web_fetch denied: tools.web_fetch.url_allowlist is empty (set at least one host to enable)")
-	}
-
-	// canonicalHost lowercases the hostname and strips a trailing dot so
-	// "EXAMPLE.com" and "example.com." both match an "example.com" entry.
-	canonicalHost := func(h string) string {
-		return strings.TrimSuffix(strings.ToLower(h), ".")
-	}
+	// Mode-aware host gate (design §1.2): hostDecision is the single source
+	// of truth shared by web_fetch, web_search, the browser fallback, and
+	// browser_navigate. In allowlist mode a non-empty allowlist gates fetches
+	// exactly as before; with an empty/absent allowlist the config resolves to
+	// denylist mode, so public hosts pass and only url_denylist hosts are
+	// blocked — the "empty allowlist denies everything" footgun is gone.
 	hostAllowed := func(host string) bool {
-		host = canonicalHost(host)
-		for _, allowed := range cfg.URLAllowlist {
-			allowed = canonicalHost(strings.TrimSpace(allowed))
-			if allowed == "" {
-				continue
-			}
-			if host == allowed || strings.HasSuffix(host, "."+allowed) {
-				return true
-			}
-		}
-		return false
+		ok, _ := a.hostDecision(host)
+		return ok
 	}
 	if !hostAllowed(u.Hostname()) {
-		return "", webfetch.NewHostNotAllowedError(u.Hostname())
+		_, reason := a.hostDecision(u.Hostname())
+		return "", a.hostGateError(u.Hostname(), reason)
 	}
 
 	opts := webfetch.Options{
@@ -1359,7 +1417,8 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		Timeout:  time.Duration(cfg.TimeoutSec) * time.Second,
 		HostValidator: func(host string) error {
 			if !hostAllowed(host) {
-				return webfetch.NewHostNotAllowedError(host)
+				_, reason := a.hostDecision(host)
+				return a.hostGateError(host, reason)
 			}
 			return nil
 		},
@@ -1536,8 +1595,8 @@ func isBotBlockStatus(status int) bool {
 
 // fetchWithBrowser runs the browser fallback for JS-heavy sites: it
 // navigates the browser pool to rawURL and extracts rendered text. The same
-// host allowlist is applied to navigation (the pool re-checks the final URL
-// after redirects).
+// mode-aware host gate (hostDecision) is applied to navigation (the pool
+// re-checks the final URL after redirects).
 //
 // Lifecycle is acquire-use-release through the pool: NavigateAndExtract
 // acquires/reuses a per-user page, reads it, and the pool's idle-sweeper
@@ -1559,7 +1618,10 @@ func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawUR
 	}
 	hostCheck := func(host string) error {
 		if !hostAllowed(host) {
-			return webfetch.NewHostNotAllowedError(host)
+			// Mode-aware reason so a denylist rejection on a redirect in the
+			// browser-fallback path is not mislabeled as an allowlist miss.
+			_, reason := a.hostDecision(host)
+			return a.hostGateError(host, reason)
 		}
 		return nil
 	}
@@ -1588,14 +1650,17 @@ func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawUR
 }
 
 // handleWebSearch dispatches the builtin__web_search tool. Auth boundary:
-// reuses the same per-host URL allowlist as web_fetch (the search endpoint
-// host must be in tools.web_fetch.url_allowlist) and the same private-net
-// policy. The model gets a compact title/url/snippet listing instead of
-// the raw 4-16KB SearXNG JSON.
+// reuses the same mode-aware host gate as web_fetch (hostDecision) plus the
+// same private-net policy. In allowlist mode the search endpoint host must be
+// allowlisted (unchanged); in denylist mode the configured endpoint host is
+// implicitly permitted — it is a single operator-pinned value the LLM never
+// supplies, so it only needs to pass the denylist + scheme + private-net
+// checks (design §1.5). The model gets a compact title/url/snippet listing
+// instead of the raw 4-16KB SearXNG JSON.
 func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (string, error) {
 	cfg := a.cfg.Tools.WebSearch
 	if !cfg.Enabled {
-		return "", fmt.Errorf("web_search is disabled; enable it via tools.web_search.enabled=true, with tools.web_fetch.enabled=true and the search endpoint host in tools.web_fetch.url_allowlist")
+		return "", fmt.Errorf("web_search is disabled; enable it via tools.web_search.enabled=true, with tools.web_fetch.enabled=true (the search endpoint host is gated by the web_fetch URL policy)")
 	}
 	query, _ := args["query"].(string)
 	if strings.TrimSpace(query) == "" {
@@ -1605,40 +1670,19 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 	maxResults := readIntArg(args, "max_results", cfg.MaxResults)
 
 	fcfg := a.cfg.Tools.WebFetch
-	canonicalHost := func(h string) string {
-		return strings.TrimSuffix(strings.ToLower(h), ".")
-	}
-	hostAllowed := func(host string) bool {
-		host = canonicalHost(host)
-		for _, allowed := range fcfg.URLAllowlist {
-			allowed = canonicalHost(strings.TrimSpace(allowed))
-			if allowed == "" {
-				continue
-			}
-			if host == allowed || strings.HasSuffix(host, "."+allowed) {
-				return true
-			}
-		}
-		return false
-	}
 
 	// Provider boundary (web-retrieval plan, Slice 1): the backend is
 	// selected from config; SearXNG is the default and keeps its current
-	// behavior byte-for-byte (same endpoint, same url_allowlist host gate,
-	// same private-net policy). The hosted Tavily path uses its fixed
-	// vendor host — NOT the user-fetch url_allowlist (a different surface;
-	// see websearch.TavilyProvider).
+	// behavior byte-for-byte (same endpoint, same host gate, same private-net
+	// policy). The hosted Tavily path uses its fixed vendor host — NOT the
+	// user-fetch host gate (a different surface; see websearch.TavilyProvider).
 	prov, provErr := websearch.ProviderFor(websearch.ProviderConfig{
 		Name:       cfg.Provider,
 		Endpoint:   cfg.Endpoint,
 		MaxResults: maxResults,
 		Timeout:    time.Duration(cfg.TimeoutSec) * time.Second,
-		HostValidator: func(host string) error {
-			if !hostAllowed(host) {
-				return webfetch.NewHostNotAllowedError(host)
-			}
-			return nil
-		},
+		// The mode-aware host gate, shared with web_fetch (design §1.2, §1.5).
+		HostValidator: a.hostValidator,
 		AllowPrivateNetworks: !fcfg.BlockPrivateNetworks,
 		TavilyAPIKey:         cfg.TavilyAPIKey,
 	})
@@ -1727,40 +1771,20 @@ func webSearchError(err error, endpoint string) (string, error) {
 }
 
 // handleBrowser dispatches all builtin__browser_* tools. Auth boundary:
-// reuses tools.web_fetch.url_allowlist as the navigation host gate (only
-// browser_navigate consults it; subsequent click/fill/extract act on the
-// current page so they inherit the validated host).
+// reuses the mode-aware web_fetch host gate (hostDecision) as the navigation
+// host gate (only browser_navigate consults it; subsequent click/fill/extract
+// act on the current page so they inherit the validated host).
 func (a *Agent) handleBrowser(ctx context.Context, toolName string, args map[string]any) (string, error) {
 	if a.browserPool == nil {
 		return "", fmt.Errorf("%s: browser tools are disabled in this deployment", toolName)
-	}
-	fcfg := a.cfg.Tools.WebFetch
-	canonicalHost := func(h string) string {
-		return strings.TrimSuffix(strings.ToLower(h), ".")
-	}
-	hostAllowed := func(host string) bool {
-		host = canonicalHost(host)
-		for _, allowed := range fcfg.URLAllowlist {
-			allowed = canonicalHost(strings.TrimSpace(allowed))
-			if allowed == "" {
-				continue
-			}
-			if host == allowed || strings.HasSuffix(host, "."+allowed) {
-				return true
-			}
-		}
-		return false
 	}
 	out, err := a.browserPool.Exec(ctx, browser.ExecInput{
 		User:     a.user.Name,
 		ToolName: toolName,
 		Args:     args,
-		HostCheck: func(host string) error {
-			if !hostAllowed(host) {
-				return webfetch.NewHostNotAllowedError(host)
-			}
-			return nil
-		},
+		// The pool re-checks the final URL after redirects with this same
+		// mode-aware gate (design §1.2, §1.4).
+		HostCheck: a.hostValidator,
 	})
 	if err != nil {
 		log.Printf("[agent][%s] %s err=%v", a.user.Name, toolName, err)

@@ -158,10 +158,29 @@ type ToolCacheConfig struct {
 // when enabled the LLM may fetch URLs subject to the per-host allowlist,
 // role gate, and OPA policy decision.
 type WebFetchConfig struct {
-	Enabled      bool     `yaml:"enabled"`
-	URLAllowlist []string `yaml:"url_allowlist,omitempty"` // REQUIRED when Enabled — empty list denies all (host-level gate)
-	MaxBytes     int64    `yaml:"max_bytes,omitempty"`     // 0 = 256KB default
-	TimeoutSec   int      `yaml:"timeout_seconds,omitempty"`
+	Enabled bool `yaml:"enabled"`
+	// URLPolicy selects the host-gating mode for web_fetch (and, by reuse,
+	// web_search and browser_navigate). "allowlist" (hard-security): only
+	// hosts in url_allowlist may be fetched. "denylist" (kid-safe, the
+	// recommended default): public http/https hosts are allowed by default and
+	// only the hosts in url_denylist are blocked. When unset it resolves by
+	// allowlist presence — see ResolvedURLPolicy (design §1.3): a non-empty
+	// allowlist keeps the legacy allowlist gate verbatim (back-compat); an
+	// empty/absent allowlist resolves to denylist, which is the fix for the
+	// "everything is blocked from start" footgun.
+	URLPolicy string `yaml:"url_policy,omitempty"`
+	// URLAllowlist is the host gate for allowlist mode only. Empty list
+	// denies all (the legacy SSRF guard, unchanged in allowlist mode).
+	// Ignored when url_policy = "denylist".
+	URLAllowlist []string `yaml:"url_allowlist,omitempty"`
+	// URLDenylist holds the parent-maintained hosts blocked when
+	// url_policy = "denylist". Same canonical host form as URLAllowlist
+	// (case-insensitive exact-or-subdomain match, trailing dot trimmed).
+	// Ignored in allowlist mode. Parent-managed via the denylist admin tools
+	// (W3); also editable directly in config.yaml.
+	URLDenylist []string `yaml:"url_denylist,omitempty"`
+	MaxBytes    int64    `yaml:"max_bytes,omitempty"`     // 0 = 256KB default
+	TimeoutSec  int      `yaml:"timeout_seconds,omitempty"`
 	AllowedRoles []string `yaml:"allowed_roles,omitempty"` // default ["parent"]
 	// BlockPrivateNetworks opts INTO rejecting private/loopback/RFC1918/
 	// link-local addresses at the dialer. famclaw's product model is a
@@ -186,6 +205,29 @@ type WebFetchConfig struct {
 	// as sufficient; below it, and with FallbackToBrowser, the browser fallback runs.
 	// Zero means use the default of 10.
 	FallbackMinTextLength int `yaml:"fallback_min_text_length,omitempty"`
+}
+
+// ResolvedURLPolicy returns the effective host-gating mode: "allowlist" or
+// "denylist". An explicitly set url_policy wins (the value is validated
+// against {allowlist, denylist} by Validate before this is called). When
+// url_policy is unset the mode is derived from the allowlist (design §1.3):
+// a non-empty url_allowlist keeps the legacy allowlist gate verbatim
+// (back-compat — existing deployments behave byte-for-byte as today), while
+// an empty/absent allowlist resolves to denylist so a zero-config
+// web_fetch enables the kid-safe default instead of denying everything.
+func (c WebFetchConfig) ResolvedURLPolicy() string {
+	switch strings.ToLower(strings.TrimSpace(c.URLPolicy)) {
+	case "allowlist":
+		return "allowlist"
+	case "denylist":
+		return "denylist"
+	}
+	for _, h := range c.URLAllowlist {
+		if strings.TrimSpace(h) != "" {
+			return "allowlist"
+		}
+	}
+	return "denylist"
 }
 
 // InferenceConfig controls local LLM inference via llama-server sidecar.
@@ -748,8 +790,17 @@ func (c *Config) Validate() error {
 				break
 			}
 		}
-		if !hasHost {
-			return fmt.Errorf("tools.web_fetch.url_allowlist must list at least one non-empty host when enabled (empty list denies all fetches as an SSRF guard)")
+		// url_policy, when explicitly set, must be a known mode.
+		if p := strings.ToLower(strings.TrimSpace(c.Tools.WebFetch.URLPolicy)); p != "" && p != "allowlist" && p != "denylist" {
+			return fmt.Errorf("tools.web_fetch.url_policy must be \"allowlist\" or \"denylist\" (got %q)", c.Tools.WebFetch.URLPolicy)
+		}
+		// The non-empty-allowlist requirement applies to the EFFECTIVE mode:
+		// in allowlist mode an empty list denies all fetches (SSRF guard,
+		// unchanged legacy behavior); in denylist mode an empty allowlist is
+		// the normal zero-config default (public hosts allowed, only
+		// url_denylist hosts blocked).
+		if c.Tools.WebFetch.ResolvedURLPolicy() == "allowlist" && !hasHost {
+			return fmt.Errorf("tools.web_fetch.url_allowlist must list at least one non-empty host when url_policy resolves to allowlist (empty list denies all fetches as an SSRF guard); set url_policy: denylist to use the kid-safe default instead")
 		}
 	}
 	if c.Tools.WebSearch.Enabled {
@@ -763,7 +814,7 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("tools.web_search.endpoint must be set when enabled (e.g. http://localhost:8888)")
 			}
 			if !c.Tools.WebFetch.Enabled {
-				return fmt.Errorf("tools.web_search requires tools.web_fetch.enabled=true (it reuses the web_fetch URL allowlist as its host gate)")
+				return fmt.Errorf("tools.web_search requires tools.web_fetch.enabled=true (it reuses the web_fetch host gate as its host check)")
 			}
 		case "tavily":
 			// Hosted provider (option B in the operator options guide):
