@@ -1408,10 +1408,13 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 			// the lookup/upsert before they complete.
 			if a.db != nil {
 				approvalID := proposalApprovalID(a.user.Name, "suspicious_site", host)
-				if prev, err := a.db.GetApproval(ctx, approvalID); err == nil && prev != nil {
-					if prev.Status == "approved" && time.Now().Before(prev.ExpiresAt) {
-						return true, ""
-					}
+				if prev, err := a.db.GetApproval(ctx, approvalID); err != nil {
+					// Fail closed (deny + upsert pending row) on lookup errors, but
+					// log them so operators can distinguish "no approval yet" from
+					// a transient DB fault that re-denied an already-approved host.
+					log.Printf("[agent] host-decision: approval lookup for %q failed: %v", approvalID, err)
+				} else if prev != nil && prev.Status == "approved" && time.Now().Before(prev.ExpiresAt) {
+					return true, ""
 				}
 				// Create a host-scoped pending approval the parent can act on via
 				// the approvals flow (idempotent: UpsertApproval is a no-op when the
