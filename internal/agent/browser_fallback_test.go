@@ -48,7 +48,7 @@ func (f *fakeBrowserPool) Exec(_ context.Context, _ browser.ExecInput) (string, 
 
 // alwaysAllowHost accepts every host — used in fallback tests where the host
 // gate is not the subject under test.
-func alwaysAllowHost(host string) bool { return true }
+func alwaysAllowHost(host string) error { return nil }
 
 func newFallbackAgent() *Agent {
 	return &Agent{
