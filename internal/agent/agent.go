@@ -1364,17 +1364,29 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 			}
 		}
 		
-		// (c) W4: suspicious site detector (design §4). The heuristics target
-		// malicious PUBLIC domain names (punycode lookalikes, high-entropy C2
-		// labels, typo-squats of known brands). IP literals are NOT gated here:
-		// the home-LAN model permits private-IP endpoints (SearXNG, NAS, ...)
-		// by default, and raw-IP security (private/loopback/link-local veto) is
-		// handled by the orthogonal dialer gate in webfetch (design §1.4/§1.5).
-		// Baseline + parent denylist above already apply to IP literals.
+		// (c) W4: host-level suspicion gate (design §4). The detector's
+		// heuristics target malicious PUBLIC domain names (punycode lookalikes,
+		// high-entropy C2 labels, typo-squats of known brands).
+		//
+		// IP literals: the home-LAN model (design §1.5) permits private/loopback/
+		// link-local endpoints (SearXNG, NAS, local services) by default — raw-IP
+		// security for those ranges is the orthogonal dialer gate's job
+		// (webfetch block_private_networks). A raw PUBLIC IP literal, however, is
+		// not a domain: the domain-based baseline + parent denylist above cannot
+		// match an IP, so a child could reach a baseline-blocked site by
+		// navigating to its public IP instead of its name. Public IPs are
+		// therefore routed to the parent-approval gate (ask_parent) rather than
+		// silently allowed.
+		var verdict webfilter.Verdict
 		if ip := net.ParseIP(host); ip != nil {
-			return true, ""
+			if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+				return true, ""
+			}
+			verdict = webfilter.Verdict{Action: "ask_parent", Reason: "public IP literal host"}
+		} else {
+			verdict = webfilter.NewSuspiciousSiteDetector().Check(host)
 		}
-		if verdict := webfilter.NewSuspiciousSiteDetector().Check(host); verdict.Action != "warn_allow" {
+		if verdict.Action != "warn_allow" {
 			if verdict.Action == "block" {
 				return false, "suspicious"
 			}
