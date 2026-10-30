@@ -833,7 +833,7 @@ func TestHostDecision_SuspiciousSiteAskParent(t *testing.T) {
 	}
 
 	// "googl.com" is a typo-squat of "google.com" → detector says ask_parent.
-	ok, reason := a.hostDecision("googl.com")
+	ok, reason := a.hostDecision(context.Background(), "googl.com")
 	if ok {
 		t.Fatalf("hostDecision(googl.com) = (%v, %q), want blocked", ok, reason)
 	}
@@ -860,13 +860,13 @@ func TestHostDecision_SuspiciousSiteAskParent(t *testing.T) {
 	}
 
 	// Now the same host should be allowed (approved + not yet expired).
-	ok, reason = a.hostDecision("googl.com")
+	ok, reason = a.hostDecision(context.Background(), "googl.com")
 	if !ok {
 		t.Fatalf("hostDecision(googl.com) after approval = (%v, %q), want allowed", ok, reason)
 	}
 
 	// A DIFFERENT suspicious host gets a DIFFERENT approval ID.
-	ok2, _ := a.hostDecision("youtub.com") // typo-squat of youtube.com
+	ok2, _ := a.hostDecision(context.Background(), "youtub.com") // typo-squat of youtube.com
 	if ok2 {
 		t.Error("hostDecision(youtub.com) should be blocked (not yet approved)")
 	}
@@ -895,19 +895,19 @@ func TestHostDecision_IPLiteralSkipsDetector(t *testing.T) {
 	}
 
 	// Private IP (SearXNG) should pass without triggering the detector.
-	ok, reason := a.hostDecision("192.168.1.50")
+	ok, reason := a.hostDecision(context.Background(), "192.168.1.50")
 	if !ok {
 		t.Fatalf("hostDecision(192.168.1.50) = (%v, %q), want allowed (home-LAN)", ok, reason)
 	}
 
 	// Loopback should also pass.
-	ok, reason = a.hostDecision("127.0.0.1")
+	ok, reason = a.hostDecision(context.Background(), "127.0.0.1")
 	if !ok {
 		t.Fatalf("hostDecision(127.0.0.1) = (%v, %q), want allowed", ok, reason)
 	}
 
 	// IPv6 loopback should also pass.
-	ok, reason = a.hostDecision("::1")
+	ok, reason = a.hostDecision(context.Background(), "::1")
 	if !ok {
 		t.Fatalf("hostDecision(::1) = (%v, %q), want allowed", ok, reason)
 	}
@@ -917,7 +917,7 @@ func TestHostDecision_IPLiteralSkipsDetector(t *testing.T) {
 // closure handed to webfetch enforces the same allowlist on redirect
 // targets as on the initial URL.
 func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
-	var capturedValidator func(string) error
+	var capturedValidator func(context.Context, string) error
 	a := &Agent{
 		user: &config.UserConfig{Name: "testuser", Role: "parent"},
 		cfg: &config.Config{
@@ -942,13 +942,13 @@ func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
 	if capturedValidator == nil {
 		t.Fatal("HostValidator should have been passed to fetcher")
 	}
-	if err := capturedValidator("good.example"); err != nil {
+	if err := capturedValidator(context.Background(), "good.example"); err != nil {
 		t.Errorf("good.example should pass validator, got: %v", err)
 	}
-	if err := capturedValidator("api.good.example"); err != nil {
+	if err := capturedValidator(context.Background(), "api.good.example"); err != nil {
 		t.Errorf("api.good.example (subdomain) should pass validator, got: %v", err)
 	}
-	if err := capturedValidator("evil.example"); err == nil {
+	if err := capturedValidator(context.Background(), "evil.example"); err == nil {
 		t.Errorf("evil.example should be rejected by validator")
 	}
 }
@@ -994,10 +994,10 @@ func TestHandleWebFetch_BlockedHostMessageIsClear(t *testing.T) {
 			fetcher := func(_ context.Context, _ string, opts webfetch.Options) (*webfetch.Result, error) {
 				// Simulate the host validator rejecting the host
 				if opts.HostValidator != nil {
-					if err := opts.HostValidator("www.clinicaltrials.gov"); err != nil {
+					if err := opts.HostValidator(context.Background(), "www.clinicaltrials.gov"); err != nil {
 						return nil, err
 					}
-					if err := opts.HostValidator("blocked.example.com"); err != nil {
+					if err := opts.HostValidator(context.Background(), "blocked.example.com"); err != nil {
 						return nil, err
 					}
 				}

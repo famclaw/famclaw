@@ -313,7 +313,7 @@ func TestSearch_RedirectToDisallowedHost(t *testing.T) {
 		Endpoint:             redirectServer.URL,
 		Timeout:              5 * time.Second,
 		AllowPrivateNetworks: true,
-		HostValidator: func(host string) error {
+		HostValidator: func(_ context.Context, host string) error {
 			if host == "evil.example.com" {
 				return webfetch.NewHostNotAllowedError(host)
 			}
@@ -375,7 +375,7 @@ func TestSearch_HostValidatorRejection(t *testing.T) {
 		Endpoint:             server.URL,
 		Timeout:              5 * time.Second,
 		AllowPrivateNetworks: true,
-		HostValidator: func(host string) error {
+		HostValidator: func(_ context.Context, host string) error {
 			return fmt.Errorf("host %q blocked by test", host)
 		},
 	})
