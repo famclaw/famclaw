@@ -2,8 +2,10 @@ package task
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,5 +131,18 @@ func TestSharedTaskTransitionsNoMatch(t *testing.T) {
 	}
 	if !got.Completed {
 		t.Errorf("Completed = false after CompleteTask, want true")
+	}
+
+	// GetSharedTask wraps sql.ErrNoRows with the queried ID so a missing task
+	// is diagnosable (bare "sql: no rows" does not say which lookup failed).
+	if _, err := s.GetSharedTask(ctx, 999999); err == nil {
+		t.Error("GetSharedTask(missing id): expected error, got nil")
+	} else {
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("GetSharedTask(missing id): error = %v, want wrapped sql.ErrNoRows", err)
+		}
+		if !strings.Contains(err.Error(), "999999") {
+			t.Errorf("GetSharedTask(missing id): error = %q, want the task ID in the message", err.Error())
+		}
 	}
 }

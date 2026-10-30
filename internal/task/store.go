@@ -208,13 +208,20 @@ func (s *Store) HandBackTask(ctx context.Context, owner string, id int64) error 
 	return nil
 }
 
-// GetSharedTask retrieves a specific shared task by ID
+// GetSharedTask retrieves a specific shared task by ID. The underlying
+// sql.ErrNoRows is wrapped with context so logs show which lookup failed
+// and callers can distinguish this method's not-found from the same sentinel
+// returned elsewhere.
 func (s *Store) GetSharedTask(ctx context.Context, id int64) (*SharedTask, error) {
 	row := s.db.SQL().QueryRowContext(ctx,
 		`SELECT id, owner, text, due_at, source, completed, created_at, updated_at, accepted, declined, handed_back FROM shared_tasks WHERE id = ?`,
 		id)
-	
-	return scanSharedTask(row)
+
+	t, err := scanSharedTask(row)
+	if err != nil {
+		return nil, fmt.Errorf("get shared task %d: %w", id, err)
+	}
+	return t, nil
 }
 
 // ListOutstandingTasks lists all outstanding shared tasks (not completed, not declined, not handed back)
