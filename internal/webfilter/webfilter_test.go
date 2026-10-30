@@ -146,6 +146,21 @@ func TestSuspiciousSiteDetector_NonStandardPort(t *testing.T) {
 			host: "example.com",
 			want: false,
 		},
+		{
+			name: "Bare IPv4 literal (no port)",
+			host: "192.168.1.50",
+			want: false,
+		},
+		{
+			name: "Bare IPv6 literal (no port)",
+			host: "::1",
+			want: false,
+		},
+		{
+			name: "IPv4 with non-standard port",
+			host: "192.168.1.1:8080",
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {
