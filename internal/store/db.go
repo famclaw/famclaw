@@ -368,13 +368,36 @@ func (d *DB) migrate() error {
 		category   TEXT NOT NULL,
 		label      TEXT NOT NULL,
 		value      TEXT NOT NULL,
-		created_at INTEGER NOT NULL,
-		updated_at INTEGER NOT NULL,
-		UNIQUE(user_name, category, label)
-	);
-	CREATE INDEX IF NOT EXISTS idx_user_memories_user ON user_memories(user_name);
-	CREATE INDEX IF NOT EXISTS idx_user_memories_category ON user_memories(category)
-	`)
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				UNIQUE(user_name, category, label)
+			);
+			CREATE INDEX IF NOT EXISTS idx_user_memories_user ON user_memories(user_name);
+			CREATE INDEX IF NOT EXISTS idx_user_memories_category ON user_memories(category);
+
+			-- Shared task table for task assignments with owner acceptance tracking
+			CREATE TABLE IF NOT EXISTS shared_tasks (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				owner       TEXT NOT NULL,
+				text        TEXT NOT NULL,
+				due_at      TEXT NOT NULL,
+				source      TEXT NOT NULL,
+				completed   INTEGER NOT NULL DEFAULT 0,
+				accepted    INTEGER NOT NULL DEFAULT 0,
+				declined    INTEGER NOT NULL DEFAULT 0,
+				handed_back INTEGER NOT NULL DEFAULT 0,
+				created_at  INTEGER NOT NULL,
+				updated_at  INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_shared_tasks_owner ON shared_tasks(owner);
+			CREATE INDEX IF NOT EXISTS idx_shared_tasks_completed ON shared_tasks(completed);
+			CREATE INDEX IF NOT EXISTS idx_shared_tasks_accepted ON shared_tasks(accepted);
+			CREATE INDEX IF NOT EXISTS idx_shared_tasks_due_at ON shared_tasks(due_at);
+			CREATE INDEX IF NOT EXISTS idx_shared_tasks_updated_at ON shared_tasks(updated_at);
+
+			-- Shared task index for outstanding tasks (not completed, not declined, not handed back)
+			CREATE INDEX IF NOT EXISTS idx_shared_tasks_outstanding ON shared_tasks(owner, completed, declined, handed_back);
+			`)
 	if err != nil {
 		return err
 	}
