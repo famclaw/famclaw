@@ -1401,7 +1401,7 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 					Category:    "suspicious_site",
 					QueryText:   host,
 				}
-				if _, err := a.db.UpsertApproval(approval); err != nil {
+				if _, err := a.db.UpsertApproval(ctx, approval); err != nil {
 					log.Printf("[agent] failed to create suspicious-site approval: %v", err)
 				}
 			}
@@ -1972,7 +1972,7 @@ func (a *Agent) handleProposeFamilyFact(ctx context.Context, args map[string]any
 	if a.db == nil {
 		return "", fmt.Errorf("propose_family_fact: db not configured")
 	}
-	if _, err := a.db.UpsertApproval(approval); err != nil {
+	if _, err := a.db.UpsertApproval(ctx, approval); err != nil {
 		return "", fmt.Errorf("propose_family_fact approval: %w", err)
 	}
 	return "Proposal sent to parents.", nil

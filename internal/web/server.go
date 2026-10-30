@@ -1136,7 +1136,7 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 		Category:    category,
 		QueryText:   queryText,
 	}
-	isNew, err := s.db.UpsertApproval(a)
+	isNew, err := s.db.UpsertApproval(context.Background(), a)
 	if err != nil {
 		log.Printf("[web] approval upsert: %v", err)
 		return

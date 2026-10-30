@@ -578,9 +578,9 @@ type Approval struct {
 
 // UpsertApproval inserts a new approval request or returns the existing one.
 // Returns (isNew, error).
-func (d *DB) UpsertApproval(a *Approval) (bool, error) {
+func (d *DB) UpsertApproval(ctx context.Context, a *Approval) (bool, error) {
 	var count int
-	err := d.sql.QueryRow(`SELECT COUNT(*) FROM approvals WHERE id = ?`, a.ID).Scan(&count)
+	err := d.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM approvals WHERE id = ?`, a.ID).Scan(&count)
 	if err != nil {
 		return false, err
 	}
@@ -588,7 +588,7 @@ func (d *DB) UpsertApproval(a *Approval) (bool, error) {
 		return false, nil // already exists
 	}
 
-	_, err = d.sql.Exec(`
+	_, err = d.sql.ExecContext(ctx, `
 		INSERT INTO approvals (id, user_name, user_display, age_group, category, query_text, status, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
 		a.ID, a.UserName, a.UserDisplay, a.AgeGroup, a.Category, a.QueryText,

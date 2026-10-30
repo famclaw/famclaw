@@ -356,7 +356,7 @@ func TestIntegration_FamilyState_KidProposalApprovedAppliesFact(t *testing.T) {
 		ID: approvalID, UserName: "sofia", UserDisplay: "Sofia", AgeGroup: "age_13_17",
 		Category: familystate.ProposalKind, QueryText: string(envelope),
 	}
-	if _, err := env.db.UpsertApproval(approval); err != nil {
+	if _, err := env.db.UpsertApproval(context.Background(), approval); err != nil {
 		t.Fatalf("upsert approval: %v", err)
 	}
 

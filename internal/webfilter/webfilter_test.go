@@ -16,16 +16,16 @@ func TestSuspiciousSiteDetector_Check(t *testing.T) {
 			name: "IP literal host",
 			host: "192.168.1.1",
 			expected: Verdict{
-				Action: "block",
-				Reason: "IP literal host detected",
+				Action: "warn_allow",
+				Reason: "IP literal host permitted by default; private/loopback security enforced by the dialer gate",
 			},
 		},
 		{
 			name: "IPv6 literal host",
 			host: "[::1]",
 			expected: Verdict{
-				Action: "block",
-				Reason: "IP literal host detected",
+				Action: "warn_allow",
+				Reason: "IP literal host permitted by default; private/loopback security enforced by the dialer gate",
 			},
 		},
 		{

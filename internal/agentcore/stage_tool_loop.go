@@ -21,7 +21,7 @@ import (
 // ApprovalStore provides approval persistence for the tool-call approval
 // flow. *store.DB satisfies this interface.
 type ApprovalStore interface {
-	UpsertApproval(a *store.Approval) (bool, error)
+	UpsertApproval(ctx context.Context, a *store.Approval) (bool, error)
 	AllApprovalsForOPA() (map[string]any, error)
 }
 
@@ -314,7 +314,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							Category:    "tool:" + bareToolName(tc.Function.Name),
 							QueryText:   approvalDescription(bareToolName(tc.Function.Name), tc.Function.Arguments),
 						}
-						if _, err := deps.ApprovalStore.UpsertApproval(a); err != nil {
+						if _, err := deps.ApprovalStore.UpsertApproval(context.Background(), a); err != nil {
 							log.Printf("[stage_tool_loop] approval creation failed for %s: %v (failing closed)", tc.Function.Name, err)
 							injectToolError(&llmMsgs, turn, tc, ErrToolBlocked, "approval unavailable", start)
 							continue
