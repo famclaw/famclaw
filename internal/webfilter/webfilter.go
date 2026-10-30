@@ -43,11 +43,16 @@ func NewSuspiciousSiteDetector() *SuspiciousSiteDetector {
 // Check determines if a host is suspicious based on various heuristics.
 // Returns a Verdict indicating whether to block, ask parent, or warn_allow.
 func (s *SuspiciousSiteDetector) Check(host string) Verdict {
-	// Check if host is an IP literal (IPv4 or IPv6)
+	// Check if host is an IP literal (IPv4 or IPv6).
+	// IP literals are permitted by default under the home-LAN model; the
+	// agent flow (hostDecision) allows them and relies on the dialer gate
+	// to veto private/loopback ranges. Return warn_allow so a direct
+	// caller of Check stays consistent with that design instead of
+	// contradicting it with a hard block.
 	if isIPLiteral(host) {
 		return Verdict{
-			Action: "block",
-			Reason: "IP literal host detected",
+			Action: "warn_allow",
+			Reason: "IP literal host permitted by default; private/loopback security enforced by the dialer gate",
 		}
 	}
 
