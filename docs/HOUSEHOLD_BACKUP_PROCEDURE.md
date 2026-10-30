@@ -207,10 +207,25 @@ sudo systemctl stop famclaw
 # Backup current data
 mv /home/user/famclaw-data "/home/user/famclaw-data-$(date +%Y%m%d-%H%M%S)-backup"
 
-# Extract and restore
-tar -xzf "${BACKUP_FILE}" -C /home/user/
-cp -r /home/user/data/* /home/user/famclaw-data/
-cp -r /home/user/config/* /home/user/.config/famclaw/
+# Extract into a staging dir. The backup archive's top-level entry is
+# famclaw-<timestamp>/ (created by the backup script above), so discover it
+# rather than assuming a flat layout.
+STAGE="$(mktemp -d)"
+tar -xzf "${BACKUP_FILE}" -C "${STAGE}"
+TOPDIR="$(ls -d "${STAGE}"/famclaw-* 2>/dev/null | head -1)"
+if [ -z "${TOPDIR}" ]; then
+  echo "ERROR: no famclaw-* top-level entry found in ${BACKUP_FILE}" >&2
+  rm -rf "${STAGE}"
+  exit 1
+fi
+
+# Copy restored data (the mv above removed the current data dir)
+mkdir -p /home/user/famclaw-data /home/user/.config/famclaw
+cp -r "${TOPDIR}"/data/* /home/user/famclaw-data/
+cp -r "${TOPDIR}"/config/* /home/user/.config/famclaw/
+
+# Clean up staging
+rm -rf "${STAGE}"
 
 # Set permissions
 chown -R user:user /home/user/famclaw-data
