@@ -40,12 +40,6 @@ func NewSuspiciousSiteDetector() *SuspiciousSiteDetector {
 	return &SuspiciousSiteDetector{}
 }
 
-// DefaultSuspiciousSiteDetector is a shared instance for the stateless
-// heuristics. The detector holds no per-request state, so the agent gate
-// reuses this singleton instead of allocating a new one on every
-// hostDecision call (hot path: every fetch, redirect, search, navigation).
-var DefaultSuspiciousSiteDetector = &SuspiciousSiteDetector{}
-
 // Check determines if a host is suspicious based on various heuristics.
 // Returns a Verdict indicating whether to block, ask parent, or warn_allow.
 func (s *SuspiciousSiteDetector) Check(host string) Verdict {
