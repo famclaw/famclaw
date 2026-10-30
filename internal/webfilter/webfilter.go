@@ -117,6 +117,14 @@ func isIPLiteral(host string) bool {
 // hasNonStandardPort checks if the host has a non-standard port.
 // Standard ports are the two well-known HTTP(S) ports only; everything
 // else (including 8080/8443) is surfaced to the parent per design §4.
+//
+// Reachability note: in the agent's host-gate flow the host reaches Check()
+// via url.URL.Hostname(), which strips the port, so this check does not fire
+// on that path. That is intentional, not a bug: the home-LAN model (design
+// §1.5) must let self-hosted services on non-standard ports (e.g. SearXNG on
+// :8888) pass without a parent prompt, and gating on the port would break
+// exactly those. The check is kept (and unit-tested) for any direct
+// Check(host:port) caller that passes a raw host:port string.
 func hasNonStandardPort(host string) bool {
 	// Standard ports for HTTP/HTTPS
 	standardPorts := map[string]bool{
