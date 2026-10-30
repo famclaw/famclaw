@@ -1380,6 +1380,18 @@ func (a *Agent) hostDecision(host string) (bool, string) {
 			}
 			// ask_parent: first honour a still-valid parent approval for this
 			// exact host, so a site a parent already OK'd is not re-blocked.
+			//
+			// context.Background() is deliberate, not an oversight: the
+			// hostValidator callback is the shared webfetch.HostValidator /
+			// browser.HostValidator interface (func(host string) error), which
+			// does not carry a context — it is also invoked per-redirect inside
+			// webfetch.Fetch where the caller's ctx is not threaded to the
+			// callback. Threading the request ctx through would require widening
+			// that interface and every call site. These approval ops are
+			// bounded in-process SQLite lookups (one indexed read, one
+			// idempotent upsert), so the worst case of a cancelled request is a
+			// single orphaned pending-approval row the parent can still review
+			// and deny — not a leak, hang, or unbounded operation.
 			if a.db != nil {
 				approvalID := proposalApprovalID(a.user.Name, "suspicious_site", host)
 				if prev, err := a.db.GetApproval(context.Background(), approvalID); err == nil && prev != nil {
