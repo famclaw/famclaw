@@ -13,19 +13,35 @@ func TestSuspiciousSiteDetector_Check(t *testing.T) {
 		expected Verdict
 	}{
 		{
-			name: "IP literal host",
+			name: "Private IPv4 literal (home-LAN)",
 			host: "192.168.1.1",
 			expected: Verdict{
 				Action: "warn_allow",
-				Reason: "IP literal host permitted by default; private/loopback security enforced by the dialer gate",
+				Reason: "private/loopback/link-local IP literal permitted by default (home-LAN model)",
 			},
 		},
 		{
-			name: "IPv6 literal host",
+			name: "Loopback IPv6 literal (home-LAN)",
 			host: "[::1]",
 			expected: Verdict{
 				Action: "warn_allow",
-				Reason: "IP literal host permitted by default; private/loopback security enforced by the dialer gate",
+				Reason: "private/loopback/link-local IP literal permitted by default (home-LAN model)",
+			},
+		},
+		{
+			name: "Public IPv4 literal",
+			host: "203.0.113.5",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "public IP literal host",
+			},
+		},
+		{
+			name: "Public IPv6 literal",
+			host: "2001:db8::1",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "public IP literal host",
 			},
 		},
 		{

@@ -881,9 +881,11 @@ func TestHostDecision_SuspiciousSiteAskParent(t *testing.T) {
 	}
 }
 
-// TestHostDecision_IPLiteralSkipsDetector verifies that IP-literal hosts
-// bypass the suspicious-site heuristics (home-LAN model, design §1.5).
-func TestHostDecision_IPLiteralSkipsDetector(t *testing.T) {
+// TestHostDecision_IPLiteralRanges verifies that local (private/loopback/
+// link-local) IP literals pass the gate by default under the home-LAN model
+// (design §1.5), while raw PUBLIC IP literals are routed to the parent-
+// approval gate instead of being silently allowed.
+func TestHostDecision_IPLiteralRanges(t *testing.T) {
 	a := &Agent{
 		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
 		cfg: &config.Config{
@@ -910,6 +912,17 @@ func TestHostDecision_IPLiteralSkipsDetector(t *testing.T) {
 	ok, reason = a.hostDecision(context.Background(), "::1")
 	if !ok {
 		t.Fatalf("hostDecision(::1) = (%v, %q), want allowed", ok, reason)
+	}
+
+	// A raw PUBLIC IP literal must NOT be silently allowed: the domain-based
+	// baseline/denylist cannot match an IP, so it routes to the approval gate.
+	// (a.db is nil here, so no approval row is created; the gate is denied.)
+	pub, pubReason := a.hostDecision(context.Background(), "203.0.113.5")
+	if pub {
+		t.Errorf("hostDecision(203.0.113.5) = (%v, %q), want denied (public IP)", pub, pubReason)
+	}
+	if pubReason != "suspicious" {
+		t.Errorf("hostDecision(203.0.113.5) reason = %q, want %q", pubReason, "suspicious")
 	}
 }
 

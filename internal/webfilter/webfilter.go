@@ -43,16 +43,23 @@ func NewSuspiciousSiteDetector() *SuspiciousSiteDetector {
 // Check determines if a host is suspicious based on various heuristics.
 // Returns a Verdict indicating whether to block, ask parent, or warn_allow.
 func (s *SuspiciousSiteDetector) Check(host string) Verdict {
-	// Check if host is an IP literal (IPv4 or IPv6).
-	// IP literals are permitted by default under the home-LAN model; the
-	// agent flow (hostDecision) allows them and relies on the dialer gate
-	// to veto private/loopback ranges. Return warn_allow so a direct
-	// caller of Check stays consistent with that design instead of
-	// contradicting it with a hard block.
-	if isIPLiteral(host) {
+	// IP literals: under the home-LAN model (design §1.5) private, loopback
+	// and link-local endpoints (SearXNG, NAS, local services) are permitted
+	// by default — raw-IP security for those ranges is the dialer gate's job.
+	// A raw PUBLIC IP literal is not a domain: the domain-based baseline and
+	// parent denylist cannot match it, so a child could reach a
+	// baseline-blocked site via its public IP. Public IPs are therefore
+	// routed to the parent-approval gate instead of being silently allowed.
+	if isIP, local := classifyIPLiteral(host); isIP {
+		if local {
+			return Verdict{
+				Action: "warn_allow",
+				Reason: "private/loopback/link-local IP literal permitted by default (home-LAN model)",
+			}
+		}
 		return Verdict{
-			Action: "warn_allow",
-			Reason: "IP literal host permitted by default; private/loopback security enforced by the dialer gate",
+			Action: "ask_parent",
+			Reason: "public IP literal host",
 		}
 	}
 
@@ -97,26 +104,32 @@ func (s *SuspiciousSiteDetector) Check(host string) Verdict {
 
 // isIPLiteral checks if the host is an IP literal (IPv4 or IPv6).
 func isIPLiteral(host string) bool {
-	// Handle IPv6 bracketed notation like [::1]
-	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-		// Extract the IP part inside brackets
-		ipStr := host[1 : len(host)-1]
-		ip := net.ParseIP(ipStr)
-		return ip != nil
-	}
+	isIP, _ := classifyIPLiteral(host)
+	return isIP
+}
 
-	// Handle IPv4 and IPv6 with ports
-	// Use net.SplitHostPort for proper port-aware parsing
-	if _, _, err := net.SplitHostPort(host); err == nil {
-		// Valid host:port format, check if the host part is an IP literal
-		hostWithoutPort, _, _ := net.SplitHostPort(host)
-		ip := net.ParseIP(hostWithoutPort)
-		return ip != nil
-	} else {
-		// If we can't split, check if it's a direct IP literal
-		ip := net.ParseIP(host)
-		return ip != nil
+// classifyIPLiteral reports whether host is an IP literal (bare, bracketed,
+// or host:port) and whether it falls in a home-LAN range (private, loopback,
+// or link-local). This keeps the "which IPs are local" logic in one place so
+// the detector and the agent gate agree.
+func classifyIPLiteral(host string) (isIP, local bool) {
+	var ipStr string
+	switch {
+	case strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]"):
+		ipStr = host[1 : len(host)-1]
+	default:
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			ipStr = h
+		} else {
+			ipStr = host
+		}
 	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false, false
+	}
+	local = ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+	return true, local
 }
 
 // hasNonStandardPort checks if the host has a non-standard port.
