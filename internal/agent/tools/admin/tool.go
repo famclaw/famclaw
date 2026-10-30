@@ -87,6 +87,7 @@ func AllReadOnlyDefinitions() []agentcore.Tool {
 		ListUnknownAccountsDefinition(),
 		MCPListDefinition(),
 		AllowlistListDefinition(),
+		DenylistListDefinition(),
 	}
 }
 
@@ -107,6 +108,8 @@ func AllMutatingDefinitions() []agentcore.Tool {
 		MCPRemoveDefinition(),
 		AllowlistAddDefinition(),
 		AllowlistRemoveDefinition(),
+		DenylistAddDefinition(),
+		DenylistRemoveDefinition(),
 	}
 }
 

@@ -59,10 +59,14 @@ type gatewaySettingsView struct {
 	} `json:"discord"`
 }
 
-// webFetchSettingsView carries the web_fetch allowlist and enable flag.
+// webFetchSettingsView carries the web_fetch URL policy, allowlist, and
+// denylist. The denylist + bundled baseline are the kid-safe default (W2);
+// the allowlist is the back-compat parent-maintained mode.
 type webFetchSettingsView struct {
 	Enabled      bool     `json:"enabled"`
+	URLPolicy    string   `json:"url_policy,omitempty"`
 	URLAllowlist []string `json:"url_allowlist"`
+	URLDenylist  []string `json:"url_denylist"`
 }
 
 // handleSettings handles GET (read config) and POST (update config).
@@ -128,9 +132,12 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 
 	// WebFetch settings
 	view.WebFetch.Enabled = s.cfg.Tools.WebFetch.Enabled
+	view.WebFetch.URLPolicy = s.cfg.Tools.WebFetch.URLPolicy
 	// Copy the allowlist so the view is stable against concurrent writes
 	view.WebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
 	copy(view.WebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
+	view.WebFetch.URLDenylist = make([]string, len(s.cfg.Tools.WebFetch.URLDenylist))
+	copy(view.WebFetch.URLDenylist, s.cfg.Tools.WebFetch.URLDenylist)
 
 	jsonOK(w, view)
 }
@@ -235,10 +242,20 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		newGateways.Discord.Token = update.Gateways.Discord.Token
 	}
 
-	// WebFetch — allowlist and enable flag
+	// WebFetch — policy, allowlist, denylist, and enable flag
 	newWebFetch := s.cfg.Tools.WebFetch
 	if update.WebFetch.Enabled != s.cfg.Tools.WebFetch.Enabled {
 		newWebFetch.Enabled = update.WebFetch.Enabled
+	}
+	if update.WebFetch.URLPolicy != "" {
+		// Only accept an explicit policy override when it's a known mode.
+		switch strings.ToLower(strings.TrimSpace(update.WebFetch.URLPolicy)) {
+		case "allowlist", "denylist":
+			newWebFetch.URLPolicy = strings.ToLower(strings.TrimSpace(update.WebFetch.URLPolicy))
+		default:
+			jsonErr(w, fmt.Errorf("web_fetch.url_policy must be %q or %q", "allowlist", "denylist"), http.StatusBadRequest)
+			return
+		}
 	}
 	if len(update.WebFetch.URLAllowlist) > 0 {
 		// Deduplicate, trim whitespace, and validate hosts
@@ -260,10 +277,33 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		newWebFetch.URLAllowlist = deduped
 	}
+	if len(update.WebFetch.URLDenylist) > 0 {
+		// Deduplicate, trim whitespace, and validate hosts (same shape as allowlist).
+		seen := make(map[string]struct{}, len(update.WebFetch.URLDenylist))
+		deduped := make([]string, 0, len(update.WebFetch.URLDenylist))
+		for _, host := range update.WebFetch.URLDenylist {
+			trimmed := strings.TrimSpace(host)
+			if trimmed == "" {
+				continue
+			}
+			if _, ok := seen[trimmed]; !ok {
+				if _, err := config.NormalizeAllowlistHost(trimmed); err != nil {
+					jsonErr(w, fmt.Errorf("invalid host %q: %w", trimmed, err), http.StatusBadRequest)
+					return
+				}
+				seen[trimmed] = struct{}{}
+				deduped = append(deduped, trimmed)
+			}
+		}
+		newWebFetch.URLDenylist = deduped
+	}
 
-	// Validate web_fetch config before assignment
-	if newWebFetch.Enabled && len(newWebFetch.URLAllowlist) == 0 {
-		jsonErr(w, fmt.Errorf("web_fetch is enabled but url_allowlist is empty — set at least one host or disable web_fetch"), http.StatusBadRequest)
+	// Validate web_fetch config before assignment. In allowlist mode an empty
+	// allowlist would deny all fetches — reject that. In denylist mode (the
+	// zero-config default) an empty allowlist is expected and valid; the
+	// bundled baseline + any denylist entries still gate access.
+	if newWebFetch.Enabled && newWebFetch.ResolvedURLPolicy() == "allowlist" && len(newWebFetch.URLAllowlist) == 0 {
+		jsonErr(w, fmt.Errorf("web_fetch is enabled in allowlist mode but url_allowlist is empty — add at least one host, or set url_policy: denylist"), http.StatusBadRequest)
 		return
 	}
 

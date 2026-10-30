@@ -7,7 +7,7 @@ VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "d
 HONEYBADGER_VERSION := v0.6.2
 LDFLAGS   := -ldflags "-s -w -X main.Version=$(VERSION)"
 
-.PHONY: all build run dev test test-scripts opa-test behavioral cross clean install install-service install-rpi install-systemd install-launchd build-seccheck install-scanner cross-rpi3 cross-rpi4 cross-rpi5 cross-android cross-mac-intel cross-mac-arm cross-linux64
+.PHONY: all build run dev test test-scripts opa-test behavioral cross clean install install-service install-rpi install-systemd install-launchd build-seccheck install-scanner cross-rpi3 cross-rpi4 cross-rpi5 cross-android cross-mac-intel cross-mac-arm cross-linux64 re-vendor-baseline
 
 ## build: Build for current machine
 build:
@@ -141,6 +141,38 @@ build-seccheck:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 		go build -buildvcs=false $(LDFLAGS) -o $(BUILD_DIR)/seccheck/seccheck-linux-amd64 ./skills-repo/seccheck/bin/
 	@echo "✅ seccheck binaries: $(BUILD_DIR)/seccheck/"
+
+## re-vendor-baseline: Refresh internal/webfilter/baseline.txt from CC0 Aegis Blocklist
+## Fetches the Aegis "Core (Always Blocked)" grade, applies FamClaw's curation
+## (drops mainstream-communication / social / news / support hosts), and writes
+## the result. Review the diff before committing.
+re-vendor-baseline:
+	@echo "Refreshing bundled kid-safe baseline from Aegis Blocklist (CC0)..."
+	@set -euo pipefail; \
+	OUT="internal/webfilter/baseline.txt"; \
+	TMP="$$(mktemp)"; EXCL="$$(mktemp)"; \
+	curl -fsSL --max-time 60 \
+	  "https://raw.githubusercontent.com/0xDarkMatter/aegis-blocklist/master/grades/core.txt" \
+	  | awk '!/^#/ && NF {gsub(/[[:space:]]+$$/,""); print tolower($$0)}' | sort -u > "$$TMP"; \
+	printf '%s\n' "discord.com" "discordapp.com" "telegram.me" "telegram.org" \
+	  "odysee.com" "rumble.com" "truthsocial.com" "gettr.com" \
+	  "tellonym.me" "ngl.link" "infowars.com" "thegatewaypundit.com" \
+	  "zerohedge.com" "naturalnews.com" "newswars.com" "beforeitsnews.com" \
+	  "edsupportforum.com" > "$$EXCL"; \
+	{ \
+	  echo "# FamClaw bundled kid-safe baseline (CC0-sourced)"; \
+	  echo "# Source: Aegis Blocklist \"Core (Always Blocked)\" — https://github.com/0xDarkMatter/aegis-blocklist"; \
+	  echo "# License: CC0 1.0 Universal (public domain)"; \
+	  echo "# Refreshed: $$(date -u +%F) via make re-vendor-baseline"; \
+	  echo "# Curation: drops 17 mainstream comm/social/news/support hosts that would"; \
+	  echo "#   false-positive on normal family use. See upstream categories/ for details."; \
+	  echo ""; \
+	} > "$$OUT.tmp"; \
+	grep -vxF -f "$$EXCL" "$$TMP" >> "$$OUT.tmp"; \
+	rm -f "$$TMP" "$$EXCL"; \
+	mv "$$OUT.tmp" "$$OUT"; \
+	N=$$(grep -cvE '^(#|$$)' "$$OUT"); \
+	echo "✅ Wrote $$OUT ($$N hosts). Review with: git diff $$OUT"
 
 ## clean: Remove build artifacts
 clean:
