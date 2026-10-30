@@ -149,6 +149,55 @@ This feature is **optional but recommended** for a family assistant to help ensu
 - **Parent notifications:** Configure alert channels under `notifications:` in `config.yaml` (email, Slack, Discord, SMS, ntfy) to receive alerts about quarantined tools, approval requests, etc.
 - **MCP servers:** Enable multi-tool servers by configuring `skills.mcp_servers` in `config.yaml` (see the example in the default config).
 - **Web tools:** The built-in web tools (`web_fetch`, `web_search`, `browser`) can be enabled under `tools:` in `config.yaml`. `web_fetch` extracts HTML→text, plain/JSON, and PDF text layers; it requires a non-empty `url_allowlist` to prevent SSRF attacks (an empty list denies all fetches). Its optional headless-browser fallback (`fallback_to_browser`) fires for thin JS-heavy pages and on 403/429 bot-blocks, and requires `tools.browser.enabled` plus a reachable browser pool. `web_search` queries SearXNG (default — requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate) or hosted Tavily (`provider: tavily` + the `FAMCLAW_WEB_SEARCH_API_KEY` env var). See the README "Web fetch" / "Web search" sections.
+
+### URL Policy Configuration
+
+The `tools.web_fetch` section supports two URL policy modes:
+
+1. **Allowlist mode** (`url_policy: allowlist`): Only hosts in `url_allowlist` are permitted. 
+   - Requires at least one host in `url_allowlist`
+   - Empty list denies all (SSRF guard)
+   - Hosts are matched exactly or as subdomains (e.g., "example.com" matches "www.example.com")
+
+2. **Denylist mode** (`url_policy: denylist`): All public hosts are allowed by default, with explicit blocks in `url_denylist`.
+   - Includes a bundled kid-safe baseline (Aegis Blocklist) that blocks adult content, hate groups, and harmful sites
+   - Parent-maintained denylist entries in `url_denylist` (exact or subdomain matches)
+   - Hosts are matched exactly or as subdomains
+   - Suspicious site detector (W4) that can block sites based on reputation
+
+The default mode is `denylist` when `url_allowlist` is empty, providing a secure-by-default experience.
+
+**Configuration example:**
+```yaml
+tools:
+  web_fetch:
+    enabled: true
+    url_policy: "denylist"
+    url_denylist:
+      - "adult.example.com"
+      - "hate.example.com"
+    max_bytes: 262144
+    timeout_seconds: 30
+    allowed_roles:
+      - "parent"
+      - "child"
+  web_search:
+    enabled: true
+    provider: "searxng"
+    endpoint: "http://localhost:8888"
+```
+
+The `url_policy` field accepts "allowlist" or "denylist" values. When unset, the mode is determined by the presence of an `url_allowlist`:
+- Non-empty allowlist → `allowlist` mode (backwards compatible)
+- Empty/missing allowlist → `denylist` mode (secure-by-default)
+
+### Admin Tools
+
+Parent admins can manage web fetch settings via:
+- `/api/tools/web_fetch/allowlist` - View/edit allowlist entries
+- `/api/tools/web_fetch/denylist` - View/edit denylist entries
+
+These endpoints are only available to users with the "parent" role.
 - **MCP runtime management:** List and add MCP servers conversationally via the parent-only `mcp_list` and `mcp_add` built-in tools, or add/remove via the `/api/mcp` endpoints (session-authenticated, parent role) — no config edit or restart required. The running MCP pool is reloaded in place. See [SKILLS.md](./SKILLS.md) and the MCP section of the README.
 - **Config hot-reload:** FamClaw watches `config.yaml` and reloads non-destructive changes in place — including MCP server add/remove, gateway toggles, and tool config — without a restart. Each component reports its actual reload outcome (success, failure, or "requires restart" for non-reloadable components); false success is no longer reported. The voice transcriber is hot-reloadable. The file watcher stops cleanly on shutdown.
 ## Next Steps
