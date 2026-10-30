@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1363,44 +1364,48 @@ func (a *Agent) hostDecision(host string) (bool, string) {
 			}
 		}
 		
-		// (c) W4: suspicious site detector
-		// W4: suspicious site detector seam - call the detector
-		suspiciousDetector := webfilter.NewSuspiciousSiteDetector()
-		if verdict := suspiciousDetector.Check(host); verdict.Action == "block" {
-			return false, "suspicious"
-		} else if verdict.Action == "ask_parent" {
-			// Create a pending approval row for the suspicious site
-			// W4: suspicious site detector seam - create pending approval
-			// Generate unique approval ID using a similar approach as router.go
-			day := time.Now().UTC().Format("2006-01-02")
-			h := sha256.Sum256([]byte(a.user.Name + ":" + "suspicious_site" + ":" + day))
-			approvalID := "suspicious-" + hex.EncodeToString(h[:8])
-			
-			// Create the approval record
-			approval := &store.Approval{
-				ID:          approvalID,
-				UserName:    a.user.Name,
-				UserDisplay: a.user.DisplayName,
-				AgeGroup:    a.user.AgeGroup,
-				Category:    "suspicious_site",
-				QueryText:   host,
-				Status:      "pending",
-				CreatedAt:   time.Now(),
-				UpdatedAt:   time.Now(),
-				ExpiresAt:   time.Now().Add(time.Hour * 24), // 24-hour expiration
-			}
-			// Insert into the database using a.db (the Agent's database field)
-			_, err := a.db.UpsertApproval(approval)
-			if err != nil {
-				log.Printf("[agent] failed to create suspicious site approval: %v", err)
-			}
-			return false, "suspicious"
-		} else if verdict.Action == "warn_allow" {
-			// Log to audit and proceed
-			// Log to audit trail
-			// For now, we'll just proceed
+		// (c) W4: suspicious site detector (design §4). The heuristics target
+		// malicious PUBLIC domain names (punycode lookalikes, high-entropy C2
+		// labels, typo-squats of known brands). IP literals are NOT gated here:
+		// the home-LAN model permits private-IP endpoints (SearXNG, NAS, ...)
+		// by default, and raw-IP security (private/loopback/link-local veto) is
+		// handled by the orthogonal dialer gate in webfetch (design §1.4/§1.5).
+		// Baseline + parent denylist above already apply to IP literals.
+		if ip := net.ParseIP(host); ip != nil {
+			return true, ""
 		}
-		
+		if verdict := webfilter.NewSuspiciousSiteDetector().Check(host); verdict.Action != "warn_allow" {
+			if verdict.Action == "block" {
+				return false, "suspicious"
+			}
+			// ask_parent: first honour a still-valid parent approval for this
+			// exact host, so a site a parent already OK'd is not re-blocked.
+			if a.db != nil {
+				approvalID := proposalApprovalID(a.user.Name, "suspicious_site", host)
+				if prev, err := a.db.GetApproval(context.Background(), approvalID); err == nil && prev != nil {
+					if prev.Status == "approved" && time.Now().Before(prev.ExpiresAt) {
+						return true, ""
+					}
+				}
+				// Create a host-scoped pending approval the parent can act on via
+				// the approvals flow (idempotent: UpsertApproval is a no-op when the
+				// row already exists). The ID is host-scoped so distinct suspicious
+				// hosts on the same day get distinct approvals.
+				approval := &store.Approval{
+					ID:          approvalID,
+					UserName:    a.user.Name,
+					UserDisplay: a.user.DisplayName,
+					AgeGroup:    a.user.AgeGroup,
+					Category:    "suspicious_site",
+					QueryText:   host,
+				}
+				if _, err := a.db.UpsertApproval(approval); err != nil {
+					log.Printf("[agent] failed to create suspicious-site approval: %v", err)
+				}
+			}
+			return false, "suspicious"
+		}
+
 		return true, ""
 	}
 }
