@@ -48,38 +48,40 @@ Household data backup and restore is critical for maintaining family information
    sudo systemctl stop famclaw
    
    # Create backup directory
-   mkdir -p /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S)
+   # Capture one timestamp so every path in this procedure refers to the same backup.
+   TS=$(date +%Y%m%d-%H%M%S)
+   mkdir -p "/home/user/backups/famclaw-${TS}"
    ```
 
 2. **Backup Core Directories**
    ```bash
    # Backup database
-   cp -r /home/user/famclaw-data /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S)/data
-   
+   cp -r /home/user/famclaw-data "/home/user/backups/famclaw-${TS}/data"
+
    # Backup configuration
-   cp -r /home/user/.config/famclaw /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S)/config
-   
+   cp -r /home/user/.config/famclaw "/home/user/backups/famclaw-${TS}/config"
+
    # Backup logs (optional but recommended)
-   cp -r /home/user/famclaw-logs /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S)/logs
+   cp -r /home/user/famclaw-logs "/home/user/backups/famclaw-${TS}/logs"
    ```
 
 3. **Archive Backup**
    ```bash
    # Create compressed archive
-   tar -czf /home/user/backups/famclaw-backup-$(date +%Y%m%d-%H%M%S).tar.gz \
-     -C /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S) .
-   
+   tar -czf "/home/user/backups/famclaw-backup-${TS}.tar.gz" \
+     -C "/home/user/backups/famclaw-${TS}" .
+
    # Verify archive integrity
-   tar -tzf /home/user/backups/famclaw-backup-$(date +%Y%m%d-%H%M%S).tar.gz
+   tar -tzf "/home/user/backups/famclaw-backup-${TS}.tar.gz"
    ```
 
 4. **Post-Backup Verification**
    ```bash
    # Verify backup location
    ls -la /home/user/backups/
-   
+
    # Check backup size
-   du -sh /home/user/backups/famclaw-backup-$(date +%Y%m%d-%H%M%S).tar.gz
+   du -sh "/home/user/backups/famclaw-backup-${TS}.tar.gz"
    ```
 
 ## Restore Procedure
@@ -97,21 +99,27 @@ Household data backup and restore is critical for maintaining family information
    sudo systemctl stop famclaw
    
    # Backup current data (if needed)
-   mv /home/user/famclaw-data /home/user/famclaw-data-$(date +%Y%m%d-%H%M%S)-backup
+   mv /home/user/famclaw-data "/home/user/famclaw-data-$(date +%Y%m%d-%H%M%S)-backup"
+
+   # Set this to the timestamp baked into YOUR backup filename, e.g. 20261030-011728
+   # (read from famclaw-backup-20261030-011728.tar.gz). Do NOT use $(date ...) here —
+   # at restore time it would expand to the current time, not the time the backup was made.
+   TS=<your-backup-timestamp>
    ```
 
 2. **Restore Core Directories**
    ```bash
-   # Extract backup
-   tar -xzf /home/user/backups/famclaw-backup-$(date +%Y%m%d-%H%M%S).tar.gz \
-     -C /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S)/
-   
+   # Extract backup into a staging dir named after the backup's timestamp
+   mkdir -p "/home/user/backups/famclaw-${TS}"
+   tar -xzf "/home/user/backups/famclaw-backup-${TS}.tar.gz" \
+     -C "/home/user/backups/famclaw-${TS}/"
+
    # Recreate the data dir that step 1 moved away
    mkdir -p /home/user/famclaw-data /home/user/.config/famclaw
-   
+
    # Copy restored data
-   cp -r /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S)/data/* /home/user/famclaw-data/
-   cp -r /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S)/config/* /home/user/.config/famclaw/
+   cp -r "/home/user/backups/famclaw-${TS}/data/"* /home/user/famclaw-data/
+   cp -r "/home/user/backups/famclaw-${TS}/config/"* /home/user/.config/famclaw/
    ```
 
 3. **Set Proper Permissions**
