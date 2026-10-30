@@ -88,7 +88,7 @@ type Options struct {
 	// fetch. Callers use this to enforce per-host allowlists across
 	// redirects (preventing an allowed host from 302-ing to a disallowed
 	// one).
-	HostValidator func(host string) error
+	HostValidator func(ctx context.Context, host string) error
 
 	// AllowPrivateNetworks disables the default DNS-resolution-time IP
 	// guard that rejects loopback, private (RFC1918/ULA), link-local,
@@ -147,7 +147,7 @@ func Fetch(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("web fetch: scheme %q not allowed", parsed.Scheme)
 	}
 	if opts.HostValidator != nil {
-		if err := opts.HostValidator(parsed.Hostname()); err != nil {
+		if err := opts.HostValidator(ctx, parsed.Hostname()); err != nil {
 			return nil, err
 		}
 	}
@@ -184,7 +184,7 @@ func Fetch(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 				return fmt.Errorf("redirect to disallowed scheme %q", req.URL.Scheme)
 			}
 			if opts.HostValidator != nil {
-				if err := opts.HostValidator(req.URL.Hostname()); err != nil {
+				if err := opts.HostValidator(req.Context(), req.URL.Hostname()); err != nil {
 					return fmt.Errorf("redirect blocked: %w", err)
 				}
 			}

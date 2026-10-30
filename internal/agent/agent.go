@@ -1331,7 +1331,7 @@ func canonicalizeHost(h string) string {
 // are orthogonal and remain applied in both modes (design §1.4); hostDecision
 // only makes the host-level allow/deny decision. It returns (allowed, reason)
 // where reason is a short class ("allowlist" | "denylist") when !allowed.
-func (a *Agent) hostDecision(host string) (bool, string) {
+func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 	host = canonicalizeHost(host)
 	fcfg := a.cfg.Tools.WebFetch
 	switch fcfg.ResolvedURLPolicy() {
@@ -1380,21 +1380,11 @@ func (a *Agent) hostDecision(host string) (bool, string) {
 			}
 			// ask_parent: first honour a still-valid parent approval for this
 			// exact host, so a site a parent already OK'd is not re-blocked.
-			//
-			// context.Background() is deliberate, not an oversight: the
-			// hostValidator callback is the shared webfetch.HostValidator /
-			// browser.HostValidator interface (func(host string) error), which
-			// does not carry a context — it is also invoked per-redirect inside
-			// webfetch.Fetch where the caller's ctx is not threaded to the
-			// callback. Threading the request ctx through would require widening
-			// that interface and every call site. These approval ops are
-			// bounded in-process SQLite lookups (one indexed read, one
-			// idempotent upsert), so the worst case of a cancelled request is a
-			// single orphaned pending-approval row the parent can still review
-			// and deny — not a leak, hang, or unbounded operation.
+			// ctx carries the request lifecycle: a cancelled request aborts
+			// the lookup/upsert before they complete.
 			if a.db != nil {
 				approvalID := proposalApprovalID(a.user.Name, "suspicious_site", host)
-				if prev, err := a.db.GetApproval(context.Background(), approvalID); err == nil && prev != nil {
+				if prev, err := a.db.GetApproval(ctx, approvalID); err == nil && prev != nil {
 					if prev.Status == "approved" && time.Now().Before(prev.ExpiresAt) {
 						return true, ""
 					}
@@ -1440,8 +1430,8 @@ func (a *Agent) hostGateError(host, reason string) error {
 // hostValidator is the host-gate callback passed to webfetch.Fetch, the
 // search provider, and the browser pool: typed error on rejection, nil when
 // the host passes. All redirect re-checks therefore use one decision.
-func (a *Agent) hostValidator(host string) error {
-	if ok, reason := a.hostDecision(host); !ok {
+func (a *Agent) hostValidator(ctx context.Context, host string) error {
+	if ok, reason := a.hostDecision(ctx, host); !ok {
 		return a.hostGateError(host, reason)
 	}
 	return nil
@@ -1480,7 +1470,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// blocked — the "empty allowlist denies everything" footgun is gone.
 	// hostValidator folds the decision and the typed rejection error into one
 	// hostDecision call, so no call site re-runs the decision for the reason.
-	if err := a.hostValidator(u.Hostname()); err != nil {
+	if err := a.hostValidator(ctx, u.Hostname()); err != nil {
 		return "", err
 	}
 

@@ -61,7 +61,7 @@ type Options struct {
 	Endpoint             string
 	MaxResults           int
 	Timeout              time.Duration
-	HostValidator        func(host string) error
+	HostValidator        func(ctx context.Context, host string) error
 	AllowPrivateNetworks bool
 }
 
@@ -137,7 +137,7 @@ func Search(ctx context.Context, query string, opts Options) ([]Hit, error) {
 	// failure the model must report honestly). webfetch.Fetch re-runs the
 	// same validator on redirect targets.
 	if opts.HostValidator != nil {
-		if err := opts.HostValidator(endpointParsed.Hostname()); err != nil {
+		if err := opts.HostValidator(ctx, endpointParsed.Hostname()); err != nil {
 			return nil, err
 		}
 	}
