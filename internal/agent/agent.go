@@ -1422,6 +1422,11 @@ func (a *Agent) hostGateError(host, reason string) error {
 	switch reason {
 	case "denylist", "baseline":
 		return webfetch.NewHostDeniedError(host, reason)
+	case "suspicious":
+		// Distinct kid-safe message: names the host + "needs parent approval"
+		// so the child/LLM gets actionable feedback (a parent approval row is
+		// created in the approvals UI) instead of a dead-end "not allowed".
+		return webfetch.NewHostDeniedError(host, "suspicious")
 	default:
 		return webfetch.NewHostNotAllowedError(host)
 	}
