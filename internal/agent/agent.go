@@ -1422,25 +1422,16 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// exactly as before; with an empty/absent allowlist the config resolves to
 	// denylist mode, so public hosts pass and only url_denylist hosts are
 	// blocked — the "empty allowlist denies everything" footgun is gone.
-	hostAllowed := func(host string) bool {
-		ok, _ := a.hostDecision(host)
-		return ok
-	}
-	if !hostAllowed(u.Hostname()) {
-		_, reason := a.hostDecision(u.Hostname())
-		return "", a.hostGateError(u.Hostname(), reason)
+	// hostValidator folds the decision and the typed rejection error into one
+	// hostDecision call, so no call site re-runs the decision for the reason.
+	if err := a.hostValidator(u.Hostname()); err != nil {
+		return "", err
 	}
 
 	opts := webfetch.Options{
 		MaxBytes: cfg.MaxBytes,
 		Timeout:  time.Duration(cfg.TimeoutSec) * time.Second,
-		HostValidator: func(host string) error {
-			if !hostAllowed(host) {
-				_, reason := a.hostDecision(host)
-				return a.hostGateError(host, reason)
-			}
-			return nil
-		},
+		HostValidator: a.hostValidator,
 		// famclaw is a home-LAN product — by default we allow private/loopback
 		// addresses so the bot can reach co-located services (SearXNG,
 		// Playwright, llama-server, etc.). Admins opt INTO enterprise-style
@@ -1483,7 +1474,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 			directStatus := result.StatusCode
 			log.Printf("[agent][%s] web_fetch: direct fetch got HTTP %d for %s; trying browser fallback",
 				a.user.Name, directStatus, rawURL)
-			browserResult, fbErr := a.fetchWithBrowser(ctx, a.browserPool, rawURL, hostAllowed)
+			browserResult, fbErr := a.fetchWithBrowser(ctx, a.browserPool, rawURL, a.hostValidator)
 			if fbErr != nil {
 				log.Printf("[agent][%s] web_fetch: browser fallback after HTTP %d failed for %s; returning original error: %v",
 					a.user.Name, directStatus, rawURL, fbErr)
@@ -1515,7 +1506,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 				// than an empty success, so there is no separate empty-render
 				// check for the fallback here. A nil/unavailable pool is handled
 				// by the else-branch below, not passed into fetchWithBrowser.
-				browserResult, err := a.fetchWithBrowser(ctx, a.browserPool, rawURL, hostAllowed)
+				browserResult, err := a.fetchWithBrowser(ctx, a.browserPool, rawURL, a.hostValidator)
 				if err != nil {
 					log.Printf("[agent][%s] web_fetch browser fallback failed for %s, using original result: %v", a.user.Name, rawURL, err)
 				} else {
@@ -1613,9 +1604,9 @@ func isBotBlockStatus(status int) bool {
 }
 
 // fetchWithBrowser runs the browser fallback for JS-heavy sites: it
-// navigates the browser pool to rawURL and extracts rendered text. The same
-// mode-aware host gate (hostDecision) is applied to navigation (the pool
-// re-checks the final URL after redirects).
+// navigates the browser pool to rawURL and extracts rendered text. The
+// hostCheck validator (the shared hostValidator) is applied to navigation —
+// the pool re-checks the final URL after redirects with the same callback.
 //
 // Lifecycle is acquire-use-release through the pool: NavigateAndExtract
 // acquires/reuses a per-user page, reads it, and the pool's idle-sweeper
@@ -1631,18 +1622,9 @@ func isBotBlockStatus(status int) bool {
 //   - nil/unavailable pool: "browser fetch: browser pool is not configured"
 //   - navigate/extract failure: "browser fetch: <stage> <url>: <err>"
 //   - empty rendered result: "browser fetch: rendered content empty for <url>"
-func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawURL string, hostAllowed func(string) bool) (*webfetch.Result, error) {
+func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawURL string, hostCheck browser.HostValidator) (*webfetch.Result, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("browser fetch: browser pool is not configured (set tools.browser.endpoint; fallback_to_browser requires a browser pool)")
-	}
-	hostCheck := func(host string) error {
-		if !hostAllowed(host) {
-			// Mode-aware reason so a denylist rejection on a redirect in the
-			// browser-fallback path is not mislabeled as an allowlist miss.
-			_, reason := a.hostDecision(host)
-			return a.hostGateError(host, reason)
-		}
-		return nil
 	}
 	// One pool call does the navigate (host gate before and after redirects)
 	// and the rendered-text extract, and reports the page's actual wire size
