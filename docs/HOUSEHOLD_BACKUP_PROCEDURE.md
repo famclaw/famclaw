@@ -106,6 +106,9 @@ Household data backup and restore is critical for maintaining family information
    tar -xzf /home/user/backups/famclaw-backup-$(date +%Y%m%d-%H%M%S).tar.gz \
      -C /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S)/
    
+   # Recreate the data dir that step 1 moved away
+   mkdir -p /home/user/famclaw-data /home/user/.config/famclaw
+   
    # Copy restored data
    cp -r /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S)/data/* /home/user/famclaw-data/
    cp -r /home/user/backups/famclaw-$(date +%Y%m%d-%H%M%S)/config/* /home/user/.config/famclaw/
