@@ -1500,12 +1500,9 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// exactly as before; with an empty/absent allowlist the config resolves to
 	// denylist mode, so public hosts pass and only url_denylist hosts are
 	// blocked — the "empty allowlist denies everything" footgun is gone.
-	// hostValidator folds the decision and the typed rejection error into one
-	// hostDecision call, so no call site re-runs the decision for the reason.
-	if err := a.hostValidator(ctx, u.Hostname()); err != nil {
-		return "", err
-	}
-
+	// The gate runs exactly once, inside webfetch.Fetch, via the HostValidator
+	// option set below; a redundant early check here would double the
+	// hostDecision GetApproval+upsert per successful fetch.
 	opts := webfetch.Options{
 		MaxBytes: cfg.MaxBytes,
 		Timeout:  time.Duration(cfg.TimeoutSec) * time.Second,

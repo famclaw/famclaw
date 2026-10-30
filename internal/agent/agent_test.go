@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -771,7 +772,18 @@ func TestHandleWebFetch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var got *call
-			fetcher := func(_ context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error) {
+			fetcher := func(ctx context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error) {
+				// Mirror webfetch.Fetch: the host gate runs inside the fetcher,
+				// before any network I/O. handleWebFetch's early hostValidator
+				// call was removed, so a blocked host is rejected here and the
+				// fetch never happens (got stays nil for blocked cases).
+				if opts.HostValidator != nil {
+					if parsed, perr := url.Parse(rawURL); perr == nil {
+						if herr := opts.HostValidator(ctx, parsed.Hostname()); herr != nil {
+							return nil, herr
+						}
+					}
+				}
 				got = &call{rawURL: rawURL, opts: opts}
 				if tt.fetcherErr != nil {
 					return nil, tt.fetcherErr

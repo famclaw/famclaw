@@ -232,6 +232,17 @@ func hasHighEntropySingleLabel(host string) bool {
 }
 
 // isTypoSquat checks if the host is a typo-squatting attempt.
+//
+// Intentional tradeoff (kid fail-safe): any host within Levenshtein distance
+// <= 2 of a known-good host (e.g. "gogle.com" vs "google.com") is flagged.
+// In agent mode that routes to ask_parent - a parent-approval row is created
+// and the fetch is held for a human - rather than a hard block. A near-typo
+// of a reputable site is therefore surfaced to a parent by design instead of
+// silently allowed. The per-fetch cost (an approval lookup + upsert) is
+// bounded by the 24h approval expiry, so repeated lookups stop mattering
+// after one day. This stays acceptable as the known-host list grows; if it
+// ever does not, the remedy is to drop the known-host list (or widen the
+// distance bound) - not to special-case the cost here. No functional change.
 func isTypoSquat(host string) bool {
 	// Add early-return for known hosts
 	knownGoodHosts := []string{
