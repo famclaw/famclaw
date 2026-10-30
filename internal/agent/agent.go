@@ -47,6 +47,7 @@ import (
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/webfetch"
+	"github.com/famclaw/famclaw/internal/webfilter"
 	"github.com/famclaw/famclaw/internal/websearch"
 )
 
@@ -851,6 +852,15 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 		case "builtin__allowlist_remove":
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
 			return admin.HandleAllowlistRemove(ctx, deps, args)
+		case "builtin__denylist_list":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			return admin.HandleDenylistList(ctx, deps, args)
+		case "builtin__denylist_add":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			return admin.HandleDenylistAdd(ctx, deps, args)
+		case "builtin__denylist_remove":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			return admin.HandleDenylistRemove(ctx, deps, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
@@ -1336,6 +1346,13 @@ func (a *Agent) hostDecision(host string) (bool, string) {
 		}
 		return false, "allowlist"
 	default: // "denylist"
+		// (a) Bundled kid-safe baseline (CC0-sourced, design §2) — always
+		// active in denylist mode; reason class "baseline" drives the
+		// kid-safe no-leak message (design §3.3).
+		if webfilter.BaselineBlocks(host) {
+			return false, "baseline"
+		}
+		// (b) Parent-maintained deny entries.
 		for _, denied := range fcfg.URLDenylist {
 			denied = canonicalizeHost(denied)
 			if denied == "" {
@@ -1356,10 +1373,12 @@ func (a *Agent) hostDecision(host string) (bool, string) {
 // configuration blocks from network failures keeps working across web_fetch,
 // web_search, and the browser paths.
 func (a *Agent) hostGateError(host, reason string) error {
-	if reason == "denylist" {
-		return webfetch.NewHostDeniedError(host, "denylist")
+	switch reason {
+	case "denylist", "baseline":
+		return webfetch.NewHostDeniedError(host, reason)
+	default:
+		return webfetch.NewHostNotAllowedError(host)
 	}
-	return webfetch.NewHostNotAllowedError(host)
 }
 
 // hostValidator is the host-gate callback passed to webfetch.Fetch, the
