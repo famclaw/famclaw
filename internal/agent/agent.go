@@ -1384,7 +1384,7 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 			}
 			verdict = webfilter.Verdict{Action: "ask_parent", Reason: "public IP literal host"}
 		} else {
-			verdict = webfilter.NewSuspiciousSiteDetector().Check(host)
+			verdict = webfilter.DefaultSuspiciousSiteDetector.Check(host)
 		}
 		if verdict.Action != "warn_allow" {
 			if verdict.Action == "block" {
