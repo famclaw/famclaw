@@ -2,11 +2,18 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/store"
 )
+
+// ErrTaskNotFound is returned when a shared-task state transition targets a
+// row that does not exist or is not owned by the given caller. An UPDATE that
+// matches zero rows previously returned nil (silent no-op); callers can now
+// distinguish this from a genuine database failure via errors.Is.
+var ErrTaskNotFound = errors.New("shared task not found or not owned by caller")
 
 // SharedTask represents a shared task that can be assigned to a user
 type SharedTask struct {
@@ -129,50 +136,74 @@ func (s *Store) ListSharedTasks(ctx context.Context, owner string, completed *bo
 	return out, nil
 }
 
-// AcceptTask marks a shared task as accepted by the owner
+// AcceptTask marks a shared task as accepted by the owner. Returns
+// ErrTaskNotFound (wrapped) when no row matched — i.e. the task does not
+// exist or belongs to a different owner — instead of the previous silent
+// no-op.
 func (s *Store) AcceptTask(ctx context.Context, owner string, id int64) error {
 	now := time.Now().Unix()
-	_, err := s.db.SQL().ExecContext(ctx,
+	res, err := s.db.SQL().ExecContext(ctx,
 		`UPDATE shared_tasks SET accepted = 1, updated_at = ? WHERE id = ? AND owner = ?`,
 		now, id, owner)
 	if err != nil {
 		return fmt.Errorf("accept task: %w", err)
 	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("accept task: %w", ErrTaskNotFound)
+	}
 	return nil
 }
 
-// DeclineTask marks a shared task as declined by the owner
+// DeclineTask marks a shared task as declined by the owner. Returns
+// ErrTaskNotFound (wrapped) when no row matched — i.e. the task does not
+// exist or belongs to a different owner — instead of the previous silent
+// no-op.
 func (s *Store) DeclineTask(ctx context.Context, owner string, id int64) error {
 	now := time.Now().Unix()
-	_, err := s.db.SQL().ExecContext(ctx,
+	res, err := s.db.SQL().ExecContext(ctx,
 		`UPDATE shared_tasks SET declined = 1, updated_at = ? WHERE id = ? AND owner = ?`,
 		now, id, owner)
 	if err != nil {
 		return fmt.Errorf("decline task: %w", err)
 	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("decline task: %w", ErrTaskNotFound)
+	}
 	return nil
 }
 
-// CompleteTask marks a shared task as completed
+// CompleteTask marks a shared task as completed. Returns
+// ErrTaskNotFound (wrapped) when no row matched — i.e. the task does not
+// exist or belongs to a different owner — instead of the previous silent
+// no-op.
 func (s *Store) CompleteTask(ctx context.Context, owner string, id int64) error {
 	now := time.Now().Unix()
-	_, err := s.db.SQL().ExecContext(ctx,
+	res, err := s.db.SQL().ExecContext(ctx,
 		`UPDATE shared_tasks SET completed = 1, updated_at = ? WHERE id = ? AND owner = ?`,
 		now, id, owner)
 	if err != nil {
 		return fmt.Errorf("complete task: %w", err)
 	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("complete task: %w", ErrTaskNotFound)
+	}
 	return nil
 }
 
-// HandBackTask marks a shared task as handed back
+// HandBackTask marks a shared task as handed back. Returns
+// ErrTaskNotFound (wrapped) when no row matched — i.e. the task does not
+// exist or belongs to a different owner — instead of the previous silent
+// no-op.
 func (s *Store) HandBackTask(ctx context.Context, owner string, id int64) error {
 	now := time.Now().Unix()
-	_, err := s.db.SQL().ExecContext(ctx,
+	res, err := s.db.SQL().ExecContext(ctx,
 		`UPDATE shared_tasks SET handed_back = 1, updated_at = ? WHERE id = ? AND owner = ?`,
 		now, id, owner)
 	if err != nil {
 		return fmt.Errorf("hand back task: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("hand back task: %w", ErrTaskNotFound)
 	}
 	return nil
 }
