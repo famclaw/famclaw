@@ -314,7 +314,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							Category:    "tool:" + bareToolName(tc.Function.Name),
 							QueryText:   approvalDescription(bareToolName(tc.Function.Name), tc.Function.Arguments),
 						}
-						if _, err := deps.ApprovalStore.UpsertApproval(context.Background(), a); err != nil {
+						if _, err := deps.ApprovalStore.UpsertApproval(ctx, a); err != nil {
 							log.Printf("[stage_tool_loop] approval creation failed for %s: %v (failing closed)", tc.Function.Name, err)
 							injectToolError(&llmMsgs, turn, tc, ErrToolBlocked, "approval unavailable", start)
 							continue
