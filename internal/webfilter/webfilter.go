@@ -126,6 +126,14 @@ func isIPLiteral(host string) bool {
 // exactly those. The check is kept (and unit-tested) for any direct
 // Check(host:port) caller that passes a raw host:port string.
 func hasNonStandardPort(host string) bool {
+	// Bare IP literals (e.g. "::1", "192.168.1.50") carry no port information
+	// in the host string; return early to avoid mis-parsing colons in IPv6.
+	// Bracketed IPv6 with explicit port ([::1]:8888) is handled correctly
+	// by net.SplitHostPort below.
+	if net.ParseIP(host) != nil {
+		return false
+	}
+
 	// Standard ports for HTTP/HTTPS
 	standardPorts := map[string]bool{
 		"80":  true,
