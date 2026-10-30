@@ -91,6 +91,13 @@ type Agent struct {
 	// allowlist/scheme/empty-list gates without making real HTTP calls.
 	webFetcher func(ctx context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error)
 
+	// suspiciousDetector runs the W4 suspicious-site heuristics in
+	// hostDecision. Set once in NewAgent (shared, stateless — the detector
+	// holds no per-request state, so a single instance is safe to reuse
+	// across goroutines). nil falls back to a fresh instance for tests /
+	// legacy Agent literals.
+	suspiciousDetector *webfilter.SuspiciousSiteDetector
+
 	// cache is the tool-result spillover store. When non-nil, large
 	// handleWebFetch (and other large-result) tool replies are written
 	// to the cache and only a budget-sized head slice is returned to the
@@ -364,6 +371,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		todoStore:            ts,
 		userMemory:           um,
 		webFetcher:           webfetch.Fetch,
+		suspiciousDetector:   webfilter.NewSuspiciousSiteDetector(),
 		cache:                deps.Cache,
 		browserPool:          deps.BrowserPool,
 		msgContext:           deps.MsgContext,
@@ -1384,7 +1392,11 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 			}
 			verdict = webfilter.Verdict{Action: "ask_parent", Reason: "public IP literal host"}
 		} else {
-			verdict = webfilter.DefaultSuspiciousSiteDetector.Check(host)
+			detector := a.suspiciousDetector
+		if detector == nil {
+			detector = webfilter.NewSuspiciousSiteDetector()
+		}
+		verdict = detector.Check(host)
 		}
 		if verdict.Action != "warn_allow" {
 			if verdict.Action == "block" {
