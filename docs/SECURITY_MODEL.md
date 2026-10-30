@@ -298,3 +298,69 @@ The built-in file tools (`file_read`, `file_write`, `file_stat`, `file_list`) ar
 ### Environment variable handling
 
 The sandbox launcher constructs a minimal environment for the subprocess using only a hardcoded allowlist of safe variables. The `BuildAllowlist` function (used by both the launcher and the MCP client) ensures that no FamClaw secrets (e.g., `FAMCLAW_LLM_API_KEY`, `*_TOKEN` variables) are passed to the subprocess.
+
+## Web Fetch and Search Security Model
+
+### Host Decision Process
+
+When a user invokes a web fetch or search tool, the system performs a host decision process before allowing the request to proceed. This process determines whether a particular host is allowed to be accessed based on the configured URL policy settings.
+
+#### Allowlist Mode (`url_policy: allowlist`)
+
+In allowlist mode, only hosts explicitly listed in the `url_allowlist` are permitted. This mode provides strict control over which domains can be accessed. The host matching follows these rules:
+- Exact host matches are permitted (e.g., `example.com` allows `example.com`)
+- Subdomain matches are permitted (e.g., `example.com` allows `www.example.com`)
+- The allowlist is evaluated against the final redirected host (after any HTTP redirects)
+- An empty allowlist denies all fetches (SSRF guard)
+
+#### Denylist Mode (`url_policy: denylist`)
+
+In denylist mode, all public hosts are allowed by default, with explicit blocks in the `url_denylist`. This provides a secure-by-default experience that can be customized by parents. The denylist includes:
+- A bundled kid-safe baseline (Aegis Blocklist) that blocks adult content, hate groups, and harmful sites
+- Parent-maintained denylist entries in `url_denylist` (exact or subdomain matches)
+- Hosts are matched exactly or as subdomains
+- Suspicious site detector (W4) that can block sites based on reputation
+
+The denylist mode is the default when `url_allowlist` is empty, providing a secure-by-default experience.
+
+#### Security Gate Implementation
+
+The host decision process is implemented in the `hostDecision` function in `internal/agent/agent.go`. This function:
+1. Evaluates the URL policy configuration (`url_policy` field)
+2. Checks if the host is in the allowlist (when `url_policy` is "allowlist")
+3. Checks if the host is in the denylist (when `url_policy` is "denylist")
+4. Applies the appropriate security decision based on the policy mode and configuration
+5. Returns a boolean indicating whether the host is allowed to be accessed
+
+#### Admin Tools
+
+Parent admins can manage web fetch settings via:
+- `/api/tools/web_fetch/allowlist` - View/edit allowlist entries
+- `/api/tools/web_fetch/denylist` - View/edit denylist entries
+
+These endpoints are only available to users with the "parent" role.
+
+### Web Search Security Model
+
+The web search tool is subject to the same URL policy rules as web fetch. When enabled, it queries a search provider (SearXNG or Tavily) and returns structured results. The security model ensures that:
+- Search endpoints are validated against the configured URL allowlist
+- The search provider's host is subject to the same security gates as web fetch
+- Results are processed through the same security pipeline as web fetch
+
+### SSRF Protection
+
+The system implements robust SSRF protection through:
+1. **URL Policy Enforcement**: The `url_policy` configuration controls whether hosts are allowed
+2. **Host Validation**: All hosts are validated against the allowlist or denylist
+3. **Redirect Handling**: The host decision process is applied to every redirect target
+4. **Private Network Blocking**: Optionally block private network access (loopback/RFC1918/ULA) via `tools.web_fetch.block_private_networks`
+
+### Secure-by-Default Configuration
+
+By default, the system operates in denylist mode with a bundled kid-safe baseline. This provides:
+- Protection against adult content, hate groups, and harmful sites
+- Parent-controlled customization of the denylist
+- Minimal risk of accidental exposure to inappropriate content
+- Clear security boundaries for web access
+
+This security model ensures that all web tool usage is subject to the configured security policies, with clear separation between different permission levels and security configurations.

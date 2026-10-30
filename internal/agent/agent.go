@@ -1362,6 +1362,45 @@ func (a *Agent) hostDecision(host string) (bool, string) {
 				return false, "denylist"
 			}
 		}
+		
+		// (c) W4: suspicious site detector
+		// W4: suspicious site detector seam - call the detector
+		suspiciousDetector := webfilter.NewSuspiciousSiteDetector()
+		if verdict := suspiciousDetector.Check(host); verdict.Action == "block" {
+			return false, "suspicious"
+		} else if verdict.Action == "ask_parent" {
+			// Create a pending approval row for the suspicious site
+			// W4: suspicious site detector seam - create pending approval
+			// Generate unique approval ID using a similar approach as router.go
+			day := time.Now().UTC().Format("2006-01-02")
+			h := sha256.Sum256([]byte(a.user.Name + ":" + "suspicious_site" + ":" + day))
+			approvalID := "suspicious-" + hex.EncodeToString(h[:8])
+			
+			// Create the approval record
+			approval := &store.Approval{
+				ID:          approvalID,
+				UserName:    a.user.Name,
+				UserDisplay: a.user.DisplayName,
+				AgeGroup:    a.user.AgeGroup,
+				Category:    "suspicious_site",
+				QueryText:   host,
+				Status:      "pending",
+				CreatedAt:   time.Now(),
+				UpdatedAt:   time.Now(),
+				ExpiresAt:   time.Now().Add(time.Hour * 24), // 24-hour expiration
+			}
+			// Insert into the database using a.db (the Agent's database field)
+			_, err := a.db.UpsertApproval(approval)
+			if err != nil {
+				log.Printf("[agent] failed to create suspicious site approval: %v", err)
+			}
+			return false, "suspicious"
+		} else if verdict.Action == "warn_allow" {
+			// Log to audit and proceed
+			// Log to audit trail
+			// For now, we'll just proceed
+		}
+		
 		return true, ""
 	}
 }

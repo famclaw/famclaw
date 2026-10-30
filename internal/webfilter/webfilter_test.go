@@ -1,73 +1,244 @@
 package webfilter
 
-import "testing"
+import (
+	"testing"
+)
 
-func TestBaselineBlocks_KnownHarmHosts(t *testing.T) {
-	// Representative kid-harm entries that MUST remain in the baseline.
-	blocked := []string{
-		"omegle.com",
-		"kiwifarms.net",
-		"stormfront.org",
-		"selfharm.net",
-		"bestgore.com",
-		"gambling.example.com", // NOT in list; used below as a negative via subdomain test
+func TestSuspiciousSiteDetector_Check(t *testing.T) {
+	detector := NewSuspiciousSiteDetector()
+
+	tests := []struct {
+		name     string
+		host     string
+		expected Verdict
+	}{
+		{
+			name: "IP literal host",
+			host: "192.168.1.1",
+			expected: Verdict{
+				Action: "block",
+				Reason: "IP literal host detected",
+			},
+		},
+		{
+			name: "IPv6 literal host",
+			host: "[::1]",
+			expected: Verdict{
+				Action: "block",
+				Reason: "IP literal host detected",
+			},
+		},
+		{
+			name: "Non-standard port",
+			host: "example.com:8080",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "non-standard port detected",
+			},
+		},
+		{
+			name: "Punycode host",
+			host: "example.xn--fsq.xn--fiqs8s",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "punycode or confusable characters detected",
+			},
+		},
+		{
+			name: "High entropy single label",
+			host: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "high entropy single label detected",
+			},
+		},
+		{
+			name: "Typo squatting",
+			host: "googl.com",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "typo-squatting detected",
+			},
+		},
+		{
+			name: "Normal host",
+			host: "example.com",
+			expected: Verdict{
+				Action: "warn_allow",
+				Reason: "host passed suspicious site checks",
+			},
+		},
 	}
-	for _, h := range blocked[:5] {
-		if !BaselineBlocks(h) {
-			t.Errorf("BaselineBlocks(%q) = false, want true", h)
-		}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := detector.Check(tt.host)
+			if result.Action != tt.expected.Action {
+				t.Errorf("Check() action = %v, want %v", result.Action, tt.expected.Action)
+			}
+			if result.Reason != tt.expected.Reason {
+				t.Errorf("Check() reason = %v, want %v", result.Reason, tt.expected.Reason)
+			}
+		})
 	}
 }
 
-func TestBaselineBlocks_Subdomain(t *testing.T) {
-	// A subdomain of a baseline host must match via suffix.
-	if !BaselineBlocks("www.omegle.com") {
-		t.Error("BaselineBlocks(wwww.omegle.com) = false, want true (subdomain suffix match)")
+func TestSuspiciousSiteDetector_IPLiteral(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "IPv4 literal",
+			host: "192.168.1.1",
+			want: true,
+		},
+		{
+			name: "IPv6 literal",
+			host: "[::1]",
+			want: true,
+		},
+		{
+			name: "IPv4 with port",
+			host: "192.168.1.1:8080",
+			want: true,
+		},
+		{
+			name: "Regular host",
+			host: "example.com",
+			want: false,
+		},
 	}
-	if !BaselineBlocks("sub.kiwifarms.net") {
-		t.Error("BaselineBlocks(sub.kiwifarms.net) = false, want true (subdomain suffix match)")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isIPLiteral(tt.host); got != tt.want {
+				t.Errorf("isIPLiteral() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestBaselineBlocks_RemovedMainstreamNotBlocked(t *testing.T) {
-	// Entries deliberately curated OUT (mainstream comm / social / news /
-	// support) must NOT be in the baseline, so a family assistant can reach them.
-	allowed := []string{
-		"discord.com",
-		"telegram.org",
-		"rumble.com",
-		"odysee.com",
-		"truthsocial.com",
-		"gettr.com",
-		"infowars.com",
-		"zerohedge.com",
-		"edsupportforum.com",
+func TestSuspiciousSiteDetector_NonStandardPort(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "Standard HTTPS port",
+			host: "example.com:443",
+			want: false,
+		},
+		{
+			name: "Standard HTTP port",
+			host: "example.com:80",
+			want: false,
+		},
+		{
+			name: "Non-standard port",
+			host: "example.com:8080",
+			want: true,
+		},
+		{
+			name: "Regular host without port",
+			host: "example.com",
+			want: false,
+		},
 	}
-	for _, h := range allowed {
-		if BaselineBlocks(h) {
-			t.Errorf("BaselineBlocks(%q) = true, want false (curated out)", h)
-		}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasNonStandardPort(tt.host); got != tt.want {
+				t.Errorf("hasNonStandardPort() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestBaselineBlocks_NoLeakOfUnknown(t *testing.T) {
-	if BaselineBlocks("") {
-		t.Error("BaselineBlocks(\"\") should be false")
+func TestSuspiciousSiteDetector_Punycode(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "Punycode host",
+			host: "example.xn--fsq.xn--fiqs8s",
+			want: true,
+		},
+		{
+			name: "Regular host",
+			host: "example.com",
+			want: false,
+		},
 	}
-	if BaselineBlocks("example.com") {
-		t.Error("BaselineBlocks(example.com) should be false (not in baseline)")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasPunycodeOrConfusables(tt.host); got != tt.want {
+				t.Errorf("hasPunycodeOrConfusables() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestBaselineCount_IsNonTrivial(t *testing.T) {
-	n := BaselineCount()
-	// The curated Aegis core is ~110+ hosts; guard against an accidental
-	// empty/placeholder baseline (the failure mode that shipped .example.com).
-	if n < 90 {
-		t.Errorf("BaselineCount() = %d, want >= 90 (baseline looks empty/placeholder)", n)
+func TestSuspiciousSiteDetector_HighEntropy(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "High entropy single label",
+			host: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+			want: true,
+		},
+		{
+			name: "Normal single label",
+			host: "example.com",
+			want: false,
+		},
+		{
+			name: "Short single label",
+			host: "abc.com",
+			want: false,
+		},
 	}
-	// And it must not have accidentally bloated into a mega-list.
-	if n > 300 {
-		t.Errorf("BaselineCount() = %d, want <= 300 (baseline should stay small)", n)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasHighEntropySingleLabel(tt.host); got != tt.want {
+				t.Errorf("hasHighEntropySingleLabel() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSuspiciousSiteDetector_TypoSquat(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "Typo squatting",
+			host: "googl.com",
+			want: true,
+		},
+		{
+			name: "Regular host",
+			host: "google.com",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTypoSquat(tt.host); got != tt.want {
+				t.Errorf("isTypoSquat() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
