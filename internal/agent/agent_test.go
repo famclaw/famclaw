@@ -662,13 +662,21 @@ func TestHandleWebFetch(t *testing.T) {
 			wantErrSub: "family's web policy",
 		},
 		{
-			name:        "denylist mode: public host not on denylist allowed",
-			policy:      "denylist",
-			denylist:    []string{"bad.example.com"},
-			args:        map[string]any{"url": "https://good.example.com/x"},
-			fetcherRes:  &webfetch.Result{URL: "https://good.example.com/x", StatusCode: 200, ContentType: "text/html", Text: "ok"},
-			wantOutSub:  "ok",
-			wantCalled:  true,
+			name:       "denylist mode: public host not on denylist allowed",
+			policy:     "denylist",
+			denylist:   []string{"bad.example.com"},
+			args:       map[string]any{"url": "https://good.example.com/x"},
+			fetcherRes: &webfetch.Result{URL: "https://good.example.com/x", StatusCode: 200, ContentType: "text/plain", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "denylist mode: IP-literal host allowed (home-LAN service, not gated by suspicious detector)",
+			policy:     "denylist",
+			args:       map[string]any{"url": "http://192.168.1.50:8888/search?q=x"},
+			fetcherRes: &webfetch.Result{URL: "http://192.168.1.50:8888/search?q=x", StatusCode: 200, ContentType: "text/plain", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
 		},
 		{
 			name:       "denylist mode: bundled baseline host blocked (kid-safe message)",
@@ -800,6 +808,108 @@ func TestHandleWebFetch(t *testing.T) {
 				t.Errorf("HostValidator should be set when fetcher is called")
 			}
 		})
+	}
+}
+
+// TestHostDecision_SuspiciousSiteAskParent verifies the W4 ask_parent flow:
+// suspicious host blocks + creates host-scoped approval; parent-approved
+// host is then allowed; distinct hosts get distinct approval IDs.
+func TestHostDecision_SuspiciousSiteAskParent(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+	}
+
+	// "googl.com" is a typo-squat of "google.com" → detector says ask_parent.
+	ok, reason := a.hostDecision("googl.com")
+	if ok {
+		t.Fatalf("hostDecision(googl.com) = (%v, %q), want blocked", ok, reason)
+	}
+	if reason != "suspicious" {
+		t.Errorf("reason = %q, want %q", reason, "suspicious")
+	}
+
+	// A pending approval row should exist with a host-scoped ID.
+	approvalID := proposalApprovalID("teo", "suspicious_site", "googl.com")
+	apr, err := db.GetApproval(context.Background(), approvalID)
+	if err != nil {
+		t.Fatalf("get approval: %v", err)
+	}
+	if apr == nil {
+		t.Fatalf("expected approval row for host-scoped id %q, got nil", approvalID)
+	}
+	if apr.Status != "pending" {
+		t.Errorf("approval status = %q, want pending", apr.Status)
+	}
+
+	// Parent approves the host.
+	if err := db.DecideApproval(approvalID, "approved", "parent"); err != nil {
+		t.Fatalf("decide approval: %v", err)
+	}
+
+	// Now the same host should be allowed (approved + not yet expired).
+	ok, reason = a.hostDecision("googl.com")
+	if !ok {
+		t.Fatalf("hostDecision(googl.com) after approval = (%v, %q), want allowed", ok, reason)
+	}
+
+	// A DIFFERENT suspicious host gets a DIFFERENT approval ID.
+	ok2, _ := a.hostDecision("youtub.com") // typo-squat of youtube.com
+	if ok2 {
+		t.Error("hostDecision(youtub.com) should be blocked (not yet approved)")
+	}
+	otherID := proposalApprovalID("teo", "suspicious_site", "youtub.com")
+	if otherID == approvalID {
+		t.Error("distinct suspicious hosts produced the same approval ID — collision!")
+	}
+	// Confirm the second approval row was created.
+	apr2, err := db.GetApproval(context.Background(), otherID)
+	if err != nil || apr2 == nil {
+		t.Errorf("expected approval row for youtub.com: apr=%+v err=%v", apr2, err)
+	}
+}
+
+// TestHostDecision_IPLiteralSkipsDetector verifies that IP-literal hosts
+// bypass the suspicious-site heuristics (home-LAN model, design §1.5).
+func TestHostDecision_IPLiteralSkipsDetector(t *testing.T) {
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+	}
+
+	// Private IP (SearXNG) should pass without triggering the detector.
+	ok, reason := a.hostDecision("192.168.1.50")
+	if !ok {
+		t.Fatalf("hostDecision(192.168.1.50) = (%v, %q), want allowed (home-LAN)", ok, reason)
+	}
+
+	// Loopback should also pass.
+	ok, reason = a.hostDecision("127.0.0.1")
+	if !ok {
+		t.Fatalf("hostDecision(127.0.0.1) = (%v, %q), want allowed", ok, reason)
+	}
+
+	// IPv6 loopback should also pass.
+	ok, reason = a.hostDecision("::1")
+	if !ok {
+		t.Fatalf("hostDecision(::1) = (%v, %q), want allowed", ok, reason)
 	}
 }
 
