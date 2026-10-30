@@ -115,13 +115,13 @@ func isIPLiteral(host string) bool {
 }
 
 // hasNonStandardPort checks if the host has a non-standard port.
+// Standard ports are the two well-known HTTP(S) ports only; everything
+// else (including 8080/8443) is surfaced to the parent per design §4.
 func hasNonStandardPort(host string) bool {
 	// Standard ports for HTTP/HTTPS
 	standardPorts := map[string]bool{
-		"80":   true,
-		"443":  true,
-		"8080": true,
-		"8443": true,
+		"80":  true,
+		"443": true,
 	}
 
 	// Extract port if present
@@ -181,23 +181,19 @@ func hasPunycodeOrConfusables(host string) bool {
 	return false
 }
 
-// hasHighEntropySingleLabel checks if the host has a high-entropy single label.
+// hasHighEntropySingleLabel checks if any single label of the host is long
+// enough (≥24 chars) to look like a machine-generated token (raw hash,
+// obfuscated name, C2-style domain). Length-based on purpose: the detector
+// stays offline and deterministic, and the threshold — not Shannon
+// entropy — is what distinguishes generated labels from ordinary names.
+// Multi-label hosts are NOT excluded: "a24charlabel…​.com" is exactly the
+// shape the heuristic targets.
 func hasHighEntropySingleLabel(host string) bool {
-	// Split host into labels (separated by dots)
-	labels := strings.Split(host, ".")
-	
-	// If there's only one label, check its entropy
-	if len(labels) == 1 {
-		label := labels[0]
-		// If label has ≥24 characters, consider it high entropy
+	for _, label := range strings.Split(host, ".") {
 		if len(label) >= 24 {
 			return true
 		}
 	}
-	
-	// For multi-label hosts, we should not treat them as high entropy
-	// The original logic was incorrect - it should only check single labels
-	// Return false for multi-label hosts to avoid false positives
 	return false
 }
 
