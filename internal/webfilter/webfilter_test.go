@@ -303,11 +303,13 @@ func TestSuspiciousSiteDetector_TypoSquat(t *testing.T) {
 			want: false,
 		},
 		// Documented B2 tradeoff: faceb00k.com is Levenshtein distance 2 from
-		// facebook.com (both 'o' -> '0'), so under the tightened <= 1 bound it
-		// is no longer auto-flagged. The fail-safe for it is the parent
-		// URLDenylist, which hostDecision consults before any detector verdict.
+		// facebook.com (both 'o' -> '0'), so under the tightened <= 1 bound the
+		// detector no longer auto-flags it. The detector layer stays distance
+		// based on purpose; the curated fail-safe for this specific squat lives
+		// in the bundled baseline (see TestBaselineStore_TypoSquatCurated),
+		// which hostDecision consults before any detector verdict.
 		{
-			name: "Distance-2 leet variant no longer flagged (faceb00k.com)",
+			name: "Distance-2 leet variant no longer flagged by detector (faceb00k.com)",
 			host: "faceb00k.com",
 			want: false,
 		},
@@ -319,5 +321,33 @@ func TestSuspiciousSiteDetector_TypoSquat(t *testing.T) {
 				t.Errorf("isTypoSquat() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestBaselineStore_TypoSquatCurated pins the documented B2 tradeoff (PM
+// decision 2026-10-31, Option 2): distance-2 leet squats that the
+// <= 1 edit-distance heuristic intentionally does not flag are covered by
+// the bundled kid-safe baseline, the repo's default URL denylist. faceb00k.com
+// is a curated entry there (known typo-squat of facebook.com), so children are
+// blocked regardless of distance heuristics; the real host and the
+// distance-2 near-miss g00gle.com are NOT curated, so B2's false-positive fix
+// stays intact at both layers.
+func TestBaselineStore_TypoSquatCurated(t *testing.T) {
+	store := NewBaselineStore()
+
+	// Curated typo-squat: blocked, including subdomain-suffix matching.
+	for _, host := range []string{"faceb00k.com", "www.faceb00k.com", "FACEB00K.COM"} {
+		if !store.Blocks(host) {
+			t.Errorf("BaselineStore.Blocks(%q) = false, want true (curated known typo-squat of facebook.com)", host)
+		}
+	}
+
+	// Not curated: the real known-good host stays fetchable, and the
+	// distance-2 near-miss g00gle.com is not auto-blocked at the baseline
+	// layer either (B2 false-positive fix preserved).
+	for _, host := range []string{"facebook.com", "g00gle.com"} {
+		if store.Blocks(host) {
+			t.Errorf("BaselineStore.Blocks(%q) = true, want false", host)
+		}
 	}
 }

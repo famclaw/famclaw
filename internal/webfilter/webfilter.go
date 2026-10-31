@@ -239,10 +239,15 @@ func hasHighEntropySingleLabel(host string) bool {
 // flagged (previously <= 2). The single-edit bound keeps real typo-squats
 // such as "gogle.com" / "facebok.com" in the ask_parent path while dropping
 // the two-edit surface that auto-blocked legitimate near-misses ("g00gle.com")
-// for up to 24 h. The TLD-shape guard below still applies. A distance-2 leet
-// variant such as "faceb00k.com" is consequently no longer auto-flagged; the
-// fail-safe for it is the parent URLDenylist, which hostDecision consults
-// before any detector verdict.
+// for up to 24 h. The TLD-shape guard below still applies.
+//
+// Tradeoff (documented, PM decision 2026-10-31): a distance-2 leet variant
+// such as "faceb00k.com" is consequently no longer auto-flagged here. Such
+// squats are covered instead by the bundled kid-safe baseline (the repo's
+// default URL denylist, which hostDecision consults before any detector
+// verdict; "faceb00k.com" is a curated entry there, marked as a known
+// typo-squat of facebook.com), and by the per-install parent URLDenylist for
+// hosts the parent wants blocked.
 //
 // In agent mode a flagged host routes to ask_parent - a parent-approval row is
 // created and the fetch is held for a human - rather than a hard block. The
