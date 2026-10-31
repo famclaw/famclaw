@@ -24,10 +24,24 @@ var (
 	baseline map[string]struct{} // canonical host → struct{}
 )
 
+// Constant reference data for the offline heuristics, hoisted to package
+// level so per-call host checks don't reallocate it (project rule:
+// preallocate / avoid repeated allocations in hot paths).
+var (
+	knownGoodHosts = []string{
+		"google.com", "facebook.com", "youtube.com", "amazon.com",
+		"twitter.com", "instagram.com", "linkedin.com", "wikipedia.org",
+		"reddit.com", "netflix.com", "spotify.com", "ebay.com",
+		"microsoft.com", "apple.com", "github.com", "stackoverflow.com",
+	}
+	standardPorts   = map[string]bool{"80": true, "443": true}
+	confusableChars = []rune{'\u0430', '\u0391', '\u212A'} // Cyrillic 'a', Greek 'A', Kelvin sign
+)
+
 // Verdict represents the result of a suspicious site check.
 type Verdict struct {
-	Action  string // "block", "ask_parent", or "warn_allow"
-	Reason  string // human-readable explanation
+	Action string // "block", "ask_parent", or "warn_allow"
+	Reason string // human-readable explanation
 }
 
 // SuspiciousSiteDetector implements the offline suspicious site checking logic.
@@ -152,15 +166,9 @@ func hasNonStandardPort(host string) bool {
 		return false
 	}
 
-	// Standard ports for HTTP/HTTPS
-	standardPorts := map[string]bool{
-		"80":  true,
-		"443": true,
-	}
-
 	// Extract port if present
 	port := ""
-	
+
 	// Use net.SplitHostPort to properly handle ports
 	if _, portPart, err := net.SplitHostPort(host); err == nil {
 		// If we successfully split, check if port is standard
@@ -203,7 +211,6 @@ func hasPunycodeOrConfusables(host string) bool {
 
 	// Check for potential confusables (this is simplified)
 	// In practice, we might want to use a more comprehensive check
-	confusableChars := []rune{'\u0430', '\u0391', '\u212A'} // Cyrillic 'a', Greek 'A', Kelvin sign
 	for _, r := range host {
 		for _, c := range confusableChars {
 			if r == c {
@@ -244,14 +251,6 @@ func hasHighEntropySingleLabel(host string) bool {
 // ever does not, the remedy is to drop the known-host list (or widen the
 // distance bound) - not to special-case the cost here. No functional change.
 func isTypoSquat(host string) bool {
-	// Add early-return for known hosts
-	knownGoodHosts := []string{
-		"google.com", "facebook.com", "youtube.com", "amazon.com", 
-		"twitter.com", "instagram.com", "linkedin.com", "wikipedia.org",
-		"reddit.com", "netflix.com", "spotify.com", "ebay.com",
-		"microsoft.com", "apple.com", "github.com", "stackoverflow.com",
-	}
-	
 	// Early return for known good hosts
 	for _, knownHost := range knownGoodHosts {
 		if host == knownHost {
@@ -265,12 +264,12 @@ func isTypoSquat(host string) bool {
 			// Tighten so Levenshtein ≤ 2 only flags when TLD matches AND candidate ≠ known host
 			hostParts := strings.Split(host, ".")
 			knownHostParts := strings.Split(knownHost, ".")
-			
+
 			// If TLDs don't match, don't flag as typo-squat
 			if len(hostParts) > 1 && len(knownHostParts) > 1 && hostParts[len(hostParts)-1] != knownHostParts[len(knownHostParts)-1] {
 				continue
 			}
-			
+
 			return true
 		}
 	}
