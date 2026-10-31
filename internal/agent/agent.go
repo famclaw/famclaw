@@ -97,9 +97,17 @@ type Agent struct {
 	// across goroutines). nil falls back to a fresh instance for tests /
 	// legacy Agent literals.
 	suspiciousDetector *webfilter.SuspiciousSiteDetector
+	// suspiciousApprovalOnce guards the nil-fallback allocation of
+	// suspiciousDetector for legacy Agent literals (tests). NewAgent always
+	// sets suspiciousDetector, so in production this Once never fires and
+	// the field is written exactly once, at construction.
+	suspiciousApprovalOnce sync.Once
 	// baselineStore is the bundled kid-safe blocklist, injected at
 	// construction so webfilter keeps no package-level global state.
 	baselineStore *webfilter.BaselineStore
+	// onNewSuspiciousApproval — see AgentDeps.OnNewSuspiciousApproval.
+	// Set once in NewAgent; nil disables notification.
+	onNewSuspiciousApproval func(ctx context.Context, a *store.Approval) error
 
 	// cache is the tool-result spillover store. When non-nil, large
 	// handleWebFetch (and other large-result) tool replies are written
@@ -196,6 +204,16 @@ type AgentDeps struct {
 	// NowFn, when non-nil, is used to timestamp research status records.
 	// Optional — defaults to time.Now.
 	NowFn func() time.Time
+
+	// OnNewSuspiciousApproval is called from hostDecision when a NEW
+	// suspicious-site approval row is created for a host the detector
+	// flagged ask_parent (web_fetch path). Wire it up to deliver the
+	// parent push notification — internal/web/server.go does exactly that,
+	// mirroring the gateway router's createApproval (kid-only
+	// parent-skip, /decide HMAC token URLs). nil (gateway-router agents
+	// and tests) skips notification; the row still surfaces on the
+	// dashboard.
+	OnNewSuspiciousApproval func(ctx context.Context, a *store.Approval) error
 
 	// LifetimeCtx is the server-lifetime context. The subagent's timeout
 	// context is derived from it so that graceful shutdown cancels in-flight
@@ -356,37 +374,38 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 	}
 
 	return &Agent{
-		user:                 user,
-		cfg:                  cfg,
-		llmClient:            llmClient,
-		evaluator:            evaluator,
-		classifier:           clf,
-		db:                   db,
-		pool:                 deps.Pool,
-		skills:               deps.Skills,
-		quarantine:           deps.Quarantine,
-		scanner:              deps.Scanner,
-		scheduler:            deps.Scheduler,
-		builtinTools:         builtins,
-		convID:               convID,
-		auditGateway:         deps.Gateway,
-		familyState:          fs,
-		todoStore:            ts,
-		userMemory:           um,
-		webFetcher:           webfetch.Fetch,
-		suspiciousDetector:   webfilter.NewSuspiciousSiteDetector(),
-		baselineStore:        webfilter.NewBaselineStore(),
-		cache:                deps.Cache,
-		browserPool:          deps.BrowserPool,
-		msgContext:           deps.MsgContext,
-		transcriber:          deps.Transcriber,
-		effectiveSandboxRoot: effectiveSandboxRoot,
-		senderRegistry:       deps.SenderRegistry,
-		fileSenderRegistry:   deps.FileSenderRegistry,
-		nowFn:                deps.NowFn,
-		configPath:           deps.ConfigPath,
-		lifetimeCtx:          deps.LifetimeCtx,
-		reasoningCache:       deps.ReasoningCache,
+		user:                    user,
+		cfg:                     cfg,
+		llmClient:               llmClient,
+		evaluator:               evaluator,
+		classifier:              clf,
+		db:                      db,
+		pool:                    deps.Pool,
+		skills:                  deps.Skills,
+		quarantine:              deps.Quarantine,
+		scanner:                 deps.Scanner,
+		scheduler:               deps.Scheduler,
+		builtinTools:            builtins,
+		convID:                  convID,
+		auditGateway:            deps.Gateway,
+		familyState:             fs,
+		todoStore:               ts,
+		userMemory:              um,
+		webFetcher:              webfetch.Fetch,
+		suspiciousDetector:      webfilter.NewSuspiciousSiteDetector(),
+		baselineStore:           webfilter.NewBaselineStore(),
+		onNewSuspiciousApproval: deps.OnNewSuspiciousApproval,
+		cache:                   deps.Cache,
+		browserPool:             deps.BrowserPool,
+		msgContext:              deps.MsgContext,
+		transcriber:             deps.Transcriber,
+		effectiveSandboxRoot:    effectiveSandboxRoot,
+		senderRegistry:          deps.SenderRegistry,
+		fileSenderRegistry:      deps.FileSenderRegistry,
+		nowFn:                   deps.NowFn,
+		configPath:              deps.ConfigPath,
+		lifetimeCtx:             deps.LifetimeCtx,
+		reasoningCache:          deps.ReasoningCache,
 	}, nil
 }
 
@@ -1412,11 +1431,11 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 			}
 			verdict = webfilter.Verdict{Action: "ask_parent", Reason: "public IP literal host"}
 		} else {
-			detector := a.suspiciousDetector
-			if detector == nil {
-				detector = webfilter.NewSuspiciousSiteDetector()
-			}
-			verdict = detector.Check(host)
+			// Fallback for legacy Agent literals (tests): allocate once
+			// instead of a fresh detector per hostDecision call. NewAgent
+			// always sets the field, so in production this Do is a no-op.
+			a.suspiciousApprovalOnce.Do(func() { a.suspiciousDetector = webfilter.NewSuspiciousSiteDetector() })
+			verdict = a.suspiciousDetector.Check(host)
 		}
 		if verdict.Action != "warn_allow" {
 			// Defensive: Check does not currently return "block"; if a future
@@ -1439,8 +1458,12 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 						ID: approvalID, UserName: a.user.Name, UserDisplay: a.user.DisplayName,
 						AgeGroup: a.user.AgeGroup, Category: "suspicious_site", QueryText: host,
 					}
-					if _, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
+					if isNew, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
 						log.Printf("[agent] failed to create suspicious-site approval: %v", uerr)
+					} else if isNew && a.onNewSuspiciousApproval != nil {
+						if nerr := a.onNewSuspiciousApproval(ctx, approval); nerr != nil {
+							log.Printf("[agent] suspicious-site approval notification failed for %q: %v", approval.ID, nerr)
+						}
 					}
 				} else if prev != nil && prev.Status == "approved" && time.Now().Before(prev.ExpiresAt) {
 					// Still valid: allow without touching the row.
@@ -1460,8 +1483,12 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 						ID: approvalID, UserName: a.user.Name, UserDisplay: a.user.DisplayName,
 						AgeGroup: a.user.AgeGroup, Category: "suspicious_site", QueryText: host,
 					}
-					if _, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
+					if isNew, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
 						log.Printf("[agent] failed to create suspicious-site approval: %v", uerr)
+					} else if isNew && a.onNewSuspiciousApproval != nil {
+						if nerr := a.onNewSuspiciousApproval(ctx, approval); nerr != nil {
+							log.Printf("[agent] suspicious-site approval notification failed for %q: %v", approval.ID, nerr)
+						}
 					}
 				}
 			}
