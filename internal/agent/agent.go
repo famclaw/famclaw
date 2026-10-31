@@ -1385,6 +1385,15 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 		// navigating to its public IP instead of its name. Public IPs are
 		// therefore routed to the parent-approval gate (ask_parent) rather than
 		// silently allowed.
+		//
+		// This IP classification intentionally mirrors webfilter's
+		// classifyIPLiteral / SuspiciousSiteDetector.Check IP branch (design
+		// §1.5) so the agent gate and the detector agree on local vs. public
+		// ranges; the agent short-circuits here (early allow for local IPs,
+		// ask_parent for public IPs) instead of calling Check. If the local-IP
+		// predicate below (IsPrivate/IsLoopback/IsLinkLocalUnicast/
+		// IsLinkLocalMulticast) changes, update webfilter.classifyIPLiteral to
+		// match.
 		var verdict webfilter.Verdict
 		if ip := net.ParseIP(host); ip != nil {
 			if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
@@ -1739,11 +1748,15 @@ func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawUR
 // handleWebSearch dispatches the builtin__web_search tool. Auth boundary:
 // reuses the same mode-aware host gate as web_fetch (hostDecision) plus the
 // same private-net policy. In allowlist mode the search endpoint host must be
-// allowlisted (unchanged); in denylist mode the configured endpoint host is
-// implicitly permitted — it is a single operator-pinned value the LLM never
-// supplies, so it only needs to pass the denylist + scheme + private-net
-// checks (design §1.5). The model gets a compact title/url/snippet listing
-// instead of the raw 4-16KB SearXNG JSON.
+// allowlisted. In denylist mode the operator-pinned endpoint host still goes
+// through the full hostDecision: the bundled baseline + parent denylist apply,
+// and a public-IP-literal endpoint (e.g. a VPS-hosted SearXNG) is routed to a
+// one-time parent approval (ask_parent) before the first search succeeds — a
+// fail-safe for a home-LAN product where SearXNG normally runs locally
+// (design §1.5). The endpoint is operator-supplied (the LLM never supplies it),
+// so this gate is a config sanity check, not a user-facing host restriction.
+// The model gets a compact title/url/snippet listing instead of the raw
+// 4-16KB SearXNG JSON.
 func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (string, error) {
 	cfg := a.cfg.Tools.WebSearch
 	if !cfg.Enabled {
