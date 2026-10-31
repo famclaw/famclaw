@@ -2,6 +2,7 @@ package webfetch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -227,7 +228,7 @@ func TestFetch_HostValidatorBlocksRedirect(t *testing.T) {
 	// host:port string at the validator level).
 	allowed := good.URL
 	calls := 0
-	validator := func(host string) error {
+	validator := func(_ context.Context, host string) error {
 		calls++
 		// Accept both servers initially, but the redirect target's full
 		// authority must be the good one. Use a closure that knows the
@@ -255,7 +256,7 @@ func TestFetch_HostValidatorBlocksRedirect(t *testing.T) {
 	// pattern. Since both are 127.0.0.1 we use the URL.Hostname() — they
 	// share it — so we instead simulate by denying on the second call.
 	callCount := 0
-	denyOnRedirect := func(host string) error {
+	denyOnRedirect := func(_ context.Context, host string) error {
 		callCount++
 		if callCount > 1 {
 			return fmt.Errorf("host %q not in url_allowlist", host)
@@ -278,7 +279,7 @@ func TestFetch_HostValidatorBlocksInitialURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	deny := func(host string) error { return fmt.Errorf("host %q not in url_allowlist", host) }
+	deny := func(_ context.Context, host string) error { return fmt.Errorf("host %q not in url_allowlist", host) }
 	_, err := Fetch(context.Background(), srv.URL, localOpts(Options{HostValidator: deny}))
 	if err == nil {
 		t.Fatalf("expected initial-host validation to fail")
@@ -327,5 +328,50 @@ func TestHostNotAllowedError_DistinctFromNetworkError(t *testing.T) {
 	}
 	if strings.Contains(networkErr.Error(), "configuration") {
 		t.Errorf("network error should not mention configuration: %q", networkErr.Error())
+	}
+}
+
+// TestHostDeniedError_DenylistReason is the no-leak gate for deny-class
+// blocks (design §3.3): the child-facing message must name the requested
+// host and the reason class, and must NOT enumerate the denylist, say
+// "block list", or leak config paths.
+func TestHostDeniedError_DenylistReason(t *testing.T) {
+	err := NewHostDeniedError("bad.example.com", "denylist")
+
+	// Same type as the allowlist error, so errors.As classification at the
+	// agent boundary keeps working.
+	var asErr *HostNotAllowedError
+	if !errors.As(err, &asErr) || asErr.Host != "bad.example.com" {
+		t.Fatalf("NewHostDeniedError must be a *HostNotAllowedError carrying the host, got %T %v", err, err)
+	}
+
+	msg := err.Error()
+	for _, want := range []string{"bad.example.com", "not available", "web policy", "not by a network failure"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("denylist message missing %q: %q", want, msg)
+		}
+	}
+	// No-leak assertions (design §3.3): no list contents, no "block list",
+	// no config paths, no allowlist advice.
+	for _, leak := range []string{"url_denylist", "block list", "url_allowlist"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("denylist message leaks %q: %q", leak, msg)
+		}
+	}
+}
+
+func TestHostDeniedError_SuspiciousAndPolicyReasons(t *testing.T) {
+	susp := NewHostDeniedError("weird-host-1234.com", "suspicious")
+	if !strings.Contains(susp.Error(), "looks unusual") {
+		t.Errorf("suspicious message wrong: %q", susp.Error())
+	}
+	pol := NewHostDeniedError("x.com", "policy")
+	if !strings.Contains(pol.Error(), "blocked by the URL policy") {
+		t.Errorf("policy message wrong: %q", pol.Error())
+	}
+	// Empty reason keeps the legacy allowlist wording (back-compat).
+	legacy := &HostNotAllowedError{Host: "example.com"}
+	if !strings.Contains(legacy.Error(), "url_allowlist") {
+		t.Errorf("legacy (empty reason) message must keep the allowlist wording: %q", legacy.Error())
 	}
 }

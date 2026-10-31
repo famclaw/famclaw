@@ -127,6 +127,7 @@ uses an atomic rename), or move the binary manually as above.
 
 > I couldn't finish that thought - my reply got stuck repeating itself. Could you ask again, and I'll keep it brief?
 
+
 **What to know:**
 - The model hit its response-token budget (`finish_reason: length`) without producing a usable answer — it either fell into a repetition loop, or spent the whole budget on internal reasoning that is filtered out of the reply.
 - FamClaw retries the request once automatically, with a lower temperature and a shorter budget. You only see this message when that retry also fails, so you never get the raw looping text — and never a blank reply.
@@ -136,6 +137,18 @@ uses an atomic rename), or move the binary manually as above.
 
 ---
 
+## URL Policy Issues
+
+**What happened:** Web tool requests are being blocked unexpectedly due to URL policy configuration issues.
+
+**What to check:**
+1. **Allowlist mode issues:** If `tools.web_fetch.url_policy: "allowlist"` is set, ensure `tools.web_fetch.url_allowlist` contains the target hosts. An empty allowlist denies all fetches.
+2. **Denylist mode issues:** If `tools.web_fetch.url_policy: "denylist"` is set, check that `tools.web_fetch.url_denylist` doesn't accidentally block legitimate hosts. The system includes a bundled kid-safe baseline that blocks adult content, hate groups, and harmful sites.
+3. **Mixed mode confusion:** When `url_allowlist` is empty, the system defaults to denylist mode, which can cause unexpected behavior if not configured properly.
+
+**Time to fix:** Adjust URL policy settings in `config.yaml` as needed.
+
+---
 ## Child sees "waiting for parent" but parent didn't get a notification
 
 **What happened:** The approval notification didn't reach you.

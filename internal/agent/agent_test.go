@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -571,14 +572,17 @@ func TestBuildMessages_OperatorOverrideIncludesCapabilities(t *testing.T) {
 }
 
 func TestHandleWebFetch(t *testing.T) {
-	newAgent := func(allowlist []string, fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
+	newAgent := func(allowlist, denylist []string, policy string,
+		fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
 		return &Agent{
 			user: &config.UserConfig{Name: "testuser", Role: "parent"},
 			cfg: &config.Config{
 				Tools: config.ToolsConfig{
 					WebFetch: config.WebFetchConfig{
 						Enabled:      true,
+						URLPolicy:    policy,
 						URLAllowlist: allowlist,
+						URLDenylist:  denylist,
 						MaxBytes:     256 * 1024,
 						TimeoutSec:   5,
 					},
@@ -597,6 +601,8 @@ func TestHandleWebFetch(t *testing.T) {
 	tests := []struct {
 		name        string
 		allowlist   []string
+		denylist    []string
+		policy      string
 		args        map[string]any
 		fetcherErr  error
 		fetcherRes  *webfetch.Result
@@ -635,10 +641,87 @@ func TestHandleWebFetch(t *testing.T) {
 			wantCalled: true,
 		},
 		{
-			name:       "empty allowlist denied (SSRF guard)",
+			name:       "empty allowlist resolves to denylist: public host allowed (zero-config fix)",
 			allowlist:  nil,
 			args:       map[string]any{"url": "https://example.com/x"},
-			wantErrSub: "url_allowlist is empty",
+			fetcherRes: &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "denylist mode: host on url_denylist blocked",
+			policy:     "denylist",
+			denylist:   []string{"bad.example.com"},
+			args:       map[string]any{"url": "https://bad.example.com/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "denylist mode: subdomain of denylisted host blocked",
+			policy:     "denylist",
+			denylist:   []string{"bad.example.com"},
+			args:       map[string]any{"url": "https://sub.bad.example.com/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "denylist mode: public host not on denylist allowed",
+			policy:     "denylist",
+			denylist:   []string{"bad.example.com"},
+			args:       map[string]any{"url": "https://good.example.com/x"},
+			fetcherRes: &webfetch.Result{URL: "https://good.example.com/x", StatusCode: 200, ContentType: "text/plain", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "denylist mode: IP-literal host allowed (home-LAN service, not gated by suspicious detector)",
+			policy:     "denylist",
+			args:       map[string]any{"url": "http://192.168.1.50:8888/search?q=x"},
+			fetcherRes: &webfetch.Result{URL: "http://192.168.1.50:8888/search?q=x", StatusCode: 200, ContentType: "text/plain", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "denylist mode: bundled baseline host blocked (kid-safe message)",
+			policy:     "denylist",
+			args:       map[string]any{"url": "https://omegle.com/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "denylist mode: subdomain of baseline host blocked",
+			policy:     "denylist",
+			args:       map[string]any{"url": "https://www.omegle.com/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "zero-config: empty allowlist + baseline host blocked (the Butler fix boundary)",
+			policy:     "",
+			allowlist:  nil,
+			args:       map[string]any{"url": "https://kiwifarms.net/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "zero-config: empty allowlist + public host allowed (the Butler fix)",
+			policy:     "",
+			allowlist:  nil,
+			args:       map[string]any{"url": "https://example.com/x"},
+			fetcherRes: &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "allowlist mode: baseline does not apply (allowlist semantics preserved)",
+			policy:     "allowlist",
+			allowlist:  []string{"omegle.com"},
+			args:       map[string]any{"url": "https://omegle.com/x"},
+			fetcherRes: &webfetch.Result{URL: "https://omegle.com/x", StatusCode: 200, ContentType: "text/html", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "explicit allowlist + empty list: still deny-all (SSRF guard kept)",
+			policy:     "allowlist",
+			allowlist:  nil,
+			args:       map[string]any{"url": "https://example.com/x"},
+			wantErrSub: "url_allowlist",
 		},
 		{
 			name:       "non-http scheme rejected before fetcher",
@@ -689,14 +772,25 @@ func TestHandleWebFetch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var got *call
-			fetcher := func(_ context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error) {
+			fetcher := func(ctx context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error) {
+				// Mirror webfetch.Fetch: the host gate runs inside the fetcher,
+				// before any network I/O. handleWebFetch's early hostValidator
+				// call was removed, so a blocked host is rejected here and the
+				// fetch never happens (got stays nil for blocked cases).
+				if opts.HostValidator != nil {
+					if parsed, perr := url.Parse(rawURL); perr == nil {
+						if herr := opts.HostValidator(ctx, parsed.Hostname()); herr != nil {
+							return nil, herr
+						}
+					}
+				}
 				got = &call{rawURL: rawURL, opts: opts}
 				if tt.fetcherErr != nil {
 					return nil, tt.fetcherErr
 				}
 				return tt.fetcherRes, nil
 			}
-			a := newAgent(tt.allowlist, fetcher)
+			a := newAgent(tt.allowlist, tt.denylist, tt.policy, fetcher)
 
 			out, err := a.handleWebFetch(context.Background(), tt.args)
 
@@ -729,11 +823,126 @@ func TestHandleWebFetch(t *testing.T) {
 	}
 }
 
+// TestHostDecision_SuspiciousSiteAskParent verifies the W4 ask_parent flow:
+// suspicious host blocks + creates host-scoped approval; parent-approved
+// host is then allowed; distinct hosts get distinct approval IDs.
+func TestHostDecision_SuspiciousSiteAskParent(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+	}
+
+	// "googl.com" is a typo-squat of "google.com" → detector says ask_parent.
+	ok, reason := a.hostDecision(context.Background(), "googl.com")
+	if ok {
+		t.Fatalf("hostDecision(googl.com) = (%v, %q), want blocked", ok, reason)
+	}
+	if reason != "suspicious" {
+		t.Errorf("reason = %q, want %q", reason, "suspicious")
+	}
+
+	// A pending approval row should exist with a host-scoped ID.
+	approvalID := proposalApprovalID("teo", "suspicious_site", "googl.com")
+	apr, err := db.GetApproval(context.Background(), approvalID)
+	if err != nil {
+		t.Fatalf("get approval: %v", err)
+	}
+	if apr == nil {
+		t.Fatalf("expected approval row for host-scoped id %q, got nil", approvalID)
+	}
+	if apr.Status != "pending" {
+		t.Errorf("approval status = %q, want pending", apr.Status)
+	}
+
+	// Parent approves the host.
+	if err := db.DecideApproval(approvalID, "approved", "parent"); err != nil {
+		t.Fatalf("decide approval: %v", err)
+	}
+
+	// Now the same host should be allowed (approved + not yet expired).
+	ok, reason = a.hostDecision(context.Background(), "googl.com")
+	if !ok {
+		t.Fatalf("hostDecision(googl.com) after approval = (%v, %q), want allowed", ok, reason)
+	}
+
+	// A DIFFERENT suspicious host gets a DIFFERENT approval ID.
+	ok2, _ := a.hostDecision(context.Background(), "youtub.com") // typo-squat of youtube.com
+	if ok2 {
+		t.Error("hostDecision(youtub.com) should be blocked (not yet approved)")
+	}
+	otherID := proposalApprovalID("teo", "suspicious_site", "youtub.com")
+	if otherID == approvalID {
+		t.Error("distinct suspicious hosts produced the same approval ID — collision!")
+	}
+	// Confirm the second approval row was created.
+	apr2, err := db.GetApproval(context.Background(), otherID)
+	if err != nil || apr2 == nil {
+		t.Errorf("expected approval row for youtub.com: apr=%+v err=%v", apr2, err)
+	}
+}
+
+// TestHostDecision_IPLiteralRanges verifies that local (private/loopback/
+// link-local) IP literals pass the gate by default under the home-LAN model
+// (design §1.5), while raw PUBLIC IP literals are routed to the parent-
+// approval gate instead of being silently allowed.
+func TestHostDecision_IPLiteralRanges(t *testing.T) {
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+	}
+
+	// Private IP (SearXNG) should pass without triggering the detector.
+	ok, reason := a.hostDecision(context.Background(), "192.168.1.50")
+	if !ok {
+		t.Fatalf("hostDecision(192.168.1.50) = (%v, %q), want allowed (home-LAN)", ok, reason)
+	}
+
+	// Loopback should also pass.
+	ok, reason = a.hostDecision(context.Background(), "127.0.0.1")
+	if !ok {
+		t.Fatalf("hostDecision(127.0.0.1) = (%v, %q), want allowed", ok, reason)
+	}
+
+	// IPv6 loopback should also pass.
+	ok, reason = a.hostDecision(context.Background(), "::1")
+	if !ok {
+		t.Fatalf("hostDecision(::1) = (%v, %q), want allowed", ok, reason)
+	}
+
+	// A raw PUBLIC IP literal must NOT be silently allowed: the domain-based
+	// baseline/denylist cannot match an IP, so it routes to the approval gate.
+	// (a.db is nil here, so no approval row is created; the gate is denied.)
+	pub, pubReason := a.hostDecision(context.Background(), "203.0.113.5")
+	if pub {
+		t.Errorf("hostDecision(203.0.113.5) = (%v, %q), want denied (public IP)", pub, pubReason)
+	}
+	if pubReason != "suspicious" {
+		t.Errorf("hostDecision(203.0.113.5) reason = %q, want %q", pubReason, "suspicious")
+	}
+}
+
 // TestHandleWebFetch_HostValidatorAppliesToRedirect ensures the validator
 // closure handed to webfetch enforces the same allowlist on redirect
 // targets as on the initial URL.
 func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
-	var capturedValidator func(string) error
+	var capturedValidator func(context.Context, string) error
 	a := &Agent{
 		user: &config.UserConfig{Name: "testuser", Role: "parent"},
 		cfg: &config.Config{
@@ -758,13 +967,13 @@ func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
 	if capturedValidator == nil {
 		t.Fatal("HostValidator should have been passed to fetcher")
 	}
-	if err := capturedValidator("good.example"); err != nil {
+	if err := capturedValidator(context.Background(), "good.example"); err != nil {
 		t.Errorf("good.example should pass validator, got: %v", err)
 	}
-	if err := capturedValidator("api.good.example"); err != nil {
+	if err := capturedValidator(context.Background(), "api.good.example"); err != nil {
 		t.Errorf("api.good.example (subdomain) should pass validator, got: %v", err)
 	}
-	if err := capturedValidator("evil.example"); err == nil {
+	if err := capturedValidator(context.Background(), "evil.example"); err == nil {
 		t.Errorf("evil.example should be rejected by validator")
 	}
 }
@@ -810,10 +1019,10 @@ func TestHandleWebFetch_BlockedHostMessageIsClear(t *testing.T) {
 			fetcher := func(_ context.Context, _ string, opts webfetch.Options) (*webfetch.Result, error) {
 				// Simulate the host validator rejecting the host
 				if opts.HostValidator != nil {
-					if err := opts.HostValidator("www.clinicaltrials.gov"); err != nil {
+					if err := opts.HostValidator(context.Background(), "www.clinicaltrials.gov"); err != nil {
 						return nil, err
 					}
-					if err := opts.HostValidator("blocked.example.com"); err != nil {
+					if err := opts.HostValidator(context.Background(), "blocked.example.com"); err != nil {
 						return nil, err
 					}
 				}

@@ -398,7 +398,7 @@ func (r *Router) createApproval(ctx context.Context, user *config.UserConfig, ca
 		Category:    category,
 		QueryText:   queryText,
 	}
-	isNew, err := r.db.UpsertApproval(a)
+	isNew, err := r.db.UpsertApproval(ctx, a)
 	if err != nil {
 		log.Printf("[router] approval upsert: %v", err)
 		return fmt.Errorf("upserting approval %q: %w", requestID, err)

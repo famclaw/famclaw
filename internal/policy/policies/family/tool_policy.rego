@@ -194,4 +194,8 @@ admin_tools := {
     # Phase 4 — proactive cross-chat messaging. Only parents may address
     # another family member on a platform they are not currently on.
     "send_message",
+    # W3 — web_fetch URL denylist management (denylist mode, design §3).
+    "denylist_list",
+    "denylist_add",
+    "denylist_remove",
 }

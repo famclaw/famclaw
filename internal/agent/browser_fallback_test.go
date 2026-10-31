@@ -48,7 +48,7 @@ func (f *fakeBrowserPool) Exec(_ context.Context, _ browser.ExecInput) (string, 
 
 // alwaysAllowHost accepts every host — used in fallback tests where the host
 // gate is not the subject under test.
-func alwaysAllowHost(host string) bool { return true }
+func alwaysAllowHost(_ context.Context, host string) error { return nil }
 
 func newFallbackAgent() *Agent {
 	return &Agent{
@@ -218,15 +218,15 @@ func TestHandleWebFetch_BotBlockedBrowserFallback(t *testing.T) {
 			var gateChecked bool
 			fake := &fakeBrowserPool{
 				bytes: 512,
-				navFn: func(_ context.Context, _, _ string, hostCheck browser.HostValidator) (string, int64, error) {
+				navFn: func(ctx context.Context, _, _ string, hostCheck browser.HostValidator) (string, int64, error) {
 					if hostCheck == nil {
 						t.Error("NavigateAndExtract must carry a HostCheck (the existing host gate)")
 						return "", 0, fmt.Errorf("no host gate")
 					}
-					if err := hostCheck("example.com"); err != nil {
+					if err := hostCheck(ctx, "example.com"); err != nil {
 						t.Errorf("allowlisted host rejected by fallback gate: %v", err)
 					}
-					if err := hostCheck("evil.example"); err == nil {
+					if err := hostCheck(ctx, "evil.example"); err == nil {
 						t.Error("non-allowlisted host accepted by fallback gate")
 					}
 					gateChecked = true

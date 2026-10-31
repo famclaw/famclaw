@@ -95,7 +95,7 @@ func insertPendingApproval(t *testing.T, db *store.DB, userName, category string
 		Category:    category,
 		QueryText:   "test query for " + category,
 	}
-	isNew, err := db.UpsertApproval(a)
+	isNew, err := db.UpsertApproval(context.Background(), a)
 	if err != nil {
 		t.Fatalf("UpsertApproval: %v", err)
 	}

@@ -12,7 +12,7 @@ import (
 )
 
 // HostValidator returns nil iff host is allowed.
-type HostValidator func(host string) error
+type HostValidator func(ctx context.Context, host string) error
 
 // ExecInput is the dispatcher argument shape.
 type ExecInput struct {
@@ -162,13 +162,13 @@ func (p *Pool) snapshotReply(sess *userSession) (string, error) {
 	return out, nil
 }
 
-func (p *Pool) doNavigate(_ context.Context, sess *userSession, args map[string]any, hostCheck HostValidator) (string, error) {
+func (p *Pool) doNavigate(ctx context.Context, sess *userSession, args map[string]any, hostCheck HostValidator) (string, error) {
 	raw := strings.TrimSpace(argString(args, "url"))
 	if raw == "" {
 		return "", fmt.Errorf("browser_navigate requires 'url'")
 	}
 	timeout := argInt(args, "timeout_ms", 20000)
-	if _, err := p.navigate(sess, raw, hostCheck, timeout); err != nil {
+	if _, err := p.navigate(ctx, sess, raw, hostCheck, timeout); err != nil {
 		return "", fmt.Errorf("browser_navigate: %w", err)
 	}
 	return p.snapshotReply(sess)
@@ -182,7 +182,7 @@ func (p *Pool) doNavigate(_ context.Context, sess *userSession, args map[string]
 // table (navigation invalidates ref continuity). It returns the
 // navigation's HTTP response — nil when the browser reported none — so
 // callers can inspect response metadata such as the body size.
-func (p *Pool) navigate(sess *userSession, raw string, hostCheck HostValidator, timeoutMS int) (playwright.Response, error) {
+func (p *Pool) navigate(ctx context.Context, sess *userSession, raw string, hostCheck HostValidator, timeoutMS int) (playwright.Response, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("parse url: %w", err)
@@ -191,7 +191,7 @@ func (p *Pool) navigate(sess *userSession, raw string, hostCheck HostValidator, 
 		return nil, fmt.Errorf("scheme %q not allowed", u.Scheme)
 	}
 	if hostCheck != nil {
-		if cerr := hostCheck(u.Hostname()); cerr != nil {
+		if cerr := hostCheck(ctx, u.Hostname()); cerr != nil {
 			return nil, cerr
 		}
 	}
@@ -207,7 +207,7 @@ func (p *Pool) navigate(sess *userSession, raw string, hostCheck HostValidator, 
 	// redirect-time host check the HTTP web_fetch path enforces.
 	if hostCheck != nil {
 		if finalURL, perr := url.Parse(sess.page.URL()); perr == nil {
-			if cerr := hostCheck(finalURL.Hostname()); cerr != nil {
+			if cerr := hostCheck(ctx, finalURL.Hostname()); cerr != nil {
 				return nil, fmt.Errorf("redirected to disallowed host: %w", cerr)
 			}
 		}
@@ -228,7 +228,7 @@ func (p *Pool) navigate(sess *userSession, raw string, hostCheck HostValidator, 
 // reported no response or the size could not be determined. The page is
 // left at rawURL; the per-user session is released by the idle sweeper,
 // the same acquire-use-release lifecycle as Exec.
-func (p *Pool) NavigateAndExtract(_ context.Context, user, rawURL string, hostCheck HostValidator) (string, int64, error) {
+func (p *Pool) NavigateAndExtract(ctx context.Context, user, rawURL string, hostCheck HostValidator) (string, int64, error) {
 	user = strings.TrimSpace(user)
 	if user == "" {
 		return "", 0, fmt.Errorf("browser: user is required")
@@ -241,7 +241,7 @@ func (p *Pool) NavigateAndExtract(_ context.Context, user, rawURL string, hostCh
 	if err != nil {
 		return "", 0, err
 	}
-	resp, err := p.navigate(sess, raw, hostCheck, 20000)
+	resp, err := p.navigate(ctx, sess, raw, hostCheck, 20000)
 	if err != nil {
 		return "", 0, fmt.Errorf("navigate %s: %w", raw, err)
 	}
