@@ -105,6 +105,12 @@ type Agent struct {
 	// baselineStore is the bundled kid-safe blocklist, injected at
 	// construction so webfilter keeps no package-level global state.
 	baselineStore *webfilter.BaselineStore
+	// baselineStoreOnce guards the nil-fallback allocation of baselineStore
+	// for legacy Agent literals (tests). NewAgent always sets baselineStore,
+	// so in production this Once never fires and the field is written
+	// exactly once, at construction. Per-Agent, so webfilter keeps no
+	// package-level global state.
+	baselineStoreOnce sync.Once
 	// onNewSuspiciousApproval — see AgentDeps.OnNewSuspiciousApproval.
 	// Set once in NewAgent; nil disables notification.
 	onNewSuspiciousApproval func(ctx context.Context, a *store.Approval) error
@@ -1381,13 +1387,13 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 		// (a) Bundled kid-safe baseline (CC0-sourced, design §2) — always
 		// active in denylist mode; reason class "baseline" drives the
 		// kid-safe no-leak message (design §3.3).
-		// baselineStore is injected in NewAgent; nil falls back to a fresh
-		// store for legacy Agent literals in tests (same pattern as the
-		// suspiciousDetector fallback below).
-		baselineStore := a.baselineStore
-		if baselineStore == nil {
-			baselineStore = webfilter.NewBaselineStore()
+		// baselineStore is injected in NewAgent; nil falls back to a
+		// Once-guarded store for legacy Agent literals in tests (same
+		// pattern as the suspiciousDetector fallback below).
+		if a.baselineStore == nil {
+			a.baselineStoreOnce.Do(func() { a.baselineStore = webfilter.NewBaselineStore() })
 		}
+		baselineStore := a.baselineStore
 		if baselineStore.Blocks(host) {
 			return false, "baseline"
 		}
