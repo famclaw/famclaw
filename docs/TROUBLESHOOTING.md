@@ -127,6 +127,16 @@ uses an atomic rename), or move the binary manually as above.
 
 > I couldn't finish that thought - my reply got stuck repeating itself. Could you ask again, and I'll keep it brief?
 
+
+**What to know:**
+- The model hit its response-token budget (`finish_reason: length`) without producing a usable answer — it either fell into a repetition loop, or spent the whole budget on internal reasoning that is filtered out of the reply.
+- FamClaw retries the request once automatically, with a lower temperature and a shorter budget. You only see this message when that retry also fails, so you never get the raw looping text — and never a blank reply.
+- Most common on "thinking" models (qwen3 family, nemotron, gpt-oss) with a tight `llm.max_response_tokens` (default 512). Raising it, or asking a narrower question, usually clears it.
+
+**Time to fix:** About 1 minute — ask again more narrowly, or raise `llm.max_response_tokens`.
+
+---
+
 ## URL Policy Issues
 
 **What happened:** Web tool requests are being blocked unexpectedly due to URL policy configuration issues.
@@ -138,15 +148,7 @@ uses an atomic rename), or move the binary manually as above.
 
 **Time to fix:** Adjust URL policy settings in `config.yaml` as needed.
 
-**What to know:**
-- The model hit its response-token budget (`finish_reason: length`) without producing a usable answer — it either fell into a repetition loop, or spent the whole budget on internal reasoning that is filtered out of the reply.
-- FamClaw retries the request once automatically, with a lower temperature and a shorter budget. You only see this message when that retry also fails, so you never get the raw looping text — and never a blank reply.
-- Most common on "thinking" models (qwen3 family, nemotron, gpt-oss) with a tight `llm.max_response_tokens` (default 512). Raising it, or asking a narrower question, usually clears it.
-
-**Time to fix:** About 1 minute — ask again more narrowly, or raise `llm.max_response_tokens`.
-
 ---
-
 ## Child sees "waiting for parent" but parent didn't get a notification
 
 **What happened:** The approval notification didn't reach you.
