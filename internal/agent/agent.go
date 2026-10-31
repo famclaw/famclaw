@@ -1405,7 +1405,7 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 				return false, "denylist"
 			}
 		}
-		
+
 		// (c) W4: host-level suspicion gate (design §4). The detector's
 		// heuristics target malicious PUBLIC domain names (punycode lookalikes,
 		// high-entropy C2 labels, typo-squats of known brands).
@@ -1427,10 +1427,10 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 			verdict = webfilter.Verdict{Action: "ask_parent", Reason: "public IP literal host"}
 		} else {
 			detector := a.suspiciousDetector
-		if detector == nil {
-			detector = webfilter.NewSuspiciousSiteDetector()
-		}
-		verdict = detector.Check(host)
+			if detector == nil {
+				detector = webfilter.NewSuspiciousSiteDetector()
+			}
+			verdict = detector.Check(host)
 		}
 		if verdict.Action != "warn_allow" {
 			if verdict.Action == "block" {
@@ -1549,8 +1549,8 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// option set below; a redundant early check here would double the
 	// hostDecision GetApproval+upsert per successful fetch.
 	opts := webfetch.Options{
-		MaxBytes: cfg.MaxBytes,
-		Timeout:  time.Duration(cfg.TimeoutSec) * time.Second,
+		MaxBytes:      cfg.MaxBytes,
+		Timeout:       time.Duration(cfg.TimeoutSec) * time.Second,
 		HostValidator: a.hostValidator,
 		// famclaw is a home-LAN product — by default we allow private/loopback
 		// addresses so the bot can reach co-located services (SearXNG,
@@ -1803,7 +1803,7 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 		MaxResults: maxResults,
 		Timeout:    time.Duration(cfg.TimeoutSec) * time.Second,
 		// The mode-aware host gate, shared with web_fetch (design §1.2, §1.5).
-		HostValidator: a.hostValidator,
+		HostValidator:        a.hostValidator,
 		AllowPrivateNetworks: !fcfg.BlockPrivateNetworks,
 		TavilyAPIKey:         cfg.TavilyAPIKey,
 	})
