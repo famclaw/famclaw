@@ -893,6 +893,70 @@ func TestHostDecision_SuspiciousSiteAskParent(t *testing.T) {
 	}
 }
 
+// TestHostDecision_SuspiciousSiteNotificationRetry verifies B1: if the parent
+// push for a suspicious-site approval fails transiently (so no notification is
+// delivered), a later hostDecision for the same pending row retries it, and a
+// push that has already succeeded is NOT re-sent within the same Agent
+// lifetime.
+func TestHostDecision_SuspiciousSiteNotificationRetry(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := context.Background()
+	// First call fails transiently (no successful push recorded); the second
+	// succeeds. hostDecision is called sequentially on one goroutine, so a
+	// plain counter is enough.
+	notifyCalls := 0
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+		onNewSuspiciousApproval: func(context.Context, *store.Approval) error {
+			notifyCalls++
+			if notifyCalls == 1 {
+				return errors.New("transient push failure")
+			}
+			return nil
+		},
+	}
+
+	// "googl.com" is a distance-1 typo-squat of google.com -> ask_parent.
+	// 1st encounter: the pending row is created; the parent push fails, so the
+	// notification is NOT marked delivered.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("1st hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	if notifyCalls != 1 {
+		t.Fatalf("after 1st encounter notifyCalls = %d, want 1", notifyCalls)
+	}
+
+	// 2nd encounter: the pending row already exists and no successful push was
+	// recorded, so hostDecision retries the parent push - this time it succeeds.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("2nd hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	if notifyCalls != 2 {
+		t.Fatalf("after 2nd encounter notifyCalls = %d, want 2 (retry fired)", notifyCalls)
+	}
+
+	// 3rd encounter: the push now succeeded, so the per-Agent memo must prevent
+	// a double-notify.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("3rd hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	if notifyCalls != 2 {
+		t.Fatalf("after 3rd encounter notifyCalls = %d, want 2 (no double-notify)", notifyCalls)
+	}
+}
+
 // TestHostDecision_IPLiteralRanges verifies that local (private/loopback/
 // link-local) IP literals pass the gate by default under the home-LAN model
 // (design §1.5), while raw PUBLIC IP literals are routed to the parent-

@@ -115,6 +115,17 @@ type Agent struct {
 	// Set once in NewAgent; nil disables notification.
 	onNewSuspiciousApproval func(ctx context.Context, a *store.Approval) error
 
+	// suspiciousNotifyMu guards suspiciousNotified.
+	suspiciousNotifyMu sync.Mutex
+	// suspiciousNotified records the suspicious-site approval IDs for which a
+	// parent push was delivered successfully within this Agent's lifetime, so
+	// hostDecision's re-encounter path (B1) does not re-notify a host whose push
+	// already landed. Per-Agent state (no package-level global): keyed by the
+	// host's approval ID, set only after onNewSuspiciousApproval returns nil. It
+	// is lazily allocated under the mutex so legacy Agent literals in tests
+	// (which leave it nil) stay safe.
+	suspiciousNotified map[string]bool
+
 	// cache is the tool-result spillover store. When non-nil, large
 	// handleWebFetch (and other large-result) tool replies are written
 	// to the cache and only a budget-sized head slice is returned to the
@@ -401,6 +412,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		suspiciousDetector:      webfilter.NewSuspiciousSiteDetector(),
 		baselineStore:           webfilter.NewBaselineStore(),
 		onNewSuspiciousApproval: deps.OnNewSuspiciousApproval,
+		suspiciousNotified:      map[string]bool{},
 		cache:                   deps.Cache,
 		browserPool:             deps.BrowserPool,
 		msgContext:              deps.MsgContext,
@@ -1500,10 +1512,8 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 					}
 					if isNew, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
 						log.Printf("[agent] failed to create suspicious-site approval: %v", uerr)
-					} else if isNew && a.onNewSuspiciousApproval != nil {
-						if nerr := a.onNewSuspiciousApproval(ctx, approval); nerr != nil {
-							log.Printf("[agent] suspicious-site approval notification failed for %q: %v", approval.ID, nerr)
-						}
+					} else if isNew {
+						a.notifySuspiciousApprovalIfNeeded(ctx, approvalID, approval)
 					}
 				} else if prev != nil && prev.Status == "approved" && time.Now().Before(prev.ExpiresAt) {
 					// Still valid: allow without touching the row.
@@ -1517,18 +1527,20 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 						log.Printf("[agent] failed to requeue expired suspicious-site approval %q: %v", approvalID, uerr)
 					}
 				} else {
-					// No prior approval (first request) — or a prior DENIAL, which we
-					// leave blocked without re-nagging the parent.
+					// First request, or a re-encounter with an existing row. A prior
+					// PENDING row whose parent push has not yet landed gets
+					// re-notified (B1 retry); a prior DENIAL is left blocked without
+					// re-nagging the parent. The helper no-ops when a successful push
+					// was already recorded for this host in this Agent, so
+					// re-encounters do not double-notify, and it skips a parent caller.
 					approval := &store.Approval{
 						ID: approvalID, UserName: a.user.Name, UserDisplay: a.user.DisplayName,
 						AgeGroup: a.user.AgeGroup, Category: "suspicious_site", QueryText: host,
 					}
-					if isNew, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
+					if _, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
 						log.Printf("[agent] failed to create suspicious-site approval: %v", uerr)
-					} else if isNew && a.onNewSuspiciousApproval != nil {
-						if nerr := a.onNewSuspiciousApproval(ctx, approval); nerr != nil {
-							log.Printf("[agent] suspicious-site approval notification failed for %q: %v", approval.ID, nerr)
-						}
+					} else if prev == nil || prev.Status == "pending" {
+						a.notifySuspiciousApprovalIfNeeded(ctx, approvalID, approval)
 					}
 				}
 			}
@@ -1537,6 +1549,53 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 
 		return true, ""
 	}
+}
+
+// suspiciousNotifiedSeen reports whether a parent push for this suspicious-site
+// approval has already been delivered successfully within this Agent's
+// lifetime.
+func (a *Agent) suspiciousNotifiedSeen(id string) bool {
+	a.suspiciousNotifyMu.Lock()
+	defer a.suspiciousNotifyMu.Unlock()
+	return a.suspiciousNotified != nil && a.suspiciousNotified[id]
+}
+
+// markSuspiciousNotified records that a parent push for this approval was
+// delivered successfully, so hostDecision does not re-notify on re-encounter.
+func (a *Agent) markSuspiciousNotified(id string) {
+	a.suspiciousNotifyMu.Lock()
+	defer a.suspiciousNotifyMu.Unlock()
+	if a.suspiciousNotified == nil {
+		a.suspiciousNotified = make(map[string]bool)
+	}
+	a.suspiciousNotified[id] = true
+}
+
+// notifySuspiciousApprovalIfNeeded delivers the parent push for a suspicious-site
+// approval when (1) no successful push has been recorded yet for this approval in
+// this Agent and (2) the caller is not a parent (a parent gets no
+// self-notification for their own web_fetch — mirroring the notifier's own
+// kid-only policy). On a nil return it records success so the same session does
+// not double-notify. This is the B1 retry path: a host whose first push failed
+// (notifier error) is re-surfaced on the child's next web_fetch of the same host,
+// instead of staying silently pending until the parent happens to open the
+// dashboard.
+func (a *Agent) notifySuspiciousApprovalIfNeeded(ctx context.Context, id string, approval *store.Approval) {
+	if a.onNewSuspiciousApproval == nil {
+		return
+	}
+	if a.user == nil || a.user.Role == "parent" {
+		return
+	}
+	if a.suspiciousNotifiedSeen(id) {
+		return
+	}
+	if nerr := a.onNewSuspiciousApproval(ctx, approval); nerr != nil {
+		// Not marked, so the next encounter re-attempts the push.
+		log.Printf("[agent] suspicious-site approval notification failed for %q: %v (will retry on next encounter)", id, nerr)
+		return
+	}
+	a.markSuspiciousNotified(id)
 }
 
 // hostGateError builds the typed, sanitized error for a rejected host, using

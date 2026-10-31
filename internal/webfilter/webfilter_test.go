@@ -77,6 +77,26 @@ func TestSuspiciousSiteDetector_Check(t *testing.T) {
 			},
 		},
 		{
+			// B2: a distance-1 real typo-squat still routes to the parent.
+			name: "Distance-1 typo squat still flagged",
+			host: "facebok.com",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "typo-squatting detected",
+			},
+		},
+		{
+			// B2: a distance-2 near-miss no longer auto-blocks; under the
+			// previous <= 2 bound this host would have been flagged and held
+			// every child for up to 24 h.
+			name: "Distance-2 near-miss no longer blocked",
+			host: "g00gle.com",
+			expected: Verdict{
+				Action: "warn_allow",
+				Reason: "host passed suspicious site checks",
+			},
+		},
+		{
 			name: "Normal host",
 			host: "example.com",
 			expected: Verdict{
@@ -261,6 +281,34 @@ func TestSuspiciousSiteDetector_TypoSquat(t *testing.T) {
 		{
 			name: "Regular host",
 			host: "google.com",
+			want: false,
+		},
+		// B2: distance-1 real typo-squats are still caught.
+		{
+			name: "Distance-1 real typo-squat (facebok.com)",
+			host: "facebok.com",
+			want: true,
+		},
+		{
+			name: "Distance-1 real typo-squat (gogle.com)",
+			host: "gogle.com",
+			want: true,
+		},
+		// B2: distance-2 near-misses no longer flagged — this was the
+		// false-positive surface that auto-blocked legitimate child fetches
+		// for up to 24 h.
+		{
+			name: "Distance-2 near-miss no longer flagged (g00gle.com)",
+			host: "g00gle.com",
+			want: false,
+		},
+		// Documented B2 tradeoff: faceb00k.com is Levenshtein distance 2 from
+		// facebook.com (both 'o' -> '0'), so under the tightened <= 1 bound it
+		// is no longer auto-flagged. The fail-safe for it is the parent
+		// URLDenylist, which hostDecision consults before any detector verdict.
+		{
+			name: "Distance-2 leet variant no longer flagged (faceb00k.com)",
+			host: "faceb00k.com",
 			want: false,
 		},
 	}
