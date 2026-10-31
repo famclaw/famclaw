@@ -10,7 +10,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"unicode"
 
 	"golang.org/x/net/idna"
@@ -18,11 +17,6 @@ import (
 
 //go:embed baseline.txt
 var baselineFS embed.FS
-
-var (
-	once     sync.Once
-	baseline map[string]struct{} // canonical host → struct{}
-)
 
 // Constant reference data for the offline heuristics, hoisted to package
 // level so per-call host checks don't reallocate it (project rule:
@@ -343,28 +337,36 @@ func min(a, b, c int) int {
 	return minVal
 }
 
-// BaselineBlocks reports whether the given host matches an entry in the
-// bundled kid-safe baseline. Matching is case-insensitive and supports
-// subdomain-suffix matching (same semantics as url_allowlist / url_denylist):
-// if "example.com" is in the baseline, "sub.example.com" also matches.
-//
-// The host should already be canonicalized (lowercase, no trailing dot,
-// no port) — the caller is responsible for calling canonicalizeHost first.
-func BaselineBlocks(host string) bool {
-	once.Do(func() {
-		baseline = loadBaseline()
-	})
+// BaselineStore holds the bundled kid-safe baseline blocklist. It is loaded
+// once at construction from the embedded baseline.txt and is read-only
+// thereafter, so no sync.Once / package-level global is needed (project rule:
+// no global state — everything is injected via constructor).
+type BaselineStore struct {
+	blocks map[string]struct{} // canonical host → struct{}
+}
+
+// NewBaselineStore loads the embedded baseline blocklist. A load failure
+// fails open (empty set), matching the previous behavior.
+func NewBaselineStore() *BaselineStore {
+	return &BaselineStore{blocks: loadBaseline()}
+}
+
+// Blocks reports whether host matches a baseline entry. Matching is
+// case-insensitive and supports subdomain-suffix matching (same semantics as
+// url_allowlist / url_denylist): if "example.com" is in the baseline,
+// "sub.example.com" also matches. host should already be canonicalized
+// (lowercase, no trailing dot, no port).
+func (s *BaselineStore) Blocks(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
 		return false
 	}
 	// Exact match.
-	if _, ok := baseline[host]; ok {
+	if _, ok := s.blocks[host]; ok {
 		return true
 	}
-	// Subdomain suffix: "sub.example.com" matches baseline "example.com".
-	// Peel the leftmost label each step so every parent domain is checked:
-	// "www.omegle.com" -> "omegle.com" -> "com".
+	// Subdomain suffix: peel the leftmost label each step so every parent
+	// domain is checked: "www.omegle.com" -> "omegle.com" -> "com".
 	candidate := host
 	for {
 		idx := strings.IndexByte(candidate, '.')
@@ -372,20 +374,16 @@ func BaselineBlocks(host string) bool {
 			break
 		}
 		candidate = candidate[idx+1:]
-		if _, ok := baseline[candidate]; ok {
+		if _, ok := s.blocks[candidate]; ok {
 			return true
 		}
 	}
 	return false
 }
 
-// BaselineCount returns the number of unique hosts in the bundled baseline.
-// Useful for admin tools to report "113 baseline hosts active".
-func BaselineCount() int {
-	once.Do(func() {
-		baseline = loadBaseline()
-	})
-	return len(baseline)
+// Count returns the number of unique hosts in the bundled baseline.
+func (s *BaselineStore) Count() int {
+	return len(s.blocks)
 }
 
 func loadBaseline() map[string]struct{} {
