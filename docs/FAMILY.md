@@ -125,7 +125,7 @@ FamClaw provides built-in web tools that can be used by family members:
 
 ### Web Fetch (`web_fetch`)
 
-The `web_fetch` tool allows users to fetch content from websites. It extracts HTML→text, plain/JSON, and PDF text layers. It requires a non-empty `url_allowlist` to prevent SSRF attacks (an empty list denies all fetches). Its optional headless-browser fallback (`fallback_to_browser`) fires for thin JS-heavy pages and on 403/429 bot-blocks, and requires `tools.browser.enabled` plus a reachable browser pool.
+The `web_fetch` tool allows users to fetch content from websites. It extracts HTML→text, plain/JSON, and PDF text layers. Hosts are gated by a URL policy: in `allowlist` mode a non-empty `url_allowlist` is required (an empty list denies all — the legacy SSRF guard, unchanged in allowlist mode), while in the default `denylist` mode public hosts are allowed and only `url_denylist` entries are blocked (see "URL Policy Configuration" below). Its optional headless-browser fallback (`fallback_to_browser`) fires for thin JS-heavy pages and on 403/429 bot-blocks, and requires `tools.browser.enabled` plus a reachable browser pool.
 
 ### Web Search (`web_search`)
 
@@ -175,7 +175,8 @@ The `url_policy` field accepts "allowlist" or "denylist" values. When unset, the
 ### Admin Tools
 
 Parent admins can manage web fetch settings via:
-- `/api/tools/web_fetch/allowlist` - View/edit allowlist entries
-- `/api/tools/web_fetch/denylist` - View/edit denylist entries
+- Allowlist: managed conversationally via the LLM admin tools `builtin__allowlist_list` / `builtin__allowlist_add` / `builtin__allowlist_remove` (internal/agent/tools/admin/).
+- Denylist: managed conversationally via the LLM admin tools `builtin__denylist_list` / `builtin__denylist_add` / `builtin__denylist_remove` (internal/agent/tools/admin/).
+- Both lists persist in config.yaml under `tools.web_fetch.url_allowlist` / `url_denylist` and can be read/updated via the `/api/settings` GET/POST endpoint.
 
-These endpoints are only available to users with the "parent" role.
+These are only available to users with the "parent" role.
