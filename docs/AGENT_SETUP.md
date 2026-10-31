@@ -194,8 +194,9 @@ The `url_policy` field accepts "allowlist" or "denylist" values. When unset, the
 ### Admin Tools
 
 Parent admins can manage web fetch settings via:
-- `/api/tools/web_fetch/allowlist` - View/edit allowlist entries
-- `/api/tools/web_fetch/denylist` - View/edit denylist entries
+- Allowlist: managed conversationally via the LLM admin tools `builtin__allowlist_list` / `builtin__allowlist_add` / `builtin__allowlist_remove` (internal/agent/tools/admin/).
+- Denylist: managed conversationally via the LLM admin tools `builtin__denylist_list` / `builtin__denylist_add` / `builtin__denylist_remove` (internal/agent/tools/admin/).
+- Both lists persist in config.yaml under `tools.web_fetch.url_allowlist` / `url_denylist` and can be read/updated via the `/api/settings` GET/POST endpoint.
 
 These endpoints are only available to users with the "parent" role.
 - **MCP runtime management:** List and add MCP servers conversationally via the parent-only `mcp_list` and `mcp_add` built-in tools, or add/remove via the `/api/mcp` endpoints (session-authenticated, parent role) — no config edit or restart required. The running MCP pool is reloaded in place. See [SKILLS.md](./SKILLS.md) and the MCP section of the README.
