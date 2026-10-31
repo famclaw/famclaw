@@ -1408,28 +1408,39 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 			// the lookup/upsert before they complete.
 			if a.db != nil {
 				approvalID := proposalApprovalID(a.user.Name, "suspicious_site", host)
-				if prev, err := a.db.GetApproval(ctx, approvalID); err != nil {
-					// Fail closed (deny + upsert pending row) on lookup errors, but
-					// log them so operators can distinguish "no approval yet" from
-					// a transient DB fault that re-denied an already-approved host.
+				prev, err := a.db.GetApproval(ctx, approvalID)
+				if err != nil {
+					// Fail closed on lookup errors: surface a fresh pending row so
+					// the parent can decide, and log the fault.
 					log.Printf("[agent] host-decision: approval lookup for %q failed: %v", approvalID, err)
+					approval := &store.Approval{
+						ID: approvalID, UserName: a.user.Name, UserDisplay: a.user.DisplayName,
+						AgeGroup: a.user.AgeGroup, Category: "suspicious_site", QueryText: host,
+					}
+					if _, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
+						log.Printf("[agent] failed to create suspicious-site approval: %v", uerr)
+					}
 				} else if prev != nil && prev.Status == "approved" && time.Now().Before(prev.ExpiresAt) {
+					// Still valid: allow without touching the row.
 					return true, ""
-				}
-				// Create a host-scoped pending approval the parent can act on via
-				// the approvals flow (idempotent: UpsertApproval is a no-op when the
-				// row already exists). The ID is host-scoped so distinct suspicious
-				// hosts on the same day get distinct approvals.
-				approval := &store.Approval{
-					ID:          approvalID,
-					UserName:    a.user.Name,
-					UserDisplay: a.user.DisplayName,
-					AgeGroup:    a.user.AgeGroup,
-					Category:    "suspicious_site",
-					QueryText:   host,
-				}
-				if _, err := a.db.UpsertApproval(ctx, approval); err != nil {
-					log.Printf("[agent] failed to create suspicious-site approval: %v", err)
+				} else if prev != nil && prev.Status == "approved" {
+					// Granted earlier but now EXPIRED: reset to a fresh pending window
+					// so the parent re-sees it on the dashboard instead of the host
+					// staying silently blocked. (UpsertApproval is a no-op on an
+					// existing row, so it cannot re-surface it.)
+					if _, uerr := a.db.RequeueApproval(ctx, approvalID); uerr != nil {
+						log.Printf("[agent] failed to requeue expired suspicious-site approval %q: %v", approvalID, uerr)
+					}
+				} else {
+					// No prior approval (first request) — or a prior DENIAL, which we
+					// leave blocked without re-nagging the parent.
+					approval := &store.Approval{
+						ID: approvalID, UserName: a.user.Name, UserDisplay: a.user.DisplayName,
+						AgeGroup: a.user.AgeGroup, Category: "suspicious_site", QueryText: host,
+					}
+					if _, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
+						log.Printf("[agent] failed to create suspicious-site approval: %v", uerr)
+					}
 				}
 			}
 			return false, "suspicious"
