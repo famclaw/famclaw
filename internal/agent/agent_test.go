@@ -893,6 +893,45 @@ func TestHostDecision_SuspiciousSiteAskParent(t *testing.T) {
 	}
 }
 
+// TestHostDecision_BaselineTypoSquat pins the PM decision (2026-10-31, Option
+// 2): faceb00k.com — a distance-2 leet variant of facebook.com that B2's
+// <= 1 edit-distance heuristic intentionally does not flag — is caught by the
+// repo's default URL denylist (the bundled kid-safe baseline), so children are
+// hard-denied regardless of distance heuristics. g00gle.com stays unflagged,
+// asserting B2's false-positive fix is preserved end-to-end.
+func TestHostDecision_BaselineTypoSquat(t *testing.T) {
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+	}
+
+	// Curated baseline entry: hard deny via the denylist mechanism. Baseline
+	// checks are consulted before any detector verdict, so no ask_parent
+	// approval row is ever created for a child on this host.
+	if ok, reason := a.hostDecision(context.Background(), "faceb00k.com"); ok || reason != "baseline" {
+		t.Errorf("hostDecision(\"faceb00k.com\") = (%v, %q); want (false, \"baseline\") — caught by the repo's default URL denylist", ok, reason)
+	}
+
+	// g00gle.com: distance 2 from google.com, not curated, not flagged by the
+	// heuristic — allowed with no reason.
+	if ok, reason := a.hostDecision(context.Background(), "g00gle.com"); !ok || reason != "" {
+		t.Errorf("hostDecision(\"g00gle.com\") = (%v, %q); want (true, \"\") — B2 false-positive fix must stay intact", ok, reason)
+	}
+	// End-to-end gate: hostValidator wraps hostDecision into the typed error
+	// webfetch.Fetch applies to every redirect hop.
+	if err := a.hostValidator(context.Background(), "faceb00k.com"); err == nil {
+		t.Error("hostValidator(\"faceb00k.com\") = nil; want a host-denied error via the default URL denylist")
+	}
+	if err := a.hostValidator(context.Background(), "g00gle.com"); err != nil {
+		t.Errorf("hostValidator(\"g00gle.com\") = %v; want nil — B2 false-positive fix must stay intact", err)
+	}
+}
+
 // TestHostDecision_SuspiciousSiteNotificationRetry verifies B1: if the parent
 // push for a suspicious-site approval fails transiently (so no notification is
 // delivered), a later hostDecision for the same pending row retries it, and a

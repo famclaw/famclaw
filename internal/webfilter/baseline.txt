@@ -3,7 +3,11 @@
 # License: CC0 1.0 Universal (public domain)
 # Refreshed: 2026-10-30 via make re-vendor-baseline
 # Curation: drops 17 mainstream comm/social/news/support hosts that would
-#   false-positive on normal family use. See upstream categories/ for details.
+#   false-positive on normal family use, and adds known typo-squats of
+#   known-good hosts that the <= 1 edit-distance heuristic does not flag
+#   (currently faceb00k.com, a known typo-squat of facebook.com; see the
+#   ADD list in `make re-vendor-baseline`). See upstream categories/ for
+#   details.
 
 8chan.moe
 8ch.net
@@ -44,6 +48,7 @@ endchan.net
 endchan.org
 establishedmen.com
 exitinternational.net
+faceb00k.com
 flingster.com
 gab.ai
 gab.com

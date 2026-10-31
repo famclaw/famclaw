@@ -144,13 +144,14 @@ build-seccheck:
 
 ## re-vendor-baseline: Refresh internal/webfilter/baseline.txt from CC0 Aegis Blocklist
 ## Fetches the Aegis "Core (Always Blocked)" grade, applies FamClaw's curation
-## (drops mainstream-communication / social / news / support hosts), and writes
-## the result. Review the diff before committing.
+## (drops mainstream-communication / social / news / support hosts; adds known
+## typo-squats of known-good hosts the <= 1 edit-distance heuristic does not
+## flag), and writes the result. Review the diff before committing.
 re-vendor-baseline:
 	@echo "Refreshing bundled kid-safe baseline from Aegis Blocklist (CC0)..."
 	@set -euo pipefail; \
 	OUT="internal/webfilter/baseline.txt"; \
-	TMP="$$(mktemp)"; EXCL="$$(mktemp)"; \
+	TMP="$$(mktemp)"; EXCL="$$(mktemp)"; ADD="$$(mktemp)"; \
 	curl -fsSL --max-time 60 \
 	  "https://raw.githubusercontent.com/0xDarkMatter/aegis-blocklist/master/grades/core.txt" \
 	  | awk '!/^#/ && NF {gsub(/[[:space:]]+$$/,""); print tolower($$0)}' | sort -u > "$$TMP"; \
@@ -159,17 +160,22 @@ re-vendor-baseline:
 	  "tellonym.me" "ngl.link" "infowars.com" "thegatewaypundit.com" \
 	  "zerohedge.com" "naturalnews.com" "newswars.com" "beforeitsnews.com" \
 	  "edsupportforum.com" > "$$EXCL"; \
+	printf '%s\n' "faceb00k.com" > "$$ADD"; \
 	{ \
 	  echo "# FamClaw bundled kid-safe baseline (CC0-sourced)"; \
 	  echo "# Source: Aegis Blocklist \"Core (Always Blocked)\" — https://github.com/0xDarkMatter/aegis-blocklist"; \
 	  echo "# License: CC0 1.0 Universal (public domain)"; \
 	  echo "# Refreshed: $$(date -u +%F) via make re-vendor-baseline"; \
 	  echo "# Curation: drops 17 mainstream comm/social/news/support hosts that would"; \
-	  echo "#   false-positive on normal family use. See upstream categories/ for details."; \
+	  echo "#   false-positive on normal family use, and adds known typo-squats of"; \
+	  echo "#   known-good hosts that the <= 1 edit-distance heuristic does not flag"; \
+	  echo "#   (currently faceb00k.com, a known typo-squat of facebook.com; see the"; \
+	  echo "#   ADD list in \`make re-vendor-baseline\`). See upstream categories/ for"; \
+	  echo "#   details."; \
 	  echo ""; \
 	} > "$$OUT.tmp"; \
-	grep -vxF -f "$$EXCL" "$$TMP" >> "$$OUT.tmp"; \
-	rm -f "$$TMP" "$$EXCL"; \
+	{ grep -vxF -f "$$EXCL" "$$TMP"; cat "$$ADD"; } | sort -u >> "$$OUT.tmp"; \
+	rm -f "$$TMP" "$$EXCL" "$$ADD"; \
 	mv "$$OUT.tmp" "$$OUT"; \
 	N=$$(grep -cvE '^(#|$$)' "$$OUT"); \
 	echo "✅ Wrote $$OUT ($$N hosts). Review with: git diff $$OUT"
