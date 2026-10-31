@@ -612,7 +612,10 @@ func (d *DB) RequeueApproval(ctx context.Context, id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
 	return n > 0, nil
 }
 

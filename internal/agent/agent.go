@@ -1480,13 +1480,11 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 // web_search, and the browser paths.
 func (a *Agent) hostGateError(host, reason string) error {
 	switch reason {
-	case "denylist", "baseline":
+	case "denylist", "baseline", "suspicious":
+		// "suspicious" is the distinct kid-safe parent-approval reason class
+		// (a parent approval row is created in the approvals UI); the others
+		// are config blocks. All map to the host-denied typed error.
 		return webfetch.NewHostDeniedError(host, reason)
-	case "suspicious":
-		// Distinct kid-safe message: names the host + "needs parent approval"
-		// so the child/LLM gets actionable feedback (a parent approval row is
-		// created in the approvals UI) instead of a dead-end "not allowed".
-		return webfetch.NewHostDeniedError(host, "suspicious")
 	default:
 		return webfetch.NewHostNotAllowedError(host)
 	}
