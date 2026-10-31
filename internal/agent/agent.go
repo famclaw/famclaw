@@ -97,6 +97,9 @@ type Agent struct {
 	// across goroutines). nil falls back to a fresh instance for tests /
 	// legacy Agent literals.
 	suspiciousDetector *webfilter.SuspiciousSiteDetector
+	// baselineStore is the bundled kid-safe blocklist, injected at
+	// construction so webfilter keeps no package-level global state.
+	baselineStore *webfilter.BaselineStore
 
 	// cache is the tool-result spillover store. When non-nil, large
 	// handleWebFetch (and other large-result) tool replies are written
@@ -372,6 +375,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		userMemory:           um,
 		webFetcher:           webfetch.Fetch,
 		suspiciousDetector:   webfilter.NewSuspiciousSiteDetector(),
+		baselineStore:        webfilter.NewBaselineStore(),
 		cache:                deps.Cache,
 		browserPool:          deps.BrowserPool,
 		msgContext:           deps.MsgContext,
@@ -1358,7 +1362,14 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 		// (a) Bundled kid-safe baseline (CC0-sourced, design §2) — always
 		// active in denylist mode; reason class "baseline" drives the
 		// kid-safe no-leak message (design §3.3).
-		if webfilter.BaselineBlocks(host) {
+		// baselineStore is injected in NewAgent; nil falls back to a fresh
+		// store for legacy Agent literals in tests (same pattern as the
+		// suspiciousDetector fallback below).
+		baselineStore := a.baselineStore
+		if baselineStore == nil {
+			baselineStore = webfilter.NewBaselineStore()
+		}
+		if baselineStore.Blocks(host) {
 			return false, "baseline"
 		}
 		// (b) Parent-maintained deny entries.
@@ -1408,8 +1419,10 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 			verdict = detector.Check(host)
 		}
 		if verdict.Action != "warn_allow" {
+			// Defensive: Check does not currently return "block"; if a future
+			// detector does, surface it as a distinct (non-approval) reason class.
 			if verdict.Action == "block" {
-				return false, "suspicious"
+				return false, "blocked"
 			}
 			// ask_parent: first honour a still-valid parent approval for this
 			// exact host, so a site a parent already OK'd is not re-blocked.
