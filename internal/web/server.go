@@ -574,10 +574,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout).WithReasoningCache(s.reasoningCache)
 	}
 	a, err := agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
-		Skills:         s.skills,
-		Pool:           s.pool,
-		MsgContext:     gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
-		ReasoningCache: s.reasoningCache,
+		Skills:                  s.skills,
+		Pool:                    s.pool,
+		MsgContext:              gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
+		ReasoningCache:          s.reasoningCache,
+		OnNewSuspiciousApproval: s.notifySuspiciousApproval,
 	})
 	if err != nil {
 		log.Printf("[ws] failed to create agent for %s: %v", userCfg.DisplayName, err)
@@ -613,11 +614,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		currentRole, currentAgeGroup := current.Role, current.AgeGroup
 		if currentRole != lastRole || currentAgeGroup != lastAgeGroup {
 			// Recreate agent with the new effective role/ageGroup.
+			// `current` is the fully resolved config (resolveUserRole is the
+			// single source of truth), so all fields are preserved.
 			a, err = agent.NewAgent(current, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
-				Skills:         s.skills,
-				Pool:           s.pool,
-				MsgContext:     gateway.MsgContext{Gateway: "web", ExternalID: current.Name},
-				ReasoningCache: s.reasoningCache,
+				Skills:                  s.skills,
+				Pool:                    s.pool,
+				MsgContext:              gateway.MsgContext{Gateway: "web", ExternalID: current.Name},
+				ReasoningCache:          s.reasoningCache,
+				OnNewSuspiciousApproval: s.notifySuspiciousApproval,
 			})
 			lastRole = currentRole
 			if err != nil {
@@ -1182,6 +1186,30 @@ func (s *Server) spawnBackground(fn func()) {
 		defer s.bgWG.Done()
 		fn()
 	}()
+}
+
+// notifySuspiciousApproval delivers the parent push notification when the
+// agent's hostDecision creates a NEW suspicious-site approval row (a child's
+// web_fetch of a detector-flagged host, internal/agent agent.go). It mirrors
+// the gateway router's createApproval (internal/gateway/router.go): same
+// /decide HMAC-token URL construction and same kid-only parent-skip policy,
+// so a parent fetching a flagged host does not get a self-notification.
+// Notification failures are logged by the caller; the approval row is
+// already durable and visible on the dashboard.
+func (s *Server) notifySuspiciousApproval(ctx context.Context, a *store.Approval) error {
+	if s.notifier == nil {
+		return nil
+	}
+	if u := s.resolveUserRole(ctx, a.UserName); u != nil && u.Role == "parent" {
+		log.Printf("[web] suspicious-site approval %s from parent %s — skipping notify (kid-only policy)", a.ID, a.UserName)
+		return nil
+	}
+	baseURL := s.cfg.Server.BaseURL()
+	approveURL := fmt.Sprintf("%s/decide?id=%s&action=approve&token=%s",
+		baseURL, a.ID, notify.GenerateToken(a.ID, "approve", s.cfg.Server.Secret))
+	denyURL := fmt.Sprintf("%s/decide?id=%s&action=deny&token=%s",
+		baseURL, a.ID, notify.GenerateToken(a.ID, "deny", s.cfg.Server.Secret))
+	return s.notifier.Notify(ctx, a, approveURL, denyURL)
 }
 
 // WaitForBackground blocks until all fire-and-forget goroutines spawned by
