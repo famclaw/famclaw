@@ -335,10 +335,11 @@ The host decision process is implemented in the `hostDecision` function in `inte
 #### Admin Tools
 
 Parent admins can manage web fetch settings via:
-- `/api/tools/web_fetch/allowlist` - View/edit allowlist entries
-- `/api/tools/web_fetch/denylist` - View/edit denylist entries
+- Allowlist: managed conversationally via the LLM admin tools `builtin__allowlist_list` / `builtin__allowlist_add` / `builtin__allowlist_remove` (internal/agent/tools/admin/).
+- Denylist: managed conversationally via the LLM admin tools `builtin__denylist_list` / `builtin__denylist_add` / `builtin__denylist_remove` (internal/agent/tools/admin/).
+- Both lists persist in config.yaml under `tools.web_fetch.url_allowlist` / `url_denylist` and can be read/updated via the `/api/settings` GET/POST endpoint.
 
-These endpoints are only available to users with the "parent" role.
+These are only available to users with the "parent" role.
 
 ### Web Search Security Model
 
