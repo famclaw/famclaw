@@ -234,16 +234,20 @@ func hasHighEntropySingleLabel(host string) bool {
 
 // isTypoSquat checks if the host is a typo-squatting attempt.
 //
-// Intentional tradeoff (kid fail-safe): any host within Levenshtein distance
-// <= 2 of a known-good host (e.g. "gogle.com" vs "google.com") is flagged.
-// In agent mode that routes to ask_parent - a parent-approval row is created
-// and the fetch is held for a human - rather than a hard block. A near-typo
-// of a reputable site is therefore surfaced to a parent by design instead of
-// silently allowed. The per-fetch cost (an approval lookup + upsert) is
-// bounded by the 24h approval expiry, so repeated lookups stop mattering
-// after one day. This stays acceptable as the known-host list grows; if it
-// ever does not, the remedy is to drop the known-host list (or widen the
-// distance bound) - not to special-case the cost here. No functional change.
+// B2 tightened the kid fail-safe: any host within Levenshtein distance
+// <= 1 of a known-good host (e.g. "googl.com" vs "google.com") is now
+// flagged (previously <= 2). The single-edit bound keeps real typo-squats
+// such as "gogle.com" / "facebok.com" in the ask_parent path while dropping
+// the two-edit surface that auto-blocked legitimate near-misses ("g00gle.com")
+// for up to 24 h. The TLD-shape guard below still applies. A distance-2 leet
+// variant such as "faceb00k.com" is consequently no longer auto-flagged; the
+// fail-safe for it is the parent URLDenylist, which hostDecision consults
+// before any detector verdict.
+//
+// In agent mode a flagged host routes to ask_parent - a parent-approval row is
+// created and the fetch is held for a human - rather than a hard block. The
+// per-fetch cost (an approval lookup + upsert) is bounded by the 24h approval
+// expiry, so repeated lookups stop mattering after one day.
 func isTypoSquat(host string) bool {
 	// Early return for known good hosts
 	for _, knownHost := range knownGoodHosts {
@@ -252,10 +256,10 @@ func isTypoSquat(host string) bool {
 		}
 	}
 
-	// Check for similarity with known good hosts (distance ≤ 2)
+	// Check for similarity with known good hosts (distance ≤ 1)
 	for _, knownHost := range knownGoodHosts {
 		if isSimilar(host, knownHost) {
-			// Tighten so Levenshtein ≤ 2 only flags when TLD matches AND candidate ≠ known host
+			// Tighten so Levenshtein ≤ 1 only flags when TLD matches AND candidate ≠ known host
 			hostParts := strings.Split(host, ".")
 			knownHostParts := strings.Split(knownHost, ".")
 
@@ -271,7 +275,7 @@ func isTypoSquat(host string) bool {
 	return false
 }
 
-// isSimilar checks if two hosts are similar (with edit distance ≤ 2).
+// isSimilar checks if two hosts are similar (with edit distance ≤ 1).
 func isSimilar(host1, host2 string) bool {
 	// Convert to lowercase for comparison
 	host1 = strings.ToLower(host1)
@@ -279,7 +283,7 @@ func isSimilar(host1, host2 string) bool {
 
 	// Calculate edit distance (simplified)
 	distance := editDistance(host1, host2)
-	return distance <= 2
+	return distance <= 1
 }
 
 // editDistance calculates the Levenshtein distance between two strings.
@@ -289,11 +293,11 @@ func editDistance(s1, s2 string) int {
 	r2 := []rune(s2)
 
 	// Early exit: Levenshtein distance >= |len(r1) - len(r2)|. The sole caller
-	// (isSimilar) only checks distance <= 2, so a length gap greater than 2
+	// (isSimilar) only checks distance <= 1, so a length gap greater than 1
 	// proves the hosts are not similar and lets us skip the O(n*m) matrix.
-	if d := len(r1) - len(r2); d > 2 {
+	if d := len(r1) - len(r2); d > 1 {
 		return d
-	} else if d < -2 {
+	} else if d < -1 {
 		return -d
 	}
 
