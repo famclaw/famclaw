@@ -294,6 +294,15 @@ func editDistance(s1, s2 string) int {
 	r1 := []rune(s1)
 	r2 := []rune(s2)
 
+	// Early exit: Levenshtein distance >= |len(r1) - len(r2)|. The sole caller
+	// (isSimilar) only checks distance <= 2, so a length gap greater than 2
+	// proves the hosts are not similar and lets us skip the O(n*m) matrix.
+	if d := len(r1) - len(r2); d > 2 {
+		return d
+	} else if d < -2 {
+		return -d
+	}
+
 	// Create matrix
 	m := make([][]int, len(r1)+1)
 	for i := range m {
