@@ -596,6 +596,26 @@ func (d *DB) UpsertApproval(ctx context.Context, a *Approval) (bool, error) {
 	return err == nil, err
 }
 
+// RequeueApproval resets a previously-approved row to a fresh pending state
+// with a new 24h window, clearing the prior decision. It is used when a
+// granted suspicious-site approval has expired and the host is requested
+// again, so the row re-appears in PendingApprovals() and the parent is
+// prompted to re-decide instead of the host staying silently blocked.
+// Only rows currently 'approved' are requeued; an explicit denial is left
+// as-is so the parent is not re-nagged.
+func (d *DB) RequeueApproval(ctx context.Context, id string) (bool, error) {
+	res, err := d.sql.ExecContext(ctx, `
+		UPDATE approvals SET status = 'pending', decided_by = '', decision_note = '',
+			expires_at = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND status = 'approved'`,
+		time.Now().UTC().Add(24*time.Hour), id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 func (d *DB) GetApproval(ctx context.Context, id string) (*Approval, error) {
 	a := &Approval{}
 	err := d.sql.QueryRowContext(ctx, `
