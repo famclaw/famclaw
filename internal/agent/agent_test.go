@@ -996,6 +996,101 @@ func TestHostDecision_SuspiciousSiteNotificationRetry(t *testing.T) {
 	}
 }
 
+// TestHostDecision_SuspiciousSiteRequeueReNotify verifies PR #423 B1
+// end-to-end: when a previously-approved suspicious-site grant EXPIRES and the
+// host is requested again, RequeueApproval resets the row to a fresh pending
+// window AND the parent push is retried for the new decision — even though
+// the earlier (now-expired) grant's push had already succeeded and was
+// memoized in suspiciousNotified. Without the memo clear, the requeued row
+// would sit pending with no parent push.
+func TestHostDecision_SuspiciousSiteRequeueReNotify(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := context.Background()
+	approvalID := proposalApprovalID("teo", "suspicious_site", "googl.com")
+	notifyCalls := 0
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+		onNewSuspiciousApproval: func(context.Context, *store.Approval) error {
+			notifyCalls++
+			return nil
+		},
+	}
+
+	// 1st encounter: "googl.com" is a distance-1 typo-squat of google.com
+	// -> ask_parent. The pending row is created and the parent push succeeds,
+	// so the per-Agent memo records a delivered push for this approval ID.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("1st hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	if notifyCalls != 1 {
+		t.Fatalf("after 1st encounter notifyCalls = %d, want 1", notifyCalls)
+	}
+
+	// Parent approves the host.
+	if err := db.DecideApproval(approvalID, "approved", "parent"); err != nil {
+		t.Fatalf("decide approval: %v", err)
+	}
+
+	// Grant still valid: allowed without touching the notification path.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); !ok || reason != "" {
+		t.Fatalf("hostDecision(googl.com) after approval = (%v, %q), want allowed", ok, reason)
+	}
+	if notifyCalls != 1 {
+		t.Fatalf("after valid grant notifyCalls = %d, want 1 (no re-notify)", notifyCalls)
+	}
+
+	// Let the granted window EXPIRE: push expires_at into the past.
+	if _, err := db.SQL().Exec(
+		"UPDATE approvals SET expires_at = ? WHERE id = ?",
+		time.Now().UTC().Add(-time.Hour), approvalID,
+	); err != nil {
+		t.Fatalf("expire approval: %v", err)
+	}
+
+	// Expired grant re-encounter: the row is requeued to a fresh pending
+	// window and the parent push is RETRIED despite the earlier successful
+	// push being memoized — this is the B1 regression the fix addresses.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("4th hostDecision(googl.com) = (%v, %q), want blocked/suspicious (requeued)", ok, reason)
+	}
+	if notifyCalls != 2 {
+		t.Fatalf("after expired re-encounter notifyCalls = %d, want 2 (requeue retried parent push)", notifyCalls)
+	}
+
+	// The requeued row is pending again with a fresh future window.
+	apr, err := db.GetApproval(ctx, approvalID)
+	if err != nil || apr == nil {
+		t.Fatalf("get requeued approval: apr=%+v err=%v", apr, err)
+	}
+	if apr.Status != "pending" {
+		t.Errorf("requeued approval status = %q, want pending", apr.Status)
+	}
+	if !time.Now().Before(apr.ExpiresAt) {
+		t.Errorf("requeued approval expires_at = %v, want a fresh (future) window", apr.ExpiresAt)
+	}
+
+	// Re-encounter of the requeued row: the retried push is now memoized
+	// again, so no double-notify within the same Agent lifetime.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("5th hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	if notifyCalls != 2 {
+		t.Fatalf("after re-encounter of requeued row notifyCalls = %d, want 2 (no double-notify)", notifyCalls)
+	}
+}
+
 // TestHostDecision_IPLiteralRanges verifies that local (private/loopback/
 // link-local) IP literals pass the gate by default under the home-LAN model
 // (design §1.5), while raw PUBLIC IP literals are routed to the parent-
