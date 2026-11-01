@@ -603,6 +603,19 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 
 	pipeline := agentcore.FamilyPipeline(deps)
 
+	// Fix 1 — retry-intent directive. When the user explicitly asks to "try
+	// again"/"search again" and a web_search failure-claim sits in the trailing
+	// history, append a point-in-time system directive so the model is forced
+	// to run a FRESH search this turn instead of reusing the prior failed
+	// answer. Gated on all three conditions so it never fires on unrelated
+	// "try X" messages or when search isn't actually available this turn. The
+	// system role is used so StageCompress pins it (system messages are never
+	// dropped) and it reaches the wire as the last instruction the model sees.
+	if isRetryIntent(userMessage) && webSearchAvailable(turn) && trailingHistoryHasFailureClaim(history) {
+		log.Printf("[agent][%s] stale-search retry detected; injecting fresh-search directive", a.user.Name)
+		turn.Messages = append(turn.Messages, agentcore.Message{Role: "system", Content: freshSearchDirective})
+	}
+
 	err := pipeline.Run(ctx, turn)
 
 	// Handle policy blocks (not a real error — just a non-allow decision)
@@ -622,28 +635,36 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		return nil, err
 	}
 
-	if a.evaluator != nil {
-		final, allowed, gateErr := EvaluateAndApply(
-			ctx, a.evaluator, turn.Output,
-			policy.UserInput{Role: a.user.Role, AgeGroup: a.user.AgeGroup},
-			"",
-		)
-		if gateErr != nil || !allowed {
-			if gateErr != nil {
-				log.Printf("[agent][%s] output gate error (treating as block): %v", a.user.Name, gateErr)
+	// Output policy gate — evaluate the response after tool loop completes.
+	// Extracted to a.gateOutput so the fresh-search retry below can re-run the
+	// gate against a second attempt without duplicating the gate logic.
+	if resp, done := a.gateOutput(ctx, turn); done {
+		return resp, nil
+	}
+
+	// Fix 3 — cross-turn near-duplicate guard. If web_search was available and
+	// the model STILL claimed it couldn't check/search without recording a real
+	// web_search result this turn, re-prompt ONCE with the fresh-search
+	// directive. Bounded to one retry; a second failed attempt is delivered
+	// as-is (logged) rather than looped. This backstop also covers the very
+	// first turn, where there is no prior "try again" intent to trigger Fix 1.
+	if a.shouldFreshSearchRetry(turn) {
+		prevOutput, prevTokens := turn.Output, bufferedTokens
+		turn.Messages = append(turn.Messages, agentcore.Message{Role: "system", Content: freshSearchDirective})
+		turn.ToolCalls = nil
+		bufferedTokens = nil
+		log.Printf("[agent][%s] fresh-search re-prompt (retry 1/1): model claimed no search ability without calling web_search this turn", a.user.Name)
+		if err2 := pipeline.Run(ctx, turn); err2 == nil {
+			if resp, done := a.gateOutput(ctx, turn); done {
+				return resp, nil
 			}
-			blocked := "I'm unable to send this response right now."
-			if dbErr := a.db.SaveMessage(a.convID, a.user.Name, "assistant", blocked, string(turn.Category), "block", a.gatewayForSave()); dbErr != nil {
-				log.Printf("[agent][%s] save output-gated response: %v", a.user.Name, dbErr)
-			}
-			return &Response{
-				Content:      blocked,
-				PolicyAction: "block",
-				Category:     string(turn.Category),
-			}, nil
+		} else {
+			// Preserve the first attempt's output rather than surfacing the
+			// failed second one (the gate above already handles allowed re-runs;
+			// a policy-block error on the retry just keeps the first output).
+			log.Printf("[agent][%s] fresh-search retry pipeline error: %v (keeping first-attempt output)", a.user.Name, err2)
+			turn.Output, bufferedTokens = prevOutput, prevTokens
 		}
-		turn.Output = final
-		turn.Output = sanitizeModelResponse(turn.Output)
 	}
 
 	// Drain buffered tokens after pipeline completes.
