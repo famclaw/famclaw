@@ -92,24 +92,23 @@ type Agent struct {
 	webFetcher func(ctx context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error)
 
 	// suspiciousDetector runs the W4 suspicious-site heuristics in
-	// hostDecision. Set once in NewAgent (shared, stateless — the detector
-	// holds no per-request state, so a single instance is safe to reuse
-	// across goroutines). nil falls back to a fresh instance for tests /
-	// legacy Agent literals.
+	// hostDecision. Shared and stateless — the detector holds no
+	// per-request state, so a single instance is safe to reuse across
+	// goroutines. Nil until suspiciousApprovalOnce allocates it on the
+	// first hostDecision call (single allocation point; NewAgent does not
+	// pre-allocate it).
 	suspiciousDetector *webfilter.SuspiciousSiteDetector
-	// suspiciousApprovalOnce guards the nil-fallback allocation of
-	// suspiciousDetector for legacy Agent literals (tests). NewAgent always
-	// sets suspiciousDetector, so in production this Once never fires and
-	// the field is written exactly once, at construction.
+	// suspiciousApprovalOnce is the single allocation point for
+	// suspiciousDetector. Per-Agent, so webfilter keeps no package-level
+	// global state.
 	suspiciousApprovalOnce sync.Once
-	// baselineStore is the bundled kid-safe blocklist, injected at
-	// construction so webfilter keeps no package-level global state.
+	// baselineStore is the bundled kid-safe blocklist. Per-Agent, so
+	// webfilter keeps no package-level global state. Nil until
+	// baselineStoreOnce allocates it on the first denylist-mode
+	// hostDecision call (single allocation point; NewAgent does not
+	// pre-allocate it).
 	baselineStore *webfilter.BaselineStore
-	// baselineStoreOnce guards the nil-fallback allocation of baselineStore
-	// for legacy Agent literals (tests). NewAgent always sets baselineStore,
-	// so in production this Once never fires and the field is written
-	// exactly once, at construction. Per-Agent, so webfilter keeps no
-	// package-level global state.
+	// baselineStoreOnce is the single allocation point for baselineStore.
 	baselineStoreOnce sync.Once
 	// onNewSuspiciousApproval — see AgentDeps.OnNewSuspiciousApproval.
 	// Set once in NewAgent; nil disables notification.
@@ -409,8 +408,6 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		todoStore:               ts,
 		userMemory:              um,
 		webFetcher:              webfetch.Fetch,
-		suspiciousDetector:      webfilter.NewSuspiciousSiteDetector(),
-		baselineStore:           webfilter.NewBaselineStore(),
 		onNewSuspiciousApproval: deps.OnNewSuspiciousApproval,
 		suspiciousNotified:      map[string]bool{},
 		cache:                   deps.Cache,
@@ -1433,12 +1430,13 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 		// (a) Bundled kid-safe baseline (CC0-sourced, design §2) — always
 		// active in denylist mode; reason class "baseline" drives the
 		// kid-safe no-leak message (design §3.3).
-		// baselineStore is injected in NewAgent; in legacy test Agents that
-		// omit the field, allocate it once via sync.Once. Call Do unconditionally
-		// (no preceding `== nil` pointer read) to avoid a data race with a
-		// concurrent Do writer; this matches the suspiciousDetector fallback
-		// below in this same function. sync.Once provides the happens-before
-		// edge for the subsequent read.
+		// baselineStore is lazily allocated exactly once here (the single
+		// allocation point; NewAgent does not pre-allocate it). Call Do
+		// unconditionally — no preceding `== nil` pointer read — because a
+		// bare unsynchronized read racing a concurrent Do writer would be a
+		// data race; this matches the suspiciousDetector allocation below in
+		// this same function. sync.Once provides the happens-before edge for
+		// the subsequent read.
 		a.baselineStoreOnce.Do(func() { a.baselineStore = webfilter.NewBaselineStore() })
 		baselineStore := a.baselineStore
 		if baselineStore.Blocks(host) {
@@ -1484,9 +1482,11 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 			}
 			verdict = webfilter.Verdict{Action: "ask_parent", Reason: "public IP literal host"}
 		} else {
-			// Fallback for legacy Agent literals (tests): allocate once
-			// instead of a fresh detector per hostDecision call. NewAgent
-			// always sets the field, so in production this Do is a no-op.
+			// suspiciousDetector is lazily allocated exactly once here (the
+			// single allocation point; NewAgent does not pre-allocate it):
+			// one shared instance per Agent instead of a fresh detector per
+			// hostDecision call. Do is unconditional — no `== nil` read
+			// racing a concurrent Do writer.
 			a.suspiciousApprovalOnce.Do(func() { a.suspiciousDetector = webfilter.NewSuspiciousSiteDetector() })
 			verdict = a.suspiciousDetector.Check(host)
 		}
