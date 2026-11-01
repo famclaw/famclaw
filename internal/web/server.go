@@ -1148,6 +1148,24 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// decideURLs builds the one-click approve/deny /decide links for an
+// approval row, shared by requestApproval and notifySuspiciousApproval so
+// both web-server flows deliver byte-identical URLs for the same approval.
+// The base is cfg.Server.BaseURL() (internal/config), derived from the
+// configured mdns_name (".local") and server port — the same
+// local-network host requestApproval previously hardcoded inline;
+// BaseURL() additionally drops the redundant ":80" suffix on the default
+// port. It mirrors the gateway router's createApproval
+// (internal/gateway/router.go), which builds /decide links the same way.
+func (s *Server) decideURLs(a *store.Approval) (approve, deny string) {
+	baseURL := s.cfg.Server.BaseURL()
+	approve = fmt.Sprintf("%s/decide?id=%s&action=approve&token=%s",
+		baseURL, a.ID, notify.GenerateToken(a.ID, "approve", s.cfg.Server.Secret))
+	deny = fmt.Sprintf("%s/decide?id=%s&action=deny&token=%s",
+		baseURL, a.ID, notify.GenerateToken(a.ID, "deny", s.cfg.Server.Secret))
+	return approve, deny
+}
+
 func (s *Server) requestApproval(user *config.UserConfig, category, queryText string) {
 	import_approval_id := agent.ApprovalID(user.Name, category)
 	a := &store.Approval{
@@ -1164,12 +1182,7 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 		return
 	}
 	if isNew && s.notifier != nil {
-		approveURL := fmt.Sprintf("http://%s.local:%d/decide?id=%s&action=approve&token=%s",
-			s.cfg.Server.MDNSName, s.cfg.Server.Port, a.ID,
-			notify.GenerateToken(a.ID, "approve", s.cfg.Server.Secret))
-		denyURL := fmt.Sprintf("http://%s.local:%d/decide?id=%s&action=deny&token=%s",
-			s.cfg.Server.MDNSName, s.cfg.Server.Port, a.ID,
-			notify.GenerateToken(a.ID, "deny", s.cfg.Server.Secret))
+		approveURL, denyURL := s.decideURLs(a)
 		s.notifier.Notify(context.Background(), a, approveURL, denyURL)
 	}
 }
@@ -1190,9 +1203,11 @@ func (s *Server) spawnBackground(fn func()) {
 
 // notifySuspiciousApproval delivers the parent push notification when the
 // agent's hostDecision creates a NEW suspicious-site approval row (a child's
-// web_fetch of a detector-flagged host, internal/agent agent.go). It mirrors
-// the gateway router's createApproval (internal/gateway/router.go): same
-// /decide HMAC-token URL construction and same kid-only parent-skip policy,
+// web_fetch of a detector-flagged host, internal/agent agent.go). It reuses
+// the shared decideURLs helper — the same /decide HMAC-token URLs
+// requestApproval delivers (local-network-reachable BaseURL, see
+// decideURLs) — and mirrors the gateway router's createApproval
+// (internal/gateway/router.go) with the same kid-only parent-skip policy,
 // so a parent fetching a flagged host does not get a self-notification.
 // Notification failures are logged by the caller; the approval row is
 // already durable and visible on the dashboard.
@@ -1204,11 +1219,7 @@ func (s *Server) notifySuspiciousApproval(ctx context.Context, a *store.Approval
 		log.Printf("[web] suspicious-site approval %s from parent %s — skipping notify (kid-only policy)", a.ID, a.UserName)
 		return nil
 	}
-	baseURL := s.cfg.Server.BaseURL()
-	approveURL := fmt.Sprintf("%s/decide?id=%s&action=approve&token=%s",
-		baseURL, a.ID, notify.GenerateToken(a.ID, "approve", s.cfg.Server.Secret))
-	denyURL := fmt.Sprintf("%s/decide?id=%s&action=deny&token=%s",
-		baseURL, a.ID, notify.GenerateToken(a.ID, "deny", s.cfg.Server.Secret))
+	approveURL, denyURL := s.decideURLs(a)
 	return s.notifier.Notify(ctx, a, approveURL, denyURL)
 }
 
