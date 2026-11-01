@@ -1492,6 +1492,17 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 					// existing row, so it cannot re-surface it.)
 					if _, uerr := a.db.RequeueApproval(ctx, approvalID); uerr != nil {
 						log.Printf("[agent] failed to requeue expired suspicious-site approval %q: %v", approvalID, uerr)
+					} else {
+						// The requeued window is a NEW decision: the earlier
+						// successful push referred to the expired grant, so clear
+						// the per-Agent memo and let the helper retry the parent
+						// push (B1).
+						a.clearSuspiciousNotified(approvalID)
+						approval := &store.Approval{
+							ID: approvalID, UserName: a.user.Name, UserDisplay: a.user.DisplayName,
+							AgeGroup: a.user.AgeGroup, Category: "suspicious_site", QueryText: host,
+						}
+						a.notifySuspiciousApprovalIfNeeded(ctx, approvalID, approval)
 					}
 				} else {
 					// First request, or a re-encounter with an existing row. A prior
@@ -1536,6 +1547,21 @@ func (a *Agent) markSuspiciousNotified(id string) {
 		a.suspiciousNotified = make(map[string]bool)
 	}
 	a.suspiciousNotified[id] = true
+}
+
+// clearSuspiciousNotified removes the successful-push memo for one approval
+// ID so the next re-encounter may re-notify. It mirrors
+// markSuspiciousNotified: called from the same single call site, after
+// RequeueApproval has reset an expired grant to a fresh pending window,
+// because the earlier push referred to the old (now expired) grant and the
+// parent must be pinged again for the new decision (PR #423 B1).
+func (a *Agent) clearSuspiciousNotified(id string) {
+	a.suspiciousNotifyMu.Lock()
+	defer a.suspiciousNotifyMu.Unlock()
+	if a.suspiciousNotified == nil {
+		a.suspiciousNotified = make(map[string]bool)
+	}
+	delete(a.suspiciousNotified, id)
 }
 
 // notifySuspiciousApprovalIfNeeded delivers the parent push for a suspicious-site
