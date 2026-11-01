@@ -1399,12 +1399,13 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 		// (a) Bundled kid-safe baseline (CC0-sourced, design §2) — always
 		// active in denylist mode; reason class "baseline" drives the
 		// kid-safe no-leak message (design §3.3).
-		// baselineStore is injected in NewAgent; nil falls back to a
-		// Once-guarded store for legacy Agent literals in tests (same
-		// pattern as the suspiciousDetector fallback below).
-		if a.baselineStore == nil {
-			a.baselineStoreOnce.Do(func() { a.baselineStore = webfilter.NewBaselineStore() })
-		}
+		// baselineStore is injected in NewAgent; in legacy test Agents that
+		// omit the field, allocate it once via sync.Once. Call Do unconditionally
+		// (no preceding `== nil` pointer read) to avoid a data race with a
+		// concurrent Do writer; this matches the suspiciousDetector fallback
+		// below in this same function. sync.Once provides the happens-before
+		// edge for the subsequent read.
+		a.baselineStoreOnce.Do(func() { a.baselineStore = webfilter.NewBaselineStore() })
 		baselineStore := a.baselineStore
 		if baselineStore.Blocks(host) {
 			return false, "baseline"
