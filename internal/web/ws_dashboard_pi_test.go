@@ -87,11 +87,10 @@ func TestDashboardUpdatePIIChildScoping(t *testing.T) {
 	// approval decision): tracked on bgWG, and wait for it to finish before
 	// reading so both sockets have their frame on the wire.
 	done := make(chan struct{})
-	s.bgWG.Add(1)
-	go func() {
+	s.spawnBackground(func() {
 		s.broadcastDashboardUpdate(context.Background())
 		close(done)
-	}()
+	})
 
 	// readDashboardUpdate reads frames until it finds the dashboard_update
 	// frame (skipping the initial chat-session frame) and returns its payload.
