@@ -69,7 +69,13 @@ func hasSearchFailureClaim(text string) bool {
 		"i'm unable to search", "i am unable to search", "i couldn't search", "i can't search",
 		"i'm not able to search", "i don't have the tool", "there's no tool", "i don't have a tool",
 		"i can't look that up", "i cannot look that up", "i'm unable to look",
-		"without being able to", "not be able to check", "not be able to search",
+		// Search-specific inability markers. A bare "without being able to"
+		// false-positives on generic refusals ("I can't do that without
+		// being able to access the database"), so each variant must
+		// reference the search/lookup/check ability itself.
+		"without being able to search", "without being able to check", "without being able to look",
+		// "not be able to" variants — already tied to the search verbs
+		"not be able to check", "not be able to search",
 	}
 	for _, mk := range markers {
 		if strings.Contains(lower, mk) {

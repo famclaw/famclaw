@@ -76,6 +76,9 @@ func TestHasSearchFailureClaim(t *testing.T) {
 		"I searched and found no results for that query.", // legitimate: a search WAS recorded
 		"Here is the answer you asked for.",
 		"I can help with that — let me look it up.",
+		// Review case: a generic refusal that is NOT about search must not
+		// trigger the stale-search retry, even when web_search is available.
+		"I can't do that without being able to access the database.",
 	}
 	for _, in := range negatives {
 		if hasSearchFailureClaim(in) {
@@ -338,5 +341,72 @@ func TestStaleSearchFailRecoverRetryEndToEnd(t *testing.T) {
 	// A REAL web_search was executed against the offline endpoint.
 	if got := atomic.LoadInt32(&searxngHits); got != 1 {
 		t.Errorf("SearXNG hits = %d, want 1 (a fresh search was actually run)", got)
+	}
+}
+
+// TestToollessRetryClearsStaleToolMeta is the F1 regression test: when a
+// reused Turn is re-run for a tool-less retry (the fresh-search re-prompt in
+// agent.go), the LLM stage must clear the stale pending_tool_calls +
+// llm_messages left over from the previous attempt, otherwise
+// StageToolLoop re-executes the old batch against the new, tool-less answer.
+// This test FAILS on a version without the turn.DeleteMeta clear in the
+// no-tool-calls branch of agentcore/stage_llm_call.go and PASSES with it.
+func TestToollessRetryClearsStaleToolMeta(t *testing.T) {
+	// Script: [0] the model issues a web_search tool call (first attempt),
+	// [1] the model answers with a plain tool-less response (retry).
+	mock := &staleSearchChatter{script: []*llm.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:       "call_f1_1",
+				Type:     "function",
+				Function: llm.ToolCallFunction{Name: "web_search", Arguments: map[string]any{"query": "weather today"}},
+			}},
+		},
+		{Role: "assistant", Content: "Here's the answer from the fresh tool-less run."},
+	}}
+
+	stage := agentcore.NewStageLLMCall(agentcore.LLMCallDeps{
+		ClientFactory: func(*agentcore.Turn) llm.Chatter { return mock },
+		Temperature:   0.0,
+		MaxTokens:     512,
+	})
+
+	// A single Turn object, reused across both stage runs — exactly what the
+	// agent's fresh-search re-prompt does.
+	turn := &agentcore.Turn{
+		User:     &config.UserConfig{Name: "parent", Role: "parent"},
+		Tools:    []agentcore.Tool{{Name: "builtin__web_search"}},
+		Messages: []agentcore.Message{{Role: "user", Content: "what's the weather?"}},
+	}
+
+	// First attempt: the response carries a tool call, so the stage stores
+	// the tool-loop handoff state.
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatalf("first stage run: %v", err)
+	}
+	if _, ok := turn.GetMeta("pending_tool_calls"); !ok {
+		t.Fatal("pending_tool_calls should be set after a response with tool calls")
+	}
+	if _, ok := turn.GetMeta("llm_messages"); !ok {
+		t.Fatal("llm_messages should be set after a response with tool calls")
+	}
+
+	// Tool-less retry on the same reused Turn: the stage must clear the
+	// stale tool-loop state so StageToolLoop does not re-inject the batch.
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatalf("tool-less retry stage run: %v", err)
+	}
+	if _, ok := turn.GetMeta("pending_tool_calls"); ok {
+		t.Error("pending_tool_calls should be cleared on a tool-less retry (stale batch would be re-injected)")
+	}
+	if _, ok := turn.GetMeta("llm_messages"); ok {
+		t.Error("llm_messages should be cleared on a tool-less retry (stale message list would be re-injected)")
+	}
+	if !strings.Contains(turn.Output, "fresh tool-less run") {
+		t.Errorf("turn.Output = %q, want the tool-less retry answer", turn.Output)
+	}
+	if mock.calls != 2 {
+		t.Errorf("ChatWithTools calls = %d, want 2 (first attempt + tool-less retry)", mock.calls)
 	}
 }
