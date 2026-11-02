@@ -767,7 +767,7 @@ func (d *DB) GetConversationHistory(convID string, limit int) ([]*Message, error
 	rows, err := d.sql.Query(`
 		SELECT id, conversation_id, role, content, gateway, COALESCE(category,''), COALESCE(policy_action,''), created_at
 		FROM messages WHERE conversation_id=?
-		ORDER BY created_at DESC LIMIT ?`, convID, limit)
+		ORDER BY created_at DESC, id DESC LIMIT ?`, convID, limit)
 	if err != nil {
 		return nil, err
 	}
