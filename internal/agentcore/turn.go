@@ -71,3 +71,12 @@ func (t *Turn) GetMeta(key string) (any, bool) {
 	v, ok := t.Metadata[key]
 	return v, ok
 }
+
+// DeleteMeta removes a value from the turn's metadata map. It is a no-op when
+// the key is absent (delete on a nil map is safe). Stages use it to clear
+// handoff state — the tool-loop keys pending_tool_calls and llm_messages — so
+// a Turn reused by a retry does not re-execute a batch from an earlier
+// attempt.
+func (t *Turn) DeleteMeta(key string) {
+	delete(t.Metadata, key)
+}

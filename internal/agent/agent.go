@@ -659,9 +659,14 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 				return resp, nil
 			}
 		} else {
-			// Preserve the first attempt's output rather than surfacing the
-			// failed second one (the gate above already handles allowed re-runs;
-			// a policy-block error on the retry just keeps the first output).
+			// This branch runs only when attempt 2's pipeline.Run itself errored
+			// (e.g. context canceled, LLM timeout) — not when the output gate
+			// blocked it. The LLM never produced a new answer, so restore the
+			// first attempt's output and fall through to deliver that result.
+			// A gate-block on attempt 2 is the separate `err2 == nil` path above:
+			// gateOutput returns done=true and we return the generic block
+			// response, intentionally discarding attempt 1's allowed output (a
+			// blocked retry supersedes the earlier answer).
 			log.Printf("[agent][%s] fresh-search retry pipeline error: %v (keeping first-attempt output)", a.user.Name, err2)
 			turn.Output, bufferedTokens = prevOutput, prevTokens
 		}
