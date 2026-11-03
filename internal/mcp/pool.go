@@ -434,9 +434,14 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 
 	// Discard the connection for a future call, but preserve the original
 	// error: the server may have applied this call before its reply was lost.
+	// Retain the last discovered tools while disconnected so callers can still
+	// discover reconciliation tools. Start refreshes this snapshot on a
+	// successful tools/list; it is not evidence that the server is reachable.
+	tools := mc.client.Tools()
 	mc.client.Stop()
 	mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
 	mc.client.env = mc.env
+	mc.client.tools = tools
 	return nil, &toolCallError{cause: err}
 }
 
