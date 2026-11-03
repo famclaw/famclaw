@@ -264,8 +264,8 @@ func TestAgentChatPoolNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	if resp.Content != "Let me check..." {
-		t.Errorf("content = %q", resp.Content)
+	if !strings.Contains(resp.Content, "was not run") {
+		t.Errorf("content must identify the unexecuted call: %q", resp.Content)
 	}
 }
 
@@ -1916,24 +1916,13 @@ func TestBuildMessages_UserMemoryScoped(t *testing.T) {
 	}
 }
 
-// TestWebSearchError verifies that when the backend is unreachable, the
-// error is translated into an honest, human-readable message returned as
-// the RESULT STRING with a nil error — NOT as a tool error that the LLM
-// might ignore. This is critical: the tool loop wraps non-nil errors as
-// "Error: <msg>", which the LLM can treat as a system failure and
-// hallucinate around. A result string with nil error is treated as a
-// normal tool output.
-//
-// The result is intentionally a NEUTRAL marker (not a pre-written English
-// sentence addressed to the user) so the behavioural rule in components.go
-// can instruct the model to convey the unavailability in the family
-// member's preferred language.
+// TestWebSearchError checks static markers and retained failure causes.
 func TestWebSearchError(t *testing.T) {
 	t.Run("unavailable error becomes honest result string", func(t *testing.T) {
 		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
 		msg, err := webSearchError(wrapped, "http://localhost:8888")
-		if err != nil {
-			t.Fatalf("expected nil error for ErrUnavailable, got %v", err)
+		if err == nil {
+			t.Fatal("expected classified failure to retain its cause")
 		}
 		if !strings.Contains(msg, "unavailable") {
 			t.Errorf("result should mark search as unavailable, got: %q", msg)
@@ -1946,8 +1935,8 @@ func TestWebSearchError(t *testing.T) {
 		// receive an English error regardless of their language preference).
 		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
 		msg, err := webSearchError(wrapped, "http://localhost:8888")
-		if err != nil {
-			t.Fatalf("expected nil error, got %v", err)
+		if err == nil {
+			t.Fatal("expected classified failure to retain its cause")
 		}
 		// A neutral marker: no first-person "I", no second-person "you", no
 		// imperative verbs directed at the user.
@@ -1964,8 +1953,8 @@ func TestWebSearchError(t *testing.T) {
 		// message the model speaks to the family.
 		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
 		msg, err := webSearchError(wrapped, "http://internal.corp:8888/searx")
-		if err != nil {
-			t.Fatalf("expected nil error, got %v", err)
+		if err == nil {
+			t.Fatal("expected classified failure to retain its cause")
 		}
 		if strings.Contains(msg, "internal.corp") {
 			t.Errorf("user-facing message must not contain the raw endpoint: %q", msg)
@@ -1981,8 +1970,8 @@ func TestWebSearchError(t *testing.T) {
 	t.Run("host-not-allowed error translated to sanitized result", func(t *testing.T) {
 		hostErr := webfetch.NewHostNotAllowedError("evil.com")
 		msg, err := webSearchError(hostErr, "http://localhost:8888")
-		if err != nil {
-			t.Fatalf("host-not-allowed should return nil error (sanitized result), got %v", err)
+		if err == nil {
+			t.Fatal("expected classified failure to retain its cause")
 		}
 		if msg == "" {
 			t.Fatal("host-not-allowed should return a sanitized result string, got empty")
@@ -2016,8 +2005,8 @@ func TestWebSearchError(t *testing.T) {
 			t.Fatal("expected ProviderFor to fail for tavily without a key")
 		}
 		msg, err := webSearchError(provErr, "")
-		if err != nil {
-			t.Fatalf("expected nil error (sanitized result), got %v", err)
+		if err == nil {
+			t.Fatal("expected classified failure to retain its cause")
 		}
 		if msg != "web_search: provider not configured" {
 			t.Errorf("msg = %q, want the provider-not-configured marker", msg)
@@ -2030,8 +2019,8 @@ func TestWebSearchError(t *testing.T) {
 			t.Fatal("expected ProviderFor to fail for an unknown provider name")
 		}
 		msg, err := webSearchError(provErr, "http://localhost:8888")
-		if err != nil {
-			t.Fatalf("expected nil error (sanitized result), got %v", err)
+		if err == nil {
+			t.Fatal("expected classified failure to retain its cause")
 		}
 		if msg != "web_search: provider not configured" {
 			t.Errorf("msg = %q, want the provider-not-configured marker", msg)

@@ -235,8 +235,8 @@ func dispatchSubagentTool(
 		out, err := deps.BuiltinHandler(ctx, name, tc.Function.Arguments)
 		duration := time.Since(start)
 		if err != nil {
-			log.Printf("[subagent] tool_error: %s (%v, %s)", name, err, duration)
-			return fmt.Sprintf("Error: %v", err), true
+			log.Printf("[subagent] builtin tool reported an error (%s)", duration)
+			return "Tool reported an error; some changes may still have occurred. Verify before trying again.", true
 		}
 		log.Printf("[subagent] tool_ok: %s (%s)", name, duration)
 		if out == "" {
@@ -248,9 +248,13 @@ func dispatchSubagentTool(
 	if allowedTools[name] && deps.Pool != nil && deps.Pool.HasTool(name) {
 		result, err := deps.Pool.CallTool(ctx, name, tc.Function.Arguments)
 		duration := time.Since(start)
-		if err != nil {
-			log.Printf("[subagent] tool_error: %s (%v, %s)", name, err, duration)
-			return fmt.Sprintf("Error: %v", err), true
+		if err != nil || result == nil {
+			log.Printf("[subagent] tool outcome uncertain (%s)", duration)
+			return "Tool outcome uncertain; some changes may have occurred. Verify before trying again.", true
+		}
+		if result.IsError {
+			log.Printf("[subagent] tool reported an error (%s)", duration)
+			return "Tool reported an error; some changes may still have occurred. Verify before trying again.", true
 		}
 		if result != nil && len(result.Content) > 0 {
 			resultJSON, _ := json.Marshal(result.Content)

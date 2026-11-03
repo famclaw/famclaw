@@ -1424,7 +1424,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// authoritative; a second render would add latency, not text.
 	browserTried := false
 	if err != nil {
-		log.Printf("[agent][%s] web_fetch url=%q err=%v", a.user.Name, rawURL, err)
+		log.Print("[agent] web_fetch failed")
 		// F7 fix (web-retrieval plan, slice 3b): a 403/429 is usually
 		// upstream bot-blocking of this client, not a dead page — the same
 		// URL often renders fine in a real browser. When the browser
@@ -1437,18 +1437,15 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		if result != nil && isBotBlockStatus(result.StatusCode) &&
 			cfg.FallbackToBrowser && a.browserPool != nil {
 			directStatus := result.StatusCode
-			log.Printf("[agent][%s] web_fetch: direct fetch got HTTP %d for %s; trying browser fallback",
-				a.user.Name, directStatus, rawURL)
+			log.Printf("[agent] web_fetch: direct fetch got HTTP %d; trying browser fallback", directStatus)
 			browserResult, fbErr := a.fetchWithBrowser(ctx, a.browserPool, rawURL, hostAllowed)
 			if fbErr != nil {
-				log.Printf("[agent][%s] web_fetch: browser fallback after HTTP %d failed for %s; returning original error: %v",
-					a.user.Name, directStatus, rawURL, fbErr)
+				log.Printf("[agent] web_fetch: browser fallback after HTTP %d failed", directStatus)
 			} else {
 				result = browserResult
 				err = nil
 				browserTried = true
-				log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback after HTTP %d)",
-					a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated, directStatus)
+				log.Printf("[agent] web_fetch status=%d bytes=%d truncated=%v (browser fallback after HTTP %d)", result.StatusCode, result.Bytes, result.Truncated, directStatus)
 			}
 		}
 		if err != nil {
@@ -1456,8 +1453,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		}
 	}
 	if result != nil {
-		log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v",
-			a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+		log.Printf("[agent] web_fetch status=%d bytes=%d truncated=%v", result.StatusCode, result.Bytes, result.Truncated)
 		text := strings.TrimSpace(result.Text)
 		minLength := a.cfg.Tools.WebFetch.FallbackMinTextLength
 		if minLength == 0 {
@@ -1473,7 +1469,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 				// by the else-branch below, not passed into fetchWithBrowser.
 				browserResult, err := a.fetchWithBrowser(ctx, a.browserPool, rawURL, hostAllowed)
 				if err != nil {
-					log.Printf("[agent][%s] web_fetch browser fallback failed for %s, using original result: %v", a.user.Name, rawURL, err)
+					log.Print("[agent] web_fetch browser fallback failed; using original result")
 				} else {
 					result = &webfetch.Result{
 						URL:         browserResult.URL,
@@ -1483,8 +1479,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 						Truncated:   browserResult.Truncated,
 						Text:        browserResult.Text,
 					}
-					log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback)",
-						a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+					log.Printf("[agent] web_fetch status=%d bytes=%d truncated=%v (browser fallback)", result.StatusCode, result.Bytes, result.Truncated)
 				}
 			} else {
 				// Browser fallback is enabled but no browser pool is available
@@ -1492,8 +1487,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 				// failed to initialize). This is a degraded state, not a crash:
 				// return the thin HTTP text as-is, but log the missed fallback so
 				// the operator can see the degradation rather than silent thin text.
-				log.Printf("[agent][%s] web_fetch: browser fallback is enabled but no browser pool is configured; cannot fall back for %s (plain fetch returned %d chars, threshold %d)",
-					a.user.Name, rawURL, len(text), minLength)
+				log.Printf("[agent] web_fetch: browser fallback is enabled but no browser pool is configured (plain fetch returned %d chars, threshold %d)", len(text), minLength)
 			}
 		}
 		if strings.TrimSpace(result.Text) == "" {
@@ -1688,47 +1682,22 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 	return websearch.FormatHits(hits), nil
 }
 
-// webSearchError translates a web_search error into a (result, error) pair
-// that the agent's tool loop can feed to the LLM. Each backend failure class
-// maps to a short NEUTRAL marker returned as the RESULT string with a nil
-// error — this is critical because the tool loop formats non-nil errors as
-// "Error: <msg>", which the LLM may treat as a system failure and ignore in
-// favour of hallucination. A result string with nil error is treated as a
-// normal tool output, so the LLM relays the marker honestly. Class-specific
-// markers (rate-limited vs down vs misconfigured) let the model report the
-// real reason instead of a blanket "unavailable."
-//
-// The markers are intentionally NOT full English sentences addressed to the
-// user. The behavioural rule in internal/prompt/components.go instructs the
-// model to convey this in the family member's language. Returning a
-// pre-written sentence would force it into English regardless of who is
-// asking.
-//
-// The sanitized endpoint is logged server-side for debugging but never
-// echoed to the family chat — it may contain internal hostnames,
-// credentials, or network topology that should not reach the user.
-//
-// Host-not-allowed errors and configuration gaps (unknown provider, hosted
-// provider without a key) are translated into sanitized result strings so
-// the tool loop does not format them as "Error: <msg>". Both pre-request
-// checks key on typed sentinels, never message text, so an upstream rework
-// of the wording cannot change the classification: errors.As on
-// *webfetch.HostNotAllowedError, and errors.Is on
-// websearch.ErrProviderNotConfigured. Other genuine errors pass through as
-// ("", err) for the tool loop to surface.
+// webSearchError preserves the diagnostic cause while returning a static,
+// neutral classification for the tool loop to render from its allowlist.
+// Unknown errors return no display text. Neither endpoint nor cause is logged.
 func webSearchError(err error, endpoint string) (string, error) {
 	if err == nil {
 		return "", nil
 	}
 	var hostErr *webfetch.HostNotAllowedError
 	if errors.As(err, &hostErr) {
-		return "web_search: host not permitted", nil
+		return "web_search: host not permitted", err
 	}
 	// Provider-boundary configuration gaps (web-retrieval plan, Slice 1):
 	// unknown provider name or hosted provider without a key. Classified by
 	// the sentinel, so upstream rewording cannot break the mapping.
 	if errors.Is(err, websearch.ErrProviderNotConfigured) {
-		return "web_search: provider not configured", nil
+		return "web_search: provider not configured", err
 	}
 	// Classified backend failures (web-retrieval plan, Slice 2): check the
 	// specific classes BEFORE the ErrUnavailable umbrella they all wrap —
@@ -1736,26 +1705,26 @@ func webSearchError(err error, endpoint string) (string, error) {
 	// the historical "unavailable" marker.
 	switch {
 	case errors.Is(err, websearch.ErrRateLimited):
-		log.Printf("[agent] web_search rate-limited (429) at %s", websearch.SanitizeEndpoint(endpoint))
-		return "web_search: rate limited", nil
+		log.Print("[agent] web_search backend error")
+		return "web_search: rate limited", err
 	case errors.Is(err, websearch.ErrProvider5xx):
-		log.Printf("[agent] web_search backend server error (5xx) at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
-		return "web_search: search backend error", nil
+		log.Print("[agent] web_search backend error")
+		return "web_search: search backend error", err
 	case errors.Is(err, websearch.ErrTimeout):
-		log.Printf("[agent] web_search request timed out at %s", websearch.SanitizeEndpoint(endpoint))
-		return "web_search: search timed out", nil
+		log.Print("[agent] web_search backend error")
+		return "web_search: search timed out", err
 	case errors.Is(err, websearch.ErrConnection):
-		log.Printf("[agent] web_search connection failure at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
-		return "web_search: search backend unreachable", nil
+		log.Print("[agent] web_search backend error")
+		return "web_search: search backend unreachable", err
 	case errors.Is(err, websearch.ErrAuthConfig):
-		log.Printf("[agent] web_search backend rejected the request (401/403) at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
-		return "web_search: search backend auth or config error", nil
+		log.Print("[agent] web_search backend error")
+		return "web_search: search backend auth or config error", err
 	case errors.Is(err, websearch.ErrMalformed):
-		log.Printf("[agent] web_search malformed backend response at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
-		return "web_search: invalid search backend response", nil
+		log.Print("[agent] web_search backend error")
+		return "web_search: invalid search backend response", err
 	case errors.Is(err, websearch.ErrUnavailable):
-		log.Printf("[agent] web_search backend unreachable at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
-		return "web_search: unavailable", nil
+		log.Print("[agent] web_search backend error")
+		return "web_search: unavailable", err
 	}
 	return "", err
 }
@@ -1797,7 +1766,7 @@ func (a *Agent) handleBrowser(ctx context.Context, toolName string, args map[str
 		},
 	})
 	if err != nil {
-		log.Printf("[agent][%s] %s err=%v", a.user.Name, toolName, err)
+		log.Print("[agent] browser tool failed")
 		return "", err
 	}
 	log.Printf("[agent][%s] %s ok bytes=%d", a.user.Name, toolName, len(out))

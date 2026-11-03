@@ -9,13 +9,8 @@ import (
 	"github.com/famclaw/famclaw/internal/websearch"
 )
 
-// TestWebSearchError_ClassMarkers is the Slice 2d contract: each classified
-// backend failure maps to its own short neutral marker (nil error, so the
-// tool loop hands it to the LLM as ordinary output instead of an "Error:"
-// blob), the pre-class special cases keep their existing markers, and
-// anything unclassified passes through as a plain error. Every marker is
-// neutral English and must never leak the endpoint (hostnames,
-// credentials, network topology stay server-side).
+// TestWebSearchError_ClassMarkers checks static display markers and retained
+// private causes for classified failures, with unclassified errors passed through.
 func TestWebSearchError_ClassMarkers(t *testing.T) {
 	const endpoint = "http://10.0.0.7:8080"
 
@@ -94,8 +89,8 @@ func TestWebSearchError_ClassMarkers(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("classified failure must return a nil error so the tool loop hands the marker to the LLM, got %v", err)
+			if err == nil {
+				t.Fatal("classified failure must retain its cause")
 			}
 			if msg != tc.want {
 				t.Errorf("marker = %q, want %q", msg, tc.want)
@@ -137,8 +132,8 @@ func providerForGap(t *testing.T, name string) error {
 // through to the umbrella's generic "unavailable" one.
 func TestWebSearchError_ClassBeforeUmbrella(t *testing.T) {
 	msg, err := webSearchError(&dualError{class: websearch.ErrRateLimited, umbrella: websearch.ErrUnavailable}, "http://search.local")
-	if err != nil {
-		t.Fatalf("expected a nil error with a marker, got %v", err)
+	if err == nil {
+		t.Fatal("expected classified error with a marker")
 	}
 	if msg != "web_search: rate limited" {
 		t.Errorf("class-specific checks must run before the umbrella: got %q, want the rate-limited marker", msg)
@@ -182,8 +177,8 @@ func TestWebSearchError_SentinelSurvivesReworkedWording(t *testing.T) {
 		// Simulate an upstream rework: entirely new wording, same sentinel.
 		reworked := fmt.Errorf("web_search: provider setup failed: %w", inner)
 		msg, err := webSearchError(reworked, "http://10.0.0.7:8080")
-		if err != nil {
-			t.Fatalf("expected a sanitized marker, got error %v", err)
+		if err == nil {
+			t.Fatal("expected classified error with a sanitized marker")
 		}
 		if msg != "web_search: provider not configured" {
 			t.Errorf("marker = %q, want %q — classification must key on the sentinel, not the wording",

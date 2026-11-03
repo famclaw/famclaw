@@ -115,7 +115,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Done! I saved the file.",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "purely conversational turn (no tool attempted)",
@@ -174,7 +174,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Listo, lo he guardado.",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "German false success",
@@ -207,7 +207,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Fertig, gespeichert.",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "Japanese false success",
@@ -240,7 +240,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "完了しました。",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "English success without tool call (should not trigger)",
@@ -387,7 +387,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Done — all taken care of!",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "model already mentions failure — note still prepended (no silent skip)",
@@ -420,7 +420,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Sorry, all my tools failed to run.",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "cap exhausted: model never stops, output unchanged (language-independent)",
@@ -444,10 +444,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				// Mock returns the SAME response with tool calls every time
 				// the model is called — it never produces a final answer. With
 				// MaxIterations=1 the loop exits by exhausting the cap
-				// (pendingCalls stays non-empty), so the note must NOT fire.
-				// The turn never made a claim, so output is byte-identical.
-				// This mirrors the TestAgentChatPoolNil scenario at the stage
-				// level and is language-independent by construction.
+				// The cap must not hide an observed failure.
 				var callCount int
 				deps.ClientFactory = func(*Turn) llm.Chatter {
 					return &mockChatter{
@@ -464,7 +461,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 					}
 				}
 			},
-			wantOutputExact: "Let me check...", // no note: cap exhausted, model never claimed
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred.",
 		},
 	}
 

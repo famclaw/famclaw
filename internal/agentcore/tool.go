@@ -13,13 +13,43 @@ type Tool struct {
 	Roles       []string       // allowed roles (empty = all roles)
 }
 
+// ExecutionOutcome reports only what the tool protocol establishes. Its zero
+// value is unknown, not success.
+type ExecutionOutcome uint8
+
+const (
+	OutcomeUnknown ExecutionOutcome = iota
+	OutcomeSuccess
+	OutcomeFailure
+)
+
+// ToolDisposition distinguishes an attempted call from one not run.
+type ToolDisposition uint8
+
+const (
+	DispositionUnknown ToolDisposition = iota
+	DispositionAttempted
+	DispositionDenied
+	DispositionPending
+	DispositionSkipped
+)
+
+// EffectCertainty is deliberately conservative; errors do not establish that
+// no external effects occurred.
+type EffectCertainty uint8
+
+const EffectUnknown EffectCertainty = 0
+
 // ToolResult captures one tool call and its outcome.
 type ToolResult struct {
-	ToolName string
-	Args     map[string]any
-	Output   string
-	Error    error
-	Duration time.Duration
+	ToolName    string
+	Args        map[string]any
+	Output      string
+	Error       error // private diagnostic; never render directly
+	Outcome     ExecutionOutcome
+	Disposition ToolDisposition
+	Effects     EffectCertainty
+	Duration    time.Duration
 }
 
 // AllowedForRole returns true if the tool is available for the given role.

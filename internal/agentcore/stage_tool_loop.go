@@ -201,14 +201,15 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						ToolCallID: tc.ID,
 					})
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
-						ToolName: tc.Function.Name,
-						Args:     tc.Function.Arguments,
-						Output:   skipMsg,
-						Duration: 0,
+						ToolName:    tc.Function.Name,
+						Args:        tc.Function.Arguments,
+						Output:      skipMsg,
+						Disposition: DispositionSkipped,
+						Duration:    0,
 					})
 					continue
 				}
-				log.Printf("[agentcore][%s] tool_call: %s args=%s", turn.User.Name, tc.Function.Name, summarizeArgs(tc.Function.Arguments))
+				log.Printf("[agentcore] tool_call")
 				start := time.Now()
 
 				// Local LLMs occasionally emit the bare tool name
@@ -225,17 +226,15 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					}
 				}
 
-				// Short-circuit: if an identical (tool name + arguments) call
-				// already failed earlier this turn, feed back a corrective
-				// result instead of re-executing the same doomed call. This
-				// breaks the repeated apology-retry loop where the model
-				// re-emits a call that already failed. Different args and
-				// cross-turn calls are unaffected -- turn.ToolCalls holds
-				// only this turn's results, and only non-nil (failed)
-				// entries match.
-				if hasFailedCall(tc.Function.Name, tc.Function.Arguments, turn.ToolCalls) {
-					injectToolError(&llmMsgs, turn, tc, ErrToolAlreadyFailed,
-						"this exact tool call already failed earlier in this turn; try a different approach instead of repeating it", start)
+				// Suppress identical unsuccessful or uncertain calls within this
+				// turn. An uncertain outcome must not be described as a failure:
+				// the original operation may already have taken effect.
+				if prior, found := priorUnsuccessfulCall(tc.Function.Name, tc.Function.Arguments, turn.ToolCalls); found {
+					reason := "this exact tool call already failed earlier in this turn; try a different approach instead of repeating it"
+					if prior.Disposition == DispositionAttempted && prior.Outcome == OutcomeUnknown {
+						reason = "the outcome of this exact tool call is uncertain; verify before trying again"
+					}
+					injectToolError(&llmMsgs, turn, tc, ErrToolAlreadyFailed, reason, start)
 					continue
 				}
 
@@ -248,10 +247,11 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						ToolCallID: tc.ID,
 					})
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
-						ToolName: tc.Function.Name,
-						Args:     tc.Function.Arguments,
-						Error:    fmt.Errorf("tool %q not in turn allowlist", tc.Function.Name),
-						Duration: time.Since(start),
+						ToolName:    tc.Function.Name,
+						Args:        tc.Function.Arguments,
+						Error:       fmt.Errorf("tool %q not in turn allowlist", tc.Function.Name),
+						Disposition: DispositionDenied,
+						Duration:    time.Since(start),
 					})
 					continue
 				}
@@ -327,10 +327,11 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							ToolCallID: tc.ID,
 						})
 						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
-							ToolName: tc.Function.Name,
-							Args:     tc.Function.Arguments,
-							Error:    ErrApprovalRequested,
-							Duration: time.Since(start),
+							ToolName:    tc.Function.Name,
+							Args:        tc.Function.Arguments,
+							Error:       ErrApprovalRequested,
+							Disposition: DispositionPending,
+							Duration:    time.Since(start),
 						})
 						continue
 					case "pending":
@@ -342,10 +343,11 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							ToolCallID: tc.ID,
 						})
 						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
-							ToolName: tc.Function.Name,
-							Args:     tc.Function.Arguments,
-							Error:    ErrApprovalPending,
-							Duration: time.Since(start),
+							ToolName:    tc.Function.Name,
+							Args:        tc.Function.Arguments,
+							Error:       ErrApprovalPending,
+							Disposition: DispositionPending,
+							Duration:    time.Since(start),
 						})
 						continue
 					default:
@@ -364,17 +366,24 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					result, err := deps.BuiltinHandler(ctx, tc.Function.Name, tc.Function.Arguments)
 					duration := time.Since(start)
 					if err != nil {
-						log.Printf("[agentcore][%s] tool_err: %s err=%v (%s)", turn.User.Name, tc.Function.Name, err, duration)
+						log.Printf("[agentcore] builtin tool reported an error (%s)", duration)
+						display := "Tool reported an error; some changes may still have occurred. Verify before trying again."
+						if tc.Function.Name == "builtin__web_search" && safeSearchMarker(result) {
+							display = result
+						}
 						llmMsgs = append(llmMsgs, llm.Message{
 							Role:       "tool",
-							Content:    fmt.Sprintf("Error: %v", err),
+							Content:    display,
 							ToolCallID: tc.ID,
 						})
 						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
-							ToolName: tc.Function.Name,
-							Args:     tc.Function.Arguments,
-							Error:    err,
-							Duration: duration,
+							ToolName:    tc.Function.Name,
+							Args:        tc.Function.Arguments,
+							Error:       err,
+							Output:      display,
+							Outcome:     OutcomeFailure,
+							Disposition: DispositionAttempted,
+							Duration:    duration,
 						})
 					} else {
 						log.Printf("[agentcore][%s] tool_ok: %s bytes=%d (%s)", turn.User.Name, tc.Function.Name, len(result), duration)
@@ -384,10 +393,12 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							ToolCallID: tc.ID,
 						})
 						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
-							ToolName: tc.Function.Name,
-							Args:     tc.Function.Arguments,
-							Output:   result,
-							Duration: duration,
+							ToolName:    tc.Function.Name,
+							Args:        tc.Function.Arguments,
+							Output:      result,
+							Outcome:     OutcomeSuccess,
+							Disposition: DispositionAttempted,
+							Duration:    duration,
 						})
 						if deps.AbortQueueOnPageChange && isMutatingBrowserAction(tc.Function.Name) {
 							if u := extractFirstURL(result); u != "" {
@@ -411,10 +422,11 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						ToolCallID: tc.ID,
 					})
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
-						ToolName: tc.Function.Name,
-						Args:     tc.Function.Arguments,
-						Error:    fmt.Errorf("unknown tool %q", tc.Function.Name),
-						Duration: time.Since(start),
+						ToolName:    tc.Function.Name,
+						Args:        tc.Function.Arguments,
+						Error:       fmt.Errorf("unknown tool %q", tc.Function.Name),
+						Disposition: DispositionSkipped,
+						Duration:    time.Since(start),
 					})
 					continue
 				}
@@ -424,12 +436,31 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 				var toolText string
 				if err != nil {
-					toolText = fmt.Sprintf("Error calling %s: %v", tc.Function.Name, err)
+					toolText = "Tool outcome uncertain; verify before trying again."
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
-						ToolName: tc.Function.Name,
-						Args:     tc.Function.Arguments,
-						Error:    err,
-						Duration: duration,
+						ToolName:    tc.Function.Name,
+						Args:        tc.Function.Arguments,
+						Error:       err,
+						Outcome:     OutcomeUnknown,
+						Disposition: DispositionAttempted,
+						Duration:    duration,
+					})
+				} else if result == nil || result.IsError {
+					outcome := OutcomeFailure
+					if result == nil {
+						outcome = OutcomeUnknown
+					}
+					toolText = "Tool reported an error; some changes may still have occurred. Verify before trying again."
+					if result == nil {
+						toolText = "Tool outcome uncertain; verify before trying again."
+					}
+					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
+						ToolName:    tc.Function.Name,
+						Args:        tc.Function.Arguments,
+						Error:       fmt.Errorf("tool did not return a successful result"),
+						Outcome:     outcome,
+						Disposition: DispositionAttempted,
+						Duration:    duration,
 					})
 				} else {
 					var images []string
@@ -459,10 +490,12 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						toolText = note
 					}
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
-						ToolName: tc.Function.Name,
-						Args:     tc.Function.Arguments,
-						Output:   toolText,
-						Duration: duration,
+						ToolName:    tc.Function.Name,
+						Args:        tc.Function.Arguments,
+						Output:      toolText,
+						Outcome:     OutcomeSuccess,
+						Disposition: DispositionAttempted,
+						Duration:    duration,
 					})
 				}
 
@@ -584,48 +617,22 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				llmMsgs = append(llmMsgs, *msg)
 			}
 		}
-		// modelStopped records why the tool loop exited: true when the
-		// model produced a final answer (its last response had no tool
-		// calls), false when the iteration cap was exhausted while the
-		// model kept requesting tools. After the loop, pendingCalls holds
-		// the tool calls from the most recent LLM response, so an empty
-		// pendingCalls means the model stopped. The false-success
-		// correction note only fires when modelStopped — a cap-exhausted
-		// turn never made a claim, so correcting it is wrong by
-		// construction. The discriminator is structural (not lexical),
-		// making it language-agnostic by design.
-		modelStopped := len(pendingCalls) == 0
-		// Neutralize false success claims: when every tool call in the turn
-		// failed and the model produced a final answer, prepend a prominent
-		// correction so the user sees the failure up front. The failure is
-		// led with, not buried — for a parent researching a child's
-		// condition, a trailing parenthetical masquerading as verified
-		// research is the worst possible failure mode.
-		//
-		// The decision is structural, not lexical — it never inspects the
-		// output text, so it is language-agnostic by design.
-		// shouldPrependFailureNote fires whenever the model stopped with
-		// every tool failed, regardless of the language the model used to
-		// claim success. This is the fix for #242: a phrase list per
-		// language never ends and always has gaps, but a structural check
-		// has no language to miss.
-		//
-		// toolFailureNote is prepended (not appended) so the user sees the
-		// failure up front. Deliberate bias: ALWAYS warn when every tool
-		// call in the turn failed and the model produced a final answer.
-		// We accept occasional duplication (e.g. the model itself mentions
-		// failure) over the risk of silence — the captain's original bug
-		// was a confident list of research centres with the failure buried
-		// in a trailing parenthetical while researching his son's terminal
-		// illness. A duplicated warning is mildly redundant; a missing one
-		// is the exact failure mode we must never repeat.
-		const toolFailureNote = "No action was completed — every tool call failed. " +
-			"Nothing below was looked up; it comes from training data, not live results."
-		if shouldPrependFailureNote(turn.ToolCalls, modelStopped) {
+		// Summarize attempted outcomes separately from policy and skipped
+		// dispositions, including turns that exhaust the iteration budget.
+		warning := outcomeWarning(turn.ToolCalls)
+		if len(pendingCalls) > 0 {
+			// The final model text is not a completed answer when it still
+			// requests calls that the budget prevented us from executing.
+			capNote := "Tool iteration limit reached; remaining requested calls were not run."
+			if warning != "" {
+				warning += " "
+			}
+			turn.Output = warning + capNote
+		} else if warning != "" {
 			if turn.Output == "" {
-				turn.Output = toolFailureNote
+				turn.Output = warning
 			} else {
-				turn.Output = toolFailureNote + "\n\n" + turn.Output
+				turn.Output = warning + "\n\n" + turn.Output
 			}
 		}
 
@@ -633,20 +640,71 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 	}
 }
 
+// outcomeWarning makes no claim that a failure had no effects, and never
+// treats an unexecuted policy or duplicate disposition as an execution.
+func outcomeWarning(calls []ToolResult) string {
+	var success, failure, unknown, denied, pending, skipped bool
+	for _, call := range calls {
+		switch call.Disposition {
+		case DispositionAttempted:
+			switch call.Outcome {
+			case OutcomeSuccess:
+				success = true
+			case OutcomeFailure:
+				failure = true
+			default:
+				unknown = true
+			}
+		case DispositionDenied:
+			denied = true
+		case DispositionPending:
+			pending = true
+		case DispositionSkipped:
+			skipped = true
+		}
+	}
+	var notes []string
+	if failure && success {
+		notes = append(notes, "Some tool calls succeeded, but another reported a failure; some changes may have occurred. Verify before trying again.")
+	} else if failure {
+		notes = append(notes, "The tool reported a failure; some changes may still have occurred. Verify before trying again.")
+	} else if unknown && success {
+		notes = append(notes, "Some tool calls succeeded.")
+	}
+	if unknown {
+		notes = append(notes, "A tool outcome is uncertain; some changes may have occurred. Verify before trying again.")
+	}
+	if denied {
+		notes = append(notes, "A tool call was denied and was not run.")
+	}
+	if pending {
+		notes = append(notes, "A tool call is pending approval and was not run.")
+	}
+	if skipped {
+		notes = append(notes, "A tool call was skipped and was not run.")
+	}
+	return strings.Join(notes, " ")
+}
+
 // injectToolError appends a tool-error message to llmMsgs and records a
 // failed ToolResult on the turn. Extracts the repeated error-injection
 // pattern used across the policy gate and tool-dispatch paths.
 func injectToolError(llmMsgs *[]llm.Message, turn *Turn, tc llm.ToolCall, err error, reason string, start time.Time) {
+	disposition := DispositionDenied
+	if err == ErrToolAlreadyFailed {
+		disposition = DispositionSkipped
+	}
 	*llmMsgs = append(*llmMsgs, llm.Message{
 		Role:       "tool",
 		Content:    fmt.Sprintf("Error: %s", reason),
 		ToolCallID: tc.ID,
 	})
 	turn.ToolCalls = append(turn.ToolCalls, ToolResult{
-		ToolName: tc.Function.Name,
-		Args:     tc.Function.Arguments,
-		Error:    err,
-		Duration: time.Since(start),
+		ToolName:    tc.Function.Name,
+		Args:        tc.Function.Arguments,
+		Error:       err,
+		Disposition: disposition,
+		Duration:    time.Since(start),
 	})
 }
 
@@ -659,36 +717,19 @@ func injectToolError(llmMsgs *[]llm.Message, turn *Turn, tc llm.ToolCall, err er
 // OPA tool_policy engine.
 var ErrToolAlreadyFailed = fmt.Errorf("tool call already failed this turn")
 
-// hasFailedCall reports whether an identical tool call (same name and
-// arguments) already failed earlier in this turn, by scanning the turn's
-// accumulated ToolResults. It is the dedup guard behind the
-// apology-retry short-circuit: when the model re-emits a call the loop
-// already attempted and failed, it returns true so the call is fed back a
-// corrective result instead of being re-executed.
-//
-// Arguments are compared with reflect.DeepEqual, which is order-independent
-// for maps -- {"a":"b","c":"d"} and {"b":"d","a":"b"} are treated as
-// identical. Only calls whose ToolResult.Error is non-nil count as
-// failures; a previously-SUCCEEDED call with the same args does not
-// short-circuit.
-//
-// The scan is O(n) per call where n = len(results); n is bounded by
-// MaxIterations * batch size (small), so the simplicity of a scan -- which
-// automatically covers every failure path without per-path bookkeeping -- is
-// preferable to maintaining a parallel set across all failure sites.
-func hasFailedCall(name string, args map[string]any, results []ToolResult) bool {
+// priorUnsuccessfulCall finds a matching prior error or attempted non-success.
+// Map comparison is order independent; successful attempts may run again.
+// The scan is bounded by the current turn's iteration and batch limits.
+func priorUnsuccessfulCall(name string, args map[string]any, results []ToolResult) (ToolResult, bool) {
 	for _, r := range results {
-		if r.Error == nil {
+		if r.Error == nil && !(r.Disposition == DispositionAttempted && r.Outcome != OutcomeSuccess) {
 			continue
 		}
-		if r.ToolName != name {
-			continue
-		}
-		if reflect.DeepEqual(r.Args, args) {
-			return true
+		if r.ToolName == name && reflect.DeepEqual(r.Args, args) {
+			return r, true
 		}
 	}
-	return false
+	return ToolResult{}, false
 }
 
 // approvalDescription builds a human-readable summary of the tool call
@@ -741,6 +782,20 @@ func isMutatingBrowserAction(name string) bool {
 	return false
 }
 
+// safeSearchMarker accepts only fixed, non-diagnostic search classifications.
+func safeSearchMarker(s string) bool {
+	switch s {
+	case "web_search: host not permitted", "web_search: provider not configured",
+		"web_search: rate limited", "web_search: search backend error",
+		"web_search: search timed out", "web_search: search backend unreachable",
+		"web_search: search backend auth or config error", "web_search: invalid search backend response",
+		"web_search: unavailable":
+		return true
+	default:
+		return false
+	}
+}
+
 // extractFirstURL parses the URL from a tool result that starts with
 // "URL: <url>\n". Returns "" when the text does not start with that prefix.
 // This mirrors the snapshotReply format used by the browser handlers.
@@ -776,12 +831,25 @@ func rebuildResultLine(tr ToolResult) string {
 	}
 
 	var line string
-	if tr.Error != nil {
-		// Sanitize the error text: collapse newlines/tabs/CR to spaces so a
-		// multiline error cannot break the one-line-per-result history
-		// contract and pollute the rebuilt prompt block.
-		errText := sanitizeHistoryText(tr.Error.Error())
-		line = fmt.Sprintf("[%s args=%s err=%s]", tr.ToolName, argsJSON, errText)
+	if tr.Error != nil || tr.Disposition == DispositionSkipped {
+		// Diagnostic causes and input arguments can contain secrets. Render
+		// only trusted structural state and allowlisted search classifications.
+		state := "tool reported an error"
+		switch tr.Disposition {
+		case DispositionDenied:
+			state = "denied; not run"
+		case DispositionPending:
+			state = "approval pending; not run"
+		case DispositionSkipped:
+			state = "skipped; not run"
+		case DispositionAttempted:
+			if tr.Outcome == OutcomeUnknown {
+				state = "outcome uncertain; effects may have occurred"
+			} else if tr.ToolName == "builtin__web_search" && safeSearchMarker(tr.Output) {
+				state = tr.Output
+			}
+		}
+		line = fmt.Sprintf("[%s args=[redacted] err=%s]", tr.ToolName, state)
 	} else {
 		line = fmt.Sprintf("[%s args=%s ok bytes=%d]", tr.ToolName, argsJSON, len(tr.Output))
 	}
