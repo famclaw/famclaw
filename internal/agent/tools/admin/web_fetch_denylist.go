@@ -102,7 +102,7 @@ func HandleDenylistAdd(ctx context.Context, deps Deps, args map[string]any) (str
 	defer mu.Unlock()
 	host, _ := args["host"].(string)
 	if host == "" {
-		return "", fmt.Errorf("denylist_add requires a 'host' argument (e.g. denylist_add(host=\"example.com\"))")
+		return "", fmt.Errorf("denylist_add requires a 'host' argument (e.g. denylist_add(host=\"%s\"))", "example.com")
 	}
 
 	host, err = config.NormalizeAllowlistHost(host)
@@ -118,11 +118,20 @@ func HandleDenylistAdd(ctx context.Context, deps Deps, args map[string]any) (str
 
 	deps.Cfg.Tools.WebFetch.URLDenylist = append(deps.Cfg.Tools.WebFetch.URLDenylist, host)
 
-	if deps.ConfigPath != "" {
-		if err := writeConfigInline(deps.ConfigPath, deps.Cfg); err != nil {
+	if deps.ConfigPath != "" && deps.SharedConfig != nil {
+		// Use the new transactional SaveConfig method with proper lock order (T→M)
+		// Acquire T (content gate) before M (deps.denylistMu)
+		_, err = deps.SharedConfig.SaveConfig(deps.Cfg, "")
+		if err != nil {
+			// On token mismatch (operator conflict), return the error
+			if strings.Contains(err.Error(), "operator conflict") {
+				return "", err
+			}
+			// On other save failure, keep the in-memory change and return error
 			log.Printf("[admin] failed to persist denylist_add: %v", err)
 			return fmt.Sprintf("added %q to in-memory denylist, but failed to persist to disk: %v", host, err), nil
 		}
+		// If successful, we continue with the audit log
 	}
 
 	auditArgs, _ := json.Marshal(map[string]any{"host": host})
@@ -167,7 +176,7 @@ func HandleDenylistRemove(ctx context.Context, deps Deps, args map[string]any) (
 	defer mu.Unlock()
 	host, _ := args["host"].(string)
 	if host == "" {
-		return "", fmt.Errorf("denylist_remove requires a 'host' argument (e.g. denylist_remove(host=\"example.com\"))")
+		return "", fmt.Errorf("denylist_remove requires a 'host' argument (e.g. denylist_remove(host=%q))", "example.com")
 	}
 
 	host, err = config.NormalizeAllowlistHost(host)
@@ -191,11 +200,20 @@ func HandleDenylistRemove(ctx context.Context, deps Deps, args map[string]any) (
 
 	deps.Cfg.Tools.WebFetch.URLDenylist = newDenylist
 
-	if deps.ConfigPath != "" {
-		if err := writeConfigInline(deps.ConfigPath, deps.Cfg); err != nil {
+	if deps.ConfigPath != "" && deps.SharedConfig != nil {
+		// Use the new transactional SaveConfig method with proper lock order (T→M)
+		// Acquire T (content gate) before M (deps.denylistMu)
+		_, err = deps.SharedConfig.SaveConfig(deps.Cfg, "")
+		if err != nil {
+			// On token mismatch (operator conflict), return the error
+			if strings.Contains(err.Error(), "operator conflict") {
+				return "", err
+			}
+			// On other save failure, keep the in-memory change and return error
 			log.Printf("[admin] failed to persist denylist_remove: %v", err)
 			return fmt.Sprintf("removed %q from in-memory denylist, but failed to persist to disk: %v", host, err), nil
 		}
+		// If successful, we continue with the audit log
 	}
 
 	auditArgs, _ := json.Marshal(map[string]any{"host": host})

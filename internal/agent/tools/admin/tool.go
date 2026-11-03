@@ -53,7 +53,7 @@ type Deps struct {
 	// decision-time slice reads.
 	//
 	// It is REQUIRED for any entry point that can run concurrently with
-	// the agent: when nil, denylistMu() returns ErrDenylistMuUnwired and
+	// the agent's hostDecision path: when nil, denylistMu() returns ErrDenylistMuUnwired and
 	// every denylist handler fails closed instead of touching the list,
 	// so a misconfigured entry point surfaces the error at the call site
 	// rather than degrading to a partial lock that does not serialize
@@ -65,6 +65,10 @@ type Deps struct {
 	// and a value field would be copied into each Deps, defeating the
 	// synchronization.
 	URLDenylistMu *sync.RWMutex
+	
+	// SharedConfig is the shared configuration manager for atomic save/reload operations
+	// with proper transactional semantics and conflict detection.
+	SharedConfig *SharedConfigManager
 }
 
 // ErrDenylistMuUnwired is returned by denylistMu() when

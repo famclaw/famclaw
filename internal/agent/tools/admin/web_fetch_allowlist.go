@@ -75,7 +75,7 @@ func AllowlistAddDefinition() agentcore.Tool {
 func HandleAllowlistAdd(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	host, _ := args["host"].(string)
 	if host == "" {
-		return "", fmt.Errorf("allowlist_add requires a 'host' argument (e.g. allowlist_add(host=\"example.com\"))")
+		return "", fmt.Errorf("allowlist_add requires a 'host' argument (e.g. allowlist_add(host=%q))", "example.com")
 	}
 
 	// Canonicalize: accepts bare host, full URL, or URL with scheme/port.
@@ -96,11 +96,20 @@ func HandleAllowlistAdd(ctx context.Context, deps Deps, args map[string]any) (st
 	deps.Cfg.Tools.WebFetch.URLAllowlist = append(deps.Cfg.Tools.WebFetch.URLAllowlist, host)
 
 	// Persist to disk immediately
-	if deps.ConfigPath != "" {
-		if err := writeConfigInline(deps.ConfigPath, deps.Cfg); err != nil {
+	if deps.ConfigPath != "" && deps.SharedConfig != nil {
+		// Use the new transactional SaveConfig method with proper lock order (T→M)
+		// Acquire T (content gate) before M (deps.denylistMu)
+		_, err = deps.SharedConfig.SaveConfig(deps.Cfg, "")
+		if err != nil {
+			// On token mismatch (operator conflict), return the error
+			if strings.Contains(err.Error(), "operator conflict") {
+				return "", err
+			}
+			// On other save failure, keep the in-memory change and return error
 			log.Printf("[admin] failed to persist allowlist_add: %v", err)
 			return fmt.Sprintf("added %q to in-memory allowlist, but failed to persist to disk: %v", host, err), nil
 		}
+		// If successful, we continue with the audit log
 	}
 
 	auditArgs, _ := json.Marshal(map[string]any{"host": host})
@@ -136,7 +145,7 @@ func AllowlistRemoveDefinition() agentcore.Tool {
 func HandleAllowlistRemove(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	host, _ := args["host"].(string)
 	if host == "" {
-		return "", fmt.Errorf("allowlist_remove requires a 'host' argument (e.g. allowlist_remove(host=\"example.com\"))")
+		return "", fmt.Errorf("allowlist_remove requires a 'host' argument (e.g. allowlist_remove(host=%q))", "example.com")
 	}
 
 	// Canonicalize: accepts bare host, full URL, or URL with scheme/port.
@@ -163,11 +172,20 @@ func HandleAllowlistRemove(ctx context.Context, deps Deps, args map[string]any) 
 	deps.Cfg.Tools.WebFetch.URLAllowlist = newAllowlist
 
 	// Persist to disk immediately
-	if deps.ConfigPath != "" {
-		if err := writeConfigInline(deps.ConfigPath, deps.Cfg); err != nil {
+	if deps.ConfigPath != "" && deps.SharedConfig != nil {
+		// Use the new transactional SaveConfig method with proper lock order (T→M)
+		// Acquire T (content gate) before M (deps.denylistMu)
+		_, err = deps.SharedConfig.SaveConfig(deps.Cfg, "")
+		if err != nil {
+			// On token mismatch (operator conflict), return the error
+			if strings.Contains(err.Error(), "operator conflict") {
+				return "", err
+			}
+			// On other save failure, keep the in-memory change and return error
 			log.Printf("[admin] failed to persist allowlist_remove: %v", err)
 			return fmt.Sprintf("removed %q from in-memory allowlist, but failed to persist to disk: %v", host, err), nil
 		}
+		// If successful, we continue with the audit log
 	}
 
 	auditArgs, _ := json.Marshal(map[string]any{"host": host})
