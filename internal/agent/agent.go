@@ -1572,7 +1572,7 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 					} else if isNew {
 						a.notifySuspiciousApprovalIfNeeded(ctx, approvalID, approval)
 					}
-				} else if prev != nil && prev.Status == "approved" && time.Now().Before(prev.ExpiresAt) {
+				} else if prev != nil && prev.Status == "approved" && a.now().Before(prev.ExpiresAt) {
 					// Still valid: allow without touching the row.
 					return true, ""
 				} else if prev != nil && prev.Status == "approved" {

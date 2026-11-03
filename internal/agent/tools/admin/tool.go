@@ -57,24 +57,36 @@ type Deps struct {
 	// NOTE: a value sync.RWMutex is deliberately NOT used here: the
 	// field must share the agent's lock instance (&a.urlDenylistMu),
 	// and a value field would be copied into each Deps, defeating the
-	// synchronization. nil is therefore possible, and denylistMu()
-	// logs a prominent warning at handler entry when it is, so a
-	// production entry point that forgets to wire it cannot fail
-	// silently into an unsynchronized read-modify-write (review
-	// finding: nil-mutex race).
+	// synchronization. nil is therefore possible; denylistMu() logs a
+	// prominent warning at handler entry when it is and returns a stable
+	// no-op mutex (never nil) so a handler that omits a nil-check before
+	// Lock/RLock degrades to unsynchronized-with-the-agent access rather
+	// than nil-panicking (review finding: nil-mutex race).
 	URLDenylistMu *sync.RWMutex
 }
 
-// denylistMu returns the shared denylist lock for a denylist handler,
-// logging a prominent warning if it was not wired (nil). Nil is legal
-// only in single-threaded standalone/test Deps; in any configuration
-// where a live Agent shares Cfg, the lock MUST be the agent's
-// urlDenylistMu — a nil here means the handler runs unsynchronized
-// and its read-modify-write of Cfg.Tools.WebFetch.URLDenylist can
-// tear against hostDecision's slice reads.
+// noopDenylistMu is a shared, otherwise-unused *sync.RWMutex returned by
+// denylistMu() when Deps.URLDenylistMu is unwired. It exists so a handler
+// that dereferences denylistMu() without a nil-check cannot nil-panic; the
+// lock it provides intentionally does NOT serialize against the Agent's
+// decision path (which holds &a.urlDenylistMu), so an unwired entry point
+// degrades to handler-to-handler locking plus the logged warning rather
+// than a crash.
+var noopDenylistMu sync.RWMutex
+
+// denylistMu returns the shared denylist lock for a denylist handler.
+// When Deps.URLDenylistMu is wired it returns that instance so the
+// handler's read-modify-write of Cfg.Tools.WebFetch.URLDenylist never
+// races hostDecision's decision-time slice reads. When unwired it logs a
+// prominent warning and returns the stable no-op mutex (noopDenylistMu)
+// instead of nil, so a handler that omits a nil-check before Lock/RLock
+// degrades to unsynchronized-with-the-agent access rather than
+// nil-panicking. Nil was only ever legal in single-threaded standalone/
+// test Deps; the no-op mutex preserves that behavior safely.
 func (d Deps) denylistMu() *sync.RWMutex {
 	if d.URLDenylistMu == nil {
 		log.Printf("[admin] WARNING: denylist handler invoked with URLDenylistMu unset — read-modify-write of Cfg.Tools.WebFetch.URLDenylist is UNSYNCHRONIZED. This is only safe in single-threaded standalone/test Deps; every production entry point must wire Deps.URLDenylistMu to the agent's urlDenylistMu.")
+		return &noopDenylistMu
 	}
 	return d.URLDenylistMu
 }
