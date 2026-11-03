@@ -42,15 +42,14 @@ func DenylistListDefinition() agentcore.Tool {
 // HandleDenylistList dispatches builtin__denylist_list.
 func HandleDenylistList(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	// Read-lock so the slice-header read cannot tear against a concurrent
-	// denylist_add/remove rewrite sharing the same mutex (nil in
-	// standalone/test Deps that run single-threaded — see
-	// Deps.URLDenylistMu; denylistMu() warns if unwired).
-	if mu := deps.denylistMu(); mu != nil {
-		mu.RLock()
-		hosts := deps.Cfg.Tools.WebFetch.URLDenylist
-		mu.RUnlock()
-		return formatDenylistList(hosts)
+	// denylist_add/remove rewrite sharing the same mutex; denylistMu()
+	// fails closed when the mutex is unwired (ErrDenylistMuUnwired).
+	mu, err := deps.denylistMu()
+	if err != nil {
+		return "", err
 	}
+	mu.RLock()
+	defer mu.RUnlock()
 	return formatDenylistList(deps.Cfg.Tools.WebFetch.URLDenylist)
 }
 
@@ -92,19 +91,21 @@ func HandleDenylistAdd(ctx context.Context, deps Deps, args map[string]any) (str
 	// Exclusive lock over the whole read-modify-write + persist + audit
 	// span: the slice-header write below must not race hostDecision's
 	// decision-time read, and the on-disk snapshot written by
-	// writeConfigInline must be consistent with the in-memory list it just
-	// mutated (nil in standalone/test Deps that run single-threaded — see
-	// Deps.URLDenylistMu; denylistMu() warns if unwired).
-	if mu := deps.denylistMu(); mu != nil {
-		mu.Lock()
-		defer mu.Unlock()
+	// writeConfigInline must be consistent with the in-memory list it
+	// just mutated; denylistMu() fails closed when the mutex is unwired
+	// (ErrDenylistMuUnwired).
+	mu, err := deps.denylistMu()
+	if err != nil {
+		return "", err
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	host, _ := args["host"].(string)
 	if host == "" {
 		return "", fmt.Errorf("denylist_add requires a 'host' argument (e.g. denylist_add(host=\"example.com\"))")
 	}
 
-	host, err := config.NormalizeAllowlistHost(host)
+	host, err = config.NormalizeAllowlistHost(host)
 	if err != nil {
 		return "", fmt.Errorf("denylist_add: %w", err)
 	}
@@ -157,17 +158,19 @@ func DenylistRemoveDefinition() agentcore.Tool {
 func HandleDenylistRemove(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	// Exclusive lock over the whole read-modify-write + persist + audit
 	// span — same rationale as HandleDenylistAdd (see Deps.URLDenylistMu;
-	// denylistMu() warns if unwired).
-	if mu := deps.denylistMu(); mu != nil {
-		mu.Lock()
-		defer mu.Unlock()
+	// denylistMu() fails closed when unwired, ErrDenylistMuUnwired).
+	mu, err := deps.denylistMu()
+	if err != nil {
+		return "", err
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	host, _ := args["host"].(string)
 	if host == "" {
 		return "", fmt.Errorf("denylist_remove requires a 'host' argument (e.g. denylist_remove(host=\"example.com\"))")
 	}
 
-	host, err := config.NormalizeAllowlistHost(host)
+	host, err = config.NormalizeAllowlistHost(host)
 	if err != nil {
 		return "", fmt.Errorf("denylist_remove: %w", err)
 	}

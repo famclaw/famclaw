@@ -1,9 +1,9 @@
 package admin
 
 import (
-	"bytes"
 	"context"
-	"log"
+	"errors"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -11,54 +11,49 @@ import (
 	"github.com/famclaw/famclaw/internal/store"
 )
 
-// TestDenylistMu_NilGuard pins review finding #3 (nil-mutex fragility): a
-// denylist handler running with URLDenylistMu unwired must surface the
-// misconfiguration prominently AND receive a safe, non-nil mutex instead of
-// a bare nil, so handlers that omit a nil-check before Lock/RLock cannot
-// nil-panic. The no-op mutex is only legal in single-threaded
-// standalone/test Deps.
+// TestDenylistMu_NilGuard pins review finding #2 (nil-mutex fragility /
+// global-state no-op lock): a denylist handler running with URLDenylistMu
+// unwired must fail closed — denylistMu() returns ErrDenylistMuUnwired so
+// the handler surfaces the misconfiguration at the call site instead of
+// degrading to a lock that does not serialize against the agent's decision
+// path.
 func TestDenylistMu_NilGuard(t *testing.T) {
-	var buf bytes.Buffer
-	orig := log.Writer()
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(orig) })
-
-	// Unwired Deps: guard returns a STABLE NO-OP mutex (never nil) AND
-	// logs the warning. Repeated calls must return the same instance so
-	// the lock is a real shared mutex rather than a fresh one per call.
-	if mu := (Deps{}).denylistMu(); mu == nil {
-		t.Fatalf("denylistMu() = nil for unwired Deps, want a stable no-op mutex (never nil)")
+	// Unwired Deps: error + nil mutex — the handler fails closed and
+	// never takes a partial lock.
+	unwiredMu, err := (Deps{}).denylistMu()
+	if !errors.Is(err, ErrDenylistMuUnwired) {
+		t.Fatalf("denylistMu() on unwired Deps: err = %v, want ErrDenylistMuUnwired", err)
 	}
-	if got, again := (Deps{}).denylistMu(), (Deps{}).denylistMu(); got != again {
-		t.Fatalf("denylistMu() on unwired Deps returned different instances (%p vs %p), want the shared no-op mutex", got, again)
-	}
-	if !bytes.Contains(buf.Bytes(), []byte("URLDenylistMu unset")) ||
-		!bytes.Contains(buf.Bytes(), []byte("WARNING")) {
-		t.Fatalf("denylistMu() on unwired Deps did not log the expected warning, got: %q", buf.String())
+	if unwiredMu != nil {
+		t.Fatalf("denylistMu() on unwired Deps returned mutex %p, want nil", unwiredMu)
 	}
 
-	// Wired Deps: guard returns the exact shared instance, no warning.
+	// Wired Deps: the exact shared instance, no error.
 	var mu sync.RWMutex
-	buf.Reset()
-	if got := (Deps{URLDenylistMu: &mu}).denylistMu(); got != &mu {
-		t.Fatalf("denylistMu() = %v, want the shared instance", got)
+	got, err := (Deps{URLDenylistMu: &mu}).denylistMu()
+	if err != nil {
+		t.Fatalf("denylistMu() on wired Deps: err = %v, want nil", err)
 	}
-	if buf.Len() != 0 {
-		t.Fatalf("denylistMu() on wired Deps logged unexpectedly: %q", buf.String())
+	if got != &mu {
+		t.Fatalf("denylistMu() = %p, want the shared instance", got)
 	}
 }
 
-// TestDenylistHandlers_UnwiredNoPanic pins the robustness half of review
-// finding #3: with Deps.URLDenylistMu nil (unwired), every denylist handler
-// must run to completion without nil-panicking on the mutex it obtains from
-// denylistMu(). A real DB is wired so logAudit's deps.DB.LogAudit is
-// exercised too; Cfg is a fresh config with an empty WebFetch denylist.
+// TestDenylistHandlers_UnwiredNoPanic pins the fail-closed contract of
+// finding #2: with Deps.URLDenylistMu nil (unwired), every denylist
+// handler must return ErrDenylistMuUnwired — not panic on the mutex and
+// not proceed with a partial lock — and must leave the denylist
+// untouched. The real DB is wired so a handler that slipped past the
+// guard would be exercised end-to-end; the seed host proves the list
+// itself was never mutated.
 func TestDenylistHandlers_UnwiredNoPanic(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+
+	seed := []string{"seed.example"}
 
 	// URLDenylistMu intentionally left nil (unwired).
 	deps := Deps{
@@ -67,28 +62,29 @@ func TestDenylistHandlers_UnwiredNoPanic(t *testing.T) {
 		Gateway: "test",
 		Cfg:     &config.Config{Users: []config.UserConfig{{Name: "parent", Role: "parent"}}},
 	}
+	deps.Cfg.Tools.WebFetch.URLDenylist = seed
 
 	ctx := context.Background()
 
-	// list: read path.
-	if _, err := HandleDenylistList(ctx, deps, map[string]any{}); err != nil {
-		t.Fatalf("HandleDenylistList unwired: %v", err)
+	// list: read path — must error, not panic.
+	if _, err := HandleDenylistList(ctx, deps, map[string]any{}); !errors.Is(err, ErrDenylistMuUnwired) {
+		t.Fatalf("HandleDenylistList unwired: err = %v, want ErrDenylistMuUnwired", err)
 	}
 
-	// add: exclusive read-modify-write + audit.
-	out, err := HandleDenylistAdd(ctx, deps, map[string]any{"host": "example.com"})
-	if err != nil {
-		t.Fatalf("HandleDenylistAdd unwired: %v", err)
-	}
-	if len(deps.Cfg.Tools.WebFetch.URLDenylist) != 1 || deps.Cfg.Tools.WebFetch.URLDenylist[0] != "example.com" {
-		t.Fatalf("HandleDenylistAdd unwired did not append host, got: %v (out=%q)", deps.Cfg.Tools.WebFetch.URLDenylist, out)
+	// add: must error and leave the list unmodified.
+	if out, err := HandleDenylistAdd(ctx, deps, map[string]any{"host": "example.com"}); err == nil {
+		t.Fatalf("HandleDenylistAdd unwired: err = nil, want ErrDenylistMuUnwired (out=%q)", out)
+	} else if !errors.Is(err, ErrDenylistMuUnwired) {
+		t.Fatalf("HandleDenylistAdd unwired: err = %v, want ErrDenylistMuUnwired", err)
 	}
 
-	// remove: exclusive read-modify-write + audit.
-	if _, err := HandleDenylistRemove(ctx, deps, map[string]any{"host": "example.com"}); err != nil {
-		t.Fatalf("HandleDenylistRemove unwired: %v", err)
+	// remove: must error and leave the list unmodified.
+	if _, err := HandleDenylistRemove(ctx, deps, map[string]any{"host": "seed.example"}); !errors.Is(err, ErrDenylistMuUnwired) {
+		t.Fatalf("HandleDenylistRemove unwired: err = %v, want ErrDenylistMuUnwired", err)
 	}
-	if len(deps.Cfg.Tools.WebFetch.URLDenylist) != 0 {
-		t.Fatalf("HandleDenylistRemove unwired did not clear the list, got: %v", deps.Cfg.Tools.WebFetch.URLDenylist)
+
+	// No handler may have touched the denylist.
+	if got := deps.Cfg.Tools.WebFetch.URLDenylist; !reflect.DeepEqual(got, seed) {
+		t.Fatalf("denylist after unwired handler calls = %v, want unmodified %v", got, seed)
 	}
 }

@@ -6,6 +6,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -49,46 +50,44 @@ type Deps struct {
 	// denylist_list / denylist_add / denylist_remove handlers take it
 	// (RLock / Lock) so their read-modify-writes of
 	// Cfg.Tools.WebFetch.URLDenylist never race hostDecision's
-	// decision-time slice reads. Nil in standalone/test Deps where no
-	// live agent decision path shares the config; handlers then
-	// access the slice unsynchronized (safe by construction in those
-	// contexts, which run single-threaded).
+	// decision-time slice reads.
+	//
+	// It is REQUIRED for any entry point that can run concurrently with
+	// the agent: when nil, denylistMu() returns ErrDenylistMuUnwired and
+	// every denylist handler fails closed instead of touching the list,
+	// so a misconfigured entry point surfaces the error at the call site
+	// rather than degrading to a partial lock that does not serialize
+	// against the agent's decision path (review finding: global no-op
+	// mutex).
 	//
 	// NOTE: a value sync.RWMutex is deliberately NOT used here: the
 	// field must share the agent's lock instance (&a.urlDenylistMu),
 	// and a value field would be copied into each Deps, defeating the
-	// synchronization. nil is therefore possible; denylistMu() logs a
-	// prominent warning at handler entry when it is and returns a stable
-	// no-op mutex (never nil) so a handler that omits a nil-check before
-	// Lock/RLock degrades to unsynchronized-with-the-agent access rather
-	// than nil-panicking (review finding: nil-mutex race).
+	// synchronization.
 	URLDenylistMu *sync.RWMutex
 }
 
-// noopDenylistMu is a shared, otherwise-unused *sync.RWMutex returned by
-// denylistMu() when Deps.URLDenylistMu is unwired. It exists so a handler
-// that dereferences denylistMu() without a nil-check cannot nil-panic; the
-// lock it provides intentionally does NOT serialize against the Agent's
-// decision path (which holds &a.urlDenylistMu), so an unwired entry point
-// degrades to handler-to-handler locking plus the logged warning rather
-// than a crash.
-var noopDenylistMu sync.RWMutex
+// ErrDenylistMuUnwired is returned by denylistMu() when
+// Deps.URLDenylistMu is nil. All denylist handlers fail closed on it:
+// proceeding without the agent's lock would let their read-modify-write
+// of Cfg.Tools.WebFetch.URLDenylist race hostDecision's decision-time
+// slice reads, so the misconfiguration is returned to the caller instead
+// of being logged and continued.
+var ErrDenylistMuUnwired = errors.New("admin denylist: Deps.URLDenylistMu is not wired to the agent's urlDenylistMu; refusing to touch the denylist unsynchronized")
 
 // denylistMu returns the shared denylist lock for a denylist handler.
 // When Deps.URLDenylistMu is wired it returns that instance so the
 // handler's read-modify-write of Cfg.Tools.WebFetch.URLDenylist never
 // races hostDecision's decision-time slice reads. When unwired it logs a
-// prominent warning and returns the stable no-op mutex (noopDenylistMu)
-// instead of nil, so a handler that omits a nil-check before Lock/RLock
-// degrades to unsynchronized-with-the-agent access rather than
-// nil-panicking. Nil was only ever legal in single-threaded standalone/
-// test Deps; the no-op mutex preserves that behavior safely.
-func (d Deps) denylistMu() *sync.RWMutex {
+// prominent error and returns ErrDenylistMuUnwired, so the handler
+// fails closed at the call site rather than degrading to a no-op lock
+// that would not serialize against the agent's decision path.
+func (d Deps) denylistMu() (*sync.RWMutex, error) {
 	if d.URLDenylistMu == nil {
-		log.Printf("[admin] WARNING: denylist handler invoked with URLDenylistMu unset — read-modify-write of Cfg.Tools.WebFetch.URLDenylist is UNSYNCHRONIZED. This is only safe in single-threaded standalone/test Deps; every production entry point must wire Deps.URLDenylistMu to the agent's urlDenylistMu.")
-		return &noopDenylistMu
+		log.Printf("[admin] ERROR: denylist handler invoked with URLDenylistMu unset — failing closed. Every entry point that can run concurrently with the agent's hostDecision path must wire Deps.URLDenylistMu to the agent's urlDenylistMu.")
+		return nil, ErrDenylistMuUnwired
 	}
-	return d.URLDenylistMu
+	return d.URLDenylistMu, nil
 }
 
 // MCPManager abstracts MCP server lifecycle management needed by the
