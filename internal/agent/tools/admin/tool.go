@@ -65,7 +65,7 @@ type Deps struct {
 	// and a value field would be copied into each Deps, defeating the
 	// synchronization.
 	URLDenylistMu *sync.RWMutex
-	
+
 	// SharedConfig is the shared configuration manager for atomic save/reload operations
 	// with proper transactional semantics and conflict detection.
 	SharedConfig *SharedConfigManager

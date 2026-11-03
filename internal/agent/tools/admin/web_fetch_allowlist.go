@@ -99,7 +99,8 @@ func HandleAllowlistAdd(ctx context.Context, deps Deps, args map[string]any) (st
 	if deps.ConfigPath != "" && deps.SharedConfig != nil {
 		// Use the new transactional SaveConfig method with proper lock order (T→M)
 		// Acquire T (content gate) before M (deps.denylistMu)
-		_, err = deps.SharedConfig.SaveConfig(deps.Cfg, "")
+		token, _ := deps.SharedConfig.CurrentToken()
+		_, err = deps.SharedConfig.SaveConfig(deps.Cfg, token)
 		if err != nil {
 			// On token mismatch (operator conflict), return the error
 			if strings.Contains(err.Error(), "operator conflict") {
@@ -175,7 +176,8 @@ func HandleAllowlistRemove(ctx context.Context, deps Deps, args map[string]any) 
 	if deps.ConfigPath != "" && deps.SharedConfig != nil {
 		// Use the new transactional SaveConfig method with proper lock order (T→M)
 		// Acquire T (content gate) before M (deps.denylistMu)
-		_, err = deps.SharedConfig.SaveConfig(deps.Cfg, "")
+		token, _ := deps.SharedConfig.CurrentToken()
+		_, err = deps.SharedConfig.SaveConfig(deps.Cfg, token)
 		if err != nil {
 			// On token mismatch (operator conflict), return the error
 			if strings.Contains(err.Error(), "operator conflict") {

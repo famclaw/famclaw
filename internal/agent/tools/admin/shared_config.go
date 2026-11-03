@@ -3,6 +3,8 @@
 package admin
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"sync"
@@ -17,6 +19,7 @@ type SharedConfigManager struct {
 	configPath string
 	mu         sync.Mutex
 	watcher    *ConfigWatcher
+	lastToken  string
 }
 
 // NewSharedConfigManager creates a new shared config manager for the given config path
@@ -62,6 +65,9 @@ func (scm *SharedConfigManager) SaveConfig(cfg interface{}, contentToken string)
 		return "", fmt.Errorf("generating content token: %w", err)
 	}
 
+	// Record the new token
+	scm.lastToken = newToken
+
 	// Notify watchers of the change
 	go scm.watcher.NotifyChange(newToken)
 
@@ -98,9 +104,37 @@ func (scm *SharedConfigManager) validateContentToken(contentToken string) error 
 
 // generateContentToken creates a deterministic token based on file content
 func (scm *SharedConfigManager) generateContentToken(data []byte) (string, error) {
-	// Simple hash-based token generation
-	// In a real implementation, this would use a more robust hashing method
-	token := fmt.Sprintf("%x", time.Now().UnixNano()) // simplified for this implementation
+	// Use SHA256 hash of the data to create a deterministic token
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+// CurrentToken returns the current content token for the config file
+func (scm *SharedConfigManager) CurrentToken() (string, error) {
+	scm.mu.Lock()
+	defer scm.mu.Unlock()
+
+	// If we don't have a config path, return empty string
+	if scm.configPath == "" {
+		return "", nil
+	}
+
+	// Read current file content to generate token
+	data, err := os.ReadFile(scm.configPath)
+	if err != nil {
+		// If file doesn't exist, return empty string (no token)
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	// Generate token from current content
+	token, err := scm.generateContentToken(data)
+	if err != nil {
+		return "", err
+	}
+
 	return token, nil
 }
 
