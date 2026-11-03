@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/config"
@@ -41,6 +42,17 @@ type Deps struct {
 	// to persist new MCP server entries so they survive restarts.
 	ConfigPath string
 	Scanner    skillbridge.Scanner
+
+	// URLDenylistMu is the agent's denylist lock, shared with the
+	// decision path (Agent.urlDenylistMu in internal/agent). The
+	// denylist_list / denylist_add / denylist_remove handlers take it
+	// (RLock / Lock) so their read-modify-writes of
+	// Cfg.Tools.WebFetch.URLDenylist never race hostDecision's
+	// decision-time slice reads. Nil in standalone/test Deps where no
+	// live agent decision path shares the config; handlers then
+	// access the slice unsynchronized (safe by construction in those
+	// contexts, which run single-threaded).
+	URLDenylistMu *sync.RWMutex
 }
 
 // MCPManager abstracts MCP server lifecycle management needed by the

@@ -129,7 +129,7 @@ The `web_fetch` tool allows users to fetch content from websites. It extracts HT
 
 ### Web Search (`web_search`)
 
-The `web_search` tool allows users to search the web for current information (news, weather, prices, flights, products, public docs). It returns a list of title/url/snippet results. It queries SearXNG (default — requires `tools.web_fetch.enabled=true` and reuses its `url_allowlist` as the host gate) or hosted Tavily (`provider: tavily` + the `FAMCLAW_WEB_SEARCH_API_KEY` env var).
+The `web_search` tool allows users to search the web for current information (news, weather, prices, flights, products, public docs). It returns a list of title/url/snippet results. It queries SearXNG (default — requires `tools.web_fetch.enabled=true`, and the SearXNG endpoint host is gated by the same mode-aware URL policy as `web_fetch`: in `allowlist` mode it must be in `url_allowlist`, while in the default `denylist` mode public hosts are allowed and the bundled kid-safe baseline plus `url_denylist` entries block) or hosted Tavily (`provider: tavily` + the `FAMCLAW_WEB_SEARCH_API_KEY` env var).
 
 ### URL Policy Configuration
 

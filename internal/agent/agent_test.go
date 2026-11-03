@@ -13,9 +13,11 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/agent/tools/admin"
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/compress"
@@ -968,6 +970,87 @@ func TestHostDecision_NoStaleDenylistSlice(t *testing.T) {
 	a.cfg.Tools.WebFetch.URLDenylist = nil
 	if ok, reason := a.hostDecision(ctx, host); !ok || reason != "" {
 		t.Errorf("hostDecision(%q) after admin denylist remove = (%v, %q); want (true, \"\")", host, ok, reason)
+	}
+}
+
+// TestHostDecision_DenylistConcurrentReadWrite pins the synchronization
+// guard on cfg.Tools.WebFetch.URLDenylist (review finding: data race).
+// hostDecision reads the shared slice at decision time while the
+// parent-facing admin handlers rewrite it concurrently through the shared
+// config. A concurrent slice-header write racing a read is undefined
+// behavior (torn header → OOB read or panic), so every such access goes
+// through Agent.urlDenylistMu — the same mutex the admin handlers receive
+// via Deps.URLDenylistMu. This test only has teeth under -race; run with
+// `go test -race ./internal/agent/...`.
+func TestHostDecision_DenylistConcurrentReadWrite(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+	}
+
+	// The handlers rewrite the shared slice and write audit rows through
+	// the shared db — exactly the concurrent access pattern hostDecision
+	// races against.
+	deps := admin.Deps{
+		DB:            db,
+		Cfg:           a.cfg,
+		Actor:         "parent",
+		Gateway:       "test",
+		URLDenylistMu: &a.urlDenylistMu,
+	}
+
+	// Reader host: deterministically unblocked by every other gate
+	// (not in the bundled baseline, not suspicious) — the only gate that
+	// can ever fire for it is the denylist we churn (same premise as
+	// TestHostDecision_NoStaleDenylistSlice). Writer host: never read,
+	// only ever in/out of the shared slice.
+	const host = "192.168.1.50"
+	const denied = "denied.example.com"
+	const cycles = 200
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < cycles*5; i++ {
+			if ok, reason := a.hostDecision(context.Background(), host); !ok || reason != "" {
+				t.Errorf("hostDecision(%q) during concurrent denylist churn = (%v, %q); want (true, \"\")", host, ok, reason)
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < cycles; i++ {
+			if _, err := admin.HandleDenylistAdd(context.Background(), deps, map[string]any{"host": denied}); err != nil {
+				t.Errorf("HandleDenylistAdd: %v", err)
+				return
+			}
+			if _, err := admin.HandleDenylistRemove(context.Background(), deps, map[string]any{"host": denied}); err != nil {
+				t.Errorf("HandleDenylistRemove: %v", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	if got := a.cfg.Tools.WebFetch.URLDenylist; len(got) != 0 {
+		t.Fatalf("denylist after paired add/remove cycles = %v; want empty", got)
 	}
 }
 
