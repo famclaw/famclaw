@@ -14,12 +14,20 @@ import (
 )
 
 // MaxDeliveryAttempts is the number of consecutive failed proactive deliveries
-// after which the scheduler gives up on a reminder, marking it dispatched so
-// it is no longer retried. This prevents an indefinite retry loop against a
-// permanently-failing destination (e.g. a Discord channel that 404s as
-// "Unknown Channel" every 30s). The counter persists across restarts via the
-// reminders.delivery_attempts column.
+// after which the scheduler gives up on a reminder, moving it to the
+// undelivered path so it is no longer retried. This prevents an indefinite
+// retry loop against a permanently-failing destination (e.g. a Discord
+// channel that 404s as "Unknown Channel" every 30s). The counter persists
+// across restarts via the reminders.delivery_attempts column.
 const MaxDeliveryAttempts = 3
+
+// MaxTerminalAttempts is the bounded retry budget for terminalizing a
+// reminder whose undelivered-record persistence failed: how many times the
+// record save (and, while the row sits in 'undelivered_retry', its retry) is
+// attempted before the reminder is closed out as 'undelivered' with
+// record_lost evidence. The budget persists in reminders.terminal_attempts,
+// so it is not reset by restarts.
+const MaxTerminalAttempts = 3
 
 // Failure reasons recorded in the undelivered-reminder store (and in logs).
 // They are machine-readable identifiers, not user-facing prose — the user
@@ -44,7 +52,11 @@ type ReminderStore interface {
 	CreateReminder(ctx context.Context, r *store.Reminder) error
 	GetDueReminders(ctx context.Context, now time.Time) ([]*store.Reminder, error)
 	GetPendingReminders(ctx context.Context) ([]*store.Reminder, error)
+	GetUndeliveredRetryReminders(ctx context.Context) ([]*store.Reminder, error)
 	MarkReminderDispatched(ctx context.Context, id int64, now time.Time) error
+	MarkUndelivered(ctx context.Context, id int64, now time.Time, reason string) error
+	BeginUndeliveredRetry(ctx context.Context, id int64, reason string) error
+	IncrementTerminalAttempt(ctx context.Context, id int64) error
 	IncrementDeliveryAttempt(ctx context.Context, id int64) (int, error)
 }
 
@@ -152,6 +164,14 @@ type Scheduler struct {
 	// Process-volatile like failedReminders: after a restart a target gets
 	// one more attempt, which also lets a re-created channel self-heal.
 	invalidTargets map[string]bool
+	// justParked holds the reminder ids that transitioned into
+	// 'undelivered_retry' during the CURRENT processDue call. The
+	// terminalization pass of that same tick skips them: a reminder just
+	// parked gets its first record-save retry on the NEXT tick (or the next
+	// process after a restart), which keeps the terminal budget's save
+	// attempts spaced across ticks instead of doubled on the parking tick.
+	// Per-tick only — never persisted.
+	justParked map[int64]bool
 }
 
 // NewScheduler creates a new reminder scheduler.
@@ -168,6 +188,7 @@ func NewScheduler(db ReminderStore, dispatcher *Dispatcher, interval time.Durati
 		clock:           time.Now,
 		failedReminders: make(map[int64]bool),
 		invalidTargets:  make(map[string]bool),
+		justParked:      make(map[int64]bool),
 	}
 }
 
@@ -263,6 +284,141 @@ func (s *Scheduler) processDue(ctx context.Context) {
 
 		s.dispatchOnce(ctx, r, now)
 	}
+
+	// Terminalization pass: reminders sitting in the bounded
+	// 'undelivered_retry' state get their undelivered-record persistence
+	// retried (and terminalized once the budget is exhausted) — WITHOUT
+	// re-attempting delivery. This is what makes the undelivered state
+	// durable across ticks and restarts instead of one-shot. Reminders
+	// parked earlier in this very tick are skipped so their retry budget is
+	// consumed across ticks, not doubled here.
+	s.processUndeliveredRetry(ctx, now)
+
+	s.mu.Lock()
+	s.justParked = make(map[int64]bool)
+	s.mu.Unlock()
+}
+
+// processUndeliveredRetry retries terminalization for every reminder in the
+// 'undelivered_retry' state (its undelivered-record persistence failed and it
+// was parked in the bounded retry state by handleUndeliverable / a previous
+// pass). Each call is one bounded step of the terminal budget: the record
+// save is attempted once; on success the reminder terminalizes as
+// 'undelivered' with the original reason; on failure it stays in the retry
+// state until terminal_attempts reaches MaxTerminalAttempts, then it
+// terminalizes as 'undelivered' with record_lost evidence. Delivery is never
+// re-attempted here.
+func (s *Scheduler) processUndeliveredRetry(ctx context.Context, now time.Time) {
+	retrying, err := s.db.GetUndeliveredRetryReminders(ctx)
+	if err != nil {
+		log.Printf("[reminder] event=undelivered_retry_load reminder_load_failed=true detail=%v", redactErr(err))
+		return
+	}
+	for _, r := range retrying {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.stopCh:
+			return
+		default:
+		}
+
+		s.mu.Lock()
+		parked := s.justParked[r.ID]
+		s.mu.Unlock()
+		if parked {
+			continue // first retry on the next tick (or next process)
+		}
+		s.recordOrTerminalize(ctx, r, now, r.UndeliveredReason)
+	}
+}
+
+// recordOrTerminalize is one step of the bounded terminalization retry:
+// attempt to persist the undelivered record; on success terminalize with the
+// original delivery-failure reason; on failure persist one consumed step of
+// the terminal budget and stay in the retry state until
+// terminal_attempts reaches MaxTerminalAttempts, then terminalize with
+// record_lost evidence. No fallback re-notification here — the user was
+// already notified (or not reachable) when the failure first happened, and
+// re-notifying on every retry would spam. Delivery is never re-attempted.
+func (s *Scheduler) recordOrTerminalize(ctx context.Context, r *store.Reminder, now time.Time, reason string) {
+	if s.recordUndelivered(ctx, r, reason) {
+		s.finalizeUndelivered(ctx, r, now, reason, true)
+		return
+	}
+	if r.TerminalAttempts >= MaxTerminalAttempts {
+		// Budget exhausted: close out truthfully. The content still lives in
+		// the reminders row itself; no undelivered_reminders record exists,
+		// and none is claimed.
+		s.finalizeUndelivered(ctx, r, now, reason, false)
+		return
+	}
+	// Consume one bounded retry step; persisting it (not just counting it in
+	// memory) is what keeps the budget intact across restarts.
+	if ierr := s.db.IncrementTerminalAttempt(ctx, r.ID); ierr != nil {
+		// Budget accounting could not be persisted: the in-memory guard
+		// bounds this process; a restart gets the documented one-more-attempt
+		// (#395 invariant). Never silently close as delivered.
+		log.Printf("[reminder] event=undelivered_retry reminder_id=%d increment_failed=true detail=%v", r.ID, redactErr(ierr))
+		s.abandonInMemory(r, ierr)
+		return
+	}
+	log.Printf("[reminder] event=undelivered_retry reminder_id=%d attempt=%d max=%d recorded=false detail=record persistence still failing; retrying on next tick",
+		r.ID, r.TerminalAttempts+1, MaxTerminalAttempts)
+}
+
+// recordUndelivered persists the reminder content so a delivery failure is
+// never silently lost. It reports whether the record was durably stored —
+// callers must not claim a dashboard record exists when it returns false.
+// If the store write itself fails, the content goes to the log as the last
+// resort — it must never disappear.
+func (s *Scheduler) recordUndelivered(ctx context.Context, r *store.Reminder, reason string) bool {
+	if s.undelivered == nil {
+		log.Printf("[reminder] event=undelivered_record reminder_id=%d recorded=false record_lost=true detail=no undelivered store configured; no dashboard record exists for this reminder", r.ID)
+		return false
+	}
+	chatID := r.ExternalID
+	if r.IsGroup && r.GroupID != "" {
+		chatID = r.GroupID
+	}
+	u := &store.UndeliveredReminder{
+		ReminderID: r.ID,
+		UserName:   r.UserName,
+		Gateway:    r.Gateway,
+		ChatID:     chatID,
+		Message:    r.Message,
+		Reason:     reason,
+	}
+	if err := s.undelivered.SaveUndeliveredReminder(ctx, u); err != nil {
+		log.Printf("[reminder] event=undelivered_record reminder_id=%d recorded=false record_lost=true reason=%s detail=%v",
+			r.ID, reason, redactErr(err))
+		return false
+	}
+	log.Printf("[reminder] event=undelivered_record reminder_id=%d recorded=true record_lost=false reason=%s", r.ID, reason)
+	return true
+}
+
+// finalizeUndelivered terminalizes a reminder in the truthful 'undelivered'
+// state (never 'delivered'/'dispatched-as-success') and writes the
+// operational-evidence log line. recorded reports whether a
+// undelivered_reminders row exists: when false, no dashboard record is
+// claimed — the content survives only in the reminders row and this log line.
+func (s *Scheduler) finalizeUndelivered(ctx context.Context, r *store.Reminder, now time.Time, reason string, recorded bool) {
+	if merr := s.db.MarkUndelivered(ctx, r.ID, now, reason); merr != nil {
+		// Even the truthful terminal state could not be persisted: the
+		// in-memory abandonment guard bounds the process, and a restart
+		// gets one more attempt (the documented process-volatile invariant
+		// from #395). Never fall back to a false 'delivered' mark.
+		log.Printf("[reminder] event=undelivered_terminal reminder_id=%d recorded=%v mark_failed=true detail=%v",
+			r.ID, recorded, redactErr(merr))
+		s.abandonInMemory(r, merr)
+		return
+	}
+	if recorded {
+		log.Printf("[reminder] event=undelivered_terminal reminder_id=%d reason=%s recorded=true record_lost=false detail=content in undelivered store; user notified status see preceding fallback log", r.ID, reason)
+	} else {
+		log.Printf("[reminder] event=undelivered_terminal reminder_id=%d reason=%s recorded=false record_lost=true detail=no undelivered store row exists; content preserved in reminders row only; no dashboard record claimed", r.ID, reason)
+	}
 }
 
 // dispatchOnce delivers a single reminder. On success it marks the reminder
@@ -281,10 +437,13 @@ func (s *Scheduler) processDue(ctx context.Context) {
 //     never means silent loss: the content is recorded in the undelivered
 //     store and the user is notified through an alternate channel.
 //
-// When the database cannot persist the give-up mark, the reminder is
-// abandoned in-memory (failedReminders) so no failure combination produces
-// unbounded retries. The set is process-volatile: on restart a reminder in
-// it gets one more attempt (not a per-30s-forever storm).
+// The undeliverable path (handleUndeliverable) is truthful about terminal
+// state: a reminder that could not be delivered is never marked delivered.
+// When the database cannot persist either the give-up mark or the
+// undelivered-retry transition, the reminder is abandoned in-memory
+// (failedReminders) so no failure combination produces unbounded retries.
+// The set is process-volatile: on restart a reminder in it gets one more
+// attempt (not a per-30s-forever storm).
 func (s *Scheduler) dispatchOnce(ctx context.Context, r *store.Reminder, now time.Time) {
 	// Skip reminders already abandoned in this process lifetime, and take
 	// the fast path for a target already known to be dead.
@@ -307,7 +466,15 @@ func (s *Scheduler) dispatchOnce(ctx context.Context, r *store.Reminder, now tim
 	err := s.dispatcher.Dispatch(ctx, r)
 	if err == nil {
 		if merr := s.db.MarkReminderDispatched(ctx, r.ID, now); merr != nil {
-			log.Printf("[reminder] mark dispatched failed for reminder %d: %v", r.ID, merr)
+			// The message DID go out; only the persistence of the success
+			// mark failed. Re-sending on the next tick would deliver the
+			// reminder twice to a user who already received it, so the
+			// success path is idempotent within the process: abandon in
+			// memory (bounded), and let a restart — not the 30s tick — get
+			// the one additional attempt the #395 process-volatile invariant
+			// documents.
+			log.Printf("[reminder] event=mark_delivered_failed reminder_id=%d detail=%v — user already received the reminder; no re-send this process", r.ID, redactErr(merr))
+			s.abandonInMemory(r, merr)
 		}
 		return
 	}
@@ -320,13 +487,13 @@ func (s *Scheduler) dispatchOnce(ctx context.Context, r *store.Reminder, now tim
 		s.invalidTargets[targetKey(r)] = true
 		s.mu.Unlock()
 		log.Printf("[reminder] reminder %d: %s chat no longer exists; target marked invalid: %v",
-			r.ID, r.Gateway, redact(err))
+			r.ID, r.Gateway, redactErr(err))
 		s.handleUndeliverable(ctx, r, now, ReasonInvalidChat, err)
 		return
 	}
 
 	// Transient failure: keep #332's bounded-retry semantics.
-	log.Printf("[reminder] dispatch failed for reminder %d: %v", r.ID, redact(err))
+	log.Printf("[reminder] dispatch failed for reminder %d: %v", r.ID, redactErr(err))
 	attempts, aerr := s.db.IncrementDeliveryAttempt(ctx, r.ID)
 	if aerr != nil {
 		log.Printf("[reminder] recording delivery failure for reminder %d: %v", r.ID, aerr)
@@ -345,66 +512,77 @@ func (s *Scheduler) dispatchOnce(ctx context.Context, r *store.Reminder, now tim
 }
 
 // handleUndeliverable is the end of the line for a reminder that will not be
-// delivered: the content is persisted to the undelivered-reminder store (so
-// it is never silently lost and the user can query it), the user is notified
-// through an alternate reachable channel when one exists (best effort — the
-// store is the authoritative record), and the reminder is marked dispatched
-// so the retry loop stops.
+// delivered to its target. Terminal state is truthful, never
+// delivered/dispatched-as-success:
+//
+//   - the undelivered record is persisted (s.recordUndelivered reports
+//     whether it actually was — an absent store or a failed save means NO
+//     dashboard record exists, and none may be claimed),
+//   - the user is notified through an alternate reachable channel when one
+//     exists (best effort, at most once — the store/row, not the push, is
+//     the record of what happened),
+//   - when persistence is absent OR failed AND a durable terminal mark still
+//     cannot be made, the reminder enters the BOUNDED 'undelivered_retry'
+//     state (terminal_attempts budget, persisted, survives restarts) and is
+//     retried by the terminalization pass instead of being silently closed,
+//   - when the budget exhausts, the reminder terminalizes as 'undelivered'
+//     with record_lost operational evidence (structured log + state on the
+//     row; the content still lives in the reminders row itself).
 func (s *Scheduler) handleUndeliverable(ctx context.Context, r *store.Reminder, now time.Time, reason string, cause error) {
-	s.recordUndelivered(ctx, r, reason)
-	notified := s.notifyFallback(ctx, r, reason)
-	if merr := s.db.MarkReminderDispatched(ctx, r.ID, now); merr != nil {
-		s.abandonInMemory(r, merr)
+	recorded := s.recordUndelivered(ctx, r, reason)
+	s.notifyFallback(ctx, r, reason)
+
+	if recorded {
+		s.finalizeUndelivered(ctx, r, now, reason, true)
 		return
 	}
-	if notified {
-		log.Printf("[reminder] reminder %d undeliverable (%s): content recorded, user notified via fallback, marked dispatched", r.ID, reason)
-	} else {
-		log.Printf("[reminder] reminder %d undeliverable (%s): content recorded, no reachable fallback channel, marked dispatched", r.ID, reason)
-	}
-}
-
-// recordUndelivered persists the reminder content so a delivery failure is
-// never silently lost. If the store write itself fails, the content goes to
-// the log as the last resort — it must never disappear.
-func (s *Scheduler) recordUndelivered(ctx context.Context, r *store.Reminder, reason string) {
+	// No durable record: no store configured, or the save failed.
 	if s.undelivered == nil {
+		// A store that does not exist cannot start existing on a later tick:
+		// terminalize now with record_lost evidence (bounded, truthful).
+		s.finalizeUndelivered(ctx, r, now, reason, false)
 		return
 	}
-	chatID := r.ExternalID
-	if r.IsGroup && r.GroupID != "" {
-		chatID = r.GroupID
+	if r.TerminalAttempts >= MaxTerminalAttempts {
+		// The bounded retry budget is exhausted (this can only happen via the
+		// terminalization pass re-entering after a restart — the pass
+		// terminalizes at the budget itself, so in-process this is a safety
+		// close-out).
+		s.finalizeUndelivered(ctx, r, now, reason, false)
+		return
 	}
-	u := &store.UndeliveredReminder{
-		ReminderID: r.ID,
-		UserName:   r.UserName,
-		Gateway:    r.Gateway,
-		ChatID:     chatID,
-		Message:    r.Message,
-		Reason:     reason,
+	// Transient persistence failure: park in the bounded undelivered_retry
+	// state. terminal_attempts is bumped by the transition and persists, so
+	// the budget is never reset by restarts. If even this transition fails
+	// (the database is down), the in-memory abandonment guard keeps this
+	// process bounded — exactly the #395 invariant.
+	if terr := s.db.BeginUndeliveredRetry(ctx, r.ID, reason); terr != nil {
+		log.Printf("[reminder] event=undelivered_retry_park reminder_id=%d recorded=false park_failed=true detail=%v", r.ID, redactErr(terr))
+		s.abandonInMemory(r, terr)
+		return
 	}
-	if err := s.undelivered.SaveUndeliveredReminder(ctx, u); err != nil {
-		log.Printf("[reminder] storing undelivered reminder %d failed: %v — content: %q", r.ID, err, r.Message)
-	}
+	s.mu.Lock()
+	s.justParked[r.ID] = true
+	s.mu.Unlock()
+	log.Printf("[reminder] event=undelivered_retry reminder_id=%d attempt=1 max=%d recorded=false detail=undelivered persistence failed; terminalization retried on later ticks/restarts", r.ID, MaxTerminalAttempts)
 }
 
-// notifyFallback delivers the undelivered-reminder notice to the user
-// through an alternate reachable channel. It returns true when the notice
-// was delivered. A failed (or absent) fallback only logs: the undelivered
-// store is the authoritative record, so the content is never lost — but the
-// primary goal is that the user actually sees it.
-func (s *Scheduler) notifyFallback(ctx context.Context, r *store.Reminder, reason string) bool {
+// notifyFallback delivers the undelivered-reminder notice to the user through
+// an alternate reachable channel. It is best-effort and runs at most once per
+// reminder: the undelivered record (or the reminders row itself) is the
+// authoritative evidence — the push is a courtesy, and a failed (or absent)
+// fallback only logs, without pretending a record or notification exists.
+func (s *Scheduler) notifyFallback(ctx context.Context, r *store.Reminder, reason string) {
 	if s.fallback == nil {
-		log.Printf("[reminder] reminder %d (%s): no fallback channel configured; content recorded in undelivered store only", r.ID, reason)
-		return false
+		log.Printf("[reminder] event=fallback_notify reminder_id=%d notified=false detail=no fallback channel configured", r.ID)
+		return
 	}
 	gw, ferr := s.fallback.Deliver(ctx, r, undeliveredText(r, reason))
 	if ferr != nil {
-		log.Printf("[reminder] fallback notification for reminder %d (%s) failed: %v — content recorded in undelivered store", r.ID, reason, redact(ferr))
-		return false
+		log.Printf("[reminder] event=fallback_notify reminder_id=%d reason=%s notified=false detail=%v", r.ID, reason, redactErr(ferr))
+		return
 	}
-	log.Printf("[reminder] delivered undelivered-reminder notice for %d to %s via %s", r.ID, r.UserName, gw)
-	return true
+	log.Printf("[reminder] event=fallback_notify reminder_id=%d reason=%s notified=true gateway=%s", r.ID, reason, gw)
 }
 
 // undeliveredText builds the user-facing notice. The original reminder
@@ -438,10 +616,10 @@ func (s *Scheduler) abandonInMemory(r *store.Reminder, merr error) {
 	log.Printf("[reminder] abandoned reminder %d in-memory (mark fault: %v) — no further retries this process", r.ID, merr)
 }
 
-// redact returns err's string with gateway bot/webhook credentials scrubbed
+// redactErr returns err's string with gateway bot/webhook credentials scrubbed
 // for logging: platform API error bodies and request URLs have leaked bot
 // tokens into plain log lines before.
-func redact(err error) string {
+func redactErr(err error) string {
 	redacted := notify.RedactWebhookURLInError(err)
 	if redacted == nil {
 		return "<nil>"
@@ -451,19 +629,22 @@ func redact(err error) string {
 
 // ReschedulePending loads all pending reminders and processes any that are
 // already due. Call this on startup to handle reminders that were due while
-// the service was down.
+// the service was down. It also resumes the bounded terminalization retry
+// for reminders parked in 'undelivered_retry' by a previous process — the
+// persisted terminal_attempts budget keeps that recovery bounded.
 func (s *Scheduler) ReschedulePending(ctx context.Context) {
 	now := s.clock()
 	reminders, err := s.db.GetPendingReminders(ctx)
 	if err != nil {
 		log.Printf("[reminder] error loading pending reminders: %v", err)
-		return
+	} else {
+		for _, r := range reminders {
+			if r.DueAt.After(now) {
+				continue // not due yet
+			}
+			s.dispatchOnce(ctx, r, now)
+		}
 	}
 
-	for _, r := range reminders {
-		if r.DueAt.After(now) {
-			continue // not due yet
-		}
-		s.dispatchOnce(ctx, r, now)
-	}
+	s.processUndeliveredRetry(ctx, now)
 }

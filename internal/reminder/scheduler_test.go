@@ -52,7 +52,9 @@ type mockDB struct {
 	reminders        []*store.Reminder
 	deliveryAttempts map[int64]int
 	incrementErr     error // if non-nil, IncrementDeliveryAttempt returns this error
-	markErr          error // if non-nil, MarkReminderDispatched returns this error
+	markErr          error // if non-nil, MarkReminderDispatched/MarkUndelivered return this error
+	beginErr         error // if non-nil, BeginUndeliveredRetry returns this error
+	terminalIncErr   error // if non-nil, IncrementTerminalAttempt returns this error
 }
 
 func newMockDB() *mockDB {
@@ -64,6 +66,7 @@ func (m *mockDB) CreateReminder(ctx context.Context, r *store.Reminder) error {
 	defer m.mu.Unlock()
 	r.ID = int64(len(m.reminders) + 1)
 	r.CreatedAt = time.Now().UTC()
+	r.DeliveryState = store.ReminderStatePending
 	m.reminders = append(m.reminders, r)
 	return nil
 }
@@ -73,7 +76,7 @@ func (m *mockDB) GetDueReminders(ctx context.Context, now time.Time) ([]*store.R
 	defer m.mu.Unlock()
 	var out []*store.Reminder
 	for _, r := range m.reminders {
-		if !r.Dispatched && (r.DueAt.Before(now) || r.DueAt.Equal(now)) {
+		if r.DeliveryState == store.ReminderStatePending && (r.DueAt.Before(now) || r.DueAt.Equal(now)) {
 			out = append(out, r)
 		}
 	}
@@ -85,7 +88,19 @@ func (m *mockDB) GetPendingReminders(ctx context.Context) ([]*store.Reminder, er
 	defer m.mu.Unlock()
 	var out []*store.Reminder
 	for _, r := range m.reminders {
-		if !r.Dispatched {
+		if r.DeliveryState == store.ReminderStatePending {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockDB) GetUndeliveredRetryReminders(ctx context.Context) ([]*store.Reminder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*store.Reminder
+	for _, r := range m.reminders {
+		if r.DeliveryState == store.ReminderStateUndeliveredRetry {
 			out = append(out, r)
 		}
 	}
@@ -100,8 +115,59 @@ func (m *mockDB) MarkReminderDispatched(ctx context.Context, id int64, at time.T
 	}
 	for _, r := range m.reminders {
 		if r.ID == id {
+			r.DeliveryState = store.ReminderStateDelivered
 			r.Dispatched = true
 			r.DispatchedAt = &at
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *mockDB) MarkUndelivered(ctx context.Context, id int64, at time.Time, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.markErr != nil {
+		return m.markErr
+	}
+	for _, r := range m.reminders {
+		if r.ID == id {
+			r.DeliveryState = store.ReminderStateUndelivered
+			r.Dispatched = true
+			r.DispatchedAt = &at
+			r.UndeliveredReason = reason
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *mockDB) BeginUndeliveredRetry(ctx context.Context, id int64, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.beginErr != nil {
+		return m.beginErr
+	}
+	for _, r := range m.reminders {
+		if r.ID == id {
+			r.DeliveryState = store.ReminderStateUndeliveredRetry
+			r.UndeliveredReason = reason
+			r.TerminalAttempts++
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *mockDB) IncrementTerminalAttempt(ctx context.Context, id int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.terminalIncErr != nil {
+		return m.terminalIncErr
+	}
+	for _, r := range m.reminders {
+		if r.ID == id && r.DeliveryState == store.ReminderStateUndeliveredRetry {
+			r.TerminalAttempts++
 			return nil
 		}
 	}
@@ -550,15 +616,17 @@ func (e *errSender) count() int {
 // mockFallback implements reminder.Fallback, recording what it would have
 // pushed to the user on an alternate channel.
 type mockFallback struct {
-	mu   sync.Mutex
-	sent []struct{ user, text string }
-	gw   string
-	err  error
+	mu       sync.Mutex
+	sent     []struct{ user, text string }
+	attempts int
+	gw       string
+	err      error
 }
 
 func (f *mockFallback) Deliver(ctx context.Context, r *store.Reminder, text string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.attempts++
 	if f.err != nil {
 		return "", f.err
 	}
@@ -567,6 +635,12 @@ func (f *mockFallback) Deliver(ctx context.Context, r *store.Reminder, text stri
 		return "telegram", nil
 	}
 	return f.gw, nil
+}
+
+func (f *mockFallback) attemptsCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.attempts
 }
 
 func (f *mockFallback) getSent() []struct {
