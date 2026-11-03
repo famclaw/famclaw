@@ -1464,7 +1464,6 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 	// hold RLock across the whole decision) instead.
 	a.urlDenylistMu.RLock()
 	fcfg := a.cfg.Tools.WebFetch
-	a.urlDenylistMu.RUnlock()
 	switch fcfg.ResolvedURLPolicy() {
 	case "allowlist":
 		// For allowlist mode, we must ensure we're using the same
@@ -1476,9 +1475,11 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 				continue
 			}
 			if host == allowed || strings.HasSuffix(host, "."+allowed) {
+				a.urlDenylistMu.RUnlock()
 				return true, ""
 			}
 		}
+		a.urlDenylistMu.RUnlock()
 		return false, "allowlist"
 	default: // "denylist"
 		// (a) Bundled kid-safe baseline (CC0-sourced, design §2) — always
@@ -1494,6 +1495,7 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 		a.baselineStoreOnce.Do(func() { a.baselineStore = webfilter.NewBaselineStore() })
 		baselineStore := a.baselineStore
 		if baselineStore.Blocks(host) {
+			a.urlDenylistMu.RUnlock()
 			return false, "baseline"
 		}
 		// (b) Parent-maintained deny entries. Read the slice directly from
@@ -1510,8 +1512,7 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 		// data race on URLDenylist); the snapshot
 		// is then matched without holding the lock, so a mid-match
 		// rewrite never blocks the writer longer than one header copy.
-		a.urlDenylistMu.RLock()
-		denyList := a.cfg.Tools.WebFetch.URLDenylist
+		denyList := fcfg.URLDenylist
 		a.urlDenylistMu.RUnlock()
 		for _, denied := range denyList {
 			denied = canonicalizeHost(denied)
