@@ -366,7 +366,8 @@ func TestAdminSetUserRole_Parent(t *testing.T) {
 
 			// Output policy: the child role must match the PII rule so a
 			// response containing a PII keyword is denied, not default-deny
-			// by accident.
+			// by accident. child+PII is allow-with-non-empty-redact (soft block),
+			// per OPA test_child_pii_leak (deny OR non-empty redact).
 			outDecision, err := ev.EvaluateOutput(ctx, policy.OutputInput{
 				User:          user,
 				Gateway:       "telegram",
@@ -375,8 +376,8 @@ func TestAdminSetUserRole_Parent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("EvaluateOutput: %v", err)
 			}
-			if outDecision.Allow {
-				t.Errorf("output policy allowed a PII-bearing response, want deny")
+			if outDecision.Allow && len(outDecision.Redact) == 0 {
+				t.Errorf("output policy let PII through unredacted (allow=%v redact=%v, reason=%q)", outDecision.Allow, outDecision.Redact, outDecision.Reason)
 			}
 
 			// Round-trip: list_users must surface the effective override.
