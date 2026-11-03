@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/open-policy-agent/opa v1.21.3
+	github.com/open-policy-agent/opa v1.22.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.61.0 // pure Go SQLite — no CGO, cross-compiles to arm/arm64
 )
@@ -12,12 +12,12 @@ require (
 require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/elastic/go-seccomp-bpf v1.6.0
-	github.com/landlock-lsm/go-landlock v0.10.1
-	github.com/mark3labs/mcp-go v1.3.0
+	github.com/landlock-lsm/go-landlock v0.11.0
+	github.com/mark3labs/mcp-go v1.4.0
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
 )
 
@@ -50,15 +50,13 @@ require (
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
-	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/tchap/go-patricia/v2 v2.3.3 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect
-	github.com/vektah/gqlparser/v2 v2.5.37 // indirect
+	github.com/vektah/gqlparser/v2 v2.5.58 // indirect
 	github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb // indirect
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
 	github.com/yashtewari/glob-intersection v0.2.0 // indirect

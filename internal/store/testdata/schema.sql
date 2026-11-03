@@ -1,7 +1,3 @@
--- FamClaw schema golden file. Regenerate with:
---   go test -tags dumpschema -run TestDumpSchema ./internal/store/
--- (or set UPDATE_SCHEMA_GOLDEN=1 and run TestSchemaGolden)
-
 CREATE INDEX idx_approvals_status ON approvals(status);
 
 CREATE INDEX idx_approvals_user ON approvals(user_name);
@@ -27,6 +23,18 @@ CREATE UNIQUE INDEX idx_research_tasks_pk ON research_tasks(user_name, agent_id)
 CREATE INDEX idx_research_tasks_status ON research_tasks(status);
 
 CREATE INDEX idx_research_tasks_user ON research_tasks(user_name);
+
+CREATE INDEX idx_shared_tasks_accepted ON shared_tasks(accepted);
+
+CREATE INDEX idx_shared_tasks_completed ON shared_tasks(completed);
+
+CREATE INDEX idx_shared_tasks_due_at ON shared_tasks(due_at);
+
+CREATE INDEX idx_shared_tasks_outstanding ON shared_tasks(owner, completed, declined, handed_back);
+
+CREATE INDEX idx_shared_tasks_owner ON shared_tasks(owner);
+
+CREATE INDEX idx_shared_tasks_updated_at ON shared_tasks(updated_at);
 
 CREATE INDEX idx_todos_user ON todos(user_name);
 
@@ -216,6 +224,20 @@ CREATE TABLE seccheck_reports (
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
+CREATE TABLE shared_tasks (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				owner       TEXT NOT NULL,
+				text        TEXT NOT NULL,
+				due_at      TEXT NOT NULL,
+				source      TEXT NOT NULL,
+				completed   INTEGER NOT NULL DEFAULT 0,
+				accepted    INTEGER NOT NULL DEFAULT 0,
+				declined    INTEGER NOT NULL DEFAULT 0,
+				handed_back INTEGER NOT NULL DEFAULT 0,
+				created_at  INTEGER NOT NULL,
+				updated_at  INTEGER NOT NULL
+			);
+
 CREATE TABLE skill_update_checks (
 		id              INTEGER PRIMARY KEY AUTOINCREMENT,
 		skill_name      TEXT NOT NULL,
@@ -312,10 +334,10 @@ CREATE TABLE user_memories (
 		category   TEXT NOT NULL,
 		label      TEXT NOT NULL,
 		value      TEXT NOT NULL,
-		created_at INTEGER NOT NULL,
-		updated_at INTEGER NOT NULL,
-		UNIQUE(user_name, category, label)
-	);
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				UNIQUE(user_name, category, label)
+			);
 
 CREATE TABLE user_role_overrides (
 		user_name   TEXT PRIMARY KEY,

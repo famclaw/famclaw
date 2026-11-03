@@ -65,7 +65,16 @@ type Server struct {
 	// (approval notifications, dashboard broadcasts). Shutdown callers wait on
 	// it so that no background work touches the DB / WebSocket connections after
 	// the server is torn down — preventing TempDir cleanup races.
+	//
+	// bgMu is taken around every bgWG.Add (see spawnBackground) and at the top
+	// of WaitForBackground, so the teardown Wait is happens-after every
+	// handler-side Add. That edge is a plain Go memory-model requirement
+	// ("Add before Wait") and keeps Go 1.26+'s race-detector annotations on
+	// sync.WaitGroup (first Add vs first blocking Wait on unrelated goroutines
+	// that only meet through network I/O, which the detector cannot see) from
+	// firing.
 	bgWG sync.WaitGroup
+	bgMu sync.Mutex
 
 	// Session-based auth wiring (Phase 6).
 	sessions       *store.SessionStore
@@ -656,13 +665,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 			// Notify parent if approval needed
 			if resp.PolicyAction == "request_approval" {
-				s.bgWG.Add(1)
-				go s.requestApproval(userCfg, string(resp.Category), payload.Text)
+				s.spawnBackground(func() { s.requestApproval(userCfg, string(resp.Category), payload.Text) })
 			}
 
 			// Broadcast dashboard update
-			s.bgWG.Add(1)
-			go s.broadcastDashboardUpdate(context.Background())
+			s.spawnBackground(func() { s.broadcastDashboardUpdate(context.Background()) })
 
 		case "ping":
 			s.sendWS(client, "pong", nil)
@@ -823,8 +830,7 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bgWG.Add(1)
-	go s.broadcastDashboardUpdate(context.Background())
+	s.spawnBackground(func() { s.broadcastDashboardUpdate(context.Background()) })
 	jsonOK(w, map[string]string{"status": status})
 }
 
@@ -873,8 +879,7 @@ func (s *Server) handleDecideLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bgWG.Add(1)
-	go s.broadcastDashboardUpdate(context.Background())
+	s.spawnBackground(func() { s.broadcastDashboardUpdate(context.Background()) })
 
 	icon := "✅"
 	if status == "denied" {
@@ -1146,7 +1151,6 @@ func (s *Server) decideURLs(a *store.Approval) (approve, deny string) {
 }
 
 func (s *Server) requestApproval(user *config.UserConfig, category, queryText string) {
-	defer s.bgWG.Done()
 	import_approval_id := agent.ApprovalID(user.Name, category)
 	a := &store.Approval{
 		ID:          import_approval_id,
@@ -1189,12 +1193,31 @@ func (s *Server) notifySuspiciousApproval(ctx context.Context, a *store.Approval
 	return s.notifier.Notify(ctx, a, approveURL, denyURL)
 }
 
+// spawnBackground runs fn in a fire-and-forget goroutine tracked on bgWG.
+// The Add is taken under bgMu so that WaitForBackground — which acquires bgMu
+// before waiting — is happens-after every handler-side Add (see the struct
+// comment on bgMu for why the edge matters).
+func (s *Server) spawnBackground(fn func()) {
+	s.bgMu.Lock()
+	s.bgWG.Add(1)
+	s.bgMu.Unlock()
+	go func() {
+		defer s.bgWG.Done()
+		fn()
+	}()
+}
+
 // WaitForBackground blocks until all fire-and-forget goroutines spawned by
 // the server (approval notifications, dashboard broadcasts) have exited, or
 // until ctx is cancelled. Call this during teardown so no background work
 // touches the DB / WebSocket connections (and thus the temp directory) after
 // the server and DB have been shut down.
 func (s *Server) WaitForBackground(ctx context.Context) error {
+	// Acquire bgMu before waiting to order this Wait after every handler-side
+	// spawnBackground (see the struct comment on bgMu).
+	s.bgMu.Lock()
+	s.bgMu.Unlock()
+
 	done := make(chan struct{})
 	go func() {
 		s.bgWG.Wait()
@@ -1209,7 +1232,6 @@ func (s *Server) WaitForBackground(ctx context.Context) error {
 }
 
 func (s *Server) broadcastDashboardUpdate(ctx context.Context) {
-	defer s.bgWG.Done()
 	if s.db == nil {
 		return
 	}
