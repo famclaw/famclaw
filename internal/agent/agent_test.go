@@ -932,6 +932,45 @@ func TestHostDecision_BaselineTypoSquat(t *testing.T) {
 	}
 }
 
+// TestHostDecision_NoStaleDenylistSlice pins the reviewer fix for the stale
+// config slice read: hostDecision reads URLDenylist from the shared config at
+// decision time, not from a struct copy captured earlier. The denylist admin
+// tools (HandleDenylistAdd/HandleDenylistRemove) replace
+// Cfg.Tools.WebFetch.URLDenylist concurrently — a parent can block a host via
+// the web UI while a child's fetch is in flight — so a host the parent just
+// denied must be denied by the very next decision. A local-IP host keeps the
+// allow path deterministic: private IPs short-circuit the suspicious gate, so
+// this test never touches the db or the detector.
+func TestHostDecision_NoStaleDenylistSlice(t *testing.T) {
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+	}
+	ctx := context.Background()
+	host := "192.168.1.50"
+
+	if ok, reason := a.hostDecision(ctx, host); !ok || reason != "" {
+		t.Fatalf("hostDecision(%q) with empty denylist = (%v, %q); want (true, \"\")", host, ok, reason)
+	}
+
+	// Simulate HandleDenylistAdd's write to the shared config.
+	a.cfg.Tools.WebFetch.URLDenylist = append(a.cfg.Tools.WebFetch.URLDenylist, host)
+	if ok, reason := a.hostDecision(ctx, host); ok || reason != "denylist" {
+		t.Errorf("hostDecision(%q) after admin denylist add = (%v, %q); want (false, \"denylist\")", host, ok, reason)
+	}
+
+	// Simulate HandleDenylistRemove's replacement write; the host is allowed again.
+	a.cfg.Tools.WebFetch.URLDenylist = nil
+	if ok, reason := a.hostDecision(ctx, host); !ok || reason != "" {
+		t.Errorf("hostDecision(%q) after admin denylist remove = (%v, %q); want (true, \"\")", host, ok, reason)
+	}
+}
+
 // TestHostDecision_SuspiciousSiteNotificationRetry verifies B1: if the parent
 // push for a suspicious-site approval fails transiently (so no notification is
 // delivered), a later hostDecision for the same pending row retries it, and a

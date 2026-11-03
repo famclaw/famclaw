@@ -1408,8 +1408,16 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 		if baselineStore.Blocks(host) {
 			return false, "baseline"
 		}
-		// (b) Parent-maintained deny entries.
-		for _, denied := range fcfg.URLDenylist {
+		// (b) Parent-maintained deny entries. Read the slice directly from
+		// the shared config, not via the fcfg copy taken at the top of this
+		// function: the denylist admin tools replace URLDenylist
+		// concurrently (a parent can block a host while a child's fetch is
+		// in flight), and the copy would keep iterating the old slice for
+		// this decision. Denylist mode is allow-by-default, so a stale read
+		// is a fail-open gap — a host the parent just denied could still be
+		// fetched. Same direct-read pattern the other per-call config reads
+		// in this file use (see handleWebFetch's FallbackMinTextLength).
+		for _, denied := range a.cfg.Tools.WebFetch.URLDenylist {
 			denied = canonicalizeHost(denied)
 			if denied == "" {
 				continue
