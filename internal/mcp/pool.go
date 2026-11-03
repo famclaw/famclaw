@@ -276,13 +276,12 @@ func mapEqual(a, b map[string]string) bool {
 }
 
 type managedClient struct {
-	mu         sync.Mutex
-	lastError  error
-	client     *Client
-	name       string
-	cfg        config.MCPServerConfig
-	env        map[string]string
-	restartCnt int
+	mu        sync.Mutex
+	lastError error
+	client    *Client
+	name      string
+	cfg       config.MCPServerConfig
+	env       map[string]string
 }
 
 // NewPool creates an empty MCP pool. sandboxRoot is the on-disk directory
@@ -400,8 +399,15 @@ func (p *Pool) StartAll(ctx context.Context) error {
 	return nil
 }
 
+// toolCallError retains the private cause for errors.Is/As without formatting it
+// into messages or logs. A transport error does not prove whether effects occurred.
+type toolCallError struct{ cause error }
+
+func (e *toolCallError) Error() string { return "MCP tool outcome uncertain" }
+func (e *toolCallError) Unwrap() error { return e.cause }
+
 // CallTool calls a tool by name, lazily starting the server if needed.
-// Restarts failed servers once. Resets restart count on success.
+// A failed call is never reissued: its effect may already have occurred.
 func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {
 	p.mu.RLock()
 	mc, ok := p.clients[name]
@@ -423,28 +429,15 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 
 	result, err := mc.client.CallTool(ctx, name, args)
 	if err == nil {
-		mc.restartCnt = 0
 		return result, nil
 	}
 
-	// Auto-restart once on failure
-	if mc.restartCnt < 1 {
-		log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
-		mc.restartCnt++
-		mc.client.Stop()
-		mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
-		mc.client.env = mc.env
-		if startErr := mc.client.Start(ctx); startErr != nil {
-			return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
-		}
-		result, err = mc.client.CallTool(ctx, name, args)
-		if err == nil {
-			mc.restartCnt = 0
-		}
-		return result, err
-	}
-
-	return nil, err
+	// Discard the connection for a future call, but preserve the original
+	// error: the server may have applied this call before its reply was lost.
+	mc.client.Stop()
+	mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
+	mc.client.env = mc.env
+	return nil, &toolCallError{cause: err}
 }
 
 // HasTool returns true if the pool has a handler for the given tool.
