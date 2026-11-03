@@ -152,6 +152,7 @@ re-vendor-baseline:
 	@set -euo pipefail; \
 	OUT="internal/webfilter/baseline.txt"; \
 	TMP="$$(mktemp)"; EXCL="$$(mktemp)"; ADD="$$(mktemp)"; \
+	trap 'rm -f "$$TMP" "$$EXCL" "$$ADD" "$$OUT.tmp"' EXIT; \
 	curl -fsSL --max-time 60 \
 	  "https://raw.githubusercontent.com/0xDarkMatter/aegis-blocklist/master/grades/core.txt" \
 	  | awk '!/^#/ && NF {gsub(/[[:space:]]+$$/,""); print tolower($$0)}' | sort -u > "$$TMP"; \
