@@ -41,7 +41,19 @@ func DenylistListDefinition() agentcore.Tool {
 
 // HandleDenylistList dispatches builtin__denylist_list.
 func HandleDenylistList(ctx context.Context, deps Deps, args map[string]any) (string, error) {
-	hosts := deps.Cfg.Tools.WebFetch.URLDenylist
+	// Read-lock so the slice-header read cannot tear against a concurrent
+	// denylist_add/remove rewrite sharing the same mutex (nil in
+	// standalone/test Deps that run single-threaded — see Deps.URLDenylistMu).
+	if deps.URLDenylistMu != nil {
+		deps.URLDenylistMu.RLock()
+		hosts := deps.Cfg.Tools.WebFetch.URLDenylist
+		deps.URLDenylistMu.RUnlock()
+		return formatDenylistList(hosts)
+	}
+	return formatDenylistList(deps.Cfg.Tools.WebFetch.URLDenylist)
+}
+
+func formatDenylistList(hosts []string) (string, error) {
 	if len(hosts) == 0 {
 		return "web_fetch URL denylist is empty — no hosts are explicitly denied by the parent. (The bundled kid-safe baseline is always active in denylist mode.)", nil
 	}
@@ -76,6 +88,16 @@ func DenylistAddDefinition() agentcore.Tool {
 
 // HandleDenylistAdd dispatches builtin__denylist_add.
 func HandleDenylistAdd(ctx context.Context, deps Deps, args map[string]any) (string, error) {
+	// Exclusive lock over the whole read-modify-write + persist + audit
+	// span: the slice-header write below must not race hostDecision's
+	// decision-time read, and the on-disk snapshot written by
+	// writeConfigInline must be consistent with the in-memory list it just
+	// mutated (nil in standalone/test Deps that run single-threaded — see
+	// Deps.URLDenylistMu).
+	if deps.URLDenylistMu != nil {
+		deps.URLDenylistMu.Lock()
+		defer deps.URLDenylistMu.Unlock()
+	}
 	host, _ := args["host"].(string)
 	if host == "" {
 		return "", fmt.Errorf("denylist_add requires a 'host' argument (e.g. denylist_add(host=\"example.com\"))")
@@ -132,6 +154,12 @@ func DenylistRemoveDefinition() agentcore.Tool {
 
 // HandleDenylistRemove dispatches builtin__denylist_remove.
 func HandleDenylistRemove(ctx context.Context, deps Deps, args map[string]any) (string, error) {
+	// Exclusive lock over the whole read-modify-write + persist + audit
+	// span — same rationale as HandleDenylistAdd (see Deps.URLDenylistMu).
+	if deps.URLDenylistMu != nil {
+		deps.URLDenylistMu.Lock()
+		defer deps.URLDenylistMu.Unlock()
+	}
 	host, _ := args["host"].(string)
 	if host == "" {
 		return "", fmt.Errorf("denylist_remove requires a 'host' argument (e.g. denylist_remove(host=\"example.com\"))")
