@@ -230,12 +230,12 @@ func (m *staleSearchChatter) ChatWithTools(_ context.Context, _ []llm.Message, _
 // fail -> recover -> explicit-retry flow with a scripted LLM and an
 // httptest SearXNG endpoint:
 //
-//   1. A prior turn records a search failure ("I couldn't check ... search is
-//      still broken").
-//   2. The user explicitly retries ("Search again").
-//   3. The model FIRST emits a stale refusal without calling web_search.
-//   4. The fresh-search guard re-prompts; the model runs a real web_search
-//      against the httptest SearXNG endpoint and returns a fresh answer.
+//  1. A prior turn records a search failure ("I couldn't check ... search is
+//     still broken").
+//  2. The user explicitly retries ("Search again").
+//  3. The model FIRST emits a stale refusal without calling web_search.
+//  4. The fresh-search guard re-prompts; the model runs a real web_search
+//     against the httptest SearXNG endpoint and returns a fresh answer.
 //
 // Before the fix there was no guard, so step 4 never happened: the stale
 // refusal was delivered as-is, the LLM was called once, and the SearXNG
@@ -408,5 +408,328 @@ func TestToollessRetryClearsStaleToolMeta(t *testing.T) {
 	}
 	if mock.calls != 2 {
 		t.Errorf("ChatWithTools calls = %d, want 2 (first attempt + tool-less retry)", mock.calls)
+	}
+}
+
+// staleSearchTestCfg builds the standard offline config for the F3 e2e tests:
+// a SearXNG endpoint at the given URL, web_search allowed for the parent user.
+func staleSearchTestCfg(endpoint string) *config.Config {
+	return &config.Config{
+		LLM: config.LLMConfig{Temperature: 0.7, MaxResponseTokens: 200, MaxContextTokens: 8000},
+		Users: []config.UserConfig{
+			{Name: "parent", Role: "parent"},
+		},
+		Tools: config.ToolsConfig{
+			WebSearch: config.WebSearchConfig{
+				Enabled:    true,
+				Provider:   "searxng",
+				Endpoint:   endpoint,
+				MaxResults: 5,
+				TimeoutSec: 5,
+			},
+			WebFetch: config.WebFetchConfig{URLAllowlist: []string{"127.0.0.1"}},
+		},
+	}
+}
+
+// buildStaleSearchAgent builds an Agent wired to the given db, scripted
+// Chatter, and conversation. withWebSearch=false offers no web_search builtin
+// (the search tool simply was not available that turn), which is what
+// suppresses the fresh-search re-prompt guard.
+func buildStaleSearchAgent(t *testing.T, db *store.DB, cfg *config.Config, mock *staleSearchChatter, convID string, withWebSearch bool) *Agent {
+	t.Helper()
+	ev, err := policy.NewEvaluator("", "", "")
+	if err != nil {
+		t.Fatalf("policy.NewEvaluator: %v", err)
+	}
+	var builtins []agentcore.Tool
+	if withWebSearch {
+		builtins = append(builtins, websearch.Tool([]string{"parent"}))
+	}
+	agent, err := NewAgent(&cfg.Users[0], cfg, mock, ev, classifier.New(), db, AgentDeps{
+		MsgContext:   gateway.MsgContext{ConvID: convID},
+		BuiltinTools: builtins,
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	return agent
+}
+
+// TestStaleSearchRetryPreservesSeededHistory is F3 (i): the seeded
+// conversation history is INTACT after a Chat that triggers the stale-search
+// retry — explicit preservation proof via a DB read-back. The retry reuses
+// the same convID and the guard re-prompts the turn in-memory; neither path
+// may delete, rewrite, or duplicate the stored messages.
+func TestStaleSearchRetryPreservesSeededHistory(t *testing.T) {
+	t.Parallel()
+
+	// Offline SearXNG endpoint returning one fresh result.
+	var searxngHits int32
+	searxng := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&searxngHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"results":[{"title":"Fresh","url":"https://example.com/fresh","content":"clear skies, 72F"}]}`)
+	}))
+	defer searxng.Close()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const convID = "f3-conv-history"
+
+	// Seed the PRIOR failed turn exactly as it would have been recorded.
+	seedUser := "What's the weather?"
+	seedRefusal := "I couldn't check the weather; the search is still broken."
+	if err := db.SaveMessage(convID, "parent", "user", seedUser, "", "", ""); err != nil {
+		t.Fatalf("seed user msg: %v", err)
+	}
+	if err := db.SaveMessage(convID, "parent", "assistant", seedRefusal, "", "allow", ""); err != nil {
+		t.Fatalf("seed assistant msg: %v", err)
+	}
+
+	mock := &staleSearchChatter{script: []*llm.Message{
+		{Role: "assistant", Content: "I can't check that right now; the search is still broken."},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "call_f3_i", Type: "function",
+			Function: llm.ToolCallFunction{Name: "web_search", Arguments: map[string]any{"query": "weather today"}}}}},
+		{Role: "assistant", Content: "Here's the latest from a fresh search: clear skies, 72°F."},
+	}}
+
+	cfg := staleSearchTestCfg(searxng.URL)
+	agent := buildStaleSearchAgent(t, db, cfg, mock, convID, true)
+
+	resp, err := agent.Chat(context.Background(), "Search again", func(string) {})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if !strings.Contains(resp.Content, "fresh search") {
+		t.Fatalf("Content = %q — expected the recovered fresh answer", resp.Content)
+	}
+	if mock.calls != 3 {
+		t.Fatalf("ChatWithTools calls = %d, want 3 (stale refusal -> web_search -> fresh final)", mock.calls)
+	}
+
+	// F3 (i): read the stored conversation back and prove the seeded history
+	// is intact — present, unmodified, exactly once each — with only the new
+	// turn appended after it.
+	hist, err := db.GetConversationHistory(convID, 100)
+	if err != nil {
+		t.Fatalf("GetConversationHistory: %v", err)
+	}
+	counts := make(map[string]int)
+	for _, m := range hist {
+		counts[m.Role+"	"+m.Content]++
+	}
+	if got := counts["user	"+seedUser]; got != 1 {
+		t.Errorf("seeded user message count = %d, want 1 (stored history was mutated)", got)
+	}
+	if got := counts["assistant	"+seedRefusal]; got != 1 {
+		t.Errorf("seeded assistant refusal count = %d, want 1 (stored history was mutated)", got)
+	}
+	if got := counts["user	Search again"]; got != 1 {
+		t.Errorf("new user message count = %d, want 1", got)
+	}
+	if got := counts["assistant	"+resp.Content]; got != 1 {
+		t.Errorf("new assistant final answer count = %d, want 1", got)
+	}
+	if len(hist) != 4 {
+		t.Errorf("history length = %d, want 4 (2 seeded + new user + new final) — a stored message was deleted or duplicated", len(hist))
+	}
+}
+
+// TestStaleSearchBoundedSecondFailureDelivered is F3 (ii): when the re-prompted
+// attempt 2 ALSO refuses without a tool call, the guard is single-shot — the
+// second refusal is delivered as-is, the LLM is called exactly 3x total
+// (1 seed turn + refusal + bounded second refusal), and there is no further
+// re-prompt.
+func TestStaleSearchBoundedSecondFailureDelivered(t *testing.T) {
+	t.Parallel()
+
+	// Search endpoint is DOWN for the whole test: no web_search can succeed.
+	var searxngHits int32
+	searxng := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&searxngHits, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer searxng.Close()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const convID = "f3-conv-bounded"
+
+	// #417 production wording (the recorded stale refusal), then two more
+	// tool-less refusals for the retry turn. The script has EXACTLY three
+	// responses, so mock.calls == 3 is also the "no further re-prompt" proof:
+	// a fourth call would be clamped onto the last entry and break the count
+	// assertion.
+	refusal0 := "I'm unable to continue this task without being able to search the web for the latest pricing."
+	refusal1 := "I can't check that right now; the search is still broken."
+	refusal2 := "I'm sorry, I still can't get that pricing figure for you right now."
+	mock := &staleSearchChatter{script: []*llm.Message{
+		{Role: "assistant", Content: refusal0},
+		{Role: "assistant", Content: refusal1},
+		{Role: "assistant", Content: refusal2},
+	}}
+
+	cfg := staleSearchTestCfg(searxng.URL)
+
+	// Turn 1: web_search was NOT offered (the backend was down — the butler's
+	// original attempt), so the guard cannot re-prompt; the refusal is
+	// delivered as-is and recorded. Exactly one LLM call.
+	agent1 := buildStaleSearchAgent(t, db, cfg, mock, convID, false)
+	resp1, err := agent1.Chat(context.Background(), "What's the latest pricing?", func(string) {})
+	if err != nil {
+		t.Fatalf("Chat #1: %v", err)
+	}
+	if resp1.Content != refusal0 {
+		t.Fatalf("Chat #1 content = %q, want the refusal delivered as-is", resp1.Content)
+	}
+	if mock.calls != 1 {
+		t.Fatalf("Chat #1 calls = %d, want 1 (no web_search offered -> no re-prompt)", mock.calls)
+	}
+
+	// Turn 2: web_search IS offered again. Attempt 1 re-emits a stale refusal
+	// with no tool call; the guard re-prompts ONCE; attempt 2 refuses again ->
+	// delivered as-is, no further re-prompt.
+	agent2 := buildStaleSearchAgent(t, db, cfg, mock, convID, true)
+	resp2, err := agent2.Chat(context.Background(), "Search again", func(string) {})
+	if err != nil {
+		t.Fatalf("Chat #2: %v", err)
+	}
+	if resp2.Content != refusal2 {
+		t.Fatalf("Chat #2 content = %q, want the bounded second failure delivered as-is", resp2.Content)
+	}
+	if resp2.PolicyAction != "allow" {
+		t.Errorf("PolicyAction = %q, want allow", resp2.PolicyAction)
+	}
+	if mock.calls != 3 {
+		t.Errorf("total ChatWithTools calls = %d, want exactly 3 (1 seed + refusal + bounded second refusal; no further re-prompt)", mock.calls)
+	}
+	if got := atomic.LoadInt32(&searxngHits); got != 0 {
+		t.Errorf("SearXNG hits = %d, want 0 (both refusals are tool-less; no search was ever executed)", got)
+	}
+}
+
+// TestStaleSearchFreshFailureHonestDelivery is F3 (iii): the re-prompted
+// attempt 2 DOES call web_search, but the endpoint is offline and errors.
+// The recorded tool result suppresses any second re-prompt, and the model's
+// final answer reports the fresh failure honestly — it is neither the stale
+// refusal nor a fabricated fresh result.
+func TestStaleSearchFreshFailureHonestDelivery(t *testing.T) {
+	t.Parallel()
+
+	// Offline SearXNG endpoint: the search attempt itself errors (5xx).
+	var searxngHits int32
+	searxng := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&searxngHits, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer searxng.Close()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const convID = "f3-conv-fresh"
+
+	// Seed the PRIOR failed turn with the #417 production wording.
+	seedUser := "What's the latest pricing?"
+	seedRefusal := "I'm unable to continue this task without being able to search the web for the latest pricing."
+	if err := db.SaveMessage(convID, "parent", "user", seedUser, "", "", ""); err != nil {
+		t.Fatalf("seed user msg: %v", err)
+	}
+	if err := db.SaveMessage(convID, "parent", "assistant", seedRefusal, "", "allow", ""); err != nil {
+		t.Fatalf("seed assistant msg: %v", err)
+	}
+
+	// Attempt 1 re-emits the stale refusal without a tool call; the guard
+	// re-prompts ONCE; attempt 2 really calls web_search; the endpoint errors
+	// and the tool result carries the backend-error marker; the final answer
+	// is the honest fresh failure.
+	mock := &staleSearchChatter{script: []*llm.Message{
+		{Role: "assistant", Content: "I can't check that right now; the search is still broken."},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "call_f3_iii", Type: "function",
+			Function: llm.ToolCallFunction{Name: "web_search", Arguments: map[string]any{"query": "latest pricing"}}}}},
+		{Role: "assistant", Content: "The search backend returned an error on this turn, so I could not retrieve the latest pricing just now."},
+	}}
+
+	cfg := staleSearchTestCfg(searxng.URL)
+	agent := buildStaleSearchAgent(t, db, cfg, mock, convID, true)
+
+	resp, err := agent.Chat(context.Background(), "Search again", func(string) {})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	// The honest fresh failure is delivered — not the stale refusal, not a
+	// fabricated answer.
+	if !strings.Contains(resp.Content, "search backend returned an error") {
+		t.Fatalf("Content = %q — want the honest fresh-failure answer", resp.Content)
+	}
+	if strings.Contains(resp.Content, "still broken") {
+		t.Fatalf("Content = %q — the stale refusal was delivered instead of the fresh failure", resp.Content)
+	}
+	// Attempt 2 really called web_search against the failing endpoint — the
+	// endpoint was reached and errored (the websearch retry decorator issues
+	// a few HTTP attempts per logical search for transient 5xx classes, so
+	// hits > 0 is the reachability proof). mock.calls == 3 pins the LLM
+	// sequence (stale refusal -> web_search tool call -> honest final), which
+	// in turn proves exactly ONE tool execution and NO second re-prompt
+	// (single-shot guard, and a real web_search ToolResult was recorded this
+	// turn).
+	if got := atomic.LoadInt32(&searxngHits); got == 0 {
+		t.Errorf("SearXNG hits = %d, want > 0 (attempt 2 really called web_search and the offline endpoint errored)", got)
+	}
+	if mock.calls != 3 {
+		t.Errorf("ChatWithTools calls = %d, want 3 (refusal -> web_search -> honest final; no second re-prompt)", mock.calls)
+	}
+}
+
+// TestHasSearchFailureClaimNoFalsePositive is the full marker verification
+// table required by the #424 review: the exact #417 production positive must
+// STILL match after the marker narrowing, and the three bot-reported
+// false-positive negatives must NOT match.
+func TestHasSearchFailureClaimNoFalsePositive(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{
+			name:  "417 production positive still matches",
+			input: "I'm unable to continue this task without being able to search the web for the latest pricing.",
+			want:  true,
+		},
+		{
+			name:  "bot negative: database access",
+			input: "without being able to access the database",
+			want:  false,
+		},
+		{
+			name:  "bot negative: filesystem access",
+			input: "without being able to access the filesystem",
+			want:  false,
+		},
+		{
+			name:  "bot negative: reading a file",
+			input: "without being able to read that file",
+			want:  false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasSearchFailureClaim(tc.input); got != tc.want {
+				t.Errorf("hasSearchFailureClaim(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
 	}
 }
