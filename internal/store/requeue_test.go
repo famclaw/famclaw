@@ -57,6 +57,67 @@ func TestRequeueApproval_ExpiredGrant(t *testing.T) {
 	}
 }
 
+// TestRequeueApproval_ValidGrantUntouched guards the self-contained expiry
+// check: RequeueApproval must NOT reset a still-valid approved row to
+// pending — a caller bug or a future unconditional call path must not revoke
+// the parent's active grant.
+func TestRequeueApproval_ValidGrantUntouched(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, err := db.UpsertApproval(ctx, &Approval{
+		ID:          "requeue-valid-1",
+		UserName:    "jdoe",
+		UserDisplay: "J Doe",
+		AgeGroup:    "teen",
+		Category:    "suspicious-site",
+		QueryText:   "example-host.com",
+	})
+	if err != nil {
+		t.Fatalf("UpsertApproval: %v", err)
+	}
+	// Fresh grant: the default 24h window keeps expires_at in the future.
+	if err := db.DecideApproval("requeue-valid-1", "approved", "parent"); err != nil {
+		t.Fatalf("DecideApproval(approved): %v", err)
+	}
+	before, err := db.GetApproval(ctx, "requeue-valid-1")
+	if err != nil {
+		t.Fatalf("GetApproval: %v", err)
+	}
+	if before == nil {
+		t.Fatal("GetApproval returned nil, want row")
+	}
+
+	requeued, err := db.RequeueApproval(ctx, "requeue-valid-1")
+	if err != nil {
+		t.Fatalf("RequeueApproval: %v", err)
+	}
+	if requeued {
+		t.Fatalf("RequeueApproval returned true, want false for a still-valid approved row")
+	}
+
+	after, err := db.GetApproval(ctx, "requeue-valid-1")
+	if err != nil {
+		t.Fatalf("GetApproval: %v", err)
+	}
+	if after == nil {
+		t.Fatal("GetApproval returned nil, want row")
+	}
+	if after.Status != "approved" {
+		t.Errorf("Status = %q, want approved (untouched)", after.Status)
+	}
+	if after.DecidedBy != "parent" {
+		t.Errorf("DecidedBy = %q, want parent (untouched)", after.DecidedBy)
+	}
+	if !after.ExpiresAt.Equal(before.ExpiresAt) {
+		t.Errorf("ExpiresAt changed from %v to %v, want untouched", before.ExpiresAt, after.ExpiresAt)
+	}
+	if !after.ExpiresAt.After(time.Now()) {
+		t.Errorf("ExpiresAt = %v, want still in the future", after.ExpiresAt)
+	}
+}
+
 func TestRequeueApproval_DenialUntouched(t *testing.T) {
 	db, cleanup := newTestDB(t)
 	defer cleanup()
