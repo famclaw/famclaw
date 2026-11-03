@@ -19,6 +19,7 @@ type ToolResult struct {
 	Args     map[string]any
 	Output   string
 	Error    error
+	IsError  bool
 	Duration time.Duration
 }
 
