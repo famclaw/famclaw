@@ -138,6 +138,10 @@ type Agent struct {
 	// admin.Deps.URLDenylistMu. (Zero value usable: legacy Agent literals
 	// in tests that never race a concurrent writer are safe with it.)
 	urlDenylistMu sync.RWMutex
+	
+	// sharedConfigManager is used for atomic config save/reload operations
+	// with proper transactional semantics and conflict detection.
+	sharedConfigManager *admin.SharedConfigManager
 
 	// cache is the tool-result spillover store. When non-nil, large
 	// handleWebFetch (and other large-result) tool replies are written
@@ -403,6 +407,12 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		effectiveSandboxRoot = ""
 	}
 
+	// Initialize shared config manager if config path is provided
+	var sharedConfigManager *admin.SharedConfigManager
+	if deps.ConfigPath != "" {
+		sharedConfigManager = admin.NewSharedConfigManager(deps.ConfigPath)
+	}
+
 	return &Agent{
 		user:                    user,
 		cfg:                     cfg,
@@ -435,6 +445,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		configPath:              deps.ConfigPath,
 		lifetimeCtx:             deps.LifetimeCtx,
 		reasoningCache:          deps.ReasoningCache,
+		sharedConfigManager:     sharedConfigManager,
 	}, nil
 }
 
@@ -1456,6 +1467,9 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 	a.urlDenylistMu.RUnlock()
 	switch fcfg.ResolvedURLPolicy() {
 	case "allowlist":
+		// For allowlist mode, we must ensure we're using the same
+		// snapshot for both the policy mode and the allowlist.
+		// The snapshot taken above is sufficient for both.
 		for _, allowed := range fcfg.URLAllowlist {
 			allowed = canonicalizeHost(allowed)
 			if allowed == "" {
