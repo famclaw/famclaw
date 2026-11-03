@@ -1393,9 +1393,30 @@ func canonicalizeHost(h string) string {
 // where reason is a short class ("allowlist" | "denylist") when !allowed.
 func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 	host = canonicalizeHost(host)
-	// The struct copy reads the URLDenylist slice header (along with every
-	// other WebFetch field), so take the read lock so a concurrent admin
-	// rewrite cannot tear it (see urlDenylistMu).
+	// Snapshot the WebFetch struct under the read lock: the copy reads
+	// every field (including the URLDenylist slice header), so without
+	// the lock a concurrent admin rewrite could tear it (see
+	// urlDenylistMu).
+	//
+	// Invariant (review finding: stale mode determination) — this
+	// snapshot is the decision-time value for URLPolicy/URLAllowlist,
+	// while the denylist branch below re-reads URLDenylist fresh under
+	// a second RLock. That asymmetry is deliberate and safe today:
+	//   - The only writers that take urlDenylistMu are the denylist
+	//     admin tools, and denylist mode is allow-by-default: a stale
+	//     denylist read is a fail-open gap, so it gets the fresh
+	//     re-read (see that branch's comment).
+	//   - URLPolicy/URLAllowlist have no writers on this lock yet (the
+	//     settings endpoint and the allowlist admin tools write them
+	//     outside it, as they always have), so for them the snapshot
+	//     vs. a second read makes no difference today; staleness is
+	//     bounded to one decision and self-heals on the next
+	//     hostDecision call.
+	// Trap: if URLPolicy or URLAllowlist ever gain a writer wired to
+	// this same mutex (allowlist admin tools migrated to
+	// Deps.URLDenylistMu, a config hot-reload, ...), the snapshot is
+	// no longer safe — re-read all three fields under one lock (or
+	// hold RLock across the whole decision) instead.
 	a.urlDenylistMu.RLock()
 	fcfg := a.cfg.Tools.WebFetch
 	a.urlDenylistMu.RUnlock()

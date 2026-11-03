@@ -43,11 +43,12 @@ func DenylistListDefinition() agentcore.Tool {
 func HandleDenylistList(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	// Read-lock so the slice-header read cannot tear against a concurrent
 	// denylist_add/remove rewrite sharing the same mutex (nil in
-	// standalone/test Deps that run single-threaded — see Deps.URLDenylistMu).
-	if deps.URLDenylistMu != nil {
-		deps.URLDenylistMu.RLock()
+	// standalone/test Deps that run single-threaded — see
+	// Deps.URLDenylistMu; denylistMu() warns if unwired).
+	if mu := deps.denylistMu(); mu != nil {
+		mu.RLock()
 		hosts := deps.Cfg.Tools.WebFetch.URLDenylist
-		deps.URLDenylistMu.RUnlock()
+		mu.RUnlock()
 		return formatDenylistList(hosts)
 	}
 	return formatDenylistList(deps.Cfg.Tools.WebFetch.URLDenylist)
@@ -93,10 +94,10 @@ func HandleDenylistAdd(ctx context.Context, deps Deps, args map[string]any) (str
 	// decision-time read, and the on-disk snapshot written by
 	// writeConfigInline must be consistent with the in-memory list it just
 	// mutated (nil in standalone/test Deps that run single-threaded — see
-	// Deps.URLDenylistMu).
-	if deps.URLDenylistMu != nil {
-		deps.URLDenylistMu.Lock()
-		defer deps.URLDenylistMu.Unlock()
+	// Deps.URLDenylistMu; denylistMu() warns if unwired).
+	if mu := deps.denylistMu(); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
 	}
 	host, _ := args["host"].(string)
 	if host == "" {
@@ -155,10 +156,11 @@ func DenylistRemoveDefinition() agentcore.Tool {
 // HandleDenylistRemove dispatches builtin__denylist_remove.
 func HandleDenylistRemove(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	// Exclusive lock over the whole read-modify-write + persist + audit
-	// span — same rationale as HandleDenylistAdd (see Deps.URLDenylistMu).
-	if deps.URLDenylistMu != nil {
-		deps.URLDenylistMu.Lock()
-		defer deps.URLDenylistMu.Unlock()
+	// span — same rationale as HandleDenylistAdd (see Deps.URLDenylistMu;
+	// denylistMu() warns if unwired).
+	if mu := deps.denylistMu(); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
 	}
 	host, _ := args["host"].(string)
 	if host == "" {
