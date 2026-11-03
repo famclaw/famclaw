@@ -58,14 +58,24 @@ func NewStagePolicyToolCall(eval ToolPolicyEvaluator) Stage {
 			if err != nil {
 				log.Printf("[stage_policy_tool] eval error for %s: %v (treating as block)", tc.ToolName, err)
 				tc.Error = ErrToolBlocked
+				tc.Outcome = OutcomeUnknown
+				tc.Disposition = DispositionAttempted
 				continue
 			}
 			if !decision.Allow {
 				if decision.Action == "request_approval" {
 					tc.Error = ErrApprovalRequested
+					tc.Outcome = OutcomeUnknown
+					tc.Disposition = DispositionAttempted
 				} else {
 					tc.Error = ErrToolBlocked
+					tc.Outcome = OutcomeFailure
+					tc.Disposition = DispositionAttempted
 				}
+			} else {
+				// Tool is allowed, set default values for outcome and disposition
+				tc.Outcome = OutcomeUnknown
+				tc.Disposition = DispositionAttempted
 			}
 		}
 		return nil
