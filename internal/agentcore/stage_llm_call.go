@@ -54,10 +54,18 @@ func NewStageLLMCall(deps LLMCallDeps) Stage {
 				return fmt.Errorf("LLM error: %w", err)
 			}
 			turn.Output = msg.Content
-			// Store tool calls for the tool loop stage
+			// Store tool calls for the tool loop stage. When this LLM call produced
+			// no tool calls, explicitly clear any tool-loop metadata left over from an
+			// earlier attempt on this reused Turn: the keys are only ever set when a
+			// response carries tool calls (above), so without this clear a tool-less
+			// retry (the fresh-search re-prompt in agent.go) would re-execute the
+			// previous attempt's batch against the new answer. Mirrors the Set path.
 			if len(msg.ToolCalls) > 0 {
 				turn.SetMeta("pending_tool_calls", msg.ToolCalls)
 				turn.SetMeta("llm_messages", llmMsgs)
+			} else {
+				turn.DeleteMeta("pending_tool_calls")
+				turn.DeleteMeta("llm_messages")
 			}
 			return nil
 		}
