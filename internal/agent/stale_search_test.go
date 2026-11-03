@@ -200,8 +200,9 @@ func TestGateOutput_AllowedAndNil(t *testing.T) {
 // many times ChatWithTools was invoked. This mirrors the incident: on the
 // retry turn the model first emits a stale refusal without calling web_search.
 type staleSearchChatter struct {
-	script []*llm.Message
-	calls  int
+	script   []*llm.Message
+	calls    int
+	recorded [][]llm.Message
 }
 
 func (m *staleSearchChatter) Chat(context.Context, []llm.Message, float64, int, func(string)) (string, error) {
@@ -216,9 +217,10 @@ func (m *staleSearchChatter) ChatSync(context.Context, []llm.Message, float64, i
 	return "", errors.New("staleSearchChatter.ChatSync: unexpected")
 }
 
-func (m *staleSearchChatter) ChatWithTools(_ context.Context, _ []llm.Message, _ float64, _ int, _ []llm.ToolDef) (*llm.Message, error) {
+func (m *staleSearchChatter) ChatWithTools(_ context.Context, msgs []llm.Message, _ float64, _ int, _ []llm.ToolDef) (*llm.Message, error) {
 	idx := m.calls
 	m.calls++
+	m.recorded = append(m.recorded, msgs)
 	if idx >= len(m.script) {
 		idx = len(m.script) - 1
 	}
@@ -731,5 +733,90 @@ func TestHasSearchFailureClaimNoFalsePositive(t *testing.T) {
 				t.Errorf("hasSearchFailureClaim(%q) = %v, want %v", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+// countDirectives counts how many entries in a recorded LLM message list carry
+// the fresh-search directive, matched by role and exact content.
+func countDirectives(msgs []llm.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == "system" && m.Content == freshSearchDirective {
+			n++
+		}
+	}
+	return n
+}
+
+// TestStaleSearchDirectiveAppendedOnce is the #424 regression test for the
+// redundant fresh-search directive double-append. When BOTH Fix 1
+// (retry-intent: the user says "search again" over a trailing failure-claim)
+// and Fix 3 (output-gate backstop: attempt 1 refuses without a web_search tool
+// call) fire on the same turn, the directive must be appended to turn.Messages
+// exactly ONCE — not twice back-to-back. The re-prompt's LLM call (the 2nd
+// ChatWithTools invocation) therefore carries the directive a single time.
+// Before the guard this test FAILS (directive seen twice); with the guard it
+// PASSES (directive seen once). It mirrors the offline e2e harness — no live
+// inference, no real SearXNG.
+func TestStaleSearchDirectiveAppendedOnce(t *testing.T) {
+	t.Parallel()
+
+	// Offline SearXNG endpoint returning one fresh result.
+	searxng := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"results":[{"title":"Fresh","url":"https://example.com/fresh","content":"clear skies, 72F"}]}`)
+	}))
+	defer searxng.Close()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const convID = "f4-conv-directive-once"
+
+	// Seed the PRIOR failed turn so Fix 1's trailing-failure-claim precondition
+	// holds (user says "search again" over a recent refusal).
+	if err := db.SaveMessage(convID, "parent", "user", "What's the weather?", "", "", ""); err != nil {
+		t.Fatalf("seed user msg: %v", err)
+	}
+	if err := db.SaveMessage(convID, "parent", "assistant", "I couldn't check the weather; the search is still broken.", "", "allow", ""); err != nil {
+		t.Fatalf("seed assistant msg: %v", err)
+	}
+
+	// Attempt 1 re-emits a stale refusal with no tool call (fires Fix 3's
+	// re-prompt); attempt 2 runs web_search; attempt 3 is the fresh final
+	// answer. mock.calls == 3 proves BOTH fixes fired and the guard re-prompted.
+	mock := &staleSearchChatter{script: []*llm.Message{
+		{Role: "assistant", Content: "I can't check that right now; the search is still broken."},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "call_f4_1", Type: "function",
+			Function: llm.ToolCallFunction{Name: "web_search", Arguments: map[string]any{"query": "weather today"}}}}},
+		{Role: "assistant", Content: "Here's the latest from a fresh search: clear skies, 72°F."},
+	}}
+
+	cfg := staleSearchTestCfg(searxng.URL)
+	agent := buildStaleSearchAgent(t, db, cfg, mock, convID, true)
+
+	resp, err := agent.Chat(context.Background(), "Search again", func(string) {})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if !strings.Contains(resp.Content, "fresh search") {
+		t.Fatalf("Content = %q — expected the recovered fresh answer", resp.Content)
+	}
+	if mock.calls != 3 {
+		t.Fatalf("ChatWithTools calls = %d, want 3 (Fix 1 + Fix 3 both fired; guard re-prompted)", mock.calls)
+	}
+
+	// The re-prompt is the 2nd ChatWithTools call. Count the fresh-search
+	// directive in its input message list: exactly ONE (Fix 1's copy), never
+	// the back-to-back duplicate that the unguarded Fix 3 path used to add.
+	if len(mock.recorded) < 2 {
+		t.Fatalf("recorded ChatWithTools inputs = %d, want >= 2", len(mock.recorded))
+	}
+	if got := countDirectives(mock.recorded[1]); got != 1 {
+		t.Errorf("fresh-search directive count in re-prompt input = %d, want 1 (double-append regression)", got)
 	}
 }

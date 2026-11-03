@@ -650,7 +650,15 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// first turn, where there is no prior "try again" intent to trigger Fix 1.
 	if a.shouldFreshSearchRetry(turn) {
 		prevOutput, prevTokens := turn.Output, bufferedTokens
-		turn.Messages = append(turn.Messages, agentcore.Message{Role: "system", Content: freshSearchDirective})
+		// Guard against a double-append: when Fix 1 (retry-intent, above)
+		// already injected the fresh-search directive this turn, it is the
+		// last message — appending it a second time would show the model the
+		// identical instruction back-to-back. Skip the duplicate; the re-prompt
+		// below still runs against the existing trailing directive.
+		n := len(turn.Messages)
+		if n == 0 || turn.Messages[n-1].Role != "system" || turn.Messages[n-1].Content != freshSearchDirective {
+			turn.Messages = append(turn.Messages, agentcore.Message{Role: "system", Content: freshSearchDirective})
+		}
 		turn.ToolCalls = nil
 		bufferedTokens = nil
 		log.Printf("[agent][%s] fresh-search re-prompt (retry 1/1): model claimed no search ability without calling web_search this turn", a.user.Name)
