@@ -355,7 +355,8 @@ CREATE TABLE vault_secrets (
 
 CREATE TABLE web_sessions (
 		id          TEXT PRIMARY KEY NOT NULL,
-		user_id     INTEGER NOT NULL,
+		user_id     INTEGER NOT NULL DEFAULT 0,
+		user_name   TEXT NOT NULL DEFAULT '',
 		created_at  INTEGER NOT NULL,
 		expires_at  INTEGER NOT NULL,
 		last_seen   INTEGER NOT NULL,

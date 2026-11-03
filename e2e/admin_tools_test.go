@@ -12,6 +12,7 @@ import (
 
 	"github.com/famclaw/famclaw/internal/agent/tools/admin"
 	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
 )
 
@@ -269,64 +270,249 @@ func TestAdminSetUserRole_Parent(t *testing.T) {
 	db := newAdminTestDB(t)
 	ctx := context.Background()
 
-	result, err := admin.HandleSetUserRole(ctx, parentDeps(db), map[string]any{
-		"user_name": "emma",
-		"role":      "under_8",
-	})
+	ev, err := policy.NewEvaluator("", "", "")
 	if err != nil {
-		t.Fatalf("HandleSetUserRole: %v", err)
+		t.Fatalf("policy.NewEvaluator: %v", err)
 	}
 
-	var resp map[string]any
-	if err := json.Unmarshal([]byte(result), &resp); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
+	// Terra F12: the real admin role setter writes the shared schema —
+	// role is "child", the cohort lives in age_group. Every cohort is
+	// verified through the real policy evaluator on input, tool and
+	// output decisions.
+	cohortCases := []struct {
+		cohort    string
+		wantInput string // input-policy action for the social_media category
+	}{
+		{"under_8", "block"},
+		{"age_8_12", "request_approval"},
+		{"age_13_17", "allow"},
 	}
-	if resp["role"] != "under_8" {
-		t.Errorf("role = %v, want 'under_8'", resp["role"])
-	}
-	if resp["user_name"] != "emma" {
-		t.Errorf("user_name = %v, want 'emma'", resp["user_name"])
+	for _, tc := range cohortCases {
+		t.Run(tc.cohort, func(t *testing.T) {
+			result, err := admin.HandleSetUserRole(ctx, parentDeps(db), map[string]any{
+				"user_name": "emma",
+				"role":      "child",
+				"age_group": tc.cohort,
+			})
+			if err != nil {
+				t.Fatalf("HandleSetUserRole: %v", err)
+			}
+
+			var resp map[string]any
+			if err := json.Unmarshal([]byte(result), &resp); err != nil {
+				t.Fatalf("unmarshal result: %v", err)
+			}
+			if resp["role"] != "child" {
+				t.Errorf("role = %v, want 'child'", resp["role"])
+			}
+			if resp["age_group"] != tc.cohort {
+				t.Errorf("age_group = %v, want %q", resp["age_group"], tc.cohort)
+			}
+			if resp["user_name"] != "emma" {
+				t.Errorf("user_name = %v, want 'emma'", resp["user_name"])
+			}
+
+			// The override is persisted with the shared schema: the role
+			// column holds "child" (never a cohort value) and the cohort
+			// lives in age_group.
+			role, ageGroup, err := db.GetRoleOverride(ctx, "emma")
+			if err != nil {
+				t.Fatalf("GetRoleOverride: %v", err)
+			}
+			if role != "child" {
+				t.Errorf("stored role override = %q, want 'child'", role)
+			}
+			if ageGroup != tc.cohort {
+				t.Errorf("stored age_group override = %q, want %q", ageGroup, tc.cohort)
+			}
+
+			// Every consumer resolves the same effective values.
+			effRole, effAge, err := db.GetEffectiveRoleAge(ctx, "emma", "child", "age_8_12")
+			if err != nil {
+				t.Fatalf("GetEffectiveRoleAge: %v", err)
+			}
+			if effRole != "child" || effAge != tc.cohort {
+				t.Errorf("effective = %q/%q, want child/%q", effRole, effAge, tc.cohort)
+			}
+
+			user := policy.UserInput{Role: effRole, AgeGroup: effAge, Name: "emma"}
+
+			// Input policy through the real evaluator.
+			decision, err := ev.Evaluate(ctx, policy.Input{
+				User:  user,
+				Query: policy.QueryInput{Category: "social_media", Text: "can I use instagram"},
+			})
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if decision.Action != tc.wantInput {
+				t.Errorf("input policy action = %q, want %q", decision.Action, tc.wantInput)
+			}
+
+			// Tool policy: file_read must be allowed for the child role in
+			// every cohort. (F12 bug: with the cohort value persisted in the
+			// role column, neither "parent" nor "child" matched and the tool
+			// gate default-denied every tool.)
+			toolDecision, err := ev.EvaluateToolCall(ctx, policy.ToolCallInput{
+				User:     user,
+				ToolName: "file_read",
+			})
+			if err != nil {
+				t.Fatalf("EvaluateToolCall: %v", err)
+			}
+			if toolDecision.Action != "allow" {
+				t.Errorf("tool policy action = %q, want 'allow'", toolDecision.Action)
+			}
+
+			// Output policy: the child role must match the PII rule so a
+			// response containing a PII keyword is denied, not default-deny
+			// by accident.
+			outDecision, err := ev.EvaluateOutput(ctx, policy.OutputInput{
+				User:          user,
+				Gateway:       "telegram",
+				DraftResponse: "your ssn is 123-45-6789",
+			})
+			if err != nil {
+				t.Fatalf("EvaluateOutput: %v", err)
+			}
+			if outDecision.Allow {
+				t.Errorf("output policy allowed a PII-bearing response, want deny")
+			}
+
+			// Round-trip: list_users must surface the effective override.
+			listResult, err := admin.HandleListUsers(ctx, parentDeps(db), map[string]any{})
+			if err != nil {
+				t.Fatalf("HandleListUsers: %v", err)
+			}
+			var users []map[string]any
+			if err := json.Unmarshal([]byte(listResult), &users); err != nil {
+				t.Fatalf("unmarshal list_users result: %v", err)
+			}
+			var found map[string]any
+			for _, u := range users {
+				if u["name"] == "emma" {
+					found = u
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("emma not in list_users output")
+			}
+			if found["role"] != "child" {
+				t.Errorf("list_users effective role = %v, want 'child'", found["role"])
+			}
+			if found["age_group"] != tc.cohort {
+				t.Errorf("list_users effective age_group = %v, want %q", found["age_group"], tc.cohort)
+			}
+			if found["has_role_override"] != true {
+				t.Errorf("has_role_override = %v, want true", found["has_role_override"])
+			}
+		})
 	}
 
-	// Verify override is stored in DB.
-	overrideRole, _, err := db.GetRoleOverride(ctx, "emma")
+	assertAuditLogged(t, db, "builtin__set_user_role", "parent", "child", "age_13_17")
+}
+
+// TestAdminSetUserRole_PromotionBlocked pins Terra F13: an override may never
+// promote a configured non-parent into the parent role. The child user "emma"
+// has the parent role in config only for the demotion tests below; the
+// promotion case targets emma while she is a configured child.
+func TestAdminSetUserRole_PromotionBlocked(t *testing.T) {
+	db := newAdminTestDB(t)
+	ctx := context.Background()
+
+	// emma is configured as child (role "child", cohort age_8_12).
+	if _, err := admin.HandleSetUserRole(ctx, parentDeps(db), map[string]any{
+		"user_name": "emma",
+		"role":      "parent",
+	}); err == nil {
+		t.Fatal("set_user_role granted parent role to a configured child — overrides must not promote")
+	}
+	// Nothing was persisted.
+	role, ageGroup, err := db.GetRoleOverride(ctx, "emma")
 	if err != nil {
 		t.Fatalf("GetRoleOverride: %v", err)
 	}
-	if overrideRole != "under_8" {
-		t.Errorf("stored role override = %q, want 'under_8'", overrideRole)
+	if role != "" || ageGroup != "" {
+		t.Errorf("override row persisted after blocked promotion: %q/%q", role, ageGroup)
 	}
 
-	// Round-trip: list_users must surface the override (not the config row).
-	listResult, err := admin.HandleListUsers(ctx, parentDeps(db), map[string]any{})
+	// A raw legacy/malicious row (role=parent for a base child) is capped at
+	// the read path: effective role is "child", never "parent".
+	if err := db.SetRoleOverride(ctx, "emma", "parent", "", "test"); err != nil {
+		t.Fatalf("SetRoleOverride: %v", err)
+	}
+	t.Cleanup(func() { _ = db.DeleteRoleOverride(ctx, "emma") })
+	effRole, _, err := db.GetEffectiveRoleAge(ctx, "emma", "child", "age_8_12")
 	if err != nil {
-		t.Fatalf("HandleListUsers after set_user_role: %v", err)
+		t.Fatalf("GetEffectiveRoleAge: %v", err)
 	}
-	var users []map[string]any
-	if err := json.Unmarshal([]byte(listResult), &users); err != nil {
-		t.Fatalf("unmarshal list_users result: %v", err)
-	}
-	var found map[string]any
-	for _, u := range users {
-		if u["name"] == "emma" {
-			found = u
-			break
-		}
-	}
-	if found == nil {
-		t.Fatalf("emma not in list_users output")
-	}
-	if found["role"] != "under_8" {
-		t.Errorf("list_users effective role = %v, want 'under_8'", found["role"])
-	}
-	if found["age_group"] != "under_8" {
-		t.Errorf("list_users effective age_group = %v, want 'under_8'", found["age_group"])
-	}
-	if found["has_role_override"] != true {
-		t.Errorf("has_role_override = %v, want true", found["has_role_override"])
+	if effRole != "child" {
+		t.Errorf("effective role for base child with parent override = %q, want 'child'", effRole)
 	}
 
-	assertAuditLogged(t, db, "builtin__set_user_role", "parent", "emma", "under_8")
+	// Invalid inputs are rejected.
+	if _, err := admin.HandleSetUserRole(ctx, parentDeps(db), map[string]any{
+		"user_name": "emma",
+		"role":      "under_8",
+	}); err == nil {
+		t.Error("cohort value accepted as role — shared schema is role parent|child")
+	}
+	if _, err := admin.HandleSetUserRole(ctx, parentDeps(db), map[string]any{
+		"user_name": "emma",
+		"role":      "parent",
+		"age_group": "under_8",
+	}); err == nil {
+		t.Error("age_group accepted with role parent — parents carry no cohort")
+	}
+}
+
+// TestAdminSetUserRole_DemotionAndRecovery pins the administrative demotion
+// and recovery semantics (Terra F13): a configured parent can be demoted to
+// child, the demotion is visible through effective resolution, and re-setting
+// role=parent on the configured parent clears the override (recovery) without
+// granting anything to a base non-parent.
+func TestAdminSetUserRole_DemotionAndRecovery(t *testing.T) {
+	db := newAdminTestDB(t)
+	ctx := context.Background()
+
+	// Demote the configured parent.
+	if _, err := admin.HandleSetUserRole(ctx, parentDeps(db), map[string]any{
+		"user_name": "parent",
+		"role":      "child",
+		"age_group": "under_8",
+	}); err != nil {
+		t.Fatalf("HandleSetUserRole (demote): %v", err)
+	}
+	effRole, effAge, err := db.GetEffectiveRoleAge(ctx, "parent", "parent", "")
+	if err != nil {
+		t.Fatalf("GetEffectiveRoleAge: %v", err)
+	}
+	if effRole != "child" || effAge != "under_8" {
+		t.Errorf("demoted parent effective = %q/%q, want child/under_8", effRole, effAge)
+	}
+
+	// Recovery: role=parent on a configured parent clears the override.
+	if _, err := admin.HandleSetUserRole(ctx, parentDeps(db), map[string]any{
+		"user_name": "parent",
+		"role":      "parent",
+	}); err != nil {
+		t.Fatalf("HandleSetUserRole (recovery): %v", err)
+	}
+	role, ageGroup, err := db.GetRoleOverride(ctx, "parent")
+	if err != nil {
+		t.Fatalf("GetRoleOverride: %v", err)
+	}
+	if role != "" || ageGroup != "" {
+		t.Errorf("override row still present after recovery: %q/%q", role, ageGroup)
+	}
+	effRole, _, err = db.GetEffectiveRoleAge(ctx, "parent", "parent", "")
+	if err != nil {
+		t.Fatalf("GetEffectiveRoleAge: %v", err)
+	}
+	if effRole != "parent" {
+		t.Errorf("effective role after recovery = %q, want 'parent'", effRole)
+	}
 }
 
 func TestAdminListUnknownAccounts_Parent(t *testing.T) {

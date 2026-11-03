@@ -11,9 +11,16 @@ import (
 )
 
 // Session represents an authenticated web session row.
+//
+// Identity is bound to the user's stable config NAME (UserName), not to a
+// position in the config array. The name survives user reorder, replacement,
+// reload and restart (a user's name only changes when that user is explicitly
+// renamed, which is itself treated as removal + re-creation and revokes the
+// session). The legacy `user_id` column remains in the schema for
+// compatibility but is non-authoritative and is always written as 0.
 type Session struct {
 	ID        string
-	UserID    int64
+	UserName  string
 	CreatedAt time.Time
 	ExpiresAt time.Time
 	LastSeen  time.Time
@@ -49,9 +56,14 @@ func NewSessionStore(db *sql.DB) *SessionStore {
 }
 
 // Create generates a cryptographically random 32-byte session ID, stores it
-// in web_sessions with an expires_at = now + ttl, and returns the URL-safe
-// base64-encoded ID (43 chars, no padding).
-func (s *SessionStore) Create(ctx context.Context, userID int64, ip, ua string) (string, error) {
+// in web_sessions bound to the user's stable name (the authoritative
+// principal), and returns the URL-safe base64-encoded ID (43 chars, no
+// padding). The legacy numeric user_id column is written as 0 — it is no
+// longer used for identity or authorization.
+func (s *SessionStore) Create(ctx context.Context, principal, ip, ua string) (string, error) {
+	if principal == "" {
+		return "", fmt.Errorf("creating session: principal must be non-empty")
+	}
 	var buf [32]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return "", fmt.Errorf("generating session id: %w", err)
@@ -62,9 +74,9 @@ func (s *SessionStore) Create(ctx context.Context, userID int64, ip, ua string) 
 	expires := now.Add(s.ttl)
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO web_sessions(id, user_id, created_at, expires_at, last_seen, ip, user_agent)
-		VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		id, userID, now.Unix(), expires.Unix(), now.Unix(), ip, ua)
+		INSERT INTO web_sessions(id, user_id, user_name, created_at, expires_at, last_seen, ip, user_agent)
+		VALUES(?, 0, ?, ?, ?, ?, ?, ?)`,
+		id, principal, now.Unix(), expires.Unix(), now.Unix(), ip, ua)
 	if err != nil {
 		return "", fmt.Errorf("insert web_session: %w", err)
 	}
@@ -77,15 +89,14 @@ func (s *SessionStore) Create(ctx context.Context, userID int64, ip, ua string) 
 // side-effect-free.
 func (s *SessionStore) Get(ctx context.Context, sessionID string) (*Session, error) {
 	var (
-		id                             string
-		userID                         int64
+		id, userName                     string
 		createdAt, expiresAt, lastSeen int64
 		ip, userAgent                  string
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, user_id, created_at, expires_at, last_seen, ip, user_agent
+		SELECT id, user_name, created_at, expires_at, last_seen, ip, user_agent
 		FROM web_sessions WHERE id = ?`, sessionID).Scan(
-		&id, &userID, &createdAt, &expiresAt, &lastSeen, &ip, &userAgent)
+		&id, &userName, &createdAt, &expiresAt, &lastSeen, &ip, &userAgent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoSession
 	}
@@ -97,7 +108,7 @@ func (s *SessionStore) Get(ctx context.Context, sessionID string) (*Session, err
 	}
 	return &Session{
 		ID:        id,
-		UserID:    userID,
+		UserName:  userName,
 		CreatedAt: time.Unix(createdAt, 0).UTC(),
 		ExpiresAt: time.Unix(expiresAt, 0).UTC(),
 		LastSeen:  time.Unix(lastSeen, 0).UTC(),

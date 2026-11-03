@@ -135,12 +135,13 @@ func TestChatRequiresSession(t *testing.T) {
 	}
 }
 
-// TestChatUnknownUserRejected asserts a session whose user ID does not map to
-// any configured user is rejected with 403 before the WebSocket upgrade.
+// TestChatUnknownUserRejected asserts a session whose principal (config name)
+// does not resolve to any configured user is rejected with 403 before the
+// WebSocket upgrade.
 func TestChatUnknownUserRejected(t *testing.T) {
 	ts, sessions := newChatSecurityServer(t)
 
-	sessID, err := sessions.Create(context.Background(), 99, "127.0.0.1", "test")
+	sessID, err := sessions.Create(context.Background(), "ghost", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestChatUnknownUserRejected(t *testing.T) {
 	_, resp, err := websocket.DefaultDialer.Dial(wsURL(t, ts, "/api/chat", ""),
 		http.Header{"Cookie": []string{"famclaw_session=" + sessID}})
 	if err == nil {
-		t.Fatal("expected dial to fail for out-of-range session user ID")
+		t.Fatal("expected dial to fail for unresolvable session principal")
 	}
 	if resp == nil || resp.StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 for unknown user session, got %v", resp)
@@ -162,8 +163,8 @@ func TestChatUnknownUserRejected(t *testing.T) {
 func TestChatIgnoresUserQueryParam(t *testing.T) {
 	ts, sessions := newChatSecurityServer(t)
 
-	// emma is config.Users[1] → synthesised session user ID 2.
-	sessID, err := sessions.Create(context.Background(), 2, "127.0.0.1", "test")
+	// emma is a child; her session principal is her stable config name.
+	sessID, err := sessions.Create(context.Background(), "emma", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create: %v", err)
 	}
@@ -200,8 +201,8 @@ func TestChatIgnoresUserQueryParam(t *testing.T) {
 func TestChatParentOverrideUser(t *testing.T) {
 	ts, sessions := newChatSecurityServer(t)
 
-	// parent is config.Users[0] → synthesised session user ID 1.
-	sessID, err := sessions.Create(context.Background(), 1, "127.0.0.1", "test")
+	// parent is a parent; the session principal is the stable config name.
+	sessID, err := sessions.Create(context.Background(), "parent", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create: %v", err)
 	}

@@ -109,14 +109,14 @@ func newJoinSecurityServer(t *testing.T, wsOriginPolicy string) (*httptest.Serve
 	}
 	s.upgrader = websocket.Upgrader{CheckOrigin: s.allowedOrigin}
 	// Wire auth + join exactly as NewServer does.
-	s.auth = NewAuthHandler(sessions, vault, s.getParentPINCiphertext, s.resolveParentUserID)
+	s.auth = NewAuthHandler(sessions, vault, s.getParentPINCiphertext, s.resolveParentPrincipal)
 	s.join = NewJoinHandler(
 		sessions,
 		vault,
 		s.getChildPINCiphertext,
 		s.saveChildPINCiphertext,
 		s.deleteChildPINCiphertext,
-		s.resolveChildUserID,
+		s.resolveChildPrincipal,
 		s.auth.Limiter(),
 	)
 	s.join.minLatency = time.Millisecond
@@ -239,7 +239,8 @@ func TestJoinConstantShape401(t *testing.T) {
 }
 
 // TestJoinSuccess (design-note T13): a correct code seats a session cookie
-// bound to the CHILD's user ID, and /session reports that child.
+// bound to the CHILD's stable config name (the session principal), and
+// /session reports that child.
 func TestJoinSuccess(t *testing.T) {
 	ts, deps := newJoinSecurityServer(t, "")
 	code := deps.issueCodeDirect(t, "emma")
@@ -252,7 +253,7 @@ func TestJoinSuccess(t *testing.T) {
 		t.Fatal("expected a famclaw_session cookie on successful join")
 	}
 
-	// The session must carry emma's synthesised user ID (config index 1 + 1).
+	// The session must carry emma's name as its principal.
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/session", nil)
 	req.AddCookie(&http.Cookie{Name: "famclaw_session", Value: sid})
 	resp, err := http.DefaultClient.Do(req)
@@ -261,14 +262,14 @@ func TestJoinSuccess(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var sess struct {
-		LoggedIn bool  `json:"logged_in"`
-		UserID   int64 `json:"user_id"`
+		LoggedIn bool   `json:"logged_in"`
+		UserName string `json:"user_name"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&sess); err != nil {
 		t.Fatalf("decoding /session: %v", err)
 	}
-	if !sess.LoggedIn || sess.UserID != 2 {
-		t.Errorf("/session = logged_in=%v user_id=%d, want true/2 (emma)", sess.LoggedIn, sess.UserID)
+	if !sess.LoggedIn || sess.UserName != "emma" {
+		t.Errorf("/session = logged_in=%v user_name=%q, want true/'emma'", sess.LoggedIn, sess.UserName)
 	}
 }
 
@@ -452,7 +453,7 @@ func TestJoinMinLatency(t *testing.T) {
 		func(context.Context, string) ([]byte, error) { return nil, sql.ErrNoRows },
 		func(context.Context, string, []byte) error { return nil },
 		func(context.Context, string) error { return nil },
-		func(context.Context, string) (int64, error) { return 2, nil },
+		func(context.Context, string) (string, error) { return "emma", nil },
 		newLoginLimiter(),
 	)
 	ts := httptest.NewServer(http.HandlerFunc(h.HandleJoin))

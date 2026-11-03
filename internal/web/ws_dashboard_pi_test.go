@@ -37,8 +37,8 @@ func TestDashboardUpdatePIIChildScoping(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Child session: config.Users[1] → synthesised session user ID 2.
-	childSess, err := deps.sessions.Create(ctx, 2, "127.0.0.1", "test")
+	// Child session: principal is the stable config name.
+	childSess, err := deps.sessions.Create(ctx, "emma", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create (child): %v", err)
 	}
@@ -48,8 +48,8 @@ func TestDashboardUpdatePIIChildScoping(t *testing.T) {
 	}
 	defer childConn.Close()
 
-	// Parent session: config.Users[0] → synthesised session user ID 1.
-	parentSess, err := deps.sessions.Create(ctx, 1, "127.0.0.1", "test")
+	// Parent session: principal is the stable config name.
+	parentSess, err := deps.sessions.Create(ctx, "parent", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create (parent): %v", err)
 	}
