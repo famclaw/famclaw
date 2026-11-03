@@ -404,8 +404,12 @@ func loadBaseline() map[string]struct{} {
 		// than a broken build).
 		return map[string]struct{}{}
 	}
-	set := make(map[string]struct{}, 128)
-	for _, line := range strings.Split(string(data), "\n") {
+	// Split once: the entry count is also the exact map preallocation
+	// hint, so a baseline larger than the old 128 hint no longer forces
+	// regrowth on every insertion (review finding: unbounded hint).
+	lines := strings.Split(string(data), "\n")
+	set := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

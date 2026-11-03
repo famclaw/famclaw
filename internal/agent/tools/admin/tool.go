@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
@@ -52,7 +53,30 @@ type Deps struct {
 	// live agent decision path shares the config; handlers then
 	// access the slice unsynchronized (safe by construction in those
 	// contexts, which run single-threaded).
+	//
+	// NOTE: a value sync.RWMutex is deliberately NOT used here: the
+	// field must share the agent's lock instance (&a.urlDenylistMu),
+	// and a value field would be copied into each Deps, defeating the
+	// synchronization. nil is therefore possible, and denylistMu()
+	// logs a prominent warning at handler entry when it is, so a
+	// production entry point that forgets to wire it cannot fail
+	// silently into an unsynchronized read-modify-write (review
+	// finding: nil-mutex race).
 	URLDenylistMu *sync.RWMutex
+}
+
+// denylistMu returns the shared denylist lock for a denylist handler,
+// logging a prominent warning if it was not wired (nil). Nil is legal
+// only in single-threaded standalone/test Deps; in any configuration
+// where a live Agent shares Cfg, the lock MUST be the agent's
+// urlDenylistMu — a nil here means the handler runs unsynchronized
+// and its read-modify-write of Cfg.Tools.WebFetch.URLDenylist can
+// tear against hostDecision's slice reads.
+func (d Deps) denylistMu() *sync.RWMutex {
+	if d.URLDenylistMu == nil {
+		log.Printf("[admin] WARNING: denylist handler invoked with URLDenylistMu unset — read-modify-write of Cfg.Tools.WebFetch.URLDenylist is UNSYNCHRONIZED. This is only safe in single-threaded standalone/test Deps; every production entry point must wire Deps.URLDenylistMu to the agent's urlDenylistMu.")
+	}
+	return d.URLDenylistMu
 }
 
 // MCPManager abstracts MCP server lifecycle management needed by the
