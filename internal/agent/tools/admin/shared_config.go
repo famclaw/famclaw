@@ -91,7 +91,8 @@ func (scm *SharedConfigManager) SaveConfig(cfg interface{}, contentToken string)
 	}
 
 	// Notify watchers of the change
-	go scm.watcher.NotifyChange(newToken)
+	// Synchronous (non-blocking) notify: channel-send-with-default is O(1); no goroutine leak on shutdown. (bot finding #2, ccb942d)
+	scm.watcher.NotifyChange(newToken)
 
 	return newToken, nil
 }
