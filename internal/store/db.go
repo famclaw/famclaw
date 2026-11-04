@@ -339,7 +339,10 @@ func (d *DB) migrate() error {
 		created_at         TEXT NOT NULL,
 		setter_gateway     TEXT DEFAULT '',
 		setter_external_id TEXT DEFAULT '',
-		delivery_attempts  INTEGER NOT NULL DEFAULT 0
+		delivery_attempts  INTEGER NOT NULL DEFAULT 0,
+		delivery_state     TEXT NOT NULL DEFAULT 'pending',
+		terminal_attempts  INTEGER NOT NULL DEFAULT 0,
+		undelivered_reason TEXT DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_reminders_due_at ON reminders(due_at);
 	CREATE INDEX IF NOT EXISTS idx_reminders_user_dispatched ON reminders(user_name, dispatched);
@@ -445,6 +448,56 @@ func (d *DB) migrate() error {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate add reminders delivery_attempts: %w", err)
 		}
+	}
+
+	// Guard for existing deployments that predate the truthful
+	// delivery-state columns (terminal-state fix). delivery_state separates
+	// "delivered to target" from "undelivered but handled": a reminder whose
+	// content could not be recorded and whose user could not be notified is
+	// undelivered, never dispatched-as-success. terminal_attempts bounds the
+	// retry of that terminalization; undelivered_reason carries the
+	// delivery-failure reason on the row itself.
+	// SQLite does not support ADD COLUMN IF NOT EXISTS, so we attempt the
+	// ALTER TABLE and ignore the error when the column already exists.
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE reminders ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'pending'`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add reminders delivery_state: %w", err)
+		}
+	}
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE reminders ADD COLUMN terminal_attempts INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add reminders terminal_attempts: %w", err)
+		}
+	}
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE reminders ADD COLUMN undelivered_reason TEXT DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add reminders undelivered_reason: %w", err)
+		}
+	}
+	// One-time data migration: rows already marked dispatched=1 on old
+	// deployments keep the legacy semantics (delivered to target, or
+	// closed-out). They must not re-enter the delivery queue, and the new
+	// truthful states start from 'pending' only for genuinely-pending rows.
+	//
+	// The legacy "dispatched but state unknown" signature is
+	// dispatched=1 AND delivery_state='pending': adding delivery_state above
+	// with DEFAULT 'pending' backfills every pre-existing row to 'pending',
+	// so a legacy dispatched row reads exactly like that. The guard
+	// `AND delivery_state = 'pending'` is what makes this block both
+	// idempotent and truthful on every re-run — it lives in migrate(), which
+	// runs on each process startup:
+	//   - an already-migrated row is now 'delivered', so it no longer matches
+	//     'pending' and re-running is a no-op on it;
+	//   - rows the truthful lifecycle has moved to 'undelivered' (which sets
+	//     dispatched=1 alongside delivery_state='undelivered') are NEVER
+	//     re-labelled delivered, so a reminder whose dispatch was recorded
+	//     but never delivered is not fabricated into "delivered" on restart.
+	// Without the guard, `WHERE dispatched = 1` alone would flip a genuine
+	// 'undelivered' row back to 'delivered' on the next Open, defeating the
+	// core no-false-delivery invariant this PR exists to protect.
+	if _, err := d.sql.ExecContext(context.Background(),
+		`UPDATE reminders SET delivery_state = 'delivered' WHERE dispatched = 1 AND delivery_state = 'pending'`); err != nil {
+		return fmt.Errorf("migrate map legacy dispatched reminders to delivered: %w", err)
 	}
 
 	// Phase 3.3 seed: built-in family_fact_categories. Idempotent.
@@ -1616,7 +1669,30 @@ func scanTodo(rows *sql.Rows) (*Todo, error) {
 
 // ── Reminders ──────────────────────────────────────────────────────────────────
 
-// Reminder represents a pending or dispatched reminder.
+// Truthful delivery lifecycle states for reminders.delivery_state.
+// 'pending' is the only state the delivery queue reads; the terminal states
+// distinguish "delivered to target" from "could not be delivered" (the
+// latter must never be conflated with the former — that was the silent-loss
+// / false-delivery bug), and 'undelivered_retry' is the bounded intermediate
+// state while terminalization (recording the undelivered content) is retried.
+const (
+	// ReminderStatePending: not yet handled by the scheduler.
+	ReminderStatePending = "pending"
+	// ReminderStateDelivered: successfully sent to its target.
+	ReminderStateDelivered = "delivered"
+	// ReminderStateUndelivered: terminal — not delivered to its target;
+	// the delivery-failure reason is in undelivered_reason. The content MAY
+	// have a queryable row in undelivered_reminders; absence of such a row
+	// together with this state is the operational signal that recording
+	// failed (record_lost) — no dashboard record is claimed.
+	ReminderStateUndelivered = "undelivered"
+	// ReminderStateUndeliveredRetry: bounded retry state — terminalization
+	// failed and is retried on later ticks / restarts up to the scheduler's
+	// terminal budget (terminal_attempts).
+	ReminderStateUndeliveredRetry = "undelivered_retry"
+)
+
+// Reminder represents a pending or delivered reminder.
 type Reminder struct {
 	ID               int64
 	UserName         string
@@ -1636,6 +1712,16 @@ type Reminder struct {
 	// reminder.MaxDeliveryAttempts, preventing infinite retries against a
 	// permanently-failing destination.
 	DeliveryAttempts int
+	// DeliveryState is the truthful lifecycle state (see ReminderState*).
+	// Legacy rows predate it; migrations map old dispatched=1 rows to
+	// 'delivered' and leave the rest 'pending'.
+	DeliveryState string
+	// TerminalAttempts bounds the retry of terminalization (recording the
+	// undelivered content) after undelivered persistence failed.
+	TerminalAttempts int
+	// UndeliveredReason carries the delivery-failure reason (reminder.Reason*)
+	// on the row itself once the reminder leaves the delivery queue.
+	UndeliveredReason string
 }
 
 // CreateReminder inserts a new reminder.
@@ -1658,18 +1744,27 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// GetDueReminders returns all reminders that are due and not yet dispatched.
+// GetDueReminders returns all reminders that are due and still pending
+// (delivery_state = 'pending' — the only state the delivery queue reads).
 func (d *DB) GetDueReminders(ctx context.Context, now time.Time) ([]*Reminder, error) {
 	rows, err := d.sql.QueryContext(ctx, `
-		SELECT id, user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, dispatched_at, created_at, setter_gateway, setter_external_id, delivery_attempts
+		SELECT `+remindersSelectColumns+`
 		FROM reminders
-		WHERE dispatched = 0 AND due_at <= ?
-		ORDER BY due_at ASC`, now.UTC().Format(time.RFC3339))
+		WHERE delivery_state = ? AND due_at <= ?
+		ORDER BY due_at ASC`, ReminderStatePending, now.UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, fmt.Errorf("querying due reminders: %w", err)
 	}
-	defer rows.Close()
+	return scanReminders(rows)
+}
 
+// remindersSelectColumns is shared by every reminders query so the column
+// list and the scanner can never drift apart.
+const remindersSelectColumns = `id, user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, dispatched_at, created_at, setter_gateway, setter_external_id, delivery_attempts, delivery_state, terminal_attempts, undelivered_reason`
+
+// scanReminders drains a reminders query result into []*Reminder.
+func scanReminders(rows *sql.Rows) ([]*Reminder, error) {
+	defer rows.Close()
 	var out []*Reminder
 	for rows.Next() {
 		r := &Reminder{}
@@ -1677,7 +1772,8 @@ func (d *DB) GetDueReminders(ctx context.Context, now time.Time) ([]*Reminder, e
 		var dispatched, isGroup int
 		if err := rows.Scan(&r.ID, &r.UserName, &r.Gateway, &r.ExternalID, &r.GroupID, &isGroup,
 			&r.Message, &dueAtStr, &dispatched, &dispatchedAtStr, &createdAtStr,
-			&r.SetterGateway, &r.SetterExternalID, &r.DeliveryAttempts); err != nil {
+			&r.SetterGateway, &r.SetterExternalID, &r.DeliveryAttempts,
+			&r.DeliveryState, &r.TerminalAttempts, &r.UndeliveredReason); err != nil {
 			return nil, fmt.Errorf("scanning reminder: %w", err)
 		}
 		r.DueAt, _ = time.Parse(time.RFC3339, dueAtStr)
@@ -1694,13 +1790,82 @@ func (d *DB) GetDueReminders(ctx context.Context, now time.Time) ([]*Reminder, e
 	return out, rows.Err()
 }
 
-// MarkReminderDispatched marks a reminder as dispatched.
+// MarkReminderDispatched marks a reminder as delivered to its target.
+// It only transitions rows still in 'pending' — a reminder in a terminal or
+// retry state can never be re-labelled delivered (the false-delivery guard).
 func (d *DB) MarkReminderDispatched(ctx context.Context, id int64, now time.Time) error {
 	_, err := d.sql.ExecContext(ctx, `
-		UPDATE reminders SET dispatched = 1, dispatched_at = ? WHERE id = ?`,
-		now.UTC().Format(time.RFC3339), id)
+		UPDATE reminders SET delivery_state = ?, dispatched = 1, dispatched_at = ?
+		WHERE id = ? AND delivery_state = ?`,
+		ReminderStateDelivered, now.UTC().Format(time.RFC3339), id, ReminderStatePending)
 	if err != nil {
-		return fmt.Errorf("marking reminder dispatched: %w", err)
+		return fmt.Errorf("marking reminder delivered: %w", err)
+	}
+	return nil
+}
+
+// MarkUndelivered transitions a reminder to the truthful terminal
+// 'undelivered' state: it was NOT delivered to its target. The legacy
+// dispatched flag is set (the row leaves the delivery queue), but
+// delivery_state carries the truth, and undelivered_reason records why.
+// When no undelivered_reminders row exists for this reminder, the combination
+// delivery_state='undelivered' + absent record row is the record_lost
+// signal — no dashboard record is claimed for it.
+func (d *DB) MarkUndelivered(ctx context.Context, id int64, now time.Time, reason string) error {
+	_, err := d.sql.ExecContext(ctx, `
+		UPDATE reminders SET delivery_state = ?, dispatched = 1, dispatched_at = ?, undelivered_reason = ?
+		WHERE id = ? AND delivery_state IN (?, ?)`,
+		ReminderStateUndelivered, now.UTC().Format(time.RFC3339), reason,
+		id, ReminderStatePending, ReminderStateUndeliveredRetry)
+	if err != nil {
+		return fmt.Errorf("marking reminder undelivered: %w", err)
+	}
+	return nil
+}
+
+// BeginUndeliveredRetry moves a reminder into the bounded undelivered_retry
+// state after terminalization (recording its content in the undelivered
+// store) failed: it bumps terminal_attempts (the persisted retry budget) and
+// stores the delivery-failure reason on the row so later ticks — including
+// after a restart — can retry the record without re-attempting delivery.
+func (d *DB) BeginUndeliveredRetry(ctx context.Context, id int64, reason string) error {
+	_, err := d.sql.ExecContext(ctx, `
+		UPDATE reminders SET delivery_state = ?, undelivered_reason = ?, terminal_attempts = terminal_attempts + 1
+		WHERE id = ? AND delivery_state = ?`,
+		ReminderStateUndeliveredRetry, reason, id, ReminderStatePending)
+	if err != nil {
+		return fmt.Errorf("moving reminder to undelivered_retry: %w", err)
+	}
+	return nil
+}
+
+// GetUndeliveredRetryReminders returns reminders sitting in the bounded
+// undelivered_retry state (terminalization failed and is being retried).
+// Used by the scheduler's terminalization pass and by ReschedulePending on
+// startup recovery.
+func (d *DB) GetUndeliveredRetryReminders(ctx context.Context) ([]*Reminder, error) {
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT `+remindersSelectColumns+`
+		FROM reminders
+		WHERE delivery_state = ?
+		ORDER BY due_at ASC`, ReminderStateUndeliveredRetry)
+	if err != nil {
+		return nil, fmt.Errorf("querying undelivered-retry reminders: %w", err)
+	}
+	return scanReminders(rows)
+}
+
+// IncrementTerminalAttempt consumes one bounded terminalization-retry step for
+// a reminder in the undelivered_retry state (the scheduler calls it after a
+// record-save retry fails, so the persisted budget — not in-memory state —
+// bounds how many retries survive restarts).
+func (d *DB) IncrementTerminalAttempt(ctx context.Context, id int64) error {
+	_, err := d.sql.ExecContext(ctx, `
+		UPDATE reminders SET terminal_attempts = terminal_attempts + 1
+		WHERE id = ? AND delivery_state = ?`,
+		id, ReminderStateUndeliveredRetry)
+	if err != nil {
+		return fmt.Errorf("incrementing terminal attempts for reminder %d: %w", id, err)
 	}
 	return nil
 }
@@ -1726,40 +1891,18 @@ func (d *DB) IncrementDeliveryAttempt(ctx context.Context, id int64) (int, error
 	return attempts, nil
 }
 
-// GetPendingReminders returns all reminders that are not yet dispatched.
+// GetPendingReminders returns all reminders still in the 'pending' state
+// (not yet delivered, not yet terminalized, not in undelivered_retry).
 func (d *DB) GetPendingReminders(ctx context.Context) ([]*Reminder, error) {
 	rows, err := d.sql.QueryContext(ctx, `
-		SELECT id, user_name, gateway, external_id, group_id, is_group, message, due_at, dispatched, dispatched_at, created_at, setter_gateway, setter_external_id, delivery_attempts
+		SELECT `+remindersSelectColumns+`
 		FROM reminders
-		WHERE dispatched = 0
-		ORDER BY due_at ASC`)
+		WHERE delivery_state = ?
+		ORDER BY due_at ASC`, ReminderStatePending)
 	if err != nil {
 		return nil, fmt.Errorf("querying pending reminders: %w", err)
 	}
-	defer rows.Close()
-
-	var out []*Reminder
-	for rows.Next() {
-		r := &Reminder{}
-		var dueAtStr, dispatchedAtStr, createdAtStr string
-		var dispatched, isGroup int
-		if err := rows.Scan(&r.ID, &r.UserName, &r.Gateway, &r.ExternalID, &r.GroupID, &isGroup,
-			&r.Message, &dueAtStr, &dispatched, &dispatchedAtStr, &createdAtStr,
-			&r.SetterGateway, &r.SetterExternalID, &r.DeliveryAttempts); err != nil {
-			return nil, fmt.Errorf("scanning reminder: %w", err)
-		}
-		r.DueAt, _ = time.Parse(time.RFC3339, dueAtStr)
-		r.Dispatched = dispatched == 1
-		r.IsGroup = isGroup == 1
-		if dispatchedAtStr != "" {
-			if t, err := time.Parse(time.RFC3339, dispatchedAtStr); err == nil {
-				r.DispatchedAt = &t
-			}
-		}
-		r.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanReminders(rows)
 }
 
 // DeleteReminder deletes a reminder by ID.
