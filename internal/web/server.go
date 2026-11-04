@@ -663,10 +663,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 
-			// Notify parent if approval needed. The upsert runs under the
-			// chat connection's request context (r.Context()), not a
-			// detached one: a closing socket aborts the in-flight DB write,
-			// matching how notifySuspiciousApproval threads its ctx.
+			// Notify parent if approval needed. The upsert runs under a
+			// detached context: requestApproval wraps r.Context() in
+			// context.WithoutCancel, so a closing socket no longer aborts
+			// the in-flight DB write — the approval row must persist even
+			// if the client disconnects right after sending the message.
 			if resp.PolicyAction == "request_approval" {
 				s.spawnBackground(func() { s.requestApproval(r.Context(), userCfg, string(resp.Category), payload.Text) })
 			}
@@ -1155,9 +1156,15 @@ func (s *Server) decideURLs(a *store.Approval) (approve, deny string) {
 
 // requestApproval records a pending approval row for a gated topic and, when
 // the row is new, notifies the parent. ctx is the chat connection's request
-// context — handleChat threads r.Context() through spawnBackground, so the
-// DB upsert runs under the live request and a disconnect aborts an
-// in-flight write, matching the sibling notifySuspiciousApproval pattern.
+// context — handleChat threads r.Context() through spawnBackground. The DB
+// upsert deliberately runs under a DETACHED context:
+// context.WithoutCancel(ctx) strips the cancellation/finalizers of the
+// request while keeping its values. If the user sends a gated message and
+// closes the tab right away, the WebSocket request context is cancelled
+// before the background goroutine executes the write; the approval row must
+// still persist, or the parent is never notified. A raw r.Context() upsert
+// would abort in that case; context.Background() would lose the values the
+// request context carries, so WithoutCancel is the correct middle ground.
 // The notifier call deliberately keeps its pre-#430 context.Background():
 // that line preexists on main and is out of scope for this PR.
 func (s *Server) requestApproval(ctx context.Context, user *config.UserConfig, category, queryText string) {
@@ -1170,7 +1177,11 @@ func (s *Server) requestApproval(ctx context.Context, user *config.UserConfig, c
 		Category:    category,
 		QueryText:   queryText,
 	}
-	isNew, err := s.db.UpsertApproval(ctx, a)
+	// Detached: survives brief client disconnects (a closed socket cancels
+	// ctx, but the approval row must still be written). WithoutCancel keeps
+	// the request context's values for downstream layers that need them.
+	// See the doc comment above for the why.
+	isNew, err := s.db.UpsertApproval(context.WithoutCancel(ctx), a)
 	if err != nil {
 		log.Printf("[web] approval upsert: %v", err)
 		return

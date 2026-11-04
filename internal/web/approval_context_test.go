@@ -15,18 +15,21 @@ import (
 	"github.com/famclaw/famclaw/internal/store"
 )
 
-// TestRequestApprovalThreadsContext verifies that requestApproval's DB upsert
-// runs under its ctx argument rather than a detached context.Background() —
-// the #430 review finding ("missing context propagation" on the in-delta
-// UpsertApproval call).
+// TestRequestApprovalDetachesContext verifies that requestApproval's DB
+// upsert runs under a DETACHED context — context.WithoutCancel(ctx) — so the
+// approval row persists even when the chat request context is already
+// cancelled (the user sent a gated message and closed the tab before the
+// background goroutine executed the write).
 //
 // Probe: database/sql + modernc.org/sqlite fail a query whose context is
-// already cancelled before execution (verified against store.DB directly).
-// So a live ctx inserts the row, while a pre-cancelled ctx must abort the
-// upsert and leave no row. If requestApproval substituted
-// context.Background() for its ctx, the cancelled-ctx case would still insert
-// and the second subtest would fail. Offline: no LLM, no network.
-func TestRequestApprovalThreadsContext(t *testing.T) {
+// already cancelled before execution (verified against store.DB directly in
+// the predecessor of this test). So a live ctx inserts the row, and — crucial
+// for this round — a pre-cancelled ctx must ALSO insert the row: the upsert
+// survives cancellation because requestApproval detaches it. If
+// requestApproval regressed to threading the raw request context, the
+// cancelled-ctx case would abort the write and leave no row. Offline: no
+// LLM, no network.
+func TestRequestApprovalDetachesContext(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, err := store.Open(filepath.Join(tmpDir, "test.db"))
 	if err != nil {
@@ -57,13 +60,13 @@ func TestRequestApprovalThreadsContext(t *testing.T) {
 		}
 	})
 
-	t.Run("cancelled context aborts the upsert", func(t *testing.T) {
+	t.Run("cancelled context still writes the row (detached)", func(t *testing.T) {
 		id := agent.ApprovalID(user.Name, "drugs")
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		s.requestApproval(ctx, user, "drugs", "tell me about drugs")
-		if n := countRow(id); n != 0 {
-			t.Fatalf("cancelled-ctx upsert must fail — row %q exists, so requestApproval is not threading its context to s.db.UpsertApproval", id)
+		if n := countRow(id); n != 1 {
+			t.Fatalf("cancelled-ctx upsert must still write the row — requestApproval is not detaching the DB write from the request context (expected context.WithoutCancel)")
 		}
 	})
 }
@@ -73,9 +76,9 @@ func TestRequestApprovalThreadsContext(t *testing.T) {
 // request_approval; the policy block returns before any LLM call) must
 // surface a pending approval row for the child, created by
 // handleChat → spawnBackground → requestApproval(r.Context()) →
-// s.db.UpsertApproval. It complements TestRequestApprovalThreadsContext,
-// which proves the upsert honours the passed context instead of a fresh
-// Background one.
+// s.db.UpsertApproval(context.WithoutCancel(ctx)). It complements
+// TestRequestApprovalDetachesContext, which proves the upsert survives a
+// cancelled request context.
 func TestChatApprovalPathUpsertsPendingRow(t *testing.T) {
 	ts, sessions := newChatSecurityServer(t)
 
