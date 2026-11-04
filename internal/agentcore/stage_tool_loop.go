@@ -228,11 +228,21 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 				// Suppress identical unsuccessful or uncertain calls within this
 				// turn. An uncertain outcome must not be described as a failure:
-				// the original operation may already have taken effect.
+				// the original operation may already have taken effect. A call
+				// that never executed (denied by policy, pending approval)
+				// must not be described as having failed either.
 				if prior, found := priorUnsuccessfulCall(tc.Function.Name, tc.Function.Arguments, turn.ToolCalls); found {
-					reason := "this exact tool call already failed earlier in this turn; try a different approach instead of repeating it"
-					if prior.Disposition == DispositionAttempted && prior.Outcome == OutcomeUnknown {
-						reason = "the outcome of this exact tool call is uncertain; verify before trying again"
+					reason := "this call was not successful earlier in this turn."
+					switch prior.Disposition {
+					case DispositionDenied:
+						reason = "this call was blocked by policy earlier in this turn; try a different approach instead of repeating it."
+					case DispositionPending:
+						reason = "this call is pending approval earlier in this turn; try a different approach instead of repeating it."
+					case DispositionAttempted:
+						reason = "this exact tool call already failed earlier in this turn; try a different approach instead of repeating it"
+						if prior.Outcome == OutcomeUnknown {
+							reason = "the outcome of this exact tool call is uncertain; verify before trying again"
+						}
 					}
 					injectToolError(&llmMsgs, turn, tc, ErrToolAlreadyFailed, reason, start)
 					continue
