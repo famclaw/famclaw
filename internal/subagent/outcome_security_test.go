@@ -23,7 +23,11 @@ func TestOutcomeSubagentDispatch(t *testing.T) {
 		{"builtin_failure", true, true}, {"mcp_failure", false, true}, {"builtin_success", true, false}, {"mcp_success", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			const secret = "synthetic-subagent-secret"
+			// "fake-*" fixture: synthetic test marker, not a live secret. The
+			// check-private-details guard (CREDENTIAL shape) only exempts the
+			// documented placeholder conventions (fake-*/test-*/changeme/...),
+			// so keep this value inside that allowlist.
+			const secret = "fake-subagent-secret"
 			var logs bytes.Buffer
 			old := log.Writer()
 			log.SetOutput(&logs)

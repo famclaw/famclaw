@@ -20,7 +20,11 @@ func TestOutcomeSearchDispatch(t *testing.T) {
 		failed bool
 	}{{"failure", true}, {"success", false}} {
 		t.Run(tc.name, func(t *testing.T) {
-			const secret = "synthetic-search-secret"
+			// "fake-*" fixture: synthetic test marker, not a live secret. The
+			// check-private-details guard (CREDENTIAL shape) only exempts the
+			// documented placeholder conventions (fake-*/test-*/changeme/...),
+			// so keep this value inside that allowlist.
+			const secret = "fake-search-secret"
 			var logs bytes.Buffer
 			old := log.Writer()
 			log.SetOutput(&logs)

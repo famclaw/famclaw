@@ -21,7 +21,11 @@ func TestOutcomeBuiltinSinks(t *testing.T) {
 		{"failure_legacy", true, false}, {"failure_rebuilt", true, true}, {"success", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			const secret = "synthetic-private-marker"
+			// "fake-*" fixture: synthetic test marker, not a live secret. The
+			// check-private-details guard (CREDENTIAL shape) only exempts the
+			// documented placeholder conventions (fake-*/test-*/changeme/...),
+			// so keep this value inside that allowlist.
+			const secret = "fake-private-marker"
 			var logs bytes.Buffer
 			old := log.Writer()
 			log.SetOutput(&logs)
