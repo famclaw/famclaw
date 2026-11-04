@@ -52,6 +52,37 @@ func NewSharedConfigManager(configPath string) *SharedConfigManager {
 // save publishes an in-memory policy mutation, so the observed order is
 // always M -> T (review S2: no path takes T or M while holding a component
 // lock; M and T are the two config locks, components are everything else).
+//
+// Whole-config persistence (bot finding 2, #430, 17:01 UTC): the YAML
+// marshal below writes the ENTIRE *config.Config, not just the policy
+// slice being changed, so its correctness depends on no component
+// mutating cfg fields in memory unsynchronized with M. Production
+// mutation trace (verified at #430):
+//
+//   1. Under M: handleSettingsPost (internal/web/settings.go) assigns
+//      s.cfg.LLM / s.cfg.Users / s.cfg.Gateways / s.cfg.Tools.WebFetch
+//      with owner.Lock held across the snapshot-assign-write span; the
+//      allowlist/denylist tools mutate the policy slices only inside M,
+//      around their SaveConfig call.
+//   2. Construction-time: component constructors default their
+//      pass-by-value config parameters before any shared *Config is
+//      published (internal/inference/sidecar.go,
+//      internal/browser/pool.go, internal/toolcache/cache.go,
+//      internal/gateway/router_mcp.go).
+//   3. The ONLY cfg-field mutation outside M: the first-boot sentinel in
+//      internal/web/setup.go (handleSetupPIN / handleSetupUnlock), which
+//      seeds a placeholder parent under s.cfgMu (a separate
+//      sync.RWMutex, internal/web/server.go) and fires only when the
+//      session principal is "parent" && len(cfg.Users) == 0. It cannot
+//      race this marshal: the allowlist/denylist save path is
+//      parent-only (role-gated), and no parent session can be
+//      authenticated while zero users exist.
+//
+// The content-token check guards against file-level concurrent writes
+// (e.g. an external editor rewriting the config file), not in-memory
+// drift — M and T cover the in-memory side. If future code adds an
+// in-memory cfg mutation outside M, it must either take M or stay
+// scoped to construction-time, and this analysis must be re-verified.
 func (scm *SharedConfigManager) SaveConfig(cfg interface{}, contentToken string) (string, error) {
 	scm.mu.Lock()
 	defer scm.mu.Unlock()
