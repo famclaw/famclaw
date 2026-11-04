@@ -165,12 +165,13 @@ type Scheduler struct {
 	// one more attempt, which also lets a re-created channel self-heal.
 	invalidTargets map[string]bool
 	// justParked holds the reminder ids that transitioned into
-	// 'undelivered_retry' during the CURRENT processDue call. The
-	// terminalization pass of that same tick skips them: a reminder just
-	// parked gets its first record-save retry on the NEXT tick (or the next
-	// process after a restart), which keeps the terminal budget's save
-	// attempts spaced across ticks instead of doubled on the parking tick.
-	// Per-tick only — never persisted.
+	// 'undelivered_retry' during the CURRENT pass (a processDue tick or the
+	// startup ReschedulePending). The terminalization pass of that same
+	// pass skips them: a reminder just parked gets its first record-save
+	// retry on the NEXT tick (or the next process after a restart), which
+	// keeps the terminal budget's save attempts spaced across ticks instead
+	// of doubled on the parking tick. Both passes reset the set at their
+	// end — per-pass only, never persisted.
 	justParked map[int64]bool
 }
 
@@ -660,4 +661,12 @@ func (s *Scheduler) ReschedulePending(ctx context.Context) {
 	}
 
 	s.processUndeliveredRetry(ctx, now)
+
+	// Symmetric with processDue: the parking set is per-pass, so reminders
+	// parked during this startup pass get their first record-save retry on
+	// the NEXT regular tick instead of being held out of it by a stale
+	// entry (one extra interval, ~30s).
+	s.mu.Lock()
+	s.justParked = make(map[int64]bool)
+	s.mu.Unlock()
 }

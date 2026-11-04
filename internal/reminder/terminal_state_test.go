@@ -445,3 +445,67 @@ func TestTerminalStateSuccessDeliveredOnce(t *testing.T) {
 		t.Errorf("undelivered saves = %d, records = %d, want 0/0 for a delivered reminder", saves, len(recs))
 	}
 }
+
+// 7. Startup-recovery responsiveness: a reminder that parks in
+// 'undelivered_retry' during ReschedulePending (the startup pass) must get
+// its first record-save retry on the NEXT regular processDue tick. The
+// justParked set is per-pass, so the startup pass must reset it at its end;
+// otherwise a stale entry holds the parked reminder out of the first tick's
+// terminalization pass and delays the first retry by one extra interval
+// (~30s).
+func TestTerminalStateReschedulePendingResetsJustParked(t *testing.T) {
+	db := newMockDB()
+	clock := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+
+	dispatcher := NewDispatcher()
+	fl := &errSender{err: deadChannelErr("dead-chan")}
+	dispatcher.RegisterSender("discord", fl)
+	us := &countedUndelivered{fail: true}
+
+	s := NewScheduler(db, dispatcher, 10*time.Millisecond)
+	s.SetClock(func() time.Time { return clock })
+	s.SetUndeliveredStore(us)
+
+	ctx := context.Background()
+	if err := db.CreateReminder(ctx, &store.Reminder{
+		UserName:   "julia",
+		Gateway:    "discord",
+		ExternalID: "dead-chan",
+		Message:    "startup parking",
+		DueAt:      clock.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("create reminder: %v", err)
+	}
+
+	// Startup pass: delivery faults and record persistence faults, so the
+	// reminder parks in 'undelivered_retry'; its own terminalization pass
+	// skips it (per-pass spacing) and it awaits the next regular tick.
+	s.ReschedulePending(ctx)
+	if r := terminalStateReminder(t, db); r.DeliveryState != store.ReminderStateUndeliveredRetry {
+		t.Fatalf("after ReschedulePending: delivery_state = %q, want %q", r.DeliveryState, store.ReminderStateUndeliveredRetry)
+	}
+	if saves, _ := us.savesAndRecords(); saves != 1 {
+		t.Fatalf("save attempts after startup = %d, want 1 (the faulted record save)", saves)
+	}
+
+	// Persistence heals; the first regular tick must perform the first
+	// record-save retry and complete the terminalization — not one
+	// interval later.
+	us.fail = false
+	s.processDue(ctx)
+
+	r := terminalStateReminder(t, db)
+	if r.DeliveryState != store.ReminderStateUndelivered {
+		t.Fatalf("after one processDue tick: delivery_state = %q, want %q (a stale justParked entry delays the first retry by an extra tick)", r.DeliveryState, store.ReminderStateUndelivered)
+	}
+	if r.UndeliveredReason != ReasonInvalidChat {
+		t.Errorf("undelivered_reason = %q, want %q", r.UndeliveredReason, ReasonInvalidChat)
+	}
+	saves, recs := us.savesAndRecords()
+	if saves != 2 || len(recs) != 1 {
+		t.Fatalf("save attempts = %d, records = %d, want 2/1 (startup fault + one healed retry)", saves, len(recs))
+	}
+	if fl.count() != 1 {
+		t.Errorf("sender calls = %d, want 1 — the tick retries terminalization, not delivery", fl.count())
+	}
+}
