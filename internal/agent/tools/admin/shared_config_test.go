@@ -152,6 +152,37 @@ func TestSaveConfig_CommitAndTokenRefresh(t *testing.T) {
 	}
 }
 
+// TestSaveConfig_RenameFailureRemovesTempFile pins bot finding 2 (#430,
+// 16:34 UTC): when the atomic rename fails AFTER the temp write succeeded,
+// the temp file must be removed — no leak. A directory at the destination
+// makes os.Rename(file, dir) fail deterministically (ENOTDIR) regardless
+// of user privileges, while the temp write in the same writable parent
+// still succeeds.
+func TestSaveConfig_RenameFailureRemovesTempFile(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "config.yaml")
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatalf("making destination dir: %v", err)
+	}
+
+	scm := NewSharedConfigManager(destination)
+	cfg := &config.Config{Server: config.ServerConfig{Host: "localhost", Port: 8080, Secret: "test-secret"}}
+	// Empty token: vacuous precondition ("new file"), so save reaches commit.
+	_, err := scm.SaveConfig(cfg, "")
+	if err == nil {
+		t.Fatalf("SaveConfig() succeeded against a directory destination, want rename failure")
+	}
+	// The temp file must not survive the failed commit.
+	tempPath := destination + ".tmp"
+	if _, statErr := os.Stat(tempPath); !os.IsNotExist(statErr) {
+		t.Fatalf("temp file leaked after rename failure: %s still exists (stat err=%v)", tempPath, statErr)
+	}
+	// Destination unchanged: still a directory.
+	if fi, statErr := os.Stat(destination); statErr != nil || !fi.IsDir() {
+		t.Fatalf("destination altered by failed save: %v", statErr)
+	}
+}
+
 // TestNotifyChange_UsesWriteLock pins review M1: NotifyChange assigns
 // cw.eventToken, so it must take the write lock — concurrent NotifyChange
 // calls must not race. Run with -race.

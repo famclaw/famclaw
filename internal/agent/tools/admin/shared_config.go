@@ -81,6 +81,10 @@ func (scm *SharedConfigManager) SaveConfig(cfg interface{}, contentToken string)
 
 	// Atomic rename to replace the original file
 	if err := os.Rename(tempPath, scm.configPath); err != nil {
+		// Rename failed: do not leak the temp file (bot finding 2, #430,
+		// 16:34 UTC). Best-effort cleanup; the rename error is the one that
+		// matters to the caller.
+		os.Remove(tempPath)
 		return "", fmt.Errorf("atomic rename: %w", err)
 	}
 
