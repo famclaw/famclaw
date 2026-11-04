@@ -532,6 +532,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the role/age override (if any) that supersedes the config row.
 	adjustedUser := s.resolveUserRole(r.Context(), userCfg.Name)
+	if adjustedUser == nil {
+		// The user stopped resolving between the principal lookup above and
+		// the override resolution (config hot-reload removed them mid-request).
+		// Deny the upgrade fail-closed rather than dereferencing a nil user
+		// further down the handler.
+		log.Printf("[ws] %s: principal stopped resolving after override lookup; denying chat upgrade", userCfg.Name)
+		http.Error(w, "unknown user", http.StatusForbidden)
+		return
+	}
 
 	// Initialize last known role and ageGroup from the adjustedUser for change detection.
 	lastRole := adjustedUser.Role
@@ -589,6 +598,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// role/age (Terra F12 shared schema, F13 no-promotion cap), so the
 		// recreation path and the initial agent both agree.
 		current := s.resolveUserRole(r.Context(), userCfg.Name)
+		if current == nil {
+			// The user was removed from the config while this session was
+			// live: terminate fail-closed instead of panicking on a nil
+			// dereference. Mirrors the other fatal paths in this handler —
+			// log, then return; the deferred conn.Close() and client-map
+			// cleanup run on the way out.
+			log.Printf("[ws] %s was removed from config; terminating live session", userCfg.DisplayName)
+			s.sendWS(client, "error", map[string]string{
+				"error": "Your account no longer exists in this household. Please log in again.",
+			})
+			return
+		}
 		currentRole, currentAgeGroup := current.Role, current.AgeGroup
 		if currentRole != lastRole || currentAgeGroup != lastAgeGroup {
 			// Recreate agent with the new effective role/ageGroup.
