@@ -663,9 +663,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 
-			// Notify parent if approval needed
+			// Notify parent if approval needed. The upsert runs under the
+			// chat connection's request context (r.Context()), not a
+			// detached one: a closing socket aborts the in-flight DB write,
+			// matching how notifySuspiciousApproval threads its ctx.
 			if resp.PolicyAction == "request_approval" {
-				s.spawnBackground(func() { s.requestApproval(userCfg, string(resp.Category), payload.Text) })
+				s.spawnBackground(func() { s.requestApproval(r.Context(), userCfg, string(resp.Category), payload.Text) })
 			}
 
 			// Broadcast dashboard update
@@ -1150,7 +1153,14 @@ func (s *Server) decideURLs(a *store.Approval) (approve, deny string) {
 	return approve, deny
 }
 
-func (s *Server) requestApproval(user *config.UserConfig, category, queryText string) {
+// requestApproval records a pending approval row for a gated topic and, when
+// the row is new, notifies the parent. ctx is the chat connection's request
+// context — handleChat threads r.Context() through spawnBackground, so the
+// DB upsert runs under the live request and a disconnect aborts an
+// in-flight write, matching the sibling notifySuspiciousApproval pattern.
+// The notifier call deliberately keeps its pre-#430 context.Background():
+// that line preexists on main and is out of scope for this PR.
+func (s *Server) requestApproval(ctx context.Context, user *config.UserConfig, category, queryText string) {
 	import_approval_id := agent.ApprovalID(user.Name, category)
 	a := &store.Approval{
 		ID:          import_approval_id,
@@ -1160,7 +1170,7 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 		Category:    category,
 		QueryText:   queryText,
 	}
-	isNew, err := s.db.UpsertApproval(context.Background(), a)
+	isNew, err := s.db.UpsertApproval(ctx, a)
 	if err != nil {
 		log.Printf("[web] approval upsert: %v", err)
 		return
