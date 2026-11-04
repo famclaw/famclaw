@@ -1809,11 +1809,15 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v",
 			a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
 		text := strings.TrimSpace(result.Text)
-		minLength := a.cfg.Tools.WebFetch.FallbackMinTextLength
+		// #423 round 19 (R1): use the local cfg snapshot taken under the
+		// owner's RLock above (same pattern as the 403/429 branch) instead
+		// of re-reading the shared config unsynchronized — the settings
+		// publish span writes the whole WebFetch struct under M.
+		minLength := cfg.FallbackMinTextLength
 		if minLength == 0 {
 			minLength = 10
 		}
-		if len(text) < minLength && a.cfg.Tools.WebFetch.FallbackToBrowser && !browserTried {
+		if len(text) < minLength && cfg.FallbackToBrowser && !browserTried {
 			if a.browserPool != nil {
 				// Attempt browser fallback for JS-heavy sites. fetchWithBrowser
 				// guarantees a non-empty result on success — every failure mode
@@ -1978,7 +1982,17 @@ func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawUR
 // The model gets a compact title/url/snippet listing instead of the raw
 // 4-16KB SearXNG JSON.
 func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (string, error) {
+	// Guarded read-lock: both struct copies read fields the denylist/
+	// allowlist admin tools and the web settings endpoint replace
+	// concurrently — the settings span publishes the whole WebFetch struct
+	// and its save-failure rollback assigns the whole Tools struct under
+	// the shared owner (M) (see sharedPolicyOwner). Snapshot both up front
+	// under one RLock; every use below is from the local copies.
+	owner := a.sharedPolicyOwner()
+	owner.RLock()
 	cfg := a.cfg.Tools.WebSearch
+	fcfg := a.cfg.Tools.WebFetch
+	owner.RUnlock()
 	if !cfg.Enabled {
 		return "", fmt.Errorf("web_search is disabled; enable it via tools.web_search.enabled=true, with tools.web_fetch.enabled=true (the search endpoint host is gated by the web_fetch URL policy)")
 	}
@@ -1988,14 +2002,6 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 	}
 
 	maxResults := readIntArg(args, "max_results", cfg.MaxResults)
-
-	// Guarded read-lock: the struct copy reads the URLDenylist/URLAllowlist
-	// slice headers, which the denylist/allowlist admin tools and the web
-	// settings endpoint replace concurrently (see sharedPolicyOwner).
-	owner := a.sharedPolicyOwner()
-	owner.RLock()
-	fcfg := a.cfg.Tools.WebFetch
-	owner.RUnlock()
 
 	// Provider boundary (web-retrieval plan, Slice 1): the backend is
 	// selected from config; SearXNG is the default and keeps its current

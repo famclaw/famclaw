@@ -255,9 +255,14 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	// read-modify-write — and writeConfig marshals the whole config, which
 	// reads those same slice headers. The entire read-merge-publish-commit
 	// span therefore runs under the config's shared WebFetch policy owner
-	// (M): taken with no other lock held, and released before any HTTP
-	// response is written (plan §C). Without M this endpoint was a
-	// whole-policy writer unsynchronized against every Agent's decision
+	// (M), released before any HTTP response is written (plan §C). #423
+	// round 19 (R3): M is acquired here while s.cfgMu is already held
+	// (Lock at the top of this handler; RLock in handleSettingsGet) — the
+	// sole cfgMu -> M nesting site in the tree, and it stays cycle-free by
+	// construction: the global order is cfgMu (outer) -> M (inner) -> T
+	// (innermost), no path takes cfgMu while holding M, and T is only ever
+	// taken under M. Without M this endpoint was a whole-policy writer
+	// unsynchronized against every Agent's decision
 	// path. (The settings file write stays outside the transactional T
 	// gate — plan §B settings-integration gap, reported on card
 	// t_2b14f901.)

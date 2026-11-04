@@ -18,10 +18,16 @@ import "sync"
 // reaches the same lock, including Agents, the admin tools, and the web
 // settings endpoint — no injection point that a construction site can miss.
 //
-// Lock order (plan §C, scoped to this owner): the owner is acquired with no
-// other lock held; the SharedConfigManager file-commit gate (T) may only be
-// taken while the owner is held (a single M -> T edge, never T -> M), so no
-// lock cycle is possible. hostDecision takes the owner's read lock alone.
+// Lock order (plan §C, global): the uniform nesting is cfgMu (outer — the
+// web Server's config-pointer lock) -> M (this owner, inner — the host
+// policy content) -> T (innermost — the SharedConfigManager file-commit
+// gate). The settings endpoint (settings.go) is the sole cfgMu -> M
+// nesting site: it holds s.cfgMu (RLock in the GET handler, Lock in the
+// POST handler) while taking M, and no path anywhere takes cfgMu while
+// holding M; every other M site (admin handlers, hostDecision) is taken
+// with no component lock held. T may only be taken while the owner is
+// held (a single M -> T edge, never T -> M). One uniform outer -> inner
+// order with no reverse edge means no lock cycle is possible.
 //
 // The owner is not YAML state: it is a pure in-process synchronization
 // primitive, allocated lazily once per Config instance.
