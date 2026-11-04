@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -98,16 +99,30 @@ func (scm *SharedConfigManager) SaveConfig(cfg interface{}, contentToken string)
 		return "", fmt.Errorf("marshaling config: %w", err)
 	}
 
-	// Write to temporary file first
-	tempPath := scm.configPath + ".tmp"
+	// Write to a uniquely-named temporary file first. The per-call unique
+	// name prevents two managers constructed for the same path from racing
+	// on a shared ".tmp" file (bot finding, #430, 17:42:47 UTC):
+	// os.CreateTemp guarantees a name no concurrent call can take, and the
+	// 0600 permissions match the previous explicit os.WriteFile mode.
+	tempFile, err := os.CreateTemp(filepath.Dir(scm.configPath), filepath.Base(scm.configPath)+".tmp.*")
+	if err != nil {
+		return "", fmt.Errorf("creating temp config file: %w", err)
+	}
+	tempPath := tempFile.Name()
 	header := "# FamClaw configuration (managed by web UI)\n# Edit via the Settings page in the web UI, or edit this file and restart.\n\n"
 	// The on-disk bytes are header + YAML: every token in this manager is
 	// computed over the on-disk bytes (CurrentToken / validateContentToken
 	// hash what ReadFile returns), so the new token must hash this exact
 	// content, not the bare YAML.
 	content := append([]byte(header), data...)
-	if err := os.WriteFile(tempPath, content, 0600); err != nil {
+	if _, err := tempFile.Write(content); err != nil {
+		tempFile.Close()
+		os.Remove(tempPath)
 		return "", fmt.Errorf("writing temp config file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		os.Remove(tempPath)
+		return "", fmt.Errorf("closing temp config file: %w", err)
 	}
 
 	// Atomic rename to replace the original file
