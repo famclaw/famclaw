@@ -494,7 +494,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
-			name: "cap exhausted: model never stops, output unchanged (language-independent)",
+			name: "cap exhausted: model never stops, last text preserved with notes trailed (language-independent)",
 			setup: func(deps *ToolLoopDeps, turn *Turn) {
 				// Builtin handler that always fails
 				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
@@ -514,8 +514,10 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				})
 				// Mock returns the SAME response with tool calls every time
 				// the model is called — it never produces a final answer. With
-				// MaxIterations=1 the loop exits by exhausting the cap
-				// The cap must not hide an observed failure.
+				// MaxIterations=1 the loop exits by exhausting the cap.
+				// The cap must not hide an observed failure, and must not
+				// discard the model's last intermediate text: it is preserved,
+				// with the failure and cap notes trailed after it.
 				var callCount int
 				deps.ClientFactory = func(*Turn) llm.Chatter {
 					return &mockChatter{
@@ -532,7 +534,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 					}
 				}
 			},
-			wantOutputContains: "The tool reported a failure; some changes may still have occurred.",
+			wantOutputExact: "Let me check...\n\nThe tool reported a failure; some changes may still have occurred. Verify before trying again. Tool iteration limit reached; remaining requested calls were not run.",
 		},
 	}
 

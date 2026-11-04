@@ -33,6 +33,11 @@ type ToolPolicyEvaluator interface {
 // Calls requiring approval have ToolResult.Error set to ErrApprovalRequested
 // (this stage cannot create approvals — that happens in the tool loop).
 //
+// Dispositions mirror whether the tool executed: OPA blocks and evaluator
+// errors set DispositionDenied, approval requests set DispositionPending.
+// These results persist in turn.ToolCalls across iterations, so outcomeWarning
+// must not classify them as attempted failures ("changes may have occurred").
+//
 // The bare tool name (with the "builtin__" / "mcp__server__" prefix stripped)
 // is passed to OPA so the same Rego rule applies whether the tool is a
 // builtin or an MCP-served one.
@@ -59,18 +64,18 @@ func NewStagePolicyToolCall(eval ToolPolicyEvaluator) Stage {
 				log.Printf("[stage_policy_tool] eval error for %s: %v (treating as block)", tc.ToolName, err)
 				tc.Error = ErrToolBlocked
 				tc.Outcome = OutcomeUnknown
-				tc.Disposition = DispositionAttempted
+				tc.Disposition = DispositionDenied
 				continue
 			}
 			if !decision.Allow {
 				if decision.Action == "request_approval" {
 					tc.Error = ErrApprovalRequested
 					tc.Outcome = OutcomeUnknown
-					tc.Disposition = DispositionAttempted
+					tc.Disposition = DispositionPending
 				} else {
 					tc.Error = ErrToolBlocked
 					tc.Outcome = OutcomeFailure
-					tc.Disposition = DispositionAttempted
+					tc.Disposition = DispositionDenied
 				}
 			} else {
 				// Tool is allowed, set default values for outcome and disposition

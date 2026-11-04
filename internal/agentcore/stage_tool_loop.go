@@ -621,13 +621,19 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		// dispositions, including turns that exhaust the iteration budget.
 		warning := outcomeWarning(turn.ToolCalls, turn.Tools)
 		if len(pendingCalls) > 0 {
-			// The final model text is not a completed answer when it still
-			// requests calls that the budget prevented us from executing.
+			// The model's last text is an intermediate report, not a completed
+			// answer: it still requests calls the budget prevented us from
+			// executing. Preserve that text and trail it with the disclosure
+			// notes instead of replacing the whole output.
 			capNote := "Tool iteration limit reached; remaining requested calls were not run."
 			if warning != "" {
-				warning += " "
+				capNote = warning + " " + capNote
 			}
-			turn.Output = warning + capNote
+			if turn.Output != "" {
+				turn.Output = turn.Output + "\n\n" + capNote
+			} else {
+				turn.Output = capNote
+			}
 		} else if warning != "" {
 			if turn.Output == "" {
 				turn.Output = warning

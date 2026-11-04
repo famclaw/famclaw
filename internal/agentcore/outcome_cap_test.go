@@ -35,6 +35,9 @@ func TestOutcomeCapPendingCalls(t *testing.T) {
 			if tc.cap && (!strings.Contains(strings.ToLower(turn.Output), "not run") || !strings.Contains(strings.ToLower(turn.Output), "limit")) {
 				t.Error("cap response failed to disclose unexecuted request")
 			}
+			if tc.cap && !strings.Contains(strings.ToLower(turn.Output), "everything is complete.") {
+				t.Errorf("cap hit must preserve the model's last response text, got %q", turn.Output)
+			}
 			if !tc.cap && turn.Output != "Everything is complete." {
 				t.Error("stopped success changed")
 			}
