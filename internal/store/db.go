@@ -478,8 +478,25 @@ func (d *DB) migrate() error {
 	// deployments keep the legacy semantics (delivered to target, or
 	// closed-out). They must not re-enter the delivery queue, and the new
 	// truthful states start from 'pending' only for genuinely-pending rows.
+	//
+	// The legacy "dispatched but state unknown" signature is
+	// dispatched=1 AND delivery_state='pending': adding delivery_state above
+	// with DEFAULT 'pending' backfills every pre-existing row to 'pending',
+	// so a legacy dispatched row reads exactly like that. The guard
+	// `AND delivery_state = 'pending'` is what makes this block both
+	// idempotent and truthful on every re-run — it lives in migrate(), which
+	// runs on each process startup:
+	//   - an already-migrated row is now 'delivered', so it no longer matches
+	//     'pending' and re-running is a no-op on it;
+	//   - rows the truthful lifecycle has moved to 'undelivered' (which sets
+	//     dispatched=1 alongside delivery_state='undelivered') are NEVER
+	//     re-labelled delivered, so a reminder whose dispatch was recorded
+	//     but never delivered is not fabricated into "delivered" on restart.
+	// Without the guard, `WHERE dispatched = 1` alone would flip a genuine
+	// 'undelivered' row back to 'delivered' on the next Open, defeating the
+	// core no-false-delivery invariant this PR exists to protect.
 	if _, err := d.sql.ExecContext(context.Background(),
-		`UPDATE reminders SET delivery_state = 'delivered' WHERE dispatched = 1`); err != nil {
+		`UPDATE reminders SET delivery_state = 'delivered' WHERE dispatched = 1 AND delivery_state = 'pending'`); err != nil {
 		return fmt.Errorf("migrate map legacy dispatched reminders to delivered: %w", err)
 	}
 

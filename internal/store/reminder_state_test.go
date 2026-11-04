@@ -271,4 +271,89 @@ func TestReminderLegacyDispatchedMigration(t *testing.T) {
 	if err != nil || len(pending2) != 1 {
 		t.Fatalf("pending after re-open = %d (err %v), want 1", len(pending2), err)
 	}
+
+	// Idempotence on already-migrated rows: the legacy dispatched=1 row must
+	// REMAIN 'delivered' after the second migration pass. The guard
+	// `delivery_state = 'pending'` means a row already moved to 'delivered'
+	// no longer matches, so re-running the migration is a no-op on it.
+	var state2 string
+	if err := db2.sql.QueryRowContext(ctx, `SELECT delivery_state FROM reminders WHERE message = ?`, "old delivered").Scan(&state2); err != nil {
+		t.Fatalf("read legacy delivered state after re-open: %v", err)
+	}
+	if state2 != ReminderStateDelivered {
+		t.Fatalf("legacy delivered row delivery_state = %q after re-open, want %q (migration must be idempotent)", state2, ReminderStateDelivered)
+	}
+}
+
+// TestReminderMigrationDoesNotFabricateDeliveryOnReopen pins the
+// no-false-delivery invariant against a migration re-run (bot finding
+// f76525437bc1). migrate() runs on every process startup, and MarkUndelivered
+// sets dispatched=1 alongside delivery_state='undelivered'. A row the truthful
+// lifecycle has already terminalized as 'undelivered' (or parked in
+// 'undelivered_retry') must therefore NOT be re-labelled 'delivered' when the
+// DB is re-opened. The legacy mapping is scoped to
+// `WHERE dispatched = 1 AND delivery_state = 'pending'`, so it only ever
+// touches rows still in the pre-migration default state.
+func TestReminderMigrationDoesNotFabricateDeliveryOnReopen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "reopen.db")
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// A reminder truthfully terminalized as 'undelivered': dispatched=1 and
+	// delivery_state='undelivered' together (as MarkUndelivered writes them).
+	undelivered := newReminderForState(t, db, "genuinely undelivered")
+	if err := db.MarkUndelivered(ctx, undelivered.ID, time.Now().UTC(), "invalid_chat"); err != nil {
+		t.Fatalf("MarkUndelivered: %v", err)
+	}
+
+	// A reminder parked in the bounded retry state (dispatched still 0).
+	retry := newReminderForState(t, db, "parked in retry")
+	if err := db.BeginUndeliveredRetry(ctx, retry.ID, "retries_exhausted"); err != nil {
+		t.Fatalf("BeginUndeliveredRetry: %v", err)
+	}
+
+	readState := func(db *DB, id int64) (string, int, string) {
+		t.Helper()
+		var state, reason string
+		var attempts int
+		if err := db.sql.QueryRowContext(ctx,
+			`SELECT delivery_state, terminal_attempts, undelivered_reason FROM reminders WHERE id = ?`, id).
+			Scan(&state, &attempts, &reason); err != nil {
+			t.Fatalf("read state for %d: %v", id, err)
+		}
+		return state, attempts, reason
+	}
+
+	// Sanity: both rows are in truthful non-delivered states before re-open.
+	if state, _, _ := readState(db, undelivered.ID); state != ReminderStateUndelivered {
+		t.Fatalf("undelivered row = %q, want %q (pre-reopen)", state, ReminderStateUndelivered)
+	}
+	if state, _, _ := readState(db, retry.ID); state != ReminderStateUndeliveredRetry {
+		t.Fatalf("retry row = %q, want %q (pre-reopen)", state, ReminderStateUndeliveredRetry)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Re-open: the migration runs again. Neither row may be flipped to
+	// 'delivered' — the guard keeps the legacy mapping off rows that are no
+	// longer in the pre-migration 'pending' default.
+	db2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("re-Open (migrate re-run): %v", err)
+	}
+	defer db2.Close()
+
+	if state, _, _ := readState(db2, undelivered.ID); state != ReminderStateUndelivered {
+		t.Fatalf("undelivered row delivery_state = %q after re-open, want %q (migration must not fabricate delivery)", state, ReminderStateUndelivered)
+	}
+	if state, _, _ := readState(db2, retry.ID); state != ReminderStateUndeliveredRetry {
+		t.Fatalf("undelivered_retry row delivery_state = %q after re-open, want %q", state, ReminderStateUndeliveredRetry)
+	}
 }

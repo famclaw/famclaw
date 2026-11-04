@@ -663,16 +663,24 @@ type mockUndelivered struct {
 	mu      sync.Mutex
 	recs    []*store.UndeliveredReminder
 	saveErr error
+	calls   int // total SaveUndeliveredReminder attempts (counts failures too)
 }
 
 func (m *mockUndelivered) SaveUndeliveredReminder(ctx context.Context, u *store.UndeliveredReminder) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.calls++
 	if m.saveErr != nil {
 		return m.saveErr
 	}
 	m.recs = append(m.recs, u)
 	return nil
+}
+
+func (m *mockUndelivered) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
 }
 
 func (m *mockUndelivered) get() []*store.UndeliveredReminder {
@@ -1013,4 +1021,117 @@ func TestUndeliveredText(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSchedulerUndeliveredRetryGuard pins processUndeliveredRetry's two
+// bounded-retry invariants (the failedReminders guard the scheduler was
+// missing): a reminder in the 'undelivered_retry' state is picked up exactly
+// once per tick, and once this process has abandoned it (the terminal budget
+// or mark could not be persisted) the terminalization pass must stop touching
+// it — not re-hammer a down store on every tick, and never mark it delivered.
+func TestSchedulerUndeliveredRetryGuard(t *testing.T) {
+	t.Run("terminalizes to undelivered after bounded retries, never delivered", func(t *testing.T) {
+		db := newMockDB()
+		clock := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+		dispatcher := NewDispatcher()
+		// The undelivered record save always fails, so the reminder cannot be
+		// terminalized immediately and must walk its persisted terminal budget.
+		us := &mockUndelivered{saveErr: errors.New("record store down")}
+		s := NewScheduler(db, dispatcher, 10*time.Millisecond)
+		s.SetClock(func() time.Time { return clock })
+		s.SetUndeliveredStore(us)
+
+		ctx := context.Background()
+		if err := db.CreateReminder(ctx, &store.Reminder{
+			UserName: "julia", Gateway: "telegram", ExternalID: "1",
+			Message: "bounded retry", DueAt: clock.Add(-time.Minute),
+		}); err != nil {
+			t.Fatalf("create reminder: %v", err)
+		}
+		// Park it in the bounded retry state (terminal_attempts=1).
+		if err := db.BeginUndeliveredRetry(ctx, 1, ReasonRetriesExhausted); err != nil {
+			t.Fatalf("BeginUndeliveredRetry: %v", err)
+		}
+
+		// Drive ticks until it leaves undelivered_retry; each tick must process
+		// it exactly once (one bounded step of the persisted budget).
+		var ticks int
+		for {
+			s.processDue(ctx)
+			ticks++
+			retrying, _ := db.GetUndeliveredRetryReminders(ctx)
+			if len(retrying) == 0 {
+				break
+			}
+			if ticks > MaxTerminalAttempts+2 {
+				t.Fatalf("retry loop did not terminate after %d ticks", ticks)
+			}
+		}
+
+		for _, r := range db.reminders {
+			if r.ID != 1 {
+				continue
+			}
+			if r.DeliveryState == store.ReminderStateDelivered {
+				t.Fatalf("reminder marked delivered; a never-delivered reminder must never be delivered")
+			}
+			if r.DeliveryState != store.ReminderStateUndelivered {
+				t.Fatalf("delivery_state = %q, want %q", r.DeliveryState, store.ReminderStateUndelivered)
+			}
+		}
+		// Picked up exactly once per tick: one record-save attempt for each
+		// tick the reminder spent in the retry state.
+		if got := us.callCount(); got != ticks {
+			t.Errorf("record-save attempts = %d, want one per tick (%d)", got, ticks)
+		}
+	})
+
+	t.Run("abandoned reminder is not reprocessed every tick", func(t *testing.T) {
+		db := newMockDB()
+		// The terminal budget cannot be persisted: IncrementTerminalAttempt
+		// always faults, which is the exact condition that makes
+		// recordOrTerminalize abandon the reminder in-memory.
+		db.terminalIncErr = errors.New("budget accounting down")
+		clock := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+		dispatcher := NewDispatcher()
+		us := &mockUndelivered{saveErr: errors.New("record store down")}
+		s := NewScheduler(db, dispatcher, 10*time.Millisecond)
+		s.SetClock(func() time.Time { return clock })
+		s.SetUndeliveredStore(us)
+
+		ctx := context.Background()
+		if err := db.CreateReminder(ctx, &store.Reminder{
+			UserName: "julia", Gateway: "telegram", ExternalID: "2",
+			Message: "abandon check", DueAt: clock.Add(-time.Minute),
+		}); err != nil {
+			t.Fatalf("create reminder: %v", err)
+		}
+		if err := db.BeginUndeliveredRetry(ctx, 1, ReasonRetriesExhausted); err != nil {
+			t.Fatalf("BeginUndeliveredRetry: %v", err)
+		}
+
+		// First tick processes it once (record fails, budget increment fails ->
+		// abandonInMemory). Every later tick must skip it via the
+		// failedReminders guard — no further record-save attempts, no
+		// force-terminalization, no delivery.
+		for i := 0; i < 5; i++ {
+			s.processDue(ctx)
+		}
+
+		if got := us.callCount(); got != 1 {
+			t.Fatalf("record-save attempts = %d, want exactly 1 (abandoned reminder must not be retried every tick)", got)
+		}
+		// Still parked in the bounded retry state, never delivered/undelivered:
+		// the budget could not be persisted, so this process leaves it alone and
+		// a restart gets the documented one-more-attempt (#395 invariant).
+		for _, r := range db.reminders {
+			if r.ID != 1 {
+				continue
+			}
+			if r.DeliveryState != store.ReminderStateUndeliveredRetry {
+				t.Fatalf("delivery_state = %q, want %q (abandoned, awaiting a restart attempt)",
+					r.DeliveryState, store.ReminderStateUndeliveredRetry)
+			}
+		}
+	})
 }

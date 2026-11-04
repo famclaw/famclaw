@@ -325,9 +325,22 @@ func (s *Scheduler) processUndeliveredRetry(ctx context.Context, now time.Time) 
 
 		s.mu.Lock()
 		parked := s.justParked[r.ID]
+		abandoned := s.failedReminders[r.ID]
 		s.mu.Unlock()
 		if parked {
 			continue // first retry on the next tick (or next process)
+		}
+		if abandoned {
+			// This process already abandoned the reminder after it could not
+			// persist either the terminal budget or the truthful mark (see
+			// abandonInMemory). Retrying the terminalization pass against it
+			// would re-hammer a down store on every tick; the in-memory guard
+			// keeps it out of the bounded retry for the rest of this process,
+			// matching the failedReminders invariant documented above (a
+			// restart gets one more attempt, not a per-tick storm). Without
+			// this check the loop read only justParked and re-processed an
+			// already-abandoned reminder indefinitely.
+			continue
 		}
 		s.recordOrTerminalize(ctx, r, now, r.UndeliveredReason)
 	}
