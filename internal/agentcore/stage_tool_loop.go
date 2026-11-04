@@ -619,7 +619,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		}
 		// Summarize attempted outcomes separately from policy and skipped
 		// dispositions, including turns that exhaust the iteration budget.
-		warning := outcomeWarning(turn.ToolCalls)
+		warning := outcomeWarning(turn.ToolCalls, turn.Tools)
 		if len(pendingCalls) > 0 {
 			// The final model text is not a completed answer when it still
 			// requests calls that the budget prevented us from executing.
@@ -642,8 +642,25 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 // outcomeWarning makes no claim that a failure had no effects, and never
 // treats an unexecuted policy or duplicate disposition as an execution.
-func outcomeWarning(calls []ToolResult) string {
-	var success, failure, unknown, denied, pending, skipped bool
+// The exception is tools declared ReadOnly in the registry: a read-only
+// call cannot mutate external state, so its failure or uncertainty is
+// reported without the "changes may have occurred" warning. Tools absent
+// from the registry stay conservatively treated as potentially mutating.
+func outcomeWarning(calls []ToolResult, registry []Tool) string {
+	readOnly := make(map[string]bool, len(registry)*2)
+	for _, tool := range registry {
+		if tool.ReadOnly {
+			readOnly[tool.Name] = true
+			readOnly[bareToolName(tool.Name)] = true
+		}
+	}
+	isReadOnly := func(name string) bool {
+		return readOnly[name] || readOnly[bareToolName(name)]
+	}
+
+	var success bool
+	var mutationFailure, readOnlyFailure, mutationUnknown, readOnlyUnknown bool
+	var denied, pending, skipped bool
 	for _, call := range calls {
 		switch call.Disposition {
 		case DispositionAttempted:
@@ -651,9 +668,17 @@ func outcomeWarning(calls []ToolResult) string {
 			case OutcomeSuccess:
 				success = true
 			case OutcomeFailure:
-				failure = true
+				if isReadOnly(call.ToolName) {
+					readOnlyFailure = true
+				} else {
+					mutationFailure = true
+				}
 			default:
-				unknown = true
+				if isReadOnly(call.ToolName) {
+					readOnlyUnknown = true
+				} else {
+					mutationUnknown = true
+				}
 			}
 		case DispositionDenied:
 			denied = true
@@ -664,15 +689,21 @@ func outcomeWarning(calls []ToolResult) string {
 		}
 	}
 	var notes []string
-	if failure && success {
+	if mutationFailure && success {
 		notes = append(notes, "Some tool calls succeeded, but another reported a failure; some changes may have occurred. Verify before trying again.")
-	} else if failure {
+	} else if mutationFailure {
 		notes = append(notes, "The tool reported a failure; some changes may still have occurred. Verify before trying again.")
-	} else if unknown && success {
+	} else if readOnlyFailure && success {
+		notes = append(notes, "Some tool calls succeeded, but a read-only tool failed. No changes were made by the failed call.")
+	} else if readOnlyFailure {
+		notes = append(notes, "The tool reported a failure. No changes were made.")
+	} else if success && (mutationUnknown || readOnlyUnknown) {
 		notes = append(notes, "Some tool calls succeeded.")
 	}
-	if unknown {
+	if mutationUnknown {
 		notes = append(notes, "A tool outcome is uncertain; some changes may have occurred. Verify before trying again.")
+	} else if readOnlyUnknown {
+		notes = append(notes, "A tool outcome is uncertain; no changes were made.")
 	}
 	if denied {
 		notes = append(notes, "A tool call was denied and was not run.")

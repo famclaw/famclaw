@@ -14,11 +14,12 @@ import (
 // but the LLM output claims success, the output is neutralized with a correction.
 func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 	cases := []struct {
-		name               string
-		setup              func(deps *ToolLoopDeps, turn *Turn)
-		wantOutputContains string // substring that should be in the final output
-		wantOutputExact    string // if non-empty, the output must equal this exactly
-		wantOutputNotEqual string // if non-empty, the output must not equal this
+		name                  string
+		setup                 func(deps *ToolLoopDeps, turn *Turn)
+		wantOutputContains    string // substring that should be in the final output
+		wantOutputNotContains string // substring that must NOT be in the final output
+		wantOutputExact       string // if non-empty, the output must equal this exactly
+		wantOutputNotEqual    string // if non-empty, the output must not equal this
 	}{
 		{
 			name: "genuine tool success",
@@ -115,6 +116,76 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Done! I saved the file.",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
+		},
+		{
+			name: "read-only builtin failure carries no mutation warning",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Simulates a rate-limited search backend: the tool is
+				// declared ReadOnly in the turn registry, so its failure
+				// must not claim that changes may have occurred.
+				// Builtin handler that fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("search backend rate-limited")
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__web_search", ReadOnly: true}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__web_search", Arguments: map[string]any{"query": "sample"}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "Sorry, the search failed."},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputContains:    "The tool reported a failure. No changes were made.",
+			wantOutputNotContains: "changes may",
+		},
+		{
+			name: "mutation builtin failure keeps the mutation warning",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// A tool with no ReadOnly declaration in the registry is
+				// conservatively treated as potentially mutating.
+				// Builtin handler that fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("write failed")
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__file_write"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__file_write", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "Done!"},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
 			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
@@ -496,6 +567,11 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				if tc.wantOutputNotEqual != "" {
 					if turn.Output == tc.wantOutputNotEqual {
 						t.Errorf("output should not be equal to %q, but got %q", tc.wantOutputNotEqual, turn.Output)
+					}
+				}
+				if tc.wantOutputNotContains != "" {
+					if strings.Contains(turn.Output, tc.wantOutputNotContains) {
+						t.Errorf("output should not contain %q, but got %q", tc.wantOutputNotContains, turn.Output)
 					}
 				}
 			}
