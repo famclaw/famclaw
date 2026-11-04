@@ -82,8 +82,9 @@ func TestRequestApprovalDetachesContext(t *testing.T) {
 func TestChatApprovalPathUpsertsPendingRow(t *testing.T) {
 	ts, sessions := newChatSecurityServer(t)
 
-	// emma is config.Users[1] → synthesised session user ID 2.
-	childSess, err := sessions.Create(context.Background(), 2, "127.0.0.1", "test")
+	// Sessions bind to the stable config principal (name), not a config-array
+	// index (Terra F7, main #429).
+	childSess, err := sessions.Create(context.Background(), "emma", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create (child): %v", err)
 	}
@@ -109,7 +110,7 @@ func TestChatApprovalPathUpsertsPendingRow(t *testing.T) {
 
 	// The upsert runs in a background goroutine spawned by handleChat — poll
 	// the parent management surface for the pending row.
-	parentSess, err := sessions.Create(context.Background(), 1, "127.0.0.1", "test")
+	parentSess, err := sessions.Create(context.Background(), "parent", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create (parent): %v", err)
 	}

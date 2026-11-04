@@ -109,7 +109,7 @@ type AuthHandler struct {
 	sessions         *store.SessionStore
 	vault            *credstore.Vault
 	getPINCiphertext func(context.Context) ([]byte, error)
-	resolveUserID    func(context.Context) (int64, error)
+	resolvePrincipal func(context.Context) (string, error)
 	limiter          *loginLimiter
 	minLatency       time.Duration
 }
@@ -127,13 +127,13 @@ func NewAuthHandler(
 	sessions *store.SessionStore,
 	vault *credstore.Vault,
 	getPIN func(context.Context) ([]byte, error),
-	resolveUserID func(context.Context) (int64, error),
+	resolvePrincipal func(context.Context) (string, error),
 ) *AuthHandler {
 	return &AuthHandler{
 		sessions:         sessions,
 		vault:            vault,
 		getPINCiphertext: getPIN,
-		resolveUserID:    resolveUserID,
+		resolvePrincipal: resolvePrincipal,
 		limiter:          newLoginLimiter(),
 		minLatency:       250 * time.Millisecond,
 	}
@@ -206,13 +206,13 @@ func (a *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	a.limiter.recordSuccess(ip)
 
-	userID, err := a.resolveUserID(r.Context())
+	principal, err := a.resolvePrincipal(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
 
-	sid, err := a.sessions.Create(r.Context(), userID, ip, r.Header.Get("User-Agent"))
+	sid, err := a.sessions.Create(r.Context(), principal, ip, r.Header.Get("User-Agent"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
@@ -227,7 +227,7 @@ func (a *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		Secure:   r.TLS != nil,
 	})
-	writeJSON(w, http.StatusOK, map[string]int64{"user_id": userID})
+	writeJSON(w, http.StatusOK, map[string]string{"user_name": principal})
 }
 
 // HandleLogout deletes the server-side session row (best-effort) and clears
@@ -275,7 +275,13 @@ func (a *AuthHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"logged_in": true, "user_id": sess.UserID})
+	// A legacy positional session (empty user_name) is revoked, matching the
+	// WithSession middleware: report it as not logged in so the UI re-auths.
+	if sess.UserName == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"logged_in": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"logged_in": true, "user_name": sess.UserName})
 }
 
 // clientIP extracts the best-effort source IP from the request. Uses
@@ -333,7 +339,7 @@ type JoinHandler struct {
 	getChildPINCiphertext    func(context.Context, string) ([]byte, error)
 	saveChildPINCiphertext   func(context.Context, string, []byte) error
 	deleteChildPINCiphertext func(context.Context, string) error
-	resolveChildUserID       func(context.Context, string) (int64, error)
+	resolveChildPrincipal      func(context.Context, string) (string, error)
 	limiter                  *loginLimiter
 	minLatency               time.Duration
 }
@@ -348,7 +354,7 @@ func NewJoinHandler(
 	getChildPINCiphertext func(context.Context, string) ([]byte, error),
 	saveChildPINCiphertext func(context.Context, string, []byte) error,
 	deleteChildPINCiphertext func(context.Context, string) error,
-	resolveChildUserID func(context.Context, string) (int64, error),
+	resolveChildPrincipal func(context.Context, string) (string, error),
 	limiter *loginLimiter,
 ) *JoinHandler {
 	return &JoinHandler{
@@ -357,7 +363,7 @@ func NewJoinHandler(
 		getChildPINCiphertext:    getChildPINCiphertext,
 		saveChildPINCiphertext:   saveChildPINCiphertext,
 		deleteChildPINCiphertext: deleteChildPINCiphertext,
-		resolveChildUserID:       resolveChildUserID,
+		resolveChildPrincipal:    resolveChildPrincipal,
 		limiter:                  limiter,
 		minLatency:               250 * time.Millisecond,
 	}
@@ -365,7 +371,7 @@ func NewJoinHandler(
 
 // HandleJoin verifies (child name + join code) against the vault row
 // user_pin:<name> and, on success, issues a session cookie bound to the
-// CHILD's user ID. Every failure path returns the byte-identical body
+// CHILD's stable config name. Every failure path returns the byte-identical body
 // {"error":"invalid credentials"} with 401; the 250 ms latency floor keeps
 // timing from a further channel.
 func (j *JoinHandler) HandleJoin(w http.ResponseWriter, r *http.Request) {
@@ -405,10 +411,10 @@ func (j *JoinHandler) HandleJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// (1) The named user must exist and be a child. resolveChildUserID folds
+	// (1) The named user must exist and be a child. resolveChildPrincipal folds
 	// "unknown name" and "parent name" into one error on purpose: both map
 	// to the same generic 401 below.
-	userID, err := j.resolveChildUserID(r.Context(), req.Name)
+	principal, err := j.resolveChildPrincipal(r.Context(), req.Name)
 	if err != nil {
 		reject()
 		return
@@ -437,7 +443,7 @@ func (j *JoinHandler) HandleJoin(w http.ResponseWriter, r *http.Request) {
 
 	j.limiter.recordSuccess(ip)
 
-	sid, err := j.sessions.Create(r.Context(), userID, ip, r.Header.Get("User-Agent"))
+	sid, err := j.sessions.Create(r.Context(), principal, ip, r.Header.Get("User-Agent"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
@@ -454,7 +460,7 @@ func (j *JoinHandler) HandleJoin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		Secure:   r.TLS != nil,
 	})
-	writeJSON(w, http.StatusOK, map[string]int64{"user_id": userID})
+	writeJSON(w, http.StatusOK, map[string]string{"user_name": principal})
 }
 
 // HandleJoinCode issues or revokes the join code for a named child. Mounted
@@ -484,7 +490,7 @@ func (j *JoinHandler) HandleJoinCode(w http.ResponseWriter, r *http.Request) {
 	// Name must resolve to a child; parents have no join codes and unknown
 	// names are a config error the parent should see plainly (this is the
 	// authenticated admin surface — clarity, not constant shape).
-	if _, err := j.resolveChildUserID(r.Context(), name); err != nil {
+	if _, err := j.resolveChildPrincipal(r.Context(), name); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not a child user"})
 		return
 	}

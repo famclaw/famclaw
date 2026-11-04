@@ -85,10 +85,10 @@ func TestOriginPolicyUpgrader(t *testing.T) {
 		t.Run(tt.policy+" "+tt.name, func(t *testing.T) {
 			ts, deps := newJoinSecurityServer(t, tt.policy)
 
-			// A valid CHILD session (config index 1 + 1) so the request gets
-			// through the session gate and reaches the origin check in the
-			// upgrader — the cookie must never be able to bypass it.
-			sid, err := deps.sessions.Create(context.Background(), 2, "127.0.0.1", "test")
+			// A valid CHILD session (principal = emma's config name) so the
+			// request gets through the session gate and reaches the origin check
+			// in the upgrader — the cookie must never be able to bypass it.
+			sid, err := deps.sessions.Create(context.Background(), "emma", "127.0.0.1", "test")
 			if err != nil {
 				t.Fatalf("sessions.Create: %v", err)
 			}

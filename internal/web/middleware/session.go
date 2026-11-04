@@ -22,9 +22,14 @@ const sessionCtxKey ctxKey = iota
 // Identity is the authenticated principal extracted from a valid session
 // cookie. It is attached to the request context by WithSession and can be
 // retrieved by downstream handlers via IdentityFrom.
+//
+// UserName is the authoritative session principal — a stable config name that
+// survives user reorder/replace/reload/restart. All identity and role
+// resolution MUST use UserName (via Server.getUserByName); the legacy numeric
+// user_id is no longer part of Identity.
 type Identity struct {
 	SessionID string
-	UserID    int64
+	UserName  string
 }
 
 // WithSession returns an http.Handler middleware that validates the
@@ -56,6 +61,15 @@ func WithSession(sessions *store.SessionStore) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Safe revocation: a session row whose user_name is empty predates the
+			// name-bound principal column (it was bound by config-array position,
+			// which is not safe to trust after a reorder). Refuse it rather than
+			// guessing which user it means; the holder re-authenticates.
+			if sess.UserName == "" {
+				writeUnauth(w)
+				return
+			}
+
 			// Refresh last_seen in the background. Use a fresh context so the
 			// UPDATE is not cancelled when the response handler returns.
 			go func() {
@@ -66,7 +80,7 @@ func WithSession(sessions *store.SessionStore) func(http.Handler) http.Handler {
 
 			ctx := context.WithValue(r.Context(), sessionCtxKey, &Identity{
 				SessionID: sess.ID,
-				UserID:    sess.UserID,
+				UserName:  sess.UserName,
 			})
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

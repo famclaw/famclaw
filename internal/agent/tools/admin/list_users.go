@@ -67,18 +67,20 @@ func HandleListUsers(ctx context.Context, deps Deps, args map[string]any) (strin
 		}
 
 		// Apply role override (if any) so the reported role/age_group reflect
-		// what the policy engine sees, not the stale config row. Both the
-		// effective and config values are surfaced for transparency.
+		// what the policy engine sees, not the stale config row. The shared
+		// helper (Terra F12/F13) normalizes legacy cohort-valued roles, caps
+		// no-promotion, and falls back per-field to the config values. Both
+		// the effective and config values are surfaced for transparency.
 		overrideRole, overrideAgeGroup, err := deps.DB.GetRoleOverride(ctx, u.name)
 		if err != nil {
 			return "", fmt.Errorf("get role override for %q: %w", u.name, err)
 		}
-		hasRoleOverride := overrideRole != ""
-		effectiveRole := u.role
-		effectiveAgeGroup := u.ageGroup
-		if hasRoleOverride {
-			effectiveRole = overrideRole
-			effectiveAgeGroup = overrideAgeGroup
+		// has_role_override reflects the raw stored row (a role-only or
+		// age-only override counts), independent of effective resolution.
+		hasRoleOverride := overrideRole != "" || overrideAgeGroup != ""
+		effectiveRole, effectiveAgeGroup, err := deps.DB.GetEffectiveRoleAge(ctx, u.name, u.role, u.ageGroup)
+		if err != nil {
+			return "", fmt.Errorf("get effective role for %q: %w", u.name, err)
 		}
 
 		result = append(result, map[string]any{

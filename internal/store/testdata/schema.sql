@@ -193,7 +193,10 @@ CREATE TABLE reminders (
 		created_at         TEXT NOT NULL,
 		setter_gateway     TEXT DEFAULT '',
 		setter_external_id TEXT DEFAULT '',
-		delivery_attempts  INTEGER NOT NULL DEFAULT 0
+		delivery_attempts  INTEGER NOT NULL DEFAULT 0,
+		delivery_state     TEXT NOT NULL DEFAULT 'pending',
+		terminal_attempts  INTEGER NOT NULL DEFAULT 0,
+		undelivered_reason TEXT DEFAULT ''
 	);
 
 CREATE TABLE research_tasks (
@@ -355,7 +358,8 @@ CREATE TABLE vault_secrets (
 
 CREATE TABLE web_sessions (
 		id          TEXT PRIMARY KEY NOT NULL,
-		user_id     INTEGER NOT NULL,
+		user_id     INTEGER NOT NULL DEFAULT 0,
+		user_name   TEXT NOT NULL DEFAULT '',
 		created_at  INTEGER NOT NULL,
 		expires_at  INTEGER NOT NULL,
 		last_seen   INTEGER NOT NULL,
