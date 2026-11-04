@@ -120,7 +120,7 @@ func TestWithSession_ExpiredCookie(t *testing.T) {
 	sessions, dbPath := newTestStore(t)
 
 	ctx := context.Background()
-	id, err := sessions.Create(ctx, 42, "10.0.0.1", "ua")
+	id, err := sessions.Create(ctx, "user42", "10.0.0.1", "ua")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -157,8 +157,8 @@ func TestWithSession_ValidCookie(t *testing.T) {
 	sessions, _ := newTestStore(t)
 
 	ctx := context.Background()
-	const wantUserID int64 = 7
-	id, err := sessions.Create(ctx, wantUserID, "1.2.3.4", "ua")
+	const wantUserName = "user7"
+	id, err := sessions.Create(ctx, wantUserName, "1.2.3.4", "ua")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -183,8 +183,8 @@ func TestWithSession_ValidCookie(t *testing.T) {
 	if inner.gotID == nil {
 		t.Fatalf("IdentityFrom returned nil Identity")
 	}
-	if inner.gotID.UserID != wantUserID {
-		t.Errorf("Identity.UserID = %d, want %d", inner.gotID.UserID, wantUserID)
+	if inner.gotID.UserName != wantUserName {
+		t.Errorf("Identity.UserName = %q, want %q", inner.gotID.UserName, wantUserName)
 	}
 	if inner.gotID.SessionID != id {
 		t.Errorf("Identity.SessionID = %q, want %q", inner.gotID.SessionID, id)
@@ -199,7 +199,7 @@ func TestWithSession_TouchUpdatesLastSeen(t *testing.T) {
 	sessions, _ := newTestStore(t)
 
 	ctx := context.Background()
-	id, err := sessions.Create(ctx, 1, "", "")
+	id, err := sessions.Create(ctx, "user1", "", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

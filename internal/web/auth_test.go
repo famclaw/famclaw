@@ -23,16 +23,16 @@ const testMachineID = "test-machine-id-deterministic"
 
 // newAuthTestDeps spins up a SessionStore, Vault, and the closures NewAuthHandler
 // expects. The caller picks the PIN ciphertext (via setPIN) and the resolved
-// user id (via setUser); both default to a working "1234"/userID=1 pair.
+// session principal (config name); both default to a working "1234"/"parent" pair.
 type authTestDeps struct {
 	sessions *store.SessionStore
 	vault    *credstore.Vault
 	rawDB    *sql.DB
 	storeDB  *store.DB
 	pinErr   error
-	pinCT    []byte
-	userID   int64
-	userErr  error
+	pinCT     []byte
+	principal string
+	userErr   error
 }
 
 func newAuthTestDeps(t *testing.T) (*authTestDeps, func()) {
@@ -66,7 +66,7 @@ func newAuthTestDeps(t *testing.T) (*authTestDeps, func()) {
 		vault:    vault,
 		rawDB:    raw,
 		storeDB:  storeDB,
-		userID:   1,
+		principal: "parent",
 	}
 
 	cleanup := func() {
@@ -89,8 +89,8 @@ func (d *authTestDeps) handler() *AuthHandler {
 			}
 			return d.pinCT, nil
 		},
-		func(context.Context) (int64, error) {
-			return d.userID, d.userErr
+		func(context.Context) (string, error) {
+			return d.principal, d.userErr
 		},
 	)
 }
@@ -187,11 +187,11 @@ func TestHandleLogin(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setupPIN    string // empty means "no PIN configured" (pinErr = ErrNoRows)
-		userID      int64  // resolved user id; 0 leaves the default (1)
-		requestPIN  string
-		wantStatus  int
-		wantUserID  int64  // 0 means: don't decode body for user_id
+		setupPIN      string // empty means "no PIN configured" (pinErr = ErrNoRows)
+		principal     string // resolved session principal; "" leaves the default ("parent")
+		requestPIN    string
+		wantStatus    int
+		wantPrincipal string // "" means: don't decode body for user_name
 		wantBody    string // exact-match body for failure responses; "" skips
 		checkCookie bool   // verify cookie attributes on success
 	}{
@@ -199,8 +199,8 @@ func TestHandleLogin(t *testing.T) {
 			name:        "Success",
 			setupPIN:    "1234",
 			requestPIN:  "1234",
-			wantStatus:  http.StatusOK,
-			wantUserID:  1,
+			wantStatus:    http.StatusOK,
+			wantPrincipal: "parent",
 			checkCookie: true,
 		},
 		{
@@ -228,8 +228,8 @@ func TestHandleLogin(t *testing.T) {
 			} else {
 				deps.pinErr = sql.ErrNoRows
 			}
-			if tc.userID != 0 {
-				deps.userID = tc.userID
+			if tc.principal != "" {
+				deps.principal = tc.principal
 			}
 			h := deps.handler()
 
@@ -250,15 +250,15 @@ func TestHandleLogin(t *testing.T) {
 				}
 			}
 
-			if tc.wantUserID != 0 {
+			if tc.wantPrincipal != "" {
 				var resp struct {
-					UserID int64 `json:"user_id"`
+					UserName string `json:"user_name"`
 				}
 				if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 					t.Fatalf("unmarshal: %v; body=%s", err, rec.Body.String())
 				}
-				if resp.UserID != tc.wantUserID {
-					t.Errorf("user_id = %d, want %d", resp.UserID, tc.wantUserID)
+				if resp.UserName != tc.wantPrincipal {
+					t.Errorf("user_name = %q, want %q", resp.UserName, tc.wantPrincipal)
 				}
 			}
 
@@ -376,11 +376,11 @@ func TestHandleLogin_MinLatency(t *testing.T) {
 func TestHandleSession(t *testing.T) {
 	tests := []struct {
 		name             string
-		login            bool  // run /login to mint a session cookie before calling /session
-		logout           bool  // run /logout against that cookie before calling /session
-		userID           int64 // resolved user id when login=true; 0 keeps default (1)
+		login            bool   // run /login to mint a session cookie before calling /session
+		logout           bool   // run /logout against that cookie before calling /session
+		principal        string // resolved session principal when login=true; "" keeps default
 		wantLoggedIn     bool
-		wantUserID       int64 // expected user_id in /session body when wantLoggedIn=true
+		wantPrincipal    string // expected user_name in /session body when wantLoggedIn=true
 		wantClearCookie  bool  // verify /logout returned a clearing cookie
 		wantLogoutStatus int   // expected /logout status when logout=true
 	}{
@@ -390,10 +390,10 @@ func TestHandleSession(t *testing.T) {
 		},
 		{
 			name:         "ValidCookie",
-			login:        true,
-			userID:       42,
-			wantLoggedIn: true,
-			wantUserID:   42,
+			login:         true,
+			principal:     "user42",
+			wantLoggedIn:  true,
+			wantPrincipal: "user42",
 		},
 		{
 			name:             "AfterLogoutClearsCookie",
@@ -415,8 +415,8 @@ func TestHandleSession(t *testing.T) {
 			var sid string
 			if tc.login {
 				deps.setPIN(t, "1234")
-				if tc.userID != 0 {
-					deps.userID = tc.userID
+				if tc.principal != "" {
+					deps.principal = tc.principal
 				}
 				body, _ := json.Marshal(map[string]string{"pin": "1234"})
 				loginReq := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
@@ -478,10 +478,10 @@ func TestHandleSession(t *testing.T) {
 			if gotLoggedIn != tc.wantLoggedIn {
 				t.Errorf("logged_in = %v, want %v", gotLoggedIn, tc.wantLoggedIn)
 			}
-			if tc.wantLoggedIn && tc.wantUserID != 0 {
-				uid, _ := s["user_id"].(float64)
-				if int64(uid) != tc.wantUserID {
-					t.Errorf("user_id = %v, want %d", s["user_id"], tc.wantUserID)
+			if tc.wantLoggedIn && tc.wantPrincipal != "" {
+				name, _ := s["user_name"].(string)
+				if name != tc.wantPrincipal {
+					t.Errorf("user_name = %v, want %q", s["user_name"], tc.wantPrincipal)
 				}
 			}
 		})

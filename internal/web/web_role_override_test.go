@@ -210,10 +210,10 @@ func TestServerWebChatRoleOverrideIntegration(t *testing.T) {
 	u.Path = "/api/chat"
 	wsURL := u.String()
 
-	// Authenticate as emma (config.Users[1] → synthesised session user ID 2) and
+	// Authenticate as emma (session principal = her stable config name) and
 	// carry the session cookie — /api/chat is now session-gated.
 	ctx := context.Background()
-	sessID, err := sessions.Create(ctx, 2, "127.0.0.1", "test")
+	sessID, err := sessions.Create(ctx, "emma", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create: %v", err)
 	}

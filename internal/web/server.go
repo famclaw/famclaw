@@ -171,7 +171,7 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store
 	// one-directional: AuthHandler does not import *Server, only the bits of
 	// state it needs.
 	if sessions != nil && vault != nil {
-		s.auth = NewAuthHandler(sessions, vault, s.getParentPINCiphertext, s.resolveParentUserID)
+		s.auth = NewAuthHandler(sessions, vault, s.getParentPINCiphertext, s.resolveParentPrincipal)
 		// The join handler shares the AuthHandler's limiter instance: from an
 		// attacker's perspective /join and /login gate the same household,
 		// so one per-IP budget covers both.
@@ -181,7 +181,7 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store
 			s.getChildPINCiphertext,
 			s.saveChildPINCiphertext,
 			s.deleteChildPINCiphertext,
-			s.resolveChildUserID,
+			s.resolveChildPrincipal,
 			s.auth.Limiter(),
 		)
 	}
@@ -306,11 +306,12 @@ func (s *Server) protect(h http.HandlerFunc) http.Handler {
 	return middleware.WithSession(s.sessions)(h)
 }
 
-// protectParent is protect plus a role gate: the session's user must have
-// the BASE config role "parent" (DB role overrides are deliberately ignored,
-// the same rule ?user= impersonation uses — an override cannot grant admin
-// rights). Anonymous requests still get 401 (the session middleware ran
-// first); a valid child session gets 403.
+// protectParent is protect plus a role gate: the session's user must hold the
+// EFFECTIVE parent role (Terra F13) — base config role "parent" AND not demoted
+// by a DB override. An override can never PROMOTE a base child up into parent
+// (the same "no override grants admin" rule ?user= impersonation uses).
+// Anonymous requests still get 401 (the session middleware ran first); a valid
+// child session gets 403.
 func (s *Server) protectParent(h http.HandlerFunc) http.Handler {
 	gated := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity, ok := middleware.IdentityFrom(r.Context())
@@ -320,8 +321,8 @@ func (s *Server) protectParent(h http.HandlerFunc) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
 			return
 		}
-		userCfg := s.getUserByID(identity.UserID)
-		if userCfg == nil || userCfg.Role != "parent" {
+		userCfg := s.userForSession(r.Context(), identity.UserName)
+		if !s.isManager(r.Context(), userCfg) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 			return
 		}
@@ -372,20 +373,19 @@ func (s *Server) hasPINConfigured(ctx context.Context) bool {
 	return n > 0
 }
 
-// resolveParentUserID returns a stable numeric ID for the first parent user.
-// Users live in YAML config (no DB users table), so we synthesise the ID from
-// the config-order index of the first parent. This is fine for session
-// accounting (web_sessions.user_id is informational), and a future `users`
-// table can drop in without changing the closure signature.
-func (s *Server) resolveParentUserID(ctx context.Context) (int64, error) {
+// resolveParentPrincipal returns the stable config NAME of the first parent
+// user. Sessions are bound to this name (not to a config-array position), so
+// the principal survives user reorder/replacement/reload/restart. Returns an
+// error when no parent user is configured.
+func (s *Server) resolveParentPrincipal(ctx context.Context) (string, error) {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
-	for i, u := range s.cfg.Users {
+	for _, u := range s.cfg.Users {
 		if u.Role == "parent" {
-			return int64(i + 1), nil
+			return u.Name, nil
 		}
 	}
-	return 0, fmt.Errorf("resolving parent user id: no parent user configured")
+	return "", fmt.Errorf("resolving parent principal: no parent user configured")
 }
 
 // childPINRowName returns the vault_secrets row name holding a child's join
@@ -430,25 +430,24 @@ func (s *Server) deleteChildPINCiphertext(ctx context.Context, name string) erro
 	return nil
 }
 
-// resolveChildUserID returns the synthesised session ID (config index + 1,
-// the same scheme resolveParentUserID uses) for the named user — but only
-// when the user exists AND is not a parent. Both "unknown name" and
-// "parent name" return an error on purpose: /api/join maps either to the
-// same generic 401, so the endpoint cannot distinguish "no such child" from
-// "parents have no join codes".
-func (s *Server) resolveChildUserID(ctx context.Context, name string) (int64, error) {
+// resolveChildPrincipal returns the stable config NAME for the named user as
+// the session principal — but only when the user exists AND is not a parent.
+// Both "unknown name" and "parent name" return an error on purpose: /api/join
+// maps either to the same generic 401, so the endpoint cannot distinguish
+// "no such child" from "parents have no join codes".
+func (s *Server) resolveChildPrincipal(ctx context.Context, name string) (string, error) {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
-	for i, u := range s.cfg.Users {
+	for _, u := range s.cfg.Users {
 		if u.Name != name {
 			continue
 		}
 		if u.Role == "parent" {
-			return 0, fmt.Errorf("resolving child user %q: parents have no join codes", name)
+			return "", fmt.Errorf("resolving child principal %q: parents have no join codes", name)
 		}
-		return int64(i + 1), nil
+		return u.Name, nil
 	}
-	return 0, fmt.Errorf("resolving child user %q: no such user", name)
+	return "", fmt.Errorf("resolving child principal %q: no such user", name)
 }
 
 // getVaultMismatch returns the current vault-mismatch flag. Used by handleRoot
@@ -504,24 +503,28 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve user from session ID
-	userCfg := s.getUserByID(identity.UserID)
+	// Resolve user from the session's stable principal (config name). Sessions
+	// are bound to a name, not a config-array position, so this survives a
+	// parent reorder/replacing the user list. A principal that no longer
+	// resolves (user removed from config) is denied rather than guessed.
+	userCfg := s.userForSession(r.Context(), identity.UserName)
 	if userCfg == nil {
 		http.Error(w, "unknown user", http.StatusForbidden)
 		return
 	}
 	// Whether the *session* user (before the ?user= preview override below)
-	// is a parent. Drives the dashboard_update PII scoping below: a child
+	// holds the effective parent role (Terra F13: base parent, not demoted by
+	// an override). Drives the dashboard_update PII scoping below: a child
 	// session's socket never receives the unknown-accounts list, even
 	// though the household badge count still reaches every session.
-	sessionIsParent := userCfg.Role == "parent"
+	sessionIsParent := s.isManager(r.Context(), userCfg)
 
 	// A parent session may preview another household member's chat via
 	// ?user=<name> (the web UI's user chooser). The privilege check uses the
-	// base config role (before DB overrides) so an override cannot grant
-	// impersonation rights. Non-parent sessions ignore the parameter: their
-	// chat identity is always the session user.
-	if claimed := r.URL.Query().Get("user"); claimed != "" && claimed != userCfg.Name && userCfg.Role == "parent" {
+	// effective parent role so an override cannot grant impersonation rights
+	// (and a demoted parent loses them). Non-parent sessions ignore the
+	// parameter: their chat identity is always the session user.
+	if claimed := r.URL.Query().Get("user"); claimed != "" && claimed != userCfg.Name && sessionIsParent {
 		if other := s.getUserByName(claimed); other != nil {
 			userCfg = other
 		}
@@ -529,6 +532,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the role/age override (if any) that supersedes the config row.
 	adjustedUser := s.resolveUserRole(r.Context(), userCfg.Name)
+	if adjustedUser == nil {
+		// The user stopped resolving between the principal lookup above and
+		// the override resolution (config hot-reload removed them mid-request).
+		// Deny the upgrade fail-closed rather than dereferencing a nil user
+		// further down the handler.
+		log.Printf("[ws] %s: principal stopped resolving after override lookup; denying chat upgrade", userCfg.Name)
+		http.Error(w, "unknown user", http.StatusForbidden)
+		return
+	}
 
 	// Initialize last known role and ageGroup from the adjustedUser for change detection.
 	lastRole := adjustedUser.Role
@@ -581,28 +593,30 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Check for role override changes and recreate agent if needed.
-		currentRole := userCfg.Role
-		currentAgeGroup := userCfg.AgeGroup
-		if role, ageGroup, err := s.db.GetRoleOverride(r.Context(), userCfg.Name); err == nil {
-			if role != "" {
-				currentRole = role
-			}
-			if ageGroup != "" {
-				currentAgeGroup = ageGroup
-			}
+		// Check for role/age override changes and recreate the agent if needed.
+		// resolveUserRole is the single source of truth for the effective
+		// role/age (Terra F12 shared schema, F13 no-promotion cap), so the
+		// recreation path and the initial agent both agree.
+		current := s.resolveUserRole(r.Context(), userCfg.Name)
+		if current == nil {
+			// The user was removed from the config while this session was
+			// live: terminate fail-closed instead of panicking on a nil
+			// dereference. Mirrors the other fatal paths in this handler —
+			// log, then return; the deferred conn.Close() and client-map
+			// cleanup run on the way out.
+			log.Printf("[ws] %s was removed from config; terminating live session", userCfg.DisplayName)
+			s.sendWS(client, "error", map[string]string{
+				"error": "Your account no longer exists in this household. Please log in again.",
+			})
+			return
 		}
+		currentRole, currentAgeGroup := current.Role, current.AgeGroup
 		if currentRole != lastRole || currentAgeGroup != lastAgeGroup {
-			// Recreate agent with the new role/ageGroup.
-			// Copy the entire user config to preserve fields like Color, Model, LLMProfile.
-			copied := *userCfg
-			copied.Role = currentRole
-			copied.AgeGroup = currentAgeGroup
-			adjustedUser := &copied
-			a, err = agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
+			// Recreate agent with the new effective role/ageGroup.
+			a, err = agent.NewAgent(current, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
 				Skills:         s.skills,
 				Pool:           s.pool,
-				MsgContext:     gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
+				MsgContext:     gateway.MsgContext{Gateway: "web", ExternalID: current.Name},
 				ReasoningCache: s.reasoningCache,
 			})
 			lastRole = currentRole
@@ -1288,27 +1302,41 @@ func jsonErr(w http.ResponseWriter, err error, code int) {
 // resolveUserRole returns the effective UserConfig for userName, applying any
 // DB-persisted role/age override (set via set_user_role) that supersedes the
 // config row. Returns userCfg unchanged when no override exists.
+//
+// The effective values come from store.GetEffectiveRoleAge — the single source
+// of truth for the shared role/age schema (Terra F12) and the no-promotion cap
+// (Terra F13): an override may demote a base parent to "child" but may never
+// elevate a base non-parent into "parent".
 func (s *Server) resolveUserRole(ctx context.Context, userName string) *config.UserConfig {
 	userCfg := s.cfg.GetUser(userName)
 	if userCfg == nil {
 		return nil
 	}
-	role, ageGroup, err := s.db.GetRoleOverride(ctx, userName)
+	role, ageGroup, err := s.db.GetEffectiveRoleAge(ctx, userCfg.Name, userCfg.Role, userCfg.AgeGroup)
 	if err != nil {
-		log.Printf("[ws] %s: GetRoleOverride error: %v — falling back to config", userName, err)
+		log.Printf("[ws] %s: GetEffectiveRoleAge error: %v — falling back to config", userCfg.Name, err)
 		return userCfg
 	}
-	if role != "" || ageGroup != "" {
-		copied := *userCfg
-		if role != "" {
-			copied.Role = role
-		}
-		if ageGroup != "" {
-			copied.AgeGroup = ageGroup
-		}
-		return &copied
+	if role == userCfg.Role && ageGroup == userCfg.AgeGroup {
+		return userCfg
 	}
-	return userCfg
+	copied := *userCfg
+	copied.Role = role
+	copied.AgeGroup = ageGroup
+	return &copied
+}
+
+// isManager reports whether a configured user currently holds web-management
+// privileges under the effective-role rule (Terra F13): the base config role
+// must be "parent" AND no override may demote them. A nil userCfg (the user
+// was removed from config, or a session principal no longer resolves) is not a
+// manager.
+func (s *Server) isManager(ctx context.Context, userCfg *config.UserConfig) bool {
+	if userCfg == nil {
+		return false
+	}
+	eff := s.resolveUserRole(ctx, userCfg.Name)
+	return eff != nil && eff.Role == "parent"
 }
 
 // getUserByName returns the user config with the given name, or nil if no
@@ -1324,15 +1352,11 @@ func (s *Server) getUserByName(name string) *config.UserConfig {
 	return nil
 }
 
-// getUserByID maps a session user ID back to a user config. User IDs are
-// synthesised from config order (index + 1) by resolveParentUserID and there
-// is no separate users table, so the reverse lookup uses the same index scheme.
-func (s *Server) getUserByID(userID int64) *config.UserConfig {
-	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-
-	if userID < 1 || int(userID-1) >= len(s.cfg.Users) {
-		return nil
-	}
-	return &s.cfg.Users[userID-1]
+// userForSession resolves a session's stable principal (config name) back to a
+// user config. Because sessions are bound to a name rather than a config-array
+// position, this lookup is stable under reorder/replacement/reload/restart.
+// It returns nil when the user no longer exists (e.g. removed from config), in
+// which case callers must treat the session as unresolvable and deny it.
+func (s *Server) userForSession(ctx context.Context, principal string) *config.UserConfig {
+	return s.getUserByName(principal)
 }

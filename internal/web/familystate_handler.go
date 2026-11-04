@@ -19,20 +19,16 @@ import (
 var familyCategoryNameRE = regexp.MustCompile(`^[a-z0-9_]+$`)
 
 // actorName resolves an audit-log "actor" string from the authenticated
-// session. Identity carries only UserID (int64). Map back to the
-// corresponding config.Users[].Name; falls back to a generic "web_user"
-// label if the mapping cannot be made (the audit row still records the
-// numeric UserID via other fields).
+// session. Identity carries the user's stable config name (the session
+// principal), so no index mapping is needed; we fall back to a generic
+// "web_user" label only when the context has no identity at all.
 func (s *Server) actorName(ctx context.Context) string {
 	id, ok := middleware.IdentityFrom(ctx)
 	if !ok {
 		return "web_unauthenticated"
 	}
-	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	idx := int(id.UserID - 1)
-	if idx >= 0 && idx < len(s.cfg.Users) {
-		return s.cfg.Users[idx].Name
+	if id.UserName != "" {
+		return id.UserName
 	}
 	return "web_user"
 }

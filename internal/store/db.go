@@ -234,7 +234,8 @@ func (d *DB) migrate() error {
 
 	CREATE TABLE IF NOT EXISTS web_sessions (
 		id          TEXT PRIMARY KEY NOT NULL,
-		user_id     INTEGER NOT NULL,
+		user_id     INTEGER NOT NULL DEFAULT 0,
+		user_name   TEXT NOT NULL DEFAULT '',
 		created_at  INTEGER NOT NULL,
 		expires_at  INTEGER NOT NULL,
 		last_seen   INTEGER NOT NULL,
@@ -522,6 +523,36 @@ func (d *DB) migrate() error {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate add messages gateway: %w", err)
 		}
+	}
+
+	// Terra F7: bind web sessions to the user's stable config NAME instead of a
+	// mutable config-array position. New deployments get the column from the
+	// CREATE TABLE above; existing deployments are upgraded here. The legacy
+	// user_id position column remains (written as 0) for schema compatibility
+	// but is no longer an authority for identity or authorization. Sessions
+	// created before this column existed have user_name = '' and are revoked by
+	// the web middleware (they cannot be safely re-mapped after a reorder).
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE web_sessions ADD COLUMN user_name TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add web_sessions user_name: %w", err)
+		}
+	}
+
+	// Terra F12: normalize legacy role overrides that were written with a
+	// cohort string in the role column. The shared schema (used by the policy
+	// engine and the gateway) is role ∈ {parent, child} plus a separate
+	// age_group cohort. Older rows from the pre-fix set_user_role tool stored
+	// the cohort in `role`; backfill age_group and coerce role to "child".
+	// Idempotent: after the first run no cohort-valued roles remain.
+	if _, err := d.sql.ExecContext(context.Background(),
+		`UPDATE user_role_overrides SET age_group = role
+		 WHERE role IN ('under_8','age_8_12','age_13_17') AND age_group = ''`); err != nil {
+		return fmt.Errorf("migrate normalize role override age_group: %w", err)
+	}
+	if _, err := d.sql.ExecContext(context.Background(),
+		`UPDATE user_role_overrides SET role = 'child'
+		 WHERE role IN ('under_8','age_8_12','age_13_17')`); err != nil {
+		return fmt.Errorf("migrate normalize role override role: %w", err)
 	}
 
 	// Tier 1 conversation recall (search_conversations): FTS5 external-content
@@ -1505,19 +1536,43 @@ func (d *DB) GetRoleOverride(ctx context.Context, userName string) (role, ageGro
 	return role, ageGroup, nil
 }
 
-// GetEffectiveRoleAge returns the effective (overridden) role and age group for a user.
-// If no override exists, the returned values match the config defaults.
+// GetEffectiveRoleAge returns the effective (overridden) role and age group for
+// a user, applying the shared role/age schema that the policy engine expects:
+// role ∈ {"parent","child"} plus a separate age_group cohort
+// {"under_8","age_8_12","age_13_17",""}.
+//
+//   - Terra F12: a legacy cohort value persisted in the role column by the
+//     pre-fix set_user_role tool is normalized to "child" (the DB migration
+//     backfills such rows at startup; this keeps the read path safe even if a
+//     legacy row is inserted after the migration ran).
+//   - Terra F13: an override may DEMOTE a base parent to "child" but may never
+//     PROMOTE a base non-parent into "parent". The cap is enforced here so
+//     every consumer of the effective role (gateway input/tool/output policy,
+//     web management gate, web chat) sees the same value.
+//
+// Empty override fields fall back to the config values; a parent carries no
+// age cohort.
 // Returns ("", "", nil) when no row exists for the user.
 func (d *DB) GetEffectiveRoleAge(ctx context.Context, userName string, cfgRole, cfgAgeGroup string) (role, ageGroup string, err error) {
 	role, ageGroup, err = d.GetRoleOverride(ctx, userName)
 	if err != nil {
 		return "", "", err
 	}
+	switch role {
+	case "under_8", "age_8_12", "age_13_17":
+		role = "child" // legacy cohort-valued role; normalize before applying
+	}
+	if role == "parent" && cfgRole != "parent" {
+		role = "child" // no-promotion cap: overrides cannot grant parent
+	}
 	if role == "" {
 		role = cfgRole
 	}
 	if ageGroup == "" {
 		ageGroup = cfgAgeGroup
+	}
+	if role == "parent" {
+		ageGroup = "" // parents carry no age cohort
 	}
 	return role, ageGroup, nil
 }

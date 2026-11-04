@@ -252,14 +252,14 @@ func (s *Server) handleSetupPIN(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := s.resolveParentUserID(ctx)
+	principal, err := s.resolveParentPrincipal(ctx)
 	if err != nil {
 		// First-boot fallback: a freshly-shipped config.yaml may not yet have a
-		// declared parent. The session row's user_id is informational only, so
-		// pinning it to 1 keeps accounting honest until the wizard writes a
-		// real parent into the YAML.
-		log.Printf("[setup] resolveParentUserID failed during PIN bootstrap, using fallback userID=1: %v", err)
-		userID = 1
+		// declared parent. The bootstrap session is bound to the placeholder
+		// parent's name, and the placeholder below is created with that name,
+		// so protectParent resolves it by name (not by config position).
+		log.Printf("[setup] resolveParentPrincipal failed during PIN bootstrap, using fallback principal=parent: %v", err)
+		principal = "parent"
 	}
 
 	// First-boot sentinel: seed a placeholder parent so protectParent
@@ -267,11 +267,11 @@ func (s *Server) handleSetupPIN(w http.ResponseWriter, r *http.Request) {
 	// overwrites this with the real user list on save. The emptiness check
 	// is held under cfgMu: cfg.Users is written elsewhere under the same
 	// lock, so the read must not race those writers.
-	// Note: config.UserConfig has no ID field; protectParent resolves
-	// userID=1 by index (getUserByID -> cfg.Users[0]), so this zero-value
-	// placeholder is the first-boot parent entry.
+	// Note: the session principal is the user NAME; protectParent resolves
+	// "parent" via getUserByName, so this zero-value placeholder (named
+	// "parent") is the first-boot parent entry.
 	s.cfgMu.Lock()
-	if userID == 1 && len(s.cfg.Users) == 0 {
+	if principal == "parent" && len(s.cfg.Users) == 0 {
 		s.cfg.Users = append(s.cfg.Users, config.UserConfig{
 			Name: "parent",
 			Role: "parent",
@@ -279,7 +279,7 @@ func (s *Server) handleSetupPIN(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfgMu.Unlock()
 
-	sid, err := s.sessions.Create(ctx, userID, clientIP(r), r.Header.Get("User-Agent"))
+	sid, err := s.sessions.Create(ctx, principal, clientIP(r), r.Header.Get("User-Agent"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
@@ -295,8 +295,8 @@ func (s *Server) handleSetupPIN(w http.ResponseWriter, r *http.Request) {
 		Secure:   r.TLS != nil,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user_id":  userID,
-		"redirect": "/dashboard",
+		"user_name": principal,
+		"redirect":  "/dashboard",
 	})
 }
 
@@ -412,21 +412,21 @@ func (s *Server) handleSetupUnlock(w http.ResponseWriter, r *http.Request) {
 
 	limiter.recordSuccess(ip)
 
-	userID, err := s.resolveParentUserID(ctx)
+	principal, err := s.resolveParentPrincipal(ctx)
 	if err != nil {
-		log.Printf("[setup] resolveParentUserID failed during unlock, using fallback userID=1: %v", err)
-		userID = 1
+		log.Printf("[setup] resolveParentPrincipal failed during unlock, using fallback principal=parent: %v", err)
+		principal = "parent"
 	}
 
 	// Same first-boot sentinel as handleSetupPIN: if the config has no users
 	// yet, seed a placeholder parent so the re-seated bootstrap session can
 	// pass protectParent. The wizard's settings save replaces it. The
 	// emptiness check is held under cfgMu for the same reason as above.
-	// Note: config.UserConfig has no ID field; protectParent resolves
-	// userID=1 by index (getUserByID -> cfg.Users[0]), so this zero-value
-	// placeholder is the first-boot parent entry.
+	// Note: the session principal is the user NAME; protectParent resolves
+	// "parent" via getUserByName, so this zero-value placeholder (named
+	// "parent") is the first-boot parent entry.
 	s.cfgMu.Lock()
-	if userID == 1 && len(s.cfg.Users) == 0 {
+	if principal == "parent" && len(s.cfg.Users) == 0 {
 		s.cfg.Users = append(s.cfg.Users, config.UserConfig{
 			Name: "parent",
 			Role: "parent",
@@ -434,7 +434,7 @@ func (s *Server) handleSetupUnlock(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfgMu.Unlock()
 
-	sid, err := s.sessions.Create(ctx, userID, ip, r.Header.Get("User-Agent"))
+	sid, err := s.sessions.Create(ctx, principal, ip, r.Header.Get("User-Agent"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
@@ -449,7 +449,7 @@ func (s *Server) handleSetupUnlock(w http.ResponseWriter, r *http.Request) {
 		Secure:   r.TLS != nil,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user_id":  userID,
-		"redirect": "/dashboard",
+		"user_name": principal,
+		"redirect":  "/dashboard",
 	})
 }

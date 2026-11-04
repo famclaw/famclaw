@@ -77,7 +77,7 @@ func newFirstBootServer(t *testing.T) (*httptest.Server, *Server, *store.Session
 		clients:    make(map[*websocket.Conn]*wsClient),
 	}
 	s.upgrader = websocket.Upgrader{CheckOrigin: s.allowedOrigin}
-	s.auth = NewAuthHandler(sessions, vault, s.getParentPINCiphertext, s.resolveParentUserID)
+	s.auth = NewAuthHandler(sessions, vault, s.getParentPINCiphertext, s.resolveParentPrincipal)
 
 	// No parent_pin row seeded — the vault is empty (true first-boot).
 
@@ -91,9 +91,10 @@ func newFirstBootServer(t *testing.T) (*httptest.Server, *Server, *store.Session
 
 // TestFirstBootPINBootstrapAllowsSettingsAccess is the regression test for
 // issue #413: on a fresh install (users: []), the first-boot PIN bootstrap
-// creates a session with user_id=1, but without a corresponding entry in
-// s.cfg.Users the protectParent middleware returns 403 on /api/settings,
-// leaving the user stuck forever in a chicken-and-egg loop.
+// creates a session bound to the placeholder parent's name, but without a
+// corresponding entry in s.cfg.Users the protectParent middleware returns
+// 403 on /api/settings, leaving the user stuck forever in a chicken-and-egg
+// loop.
 //
 // After the fix, handleSetupPIN seeds a placeholder parent when the user
 // list is empty, so the bootstrap session passes the role gate.
