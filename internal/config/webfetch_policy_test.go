@@ -11,11 +11,11 @@ import (
 // to the kid-safe denylist default.
 func TestResolvedURLPolicy(t *testing.T) {
 	tests := []struct {
-		name    string
-		policy  string
-		allow   []string
-		deny    []string
-		want    string
+		name   string
+		policy string
+		allow  []string
+		deny   []string
+		want   string
 	}{
 		{"explicit allowlist wins", "allowlist", []string{}, []string{}, "allowlist"},
 		{"explicit denylist wins", "denylist", []string{"a.com"}, []string{}, "denylist"},

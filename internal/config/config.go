@@ -205,9 +205,9 @@ type WebFetchConfig struct {
 	// (case-insensitive exact-or-subdomain match, trailing dot trimmed).
 	// Ignored in allowlist mode. Parent-managed via the denylist admin tools
 	// (W3); also editable directly in config.yaml.
-	URLDenylist []string `yaml:"url_denylist,omitempty"`
-	MaxBytes    int64    `yaml:"max_bytes,omitempty"`     // 0 = 256KB default
-	TimeoutSec  int      `yaml:"timeout_seconds,omitempty"`
+	URLDenylist  []string `yaml:"url_denylist,omitempty"`
+	MaxBytes     int64    `yaml:"max_bytes,omitempty"` // 0 = 256KB default
+	TimeoutSec   int      `yaml:"timeout_seconds,omitempty"`
 	AllowedRoles []string `yaml:"allowed_roles,omitempty"` // default ["parent"]
 	// BlockPrivateNetworks opts INTO rejecting private/loopback/RFC1918/
 	// link-local addresses at the dialer. famclaw's product model is a
