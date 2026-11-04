@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sync"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/config"
@@ -45,53 +44,54 @@ type Deps struct {
 	ConfigPath string
 	Scanner    skillbridge.Scanner
 
-	// URLDenylistMu is the agent's denylist lock, shared with the
-	// decision path (Agent.urlDenylistMu in internal/agent). The
-	// denylist_list / denylist_add / denylist_remove handlers take it
-	// (RLock / Lock) so their read-modify-writes of
-	// Cfg.Tools.WebFetch.URLDenylist never race hostDecision's
-	// decision-time slice reads.
+	// SharedPolicyOwner is the single shared lock guarding this config's
+	// WebFetch host policy slices (URLAllowlist / URLDenylist): one
+	// instance per *config.Config, shared by every Agent and every handler
+	// built from that config (#423 round 18 — replaces the per-Agent value
+	// mutex urlDenylistMu, which could never exclude across Agents). The
+	// denylist_* and allowlist_* handlers take it (RLock / Lock) so their
+	// read-modify-writes never race hostDecision's decision-time snapshots
+	// on ANY Agent, and never tear the slice headers.
 	//
-	// It is REQUIRED for any entry point that can run concurrently with
-	// the agent's hostDecision path: when nil, denylistMu() returns ErrDenylistMuUnwired and
-	// every denylist handler fails closed instead of touching the list,
-	// so a misconfigured entry point surfaces the error at the call site
-	// rather than degrading to a partial lock that does not serialize
-	// against the agent's decision path (review finding: global no-op
-	// mutex).
+	// It is REQUIRED for any entry point that can run concurrently with the
+	// agent's hostDecision path: when nil, policyOwner() returns
+	// ErrPolicyOwnerUnwired and every web-policy handler fails closed
+	// instead of touching the lists, so a misconfigured entry point
+	// surfaces the error at the call site rather than degrading to an
+	// unsynchronized read-modify-write.
 	//
-	// NOTE: a value sync.RWMutex is deliberately NOT used here: the
-	// field must share the agent's lock instance (&a.urlDenylistMu),
-	// and a value field would be copied into each Deps, defeating the
-	// synchronization.
-	URLDenylistMu *sync.RWMutex
+	// NOTE: the field is a pointer to the config's shared owner — never a
+	// value sync.RWMutex: a value field would be copied into each Deps and
+	// could not be shared across Agents.
+	SharedPolicyOwner *config.WebFetchPolicyOwner
 
 	// SharedConfig is the shared configuration manager for atomic save/reload operations
 	// with proper transactional semantics and conflict detection.
 	SharedConfig *SharedConfigManager
 }
 
-// ErrDenylistMuUnwired is returned by denylistMu() when
-// Deps.URLDenylistMu is nil. All denylist handlers fail closed on it:
-// proceeding without the agent's lock would let their read-modify-write
-// of Cfg.Tools.WebFetch.URLDenylist race hostDecision's decision-time
-// slice reads, so the misconfiguration is returned to the caller instead
-// of being logged and continued.
-var ErrDenylistMuUnwired = errors.New("admin denylist: Deps.URLDenylistMu is not wired to the agent's urlDenylistMu; refusing to touch the denylist unsynchronized")
+// ErrPolicyOwnerUnwired is returned by policyOwner() when
+// Deps.SharedPolicyOwner is nil. All web-policy handlers (denylist AND
+// allowlist) fail closed on it: proceeding without the config's shared
+// owner would let their read-modify-write of Cfg.Tools.WebFetch lists race
+// hostDecision's decision-time snapshot on any Agent, so the
+// misconfiguration is returned to the caller instead of being logged and
+// continued.
+var ErrPolicyOwnerUnwired = errors.New("admin web policy: Deps.SharedPolicyOwner is not wired to the config's shared WebFetchPolicyOwner; refusing to touch the URL policy unsynchronized")
 
-// denylistMu returns the shared denylist lock for a denylist handler.
-// When Deps.URLDenylistMu is wired it returns that instance so the
-// handler's read-modify-write of Cfg.Tools.WebFetch.URLDenylist never
-// races hostDecision's decision-time slice reads. When unwired it logs a
-// prominent error and returns ErrDenylistMuUnwired, so the handler
-// fails closed at the call site rather than degrading to a no-op lock
-// that would not serialize against the agent's decision path.
-func (d Deps) denylistMu() (*sync.RWMutex, error) {
-	if d.URLDenylistMu == nil {
-		log.Printf("[admin] ERROR: denylist handler invoked with URLDenylistMu unset — failing closed. Every entry point that can run concurrently with the agent's hostDecision path must wire Deps.URLDenylistMu to the agent's urlDenylistMu.")
-		return nil, ErrDenylistMuUnwired
+// policyOwner returns the config's shared WebFetch policy owner for a
+// web-policy handler. When Deps.SharedPolicyOwner is wired it returns that
+// instance so the handler's read-modify-write of Cfg.Tools.WebFetch lists
+// never races hostDecision's decision-time snapshot on any Agent. When
+// unwired it logs a prominent error and returns ErrPolicyOwnerUnwired, so
+// the handler fails closed at the call site rather than degrading to an
+// unsynchronized read-modify-write.
+func (d Deps) policyOwner() (*config.WebFetchPolicyOwner, error) {
+	if d.SharedPolicyOwner == nil {
+		log.Printf("[admin] ERROR: web policy handler invoked with SharedPolicyOwner unset — failing closed. Every entry point that can run concurrently with the agent's hostDecision path must wire Deps.SharedPolicyOwner to the config's shared owner (cfg.WebFetchPolicyOwner()).")
+		return nil, ErrPolicyOwnerUnwired
 	}
-	return d.URLDenylistMu, nil
+	return d.SharedPolicyOwner, nil
 }
 
 // MCPManager abstracts MCP server lifecycle management needed by the
@@ -120,8 +120,14 @@ func isKnownSubject(cfg *config.Config, subject string) bool {
 	return false
 }
 
-// logAudit writes an audit record. args must be JSON-marshalable.
+// logAudit writes an audit record. args must be JSON-marshalable. A nil
+// deps.DB (test harnesses that exercise handlers without a store) skips
+// the write: auditing is best-effort metadata, never a gate or a
+// synchronization point.
 func logAudit(ctx context.Context, deps Deps, toolName string, args any) error {
+	if deps.DB == nil {
+		return nil
+	}
 	b, err := json.Marshal(args)
 	if err != nil {
 		return fmt.Errorf("marshal audit args: %w", err)

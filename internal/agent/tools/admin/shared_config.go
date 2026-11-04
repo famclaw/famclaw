@@ -1,14 +1,28 @@
 // shared_config.go implements shared configuration save/reload helpers
 // for web_fetch denylist and allowlist with proper transactional semantics.
+//
+// #423 round 18 (plan §B/§C, scoped): this file is the file-commit gate
+// (T = SharedConfigManager.mu). The in-memory policy slices are guarded by
+// the config's ONE shared WebFetchPolicyOwner (M, see
+// internal/config/policy_owner.go). Lock order is M -> T only: admin
+// handlers take the owner with no other lock held, and SaveConfig takes T
+// inside that span. No path takes T before M, so no cycle is possible.
+//
+// TODO(#423 / plan §B, reported on card t_2b14f901): live change-event
+// watching (fsnotify-based reload dispatch, self-event reconciliation,
+// dirty-flag propagation) is NOT implemented. The ConfigWatcher below is
+// the in-process fan-out point SaveConfig uses after a confirmed commit;
+// no consumer registers a listener today, and the fake ReloadDispatcher
+// stub was removed in this round as dead code.
 package admin
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,7 +33,6 @@ type SharedConfigManager struct {
 	configPath string
 	mu         sync.Mutex
 	watcher    *ConfigWatcher
-	lastToken  string
 }
 
 // NewSharedConfigManager creates a new shared config manager for the given config path
@@ -32,13 +45,20 @@ func NewSharedConfigManager(configPath string) *SharedConfigManager {
 
 // SaveConfig atomically saves the configuration to disk with content token checking
 // and returns the new content token for tracking.
+//
+// Locking: takes T (scm.mu) around the whole read-verify-commit span
+// (plan §B: the precondition read and the file commit are one serialized
+// transaction). Callers must hold the shared policy owner (M) when the
+// save publishes an in-memory policy mutation, so the observed order is
+// always M -> T (review S2: no path takes T or M while holding a component
+// lock; M and T are the two config locks, components are everything else).
 func (scm *SharedConfigManager) SaveConfig(cfg interface{}, contentToken string) (string, error) {
 	scm.mu.Lock()
 	defer scm.mu.Unlock()
 
 	// Validate the content token (ensure no external edits occurred)
 	if err := scm.validateContentToken(contentToken); err != nil {
-		return "", fmt.Errorf("operator conflict: %w", err)
+		return "", fmt.Errorf("%w: %v", ErrOperatorConflict, err)
 	}
 
 	// Marshal the config using YAML (following the pattern in web_fetch_allowlist.go)
@@ -50,7 +70,12 @@ func (scm *SharedConfigManager) SaveConfig(cfg interface{}, contentToken string)
 	// Write to temporary file first
 	tempPath := scm.configPath + ".tmp"
 	header := "# FamClaw configuration (managed by web UI)\n# Edit via the Settings page in the web UI, or edit this file and restart.\n\n"
-	if err := os.WriteFile(tempPath, append([]byte(header), data...), 0600); err != nil {
+	// The on-disk bytes are header + YAML: every token in this manager is
+	// computed over the on-disk bytes (CurrentToken / validateContentToken
+	// hash what ReadFile returns), so the new token must hash this exact
+	// content, not the bare YAML.
+	content := append([]byte(header), data...)
+	if err := os.WriteFile(tempPath, content, 0600); err != nil {
 		return "", fmt.Errorf("writing temp config file: %w", err)
 	}
 
@@ -60,19 +85,32 @@ func (scm *SharedConfigManager) SaveConfig(cfg interface{}, contentToken string)
 	}
 
 	// Generate new content token for tracking
-	newToken, err := scm.generateContentToken(data)
+	newToken, err := scm.generateContentToken(content)
 	if err != nil {
 		return "", fmt.Errorf("generating content token: %w", err)
 	}
-
-	// Record the new token
-	scm.lastToken = newToken
 
 	// Notify watchers of the change
 	go scm.watcher.NotifyChange(newToken)
 
 	return newToken, nil
 }
+
+// ErrOperatorConflict is the sentinel returned by SaveConfig when the
+// on-disk content token changed between the handler's precondition read
+// (CurrentToken) and the commit: another process wrote the config file in
+// between. Handlers detect it with errors.Is, do NOT publish their
+// in-memory mutation (existing C is preserved, plan §B commit order), and
+// surface the sentinel so the caller can re-read and retry.
+var ErrOperatorConflict = errors.New("operator conflict: config file changed by another process since the precondition read")
+
+// ErrTokenReadFailed is the sentinel returned by CurrentToken when the
+// config file exists but cannot be read. A read failure means the on-disk
+// state is unknown, so the save precondition cannot be established:
+// handlers fail closed instead of saving against a blind overwrite
+// (review S4). A missing file is NOT a read failure: it returns ("", nil),
+// making the precondition vacuous by design for new files.
+var ErrTokenReadFailed = errors.New("cannot read config file for content-token precondition")
 
 // validateContentToken checks if the content token matches the current file content
 // and returns an error if external edits have occurred.
@@ -104,7 +142,10 @@ func (scm *SharedConfigManager) validateContentToken(contentToken string) error 
 
 // generateContentToken creates a deterministic token based on file content
 func (scm *SharedConfigManager) generateContentToken(data []byte) (string, error) {
-	// Use SHA256 hash of the data to create a deterministic token
+	// SHA256 of the file content: deterministic, so two managers over the
+	// same path compute the same token and the precondition read stays
+	// consistent across Agents (round 15: replaced the time-based token
+	// that could never detect conflicts).
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:]), nil
 }
@@ -119,22 +160,25 @@ func (scm *SharedConfigManager) CurrentToken() (string, error) {
 		return "", nil
 	}
 
-	// Read current file content to generate token
+	// Read the file and generate its token
 	data, err := os.ReadFile(scm.configPath)
 	if err != nil {
-		// If file doesn't exist, return empty string (no token)
+		// A missing file is NOT a failure: for new files the save
+		// precondition is vacuous by design (review S4) — the token is
+		// "" and validateContentToken accepts it.
 		if os.IsNotExist(err) {
 			return "", nil
 		}
-		return "", err
+		// Any other read failure means the on-disk state is unknown:
+		// fail closed with the sentinel instead of letting callers save
+		// against a blind overwrite.
+		return "", fmt.Errorf("%w: %v", ErrTokenReadFailed, err)
 	}
 
-	// Generate token from current content
 	token, err := scm.generateContentToken(data)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cannot generate current token: %w", err)
 	}
-
 	return token, nil
 }
 
@@ -170,8 +214,11 @@ func (cw *ConfigWatcher) UnregisterListener(id string) {
 
 // NotifyChange notifies all listeners of a config change
 func (cw *ConfigWatcher) NotifyChange(token string) {
-	cw.mu.RLock()
-	defer cw.mu.RUnlock()
+	// The write lock: NotifyChange assigns cw.eventToken, and a read lock
+	// here would let two concurrent NotifyChange calls write eventToken
+	// simultaneously (review M1).
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
 
 	// Store the event token for self-event suppression
 	cw.eventToken = token
@@ -190,81 +237,4 @@ func (cw *ConfigWatcher) SelfEventSuppression(token string) bool {
 	cw.mu.RLock()
 	defer cw.mu.RUnlock()
 	return cw.eventToken == token
-}
-
-// ReloadDispatcher handles FIFO reload dispatching for configuration changes
-type ReloadDispatcher struct {
-	mu           sync.Mutex
-	reloadQueue  chan *ReloadJob
-	activeReload *ReloadJob
-}
-
-// ReloadJob represents a configuration reload job
-type ReloadJob struct {
-	token     string
-	done      chan bool
-	timestamp time.Time
-}
-
-// NewReloadDispatcher creates a new reload dispatcher
-func NewReloadDispatcher() *ReloadDispatcher {
-	rd := &ReloadDispatcher{
-		reloadQueue: make(chan *ReloadJob, 100), // Buffered channel
-	}
-
-	// Start the dispatcher goroutine
-	go rd.dispatcher()
-
-	return rd
-}
-
-// SubmitReload submits a reload job to the dispatcher
-func (rd *ReloadDispatcher) SubmitReload(token string) chan bool {
-	rd.mu.Lock()
-	defer rd.mu.Unlock()
-
-	done := make(chan bool, 1)
-	job := &ReloadJob{
-		token:     token,
-		done:      done,
-		timestamp: time.Now(),
-	}
-
-	// Coalesce duplicate unchanged-token reloads
-	if rd.activeReload != nil && rd.activeReload.token == token {
-		// This is a duplicate reload, ignore it
-		done <- false
-		return done
-	}
-
-	// Submit to queue
-	select {
-	case rd.reloadQueue <- job:
-	default:
-		// Queue is full, ignore
-		done <- false
-		return done
-	}
-
-	return done
-}
-
-// dispatcher runs the reload dispatcher loop
-func (rd *ReloadDispatcher) dispatcher() {
-	for job := range rd.reloadQueue {
-		rd.mu.Lock()
-		rd.activeReload = job
-		rd.mu.Unlock()
-
-		// Process the reload (in real implementation, this would actually reload)
-		time.Sleep(10 * time.Millisecond) // Simulate processing
-
-		// Signal completion
-		job.done <- true
-
-		// Clear active reload
-		rd.mu.Lock()
-		rd.activeReload = nil
-		rd.mu.Unlock()
-	}
 }

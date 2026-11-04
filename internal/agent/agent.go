@@ -125,20 +125,6 @@ type Agent struct {
 	// (which leave it nil) stay safe.
 	suspiciousNotified map[string]bool
 
-	// urlDenylistMu guards every in-process read/write of
-	// cfg.Tools.WebFetch.URLDenylist. hostDecision copies the WebFetch
-	// struct (which reads the slice header) and re-reads the list at
-	// decision time, while the parent-facing admin tools
-	// (internal/agent/tools/admin: denylist_add/remove/list) rewrite the
-	// slice through the shared *config.Config and persist it. A concurrent
-	// slice-header write racing a read is undefined behavior (torn header →
-	// OOB read or panic), so all of those accesses go through this lock:
-	// RLock on the decision paths, Lock on the admin read-modify-writes.
-	// The admin handlers receive &urlDenylistMu via
-	// admin.Deps.URLDenylistMu. (Zero value usable: legacy Agent literals
-	// in tests that never race a concurrent writer are safe with it.)
-	urlDenylistMu sync.RWMutex
-	
 	// sharedConfigManager is used for atomic config save/reload operations
 	// with proper transactional semantics and conflict detection.
 	sharedConfigManager *admin.SharedConfigManager
@@ -950,22 +936,22 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath}
 			return admin.HandleMCPRemove(ctx, deps, args)
 		case "builtin__allowlist_list":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleAllowlistList(ctx, deps, args)
 		case "builtin__allowlist_add":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleAllowlistAdd(ctx, deps, args)
 		case "builtin__allowlist_remove":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleAllowlistRemove(ctx, deps, args)
 		case "builtin__denylist_list":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, URLDenylistMu: &a.urlDenylistMu}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleDenylistList(ctx, deps, args)
 		case "builtin__denylist_add":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, URLDenylistMu: &a.urlDenylistMu}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleDenylistAdd(ctx, deps, args)
 		case "builtin__denylist_remove":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, URLDenylistMu: &a.urlDenylistMu}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleDenylistRemove(ctx, deps, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
@@ -1422,6 +1408,19 @@ func canonicalizeHost(h string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
 }
 
+// sharedPolicyOwner returns the single shared WebFetchPolicyOwner guarding
+// this Agent's config's host policy slices (#423 round 18): every Agent
+// built from the same *config.Config — parent or child — reaches the SAME
+// owner through the config, so an admin writer on one Agent (or the web
+// settings publish span) and a hostDecision reader on another mutually
+// exclude on one lock. This replaces the per-Agent value field
+// urlDenylistMu, whose &a.urlDenylistMu was a DIFFERENT mutex per Agent and
+// could never exclude across Agents (the verified -race root cause of
+// rounds 16/17).
+func (a *Agent) sharedPolicyOwner() *config.WebFetchPolicyOwner {
+	return a.cfg.WebFetchPolicyOwner()
+}
+
 // hostDecision is the single source of truth for the web_fetch host gate,
 // shared by web_fetch, web_search, the browser-fallback path, and
 // browser_navigate (design §1.2 — replaces the duplicated per-call-site
@@ -1438,48 +1437,40 @@ func canonicalizeHost(h string) string {
 // where reason is a short class ("allowlist" | "denylist") when !allowed.
 func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 	host = canonicalizeHost(host)
-	// Snapshot the WebFetch struct under the read lock: the copy reads
-	// every field (including the URLDenylist slice header), so without
-	// the lock a concurrent admin rewrite could tear it (see
-	// urlDenylistMu).
-	//
-	// Invariant (review finding: stale mode determination) — this
-	// snapshot is the decision-time value for URLPolicy/URLAllowlist,
-	// while the denylist branch below re-reads URLDenylist fresh under
-	// a second RLock. That asymmetry is deliberate and safe today:
-	//   - The only writers that take urlDenylistMu are the denylist
-	//     admin tools, and denylist mode is allow-by-default: a stale
-	//     denylist read is a fail-open gap, so it gets the fresh
-	//     re-read (see that branch's comment).
-	//   - URLPolicy/URLAllowlist have no writers on this lock yet (the
-	//     settings endpoint and the allowlist admin tools write them
-	//     outside it, as they always have), so for them the snapshot
-	//     vs. a second read makes no difference today; staleness is
-	//     bounded to one decision and self-heals on the next
-	//     hostDecision call.
-	// Trap: if URLPolicy or URLAllowlist ever gain a writer wired to
-	// this same mutex (allowlist admin tools migrated to
-	// Deps.URLDenylistMu, a config hot-reload, ...), the snapshot is
-	// no longer safe — re-read all three fields under one lock (or
-	// hold RLock across the whole decision) instead.
-	a.urlDenylistMu.RLock()
+	// §A final snapshot: one coherent deep copy of the whole host policy —
+	// resolved mode, allowlist, and denylist — taken under the shared
+	// owner's read lock. The owner is per-config (not per-Agent), so the
+	// snapshot excludes every admin writer and the settings publish span
+	// process-wide; the deep-copied lists make the snapshot immutable, so
+	// the rest of this decision evaluates it with NO lock held — no
+	// callbacks, DB checks, or network work run under the owner, and no
+	// early-return path (allowlist match, private IP, baseline) bypasses
+	// the final snapshot. A concurrent admin publish is visible from the
+	// next decision and can never tear this one.
+	owner := a.sharedPolicyOwner()
+	owner.RLock()
 	fcfg := a.cfg.Tools.WebFetch
-	switch fcfg.ResolvedURLPolicy() {
+	mode := fcfg.ResolvedURLPolicy()
+	allowlist := make([]string, len(fcfg.URLAllowlist))
+	copy(allowlist, fcfg.URLAllowlist)
+	denylist := make([]string, len(fcfg.URLDenylist))
+	copy(denylist, fcfg.URLDenylist)
+	owner.RUnlock()
+
+	switch mode {
 	case "allowlist":
-		// For allowlist mode, we must ensure we're using the same
-		// snapshot for both the policy mode and the allowlist.
-		// The snapshot taken above is sufficient for both.
-		for _, allowed := range fcfg.URLAllowlist {
+		// Allowed iff the host matches a snapshot entry (exact or
+		// subdomain). An empty allowlist denies everything (legacy SSRF
+		// guard, byte-for-byte unchanged in allowlist mode).
+		for _, allowed := range allowlist {
 			allowed = canonicalizeHost(allowed)
 			if allowed == "" {
 				continue
 			}
 			if host == allowed || strings.HasSuffix(host, "."+allowed) {
-				a.urlDenylistMu.RUnlock()
 				return true, ""
 			}
 		}
-		a.urlDenylistMu.RUnlock()
 		return false, "allowlist"
 	default: // "denylist"
 		// (a) Bundled kid-safe baseline (CC0-sourced, design §2) — always
@@ -1495,26 +1486,14 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 		a.baselineStoreOnce.Do(func() { a.baselineStore = webfilter.NewBaselineStore() })
 		baselineStore := a.baselineStore
 		if baselineStore.Blocks(host) {
-			a.urlDenylistMu.RUnlock()
 			return false, "baseline"
 		}
-		// (b) Parent-maintained deny entries. Read the slice directly from
-		// the shared config, not via the fcfg copy taken at the top of this
-		// function: the denylist admin tools replace URLDenylist
-		// concurrently (a parent can block a host while a child's fetch is
-		// in flight), and the copy would keep iterating the old slice for
-		// this decision. Denylist mode is allow-by-default, so a stale read
-		// is a fail-open gap — a host the parent just denied could still be
-		// fetched. Same direct-read pattern the other per-call config reads
-		// in this file use (see handleWebFetch's FallbackMinTextLength).
-		// The slice-header read happens under the denylist read lock, so it
-		// cannot tear against a concurrent admin rewrite (review finding:
-		// data race on URLDenylist); the snapshot
-		// is then matched without holding the lock, so a mid-match
-		// rewrite never blocks the writer longer than one header copy.
-		denyList := fcfg.URLDenylist
-		a.urlDenylistMu.RUnlock()
-		for _, denied := range denyList {
+		// (b) Parent-maintained deny entries, matched against the immutable
+		// denylist snapshot taken under the shared owner's read lock at the
+		// top of this function (§A): denylist mode is allow-by-default, and
+		// a concurrent admin publish can neither tear this snapshot nor is
+		// it visible until the next decision.
+		for _, denied := range denylist {
 			denied = canonicalizeHost(denied)
 			if denied == "" {
 				continue
@@ -1736,12 +1715,13 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		return "", fmt.Errorf("web_fetch requires a 'url' argument")
 	}
 
-	// Guarded read-lock: the struct copy reads the URLDenylist slice
-	// header, which the denylist admin tools replace concurrently
-	// (see urlDenylistMu).
-	a.urlDenylistMu.RLock()
+	// Guarded read-lock: the struct copy reads the URLDenylist/URLAllowlist
+	// slice headers, which the denylist/allowlist admin tools and the web
+	// settings endpoint replace concurrently (see sharedPolicyOwner).
+	owner := a.sharedPolicyOwner()
+	owner.RLock()
 	cfg := a.cfg.Tools.WebFetch
-	a.urlDenylistMu.RUnlock()
+	owner.RUnlock()
 	if !cfg.Enabled {
 		return "", fmt.Errorf("web_fetch is disabled in this deployment")
 	}
@@ -2009,12 +1989,13 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 
 	maxResults := readIntArg(args, "max_results", cfg.MaxResults)
 
-	// Guarded read-lock: the struct copy reads the URLDenylist slice
-	// header, which the denylist admin tools replace concurrently
-	// (see urlDenylistMu).
-	a.urlDenylistMu.RLock()
+	// Guarded read-lock: the struct copy reads the URLDenylist/URLAllowlist
+	// slice headers, which the denylist/allowlist admin tools and the web
+	// settings endpoint replace concurrently (see sharedPolicyOwner).
+	owner := a.sharedPolicyOwner()
+	owner.RLock()
 	fcfg := a.cfg.Tools.WebFetch
-	a.urlDenylistMu.RUnlock()
+	owner.RUnlock()
 
 	// Provider boundary (web-retrieval plan, Slice 1): the backend is
 	// selected from config; SearXNG is the default and keeps its current

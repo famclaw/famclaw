@@ -7,6 +7,11 @@ package agent
 // shared by two literal Agents, parent's lock passed to admin, child decision
 // run concurrently). It is the race #423 must eliminate; the candidate's
 // committed TestSharedConfigTwoAgentDenylistRace does NOT exercise this path.
+//
+// #423 round 18: admin.Deps now carries the config's ONE shared
+// WebFetchPolicyOwner (cfg.WebFetchPolicyOwner()) instead of a per-Agent
+// value mutex, so both Agents' hostDecision paths and this admin writer
+// lock the SAME owner.
 import (
 	"context"
 	"sync"
@@ -30,11 +35,23 @@ func TestReviewTwoAgentSharedConfigRace(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The #423 round 18 invariant this test reconstructs: two Agents built
+	// from the SAME *config.Config must reach the SAME shared policy owner
+	// (the rounds 16/17 failure was a per-Agent value mutex — two different
+	// locks, so the admin writer and the child's decision never excluded).
+	if parentAgent.sharedPolicyOwner() != childAgent.sharedPolicyOwner() {
+		t.Fatalf("two Agents over one config do not share a policy owner: parent=%p child=%p",
+			parentAgent.sharedPolicyOwner(), childAgent.sharedPolicyOwner())
+	}
+
 	deps := admin.Deps{
-		Cfg:           cfg,
-		Actor:         "parent",
-		Gateway:       "test",
-		URLDenylistMu: &parentAgent.urlDenylistMu,
+		Cfg:     cfg,
+		Actor:   "parent",
+		Gateway: "test",
+		// #423 round 18: the shared owner now lives on the config — the
+		// same instance both Agents' hostDecision paths lock (parent
+		// writer vs child decision must mutually exclude on ONE owner).
+		SharedPolicyOwner: cfg.WebFetchPolicyOwner(),
 	}
 
 	var wg sync.WaitGroup

@@ -130,14 +130,20 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	view.Gateways.Telegram.Enabled = s.cfg.Gateways.Telegram.Enabled
 	view.Gateways.Discord.Enabled = s.cfg.Gateways.Discord.Enabled
 
-	// WebFetch settings
-	view.WebFetch.Enabled = s.cfg.Tools.WebFetch.Enabled
-	view.WebFetch.URLPolicy = s.cfg.Tools.WebFetch.URLPolicy
-	// Copy the allowlist so the view is stable against concurrent writes
-	view.WebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
-	copy(view.WebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
-	view.WebFetch.URLDenylist = make([]string, len(s.cfg.Tools.WebFetch.URLDenylist))
-	copy(view.WebFetch.URLDenylist, s.cfg.Tools.WebFetch.URLDenylist)
+	// WebFetch settings. The slice-header reads race the admin
+	// denylist/allowlist writers and the settings publish span, which all
+	// run under the config's shared WebFetch policy owner (#423 round 18) —
+	// snapshot under the owner's read lock so the view is coherent.
+	owner := s.cfg.WebFetchPolicyOwner()
+	owner.RLock()
+	wf := s.cfg.Tools.WebFetch
+	view.WebFetch.Enabled = wf.Enabled
+	view.WebFetch.URLPolicy = wf.URLPolicy
+	view.WebFetch.URLAllowlist = make([]string, len(wf.URLAllowlist))
+	copy(view.WebFetch.URLAllowlist, wf.URLAllowlist)
+	view.WebFetch.URLDenylist = make([]string, len(wf.URLDenylist))
+	copy(view.WebFetch.URLDenylist, wf.URLDenylist)
+	owner.RUnlock()
 
 	jsonOK(w, view)
 }
@@ -242,7 +248,21 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		newGateways.Discord.Token = update.Gateways.Discord.Token
 	}
 
-	// WebFetch — policy, allowlist, denylist, and enable flag
+	// WebFetch — policy, allowlist, denylist, and enable flag.
+	//
+	// #423 round 18: this endpoint publishes s.cfg.Tools.WebFetch — the
+	// same struct hostDecision snapshots and the admin handlers
+	// read-modify-write — and writeConfig marshals the whole config, which
+	// reads those same slice headers. The entire read-merge-publish-commit
+	// span therefore runs under the config's shared WebFetch policy owner
+	// (M): taken with no other lock held, and released before any HTTP
+	// response is written (plan §C). Without M this endpoint was a
+	// whole-policy writer unsynchronized against every Agent's decision
+	// path. (The settings file write stays outside the transactional T
+	// gate — plan §B settings-integration gap, reported on card
+	// t_2b14f901.)
+	owner := s.cfg.WebFetchPolicyOwner()
+	owner.Lock()
 	newWebFetch := s.cfg.Tools.WebFetch
 	if update.WebFetch.Enabled != s.cfg.Tools.WebFetch.Enabled {
 		newWebFetch.Enabled = update.WebFetch.Enabled
@@ -253,6 +273,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		case "allowlist", "denylist":
 			newWebFetch.URLPolicy = strings.ToLower(strings.TrimSpace(update.WebFetch.URLPolicy))
 		default:
+			owner.Unlock()
 			jsonErr(w, fmt.Errorf("web_fetch.url_policy must be %q or %q", "allowlist", "denylist"), http.StatusBadRequest)
 			return
 		}
@@ -268,6 +289,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			}
 			if _, ok := seen[trimmed]; !ok {
 				if _, err := config.NormalizeAllowlistHost(trimmed); err != nil {
+					owner.Unlock()
 					jsonErr(w, fmt.Errorf("invalid host %q: %w", trimmed, err), http.StatusBadRequest)
 					return
 				}
@@ -288,6 +310,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			}
 			if _, ok := seen[trimmed]; !ok {
 				if _, err := config.NormalizeAllowlistHost(trimmed); err != nil {
+					owner.Unlock()
 					jsonErr(w, fmt.Errorf("invalid host %q: %w", trimmed, err), http.StatusBadRequest)
 					return
 				}
@@ -303,6 +326,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	// zero-config default) an empty allowlist is expected and valid; the
 	// bundled baseline + any denylist entries still gate access.
 	if newWebFetch.Enabled && newWebFetch.ResolvedURLPolicy() == "allowlist" && len(newWebFetch.URLAllowlist) == 0 {
+		owner.Unlock()
 		jsonErr(w, fmt.Errorf("web_fetch is enabled in allowlist mode but url_allowlist is empty — add at least one host, or set url_policy: denylist"), http.StatusBadRequest)
 		return
 	}
@@ -338,11 +362,13 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			s.cfg.Users = snapUsers
 			s.cfg.Gateways = snapGateways
 			s.cfg.Tools = snapTools
+			owner.Unlock()
 			jsonErr(w, fmt.Errorf("saving config: %w", err), http.StatusInternalServerError)
 			return
 		}
 	}
 
+	owner.Unlock()
 	jsonOK(w, map[string]string{"status": "saved"})
 }
 

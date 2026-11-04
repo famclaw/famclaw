@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/honeybadger"
@@ -28,6 +29,32 @@ type Config struct {
 	Storage   StorageConfig   `yaml:"storage"`
 	SecCheck  SecCheckConfig  `yaml:"seccheck"` // deprecated — use honeybadger instead
 	Tools     ToolsConfig     `yaml:"tools,omitempty"`
+
+	// webFetchPolicyOwner is the one shared WebFetchPolicyOwner for this
+	// Config instance (#423 plan §B ownership model: one owner per config,
+	// shared by every Agent/handler built from this *Config). Lazily
+	// allocated on first WebFetchPolicyOwner() call; unexported so
+	// allocation stays internal to config, YAML-invisible, and never part
+	// of the config file. See policy_owner.go.
+	webFetchPolicyOwner atomic.Pointer[WebFetchPolicyOwner]
+}
+
+// WebFetchPolicyOwner returns the one shared WebFetchPolicyOwner for this
+// Config instance. Every caller that holds this *Config — Agents, admin
+// tool Deps, the web settings endpoint — reaches the SAME owner through
+// this method, which is what makes the cross-Agent exclusion work (the
+// rounds 16/17 failure mode was a per-Agent VALUE mutex that could never
+// be shared).
+func (c *Config) WebFetchPolicyOwner() *WebFetchPolicyOwner {
+	if p := c.webFetchPolicyOwner.Load(); p != nil {
+		return p
+	}
+	p := &WebFetchPolicyOwner{}
+	if c.webFetchPolicyOwner.CompareAndSwap(nil, p) {
+		return p
+	}
+	// Lost the race against a concurrent first call: use the winner.
+	return c.webFetchPolicyOwner.Load()
 }
 
 // ToolsConfig groups configuration for built-in tools registered with the LLM.
