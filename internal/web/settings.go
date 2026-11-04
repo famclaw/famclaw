@@ -266,6 +266,23 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	// path. (The settings file write stays outside the transactional T
 	// gate — plan §B settings-integration gap, reported on card
 	// t_2b14f901.)
+	//
+	// #430 bot review CHANGES_REQUESTED, path (b) — documentation only:
+	// M is held across BOTH the in-memory publish (the snapshot + field
+	// assignments below) AND the writeConfig disk I/O (the
+	// `if s.cfgPath != ""` site) — yaml.Marshal of the FULL config, the
+	// temp-file write + close, and the rename. Worst-case hold time is
+	// O(YAML marshal of full config + 1 fsync + 1 rename); the fsync
+	// term is the worst-case durable write-back of that temp-file
+	// write, not an explicit Sync() call. On SD-card-backed filesystems
+	// this can be 50-200ms under I/O pressure, during which every
+	// hostDecision reader (owner.RLock) is blocked. This is a LATENCY
+	// coupling, not a deadlock or race: the lock order cfgMu (outer) ->
+	// M (inner) -> T (innermost) is cycle-free (see
+	// policy_owner.go:21-30). If future work moves the disk write
+	// outside the M span (bot path (a): publish in-memory under M,
+	// write to disk under T only), update this comment and the
+	// policy_owner.go lock-order doc to reflect the new span boundary.
 	owner := s.cfg.WebFetchPolicyOwner()
 	owner.Lock()
 	newWebFetch := s.cfg.Tools.WebFetch
@@ -373,7 +390,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	owner.Unlock()
+	owner.Unlock() // #430: M span ends here, after the writeConfig disk I/O; see the hold-time note above the Lock.
 	jsonOK(w, map[string]string{"status": "saved"})
 }
 
