@@ -439,6 +439,12 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 	// successful tools/list; it is not evidence that the server is reachable.
 	tools := mc.client.Tools()
 	mc.client.Stop()
+	// Replace with a fresh client left deliberately unstarted. The next
+	// CallTool triggers lazy start: both Pool.CallTool (the inner == nil
+	// guard above) and Client.CallTool start the client on demand. We do
+	// not call Start() here: it would block this error path on a reconnect
+	// (up to its 15s timeout), and a failed reconnect would still leave the
+	// same unstarted state that lazy start already handles.
 	mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
 	mc.client.env = mc.env
 	mc.client.tools = tools
