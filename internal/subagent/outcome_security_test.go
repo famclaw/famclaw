@@ -9,11 +9,52 @@ import (
 	"testing"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpgoserver "github.com/mark3labs/mcp-go/server"
 )
+
+// TestSubagentToolErrorDisplay: the subagent's dispatch must apply the same
+// truthful failure display as the parent's tool loop
+// (agentcore.ToolErrorDisplay): ReadOnly tools report no changes, a
+// web_search failure renders its safe classification marker verbatim,
+// and everything else keeps the generic "changes may have occurred"
+// warning.
+func TestSubagentToolErrorDisplay(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		tool     string
+		readOnly bool
+		out      string
+		want     string
+	}{
+		{"builtin_generic", "builtin__operation", false, "", agentcore.ToolErrorDisplayChangesMayHaveOccurred},
+		{"builtin_read_only", "builtin__operation", true, "", agentcore.ToolErrorDisplayNoChanges},
+		{"builtin_web_search_marker", "builtin__web_search", false, agentcore.WebSearchMarkerRateLimited, agentcore.WebSearchMarkerRateLimited},
+		{"builtin_web_search_unsafe_result", "builtin__web_search", false, "searxng: HTTP 500 from 10.0.0.7", agentcore.ToolErrorDisplayChangesMayHaveOccurred},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			readonly := map[string]bool{}
+			if tc.readOnly {
+				readonly[tc.tool] = true
+			}
+			deps := ExecutorDeps{BuiltinReadOnly: readonly}
+			deps.BuiltinHandler = func(context.Context, string, map[string]any) (string, error) {
+				return tc.out, errors.New("boom")
+			}
+			call := llm.ToolCall{Function: llm.ToolCallFunction{Name: tc.tool, Arguments: map[string]any{}}}
+			result, ok := dispatchSubagentTool(context.Background(), call, deps, map[string]bool{}, map[string]bool{tc.tool: true}, time.Now())
+			if !ok {
+				t.Fatal("tool not dispatched")
+			}
+			if result != tc.want {
+				t.Errorf("display = %q, want %q", result, tc.want)
+			}
+		})
+	}
+}
 
 func TestOutcomeSubagentDispatch(t *testing.T) {
 	for _, tc := range []struct {

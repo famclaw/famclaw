@@ -1920,7 +1920,7 @@ func TestBuildMessages_UserMemoryScoped(t *testing.T) {
 func TestWebSearchError(t *testing.T) {
 	t.Run("unavailable error becomes honest result string", func(t *testing.T) {
 		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
-		msg, err := webSearchError(wrapped, "http://localhost:8888")
+		msg, err := webSearchError(wrapped)
 		if err == nil {
 			t.Fatal("expected classified failure to retain its cause")
 		}
@@ -1934,7 +1934,7 @@ func TestWebSearchError(t *testing.T) {
 		// to the user in English (which would force every family member to
 		// receive an English error regardless of their language preference).
 		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
-		msg, err := webSearchError(wrapped, "http://localhost:8888")
+		msg, err := webSearchError(wrapped)
 		if err == nil {
 			t.Fatal("expected classified failure to retain its cause")
 		}
@@ -1952,7 +1952,7 @@ func TestWebSearchError(t *testing.T) {
 		// network topology — it must NEVER appear in the user-facing
 		// message the model speaks to the family.
 		wrapped := fmt.Errorf("%w: %v", websearch.ErrUnavailable, errors.New("dial tcp: connection refused"))
-		msg, err := webSearchError(wrapped, "http://internal.corp:8888/searx")
+		msg, err := webSearchError(wrapped)
 		if err == nil {
 			t.Fatal("expected classified failure to retain its cause")
 		}
@@ -1969,7 +1969,7 @@ func TestWebSearchError(t *testing.T) {
 
 	t.Run("host-not-allowed error translated to sanitized result", func(t *testing.T) {
 		hostErr := webfetch.NewHostNotAllowedError("evil.com")
-		msg, err := webSearchError(hostErr, "http://localhost:8888")
+		msg, err := webSearchError(hostErr)
 		if err == nil {
 			t.Fatal("expected classified failure to retain its cause")
 		}
@@ -1987,7 +1987,7 @@ func TestWebSearchError(t *testing.T) {
 
 	t.Run("ordinary error passes through", func(t *testing.T) {
 		ordinary := errors.New("some other error")
-		msg, err := webSearchError(ordinary, "http://localhost:8888")
+		msg, err := webSearchError(ordinary)
 		if msg != "" {
 			t.Errorf("expected empty string for non-unavailable error, got %q", msg)
 		}
@@ -2004,7 +2004,7 @@ func TestWebSearchError(t *testing.T) {
 		if provErr == nil {
 			t.Fatal("expected ProviderFor to fail for tavily without a key")
 		}
-		msg, err := webSearchError(provErr, "")
+		msg, err := webSearchError(provErr)
 		if err == nil {
 			t.Fatal("expected classified failure to retain its cause")
 		}
@@ -2018,7 +2018,7 @@ func TestWebSearchError(t *testing.T) {
 		if provErr == nil {
 			t.Fatal("expected ProviderFor to fail for an unknown provider name")
 		}
-		msg, err := webSearchError(provErr, "http://localhost:8888")
+		msg, err := webSearchError(provErr)
 		if err == nil {
 			t.Fatal("expected classified failure to retain its cause")
 		}

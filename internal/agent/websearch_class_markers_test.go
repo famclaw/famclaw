@@ -80,7 +80,7 @@ func TestWebSearchError_ClassMarkers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg, err := webSearchError(tc.err, endpoint)
+			msg, err := webSearchError(tc.err)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected the error to pass through, got nil (msg=%q)", msg)
@@ -138,7 +138,7 @@ func providerForGap(t *testing.T, name string) error {
 // switch must return the class-specific "rate limited" marker, not fall
 // through to the umbrella's generic "unavailable" one.
 func TestWebSearchError_ClassBeforeUmbrella(t *testing.T) {
-	msg, err := webSearchError(&dualError{class: websearch.ErrRateLimited, umbrella: websearch.ErrUnavailable}, "http://search.local")
+	msg, err := webSearchError(&dualError{class: websearch.ErrRateLimited, umbrella: websearch.ErrUnavailable})
 	if err == nil {
 		t.Fatal("expected classified error with a marker")
 	}
@@ -161,7 +161,7 @@ func (d *dualError) Unwrap() []error { return []error{d.class, d.umbrella} }
 // TestWebSearchError_NoPanicOnNil: a nil error must not panic; it passes
 // through as ("", nil).
 func TestWebSearchError_NoPanicOnNil(t *testing.T) {
-	msg, err := webSearchError(nil, "http://search.local")
+	msg, err := webSearchError(nil)
 	if err != nil {
 		t.Fatalf("nil in, got error %v", err)
 	}
@@ -183,7 +183,7 @@ func TestWebSearchError_SentinelSurvivesReworkedWording(t *testing.T) {
 		inner := providerForGap(t, "tavily")
 		// Simulate an upstream rework: entirely new wording, same sentinel.
 		reworked := fmt.Errorf("web_search: provider setup failed: %w", inner)
-		msg, err := webSearchError(reworked, "http://10.0.0.7:8080")
+		msg, err := webSearchError(reworked)
 		if err == nil {
 			t.Fatal("expected classified error with a sanitized marker")
 		}
@@ -199,7 +199,7 @@ func TestWebSearchError_SentinelSurvivesReworkedWording(t *testing.T) {
 		// configuration gap and must pass through (surfaced by the tool
 		// loop), not be silently labelled one.
 		plain := fmt.Errorf("web_search: tavily provider selected but no API key is set (env FAMCLAW_WEB_SEARCH_API_KEY or tools.web_search.tavily_api_key)")
-		msg, err := webSearchError(plain, "")
+		msg, err := webSearchError(plain)
 		if err == nil {
 			t.Fatalf("expected the error to pass through, got marker %q", msg)
 		}

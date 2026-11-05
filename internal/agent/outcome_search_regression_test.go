@@ -37,7 +37,7 @@ func TestOutcomeSearchDispatch(t *testing.T) {
 				if !tc.failed {
 					return "sample result", nil
 				}
-				return webSearchError(fmt.Errorf("%s: %w", secret, websearch.ErrProvider5xx), "")
+				return webSearchError(fmt.Errorf("%s: %w", secret, websearch.ErrProvider5xx))
 			}})
 			if err := stage(context.Background(), turn); err != nil {
 				t.Fatal(err)

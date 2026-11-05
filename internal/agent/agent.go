@@ -1210,9 +1210,13 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	// Subagents inherit the parent's identity but stay read-only: any tool
 	// that mutates shared family state is filtered out here.
 	builtinDefs := make([]llm.ToolDef, 0, len(a.builtinTools))
+	builtinReadOnly := make(map[string]bool, len(a.builtinTools))
 	for _, t := range a.builtinTools {
 		if isSubagentExcludedTool(t.Name) {
 			continue
+		}
+		if t.ReadOnly {
+			builtinReadOnly[t.Name] = true
 		}
 		builtinDefs = append(builtinDefs, llm.ToolDef{
 			Type: "function",
@@ -1231,6 +1235,7 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 		MaxTokens:      a.cfg.LLM.MaxResponseTokens,
 		BuiltinDefs:    builtinDefs,
 		BuiltinHandler: a.makeBuiltinHandler(),
+		BuiltinReadOnly: builtinReadOnly,
 		ReasoningCache: a.reasoningCache,
 	}
 
@@ -1672,13 +1677,13 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 	})
 	// Marker returned directly to tool loop; IsSafeWebSearchMarker consumes it without intermediate discard.
 	if provErr != nil {
-		return webSearchError(provErr, cfg.Endpoint)
+		return webSearchError(provErr)
 	}
 
 	hits, err := prov.Search(ctx, query, maxResults)
 	// Marker returned directly to tool loop; IsSafeWebSearchMarker consumes it without intermediate discard.
 	if err != nil {
-		return webSearchError(err, cfg.Endpoint)
+		return webSearchError(err)
 	}
 	log.Printf("[agent][%s] web_search provider=%s query=%q hits=%d", a.user.Name, prov.Name(), query, len(hits))
 	return websearch.FormatHits(hits), nil
@@ -1689,8 +1694,8 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 // The marker constants are owned by agentcore (websearch_markers.go): the
 // tool loop only renders them verbatim when IsSafeWebSearchMarker accepts
 // them, so producer and consumer share one definition.
-// Unknown errors return no display text. Neither endpoint nor cause is logged.
-func webSearchError(err error, endpoint string) (string, error) {
+// Unknown errors return no display text. Cause is not logged.
+func webSearchError(err error) (string, error) {
 	if err == nil {
 		return "", nil
 	}

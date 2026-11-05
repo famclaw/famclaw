@@ -389,13 +389,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					duration := time.Since(start)
 					if err != nil {
 						log.Printf("[agentcore] builtin tool reported an error (%s)", duration)
-						display := "Tool reported an error; some changes may still have occurred. Verify before trying again."
-						if turnReadOnly[tc.Function.Name] {
-							display = "Tool reported an error. No changes were made."
-						}
-						if tc.Function.Name == "builtin__web_search" && IsSafeWebSearchMarker(result) {
-							display = result
-						}
+						display := ToolErrorDisplay(tc.Function.Name, turnReadOnly[tc.Function.Name], result)
 						llmMsgs = append(llmMsgs, llm.Message{
 							Role:       "tool",
 							Content:    display,
@@ -475,10 +469,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					if result == nil {
 						outcome = OutcomeUnknown
 					}
-					toolText = "Tool reported an error; some changes may still have occurred. Verify before trying again."
-					if turnReadOnly[tc.Function.Name] {
-						toolText = "Tool reported an error. No changes were made."
-					}
+					toolText = ToolErrorDisplay(tc.Function.Name, turnReadOnly[tc.Function.Name], "")
 					if result == nil {
 						toolText = "Tool outcome uncertain; verify before trying again."
 					}

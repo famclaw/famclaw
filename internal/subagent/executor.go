@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
@@ -37,6 +38,13 @@ type ExecutorDeps struct {
 	// posture (the parent already passed the OPA tool gate to even reach
 	// here).
 	BuiltinHandler func(ctx context.Context, name string, args map[string]any) (string, error)
+	// BuiltinReadOnly records which namespaced builtin tool names are
+	// declared ReadOnly in the parent's tool registry. Lets
+	// dispatchSubagentTool apply the same truthful failure display as the
+	// parent's tool loop (agentcore.ToolErrorDisplay): a ReadOnly tool
+	// failure reports "no changes were made", and a web_search failure
+	// renders its safe classification marker verbatim.
+	BuiltinReadOnly map[string]bool
 }
 
 // filterBuiltinDefs applies the same allowlist/denylist as filterTools
@@ -236,7 +244,7 @@ func dispatchSubagentTool(
 		duration := time.Since(start)
 		if err != nil {
 			log.Printf("[subagent] builtin tool reported an error (%s)", duration)
-			return "Tool reported an error; some changes may still have occurred. Verify before trying again.", true
+			return agentcore.ToolErrorDisplay(name, deps.BuiltinReadOnly[name], out), true
 		}
 		log.Printf("[subagent] tool_ok: %s (%s)", name, duration)
 		if out == "" {
@@ -254,7 +262,7 @@ func dispatchSubagentTool(
 		}
 		if result.IsError {
 			log.Printf("[subagent] tool reported an error (%s)", duration)
-			return "Tool reported an error; some changes may still have occurred. Verify before trying again.", true
+			return agentcore.ToolErrorDisplay(name, deps.BuiltinReadOnly[name], ""), true
 		}
 		if result != nil && len(result.Content) > 0 {
 			resultJSON, _ := json.Marshal(result.Content)

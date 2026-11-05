@@ -45,6 +45,43 @@ const (
 	WebSearchMarkerUnavailable = "web_search: unavailable"
 )
 
+// Canonical display strings for tool failures. A failed tool call is
+// reported to the model with exactly one of these: the read-only variant
+// when the tool is declared ReadOnly in the registry (no state could have
+// changed), otherwise the generic variant (side effects are possible).
+// builtin__web_search additionally may render its fixed classification
+// marker verbatim (see ToolErrorDisplay below).
+const (
+	// ToolErrorDisplayNoChanges: failure of a ReadOnly tool.
+	ToolErrorDisplayNoChanges = "Tool reported an error. No changes were made."
+	// ToolErrorDisplayChangesMayHaveOccurred: failure of a tool that may
+	// mutate state; the model is told to verify before retrying.
+	ToolErrorDisplayChangesMayHaveOccurred = "Tool reported an error; some changes may still have occurred. Verify before trying again."
+)
+
+// ToolErrorDisplay computes the truthful failure display for a tool call
+// that reported an error:
+//   - a tool declared ReadOnly is reported as having made no changes;
+//   - a builtin__web_search failure whose result is a safe classification
+//     marker (IsSafeWebSearchMarker) is rendered verbatim with that specific
+//     classification;
+//   - everything else gets the generic "changes may have occurred" warning.
+//
+// This is the single source of truth shared by the parent agent's tool loop
+// (stage_tool_loop.go) and the subagent's tool dispatch
+// (internal/subagent/executor.go), so both surfaces classify the same
+// failure identically.
+func ToolErrorDisplay(toolName string, readOnly bool, result string) string {
+	display := ToolErrorDisplayChangesMayHaveOccurred
+	if readOnly {
+		display = ToolErrorDisplayNoChanges
+	}
+	if toolName == "builtin__web_search" && IsSafeWebSearchMarker(result) {
+		display = result
+	}
+	return display
+}
+
 // IsSafeWebSearchMarker accepts only the fixed, non-diagnostic search
 // classifications listed above. Anything else — including unclassified
 // errors, near-miss rewordings, and markers that carry extra detail —
