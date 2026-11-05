@@ -185,10 +185,23 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			// per-call error shown to the LLM must not claim that changes may
 			// have occurred (same conservative rule as outcomeWarning — tools
 			// absent from the registry stay potentially mutating).
-			turnReadOnly := make(map[string]bool, len(turn.Tools))
+			//
+			// Like outcomeWarning's map, both the namespaced tool name
+			// ("builtin__web_search", "mcp__server__tool") and its bare form
+			// ("web_search", "tool") are keyed, and lookups go through
+			// turnReadOnlyLookup, which tries both. This matters because the
+			// per-call lookup sees tc.Function.Name in whichever form the LLM
+			// emitted: builtins are advertised under their bare names
+			// (toolsToLLMDefs strips the "builtin__" prefix), and the
+			// normalization step below only rewrites a bare call when its
+			// namespaced form is on the allowlist. A lookup keyed on a single
+			// form would silently mismatch the other and conservatively report
+			// a read-only failure as potentially mutating.
+			turnReadOnly := make(map[string]bool, len(turn.Tools)*2)
 			for _, t := range turn.Tools {
 				if t.ReadOnly {
 					turnReadOnly[t.Name] = true
+					turnReadOnly[bareToolName(t.Name)] = true
 				}
 			}
 
@@ -399,7 +412,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					duration := time.Since(start)
 					if err != nil {
 						log.Printf("[agentcore] builtin tool reported an error (%s)", duration)
-						display := ToolErrorDisplay(tc.Function.Name, turnReadOnly[tc.Function.Name], result)
+						display := ToolErrorDisplay(tc.Function.Name, turnReadOnlyLookup(turnReadOnly, tc.Function.Name), result)
 						llmMsgs = append(llmMsgs, llm.Message{
 							Role:       "tool",
 							Content:    display,
@@ -479,7 +492,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					if result == nil {
 						outcome = OutcomeUnknown
 					}
-					toolText = ToolErrorDisplay(tc.Function.Name, turnReadOnly[tc.Function.Name], "")
+					toolText = ToolErrorDisplay(tc.Function.Name, turnReadOnlyLookup(turnReadOnly, tc.Function.Name), "")
 					if result == nil {
 						toolText = "Tool outcome uncertain; verify before trying again."
 					}
@@ -673,6 +686,17 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 		return nil
 	}
+}
+
+// turnReadOnlyLookup classifies a tool-call name against the per-call
+// turnReadOnly map built in the loop above. It tries the name as-is and
+// in its bare form (mirroring outcomeWarning's isReadOnly), so the
+// per-call ToolErrorDisplay read-only decision is correct for every name
+// form that reaches the lookup: the namespaced registry form
+// ("builtin__web_search", "mcp__server__tool") and the bare form the LLM
+// was actually advertised ("web_search", "tool").
+func turnReadOnlyLookup(set map[string]bool, name string) bool {
+	return set[name] || set[bareToolName(name)]
 }
 
 // outcomeWarning makes no claim that a failure had no effects, and never
