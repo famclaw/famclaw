@@ -1670,11 +1670,13 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 		AllowPrivateNetworks: !fcfg.BlockPrivateNetworks,
 		TavilyAPIKey:         cfg.TavilyAPIKey,
 	})
+	// Marker returned directly to tool loop; safeSearchMarker consumes it without intermediate discard.
 	if provErr != nil {
 		return webSearchError(provErr, cfg.Endpoint)
 	}
 
 	hits, err := prov.Search(ctx, query, maxResults)
+	// Marker returned directly to tool loop; safeSearchMarker consumes it without intermediate discard.
 	if err != nil {
 		return webSearchError(err, cfg.Endpoint)
 	}
