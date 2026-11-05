@@ -1,6 +1,7 @@
 // Package web provides the FamClaw HTTP server.
 // Serves the embedded web UI and a REST+WebSocket API.
 // All local — no CDN dependencies, works offline on RPi/old phones.
+// Rebased onto main 2026-11-05: composed server.go conflict with #427 bgWG fix
 package web
 
 import (
