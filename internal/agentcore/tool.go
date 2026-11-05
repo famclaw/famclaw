@@ -39,12 +39,6 @@ const (
 	DispositionSkipped
 )
 
-// EffectCertainty is deliberately conservative; errors do not establish that
-// no external effects occurred.
-type EffectCertainty uint8
-
-const EffectUnknown EffectCertainty = 0
-
 // ToolResult captures one tool call and its outcome.
 type ToolResult struct {
 	ToolName    string
@@ -53,7 +47,6 @@ type ToolResult struct {
 	Error       error // private diagnostic; never render directly
 	Outcome     ExecutionOutcome
 	Disposition ToolDisposition
-	Effects     EffectCertainty
 	Duration    time.Duration
 }
 
