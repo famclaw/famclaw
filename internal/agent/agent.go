@@ -1627,6 +1627,9 @@ func (a *Agent) suspiciousNotifiedSeen(id string) bool {
 func (a *Agent) markSuspiciousNotified(id string) {
 	a.suspiciousNotifyMu.Lock()
 	defer a.suspiciousNotifyMu.Unlock()
+	if len(a.suspiciousNotified) >= 1000 {
+		a.suspiciousNotified = make(map[string]bool)
+	}
 	if a.suspiciousNotified == nil {
 		a.suspiciousNotified = make(map[string]bool)
 	}
