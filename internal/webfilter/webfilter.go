@@ -326,7 +326,7 @@ func editDistance(s1, s2 string) int {
 			if r1Char == r2Char {
 				m[i+1][j+1] = m[i][j]
 			} else {
-				m[i+1][j+1] = min(m[i][j+1]+1, m[i+1][j]+1, m[i][j]+1)
+				m[i+1][j+1] = min3(m[i][j+1]+1, m[i+1][j]+1, m[i][j]+1)
 			}
 		}
 	}
@@ -335,7 +335,7 @@ func editDistance(s1, s2 string) int {
 }
 
 // Helper function to find minimum of three integers
-func min(a, b, c int) int {
+func min3(a, b, c int) int {
 	minVal := a
 	if b < minVal {
 		minVal = b
