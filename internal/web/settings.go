@@ -85,6 +85,14 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
 
+	// The view copy below reads the URLDenylist slice header; take the
+	// shared denylist lock (cfg.WebFetchDenylistMu; see that field's doc
+	// for the accessor list) so it cannot tear against a concurrent
+	// settings-POST replace or an admin denylist tool rewrite. Lock
+	// order: cfgMu, then WebFetchDenylistMu (never reversed).
+	s.cfg.WebFetchDenylistMu.RLock()
+	defer s.cfg.WebFetchDenylistMu.RUnlock()
+
 	defCopy := s.cfg.LLM.Default
 	view := settingsView{
 		LLM: llmSettingsView{
@@ -156,6 +164,22 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
+
+	// This handler rewrites cfg.Tools.WebFetch.URLDenylist (the section
+	// replace below and the rollback), reads it (the newWebFetch and
+	// snapTools copies), and marshals the whole config for persistence —
+	// every one of those must serialize with the agent's hostDecision
+	// reads and the admin denylist tools, which all take the shared lock
+	// on the *Config both sides hold (cfg.WebFetchDenylistMu; see that
+	// field's doc for the full accessor list). cfgMu alone did not cover
+	// them — that two-lock gap was PR #423's current-head data-race
+	// finding. The lock lives on the config object because the web
+	// server has no reference to the agent (agents are per-turn) and the
+	// agent has no reference to this server's cfgMu. Held for the whole
+	// POST: lock order cfgMu → WebFetchDenylistMu, acyclic (no path
+	// takes cfgMu while holding the denylist lock).
+	s.cfg.WebFetchDenylistMu.Lock()
+	defer s.cfg.WebFetchDenylistMu.Unlock()
 
 	// Build updated config values first, validate everything, then assign
 	// LLM config — legacy single endpoint

@@ -45,12 +45,14 @@ type Deps struct {
 	ConfigPath string
 	Scanner    skillbridge.Scanner
 
-	// URLDenylistMu is the agent's denylist lock, shared with the
-	// decision path (Agent.urlDenylistMu in internal/agent). The
-	// denylist_list / denylist_add / denylist_remove handlers take it
-	// (RLock / Lock) so their read-modify-writes of
-	// Cfg.Tools.WebFetch.URLDenylist never race hostDecision's
-	// decision-time slice reads.
+	// URLDenylistMu is the shared denylist lock, owned by the config the
+	// handlers mutate (config.WebFetchDenylistMu on Cfg — see that
+	// field's doc for the full accessor list and lock order). The agent
+	// wires it to &cfg.WebFetchDenylistMu, which is the SAME instance
+	// hostDecision (and every other concurrent accessor, including the
+	// web settings handler) takes, so these handlers' read-modify-writes
+	// of Cfg.Tools.WebFetch.URLDenylist never race decision-time slice
+	// reads.
 	//
 	// It is REQUIRED for any entry point that can run concurrently with
 	// the agent: when nil, denylistMu() returns ErrDenylistMuUnwired and
@@ -61,19 +63,19 @@ type Deps struct {
 	// mutex).
 	//
 	// NOTE: a value sync.RWMutex is deliberately NOT used here: the
-	// field must share the agent's lock instance (&a.urlDenylistMu),
-	// and a value field would be copied into each Deps, defeating the
-	// synchronization.
+	// field must share the config's lock instance
+	// (&cfg.WebFetchDenylistMu), and a value field would be copied into
+	// each Deps, defeating the synchronization.
 	URLDenylistMu *sync.RWMutex
 }
 
 // ErrDenylistMuUnwired is returned by denylistMu() when
 // Deps.URLDenylistMu is nil. All denylist handlers fail closed on it:
-// proceeding without the agent's lock would let their read-modify-write
+// proceeding without the shared lock would let their read-modify-write
 // of Cfg.Tools.WebFetch.URLDenylist race hostDecision's decision-time
 // slice reads, so the misconfiguration is returned to the caller instead
 // of being logged and continued.
-var ErrDenylistMuUnwired = errors.New("admin denylist: Deps.URLDenylistMu is not wired to the agent's urlDenylistMu; refusing to touch the denylist unsynchronized")
+var ErrDenylistMuUnwired = errors.New("admin denylist: Deps.URLDenylistMu is not wired to the config's WebFetchDenylistMu; refusing to touch the denylist unsynchronized")
 
 // denylistMu returns the shared denylist lock for a denylist handler.
 // When Deps.URLDenylistMu is wired it returns that instance so the
@@ -84,7 +86,7 @@ var ErrDenylistMuUnwired = errors.New("admin denylist: Deps.URLDenylistMu is not
 // that would not serialize against the agent's decision path.
 func (d Deps) denylistMu() (*sync.RWMutex, error) {
 	if d.URLDenylistMu == nil {
-		log.Printf("[admin] ERROR: denylist handler invoked with URLDenylistMu unset — failing closed. Every entry point that can run concurrently with the agent's hostDecision path must wire Deps.URLDenylistMu to the agent's urlDenylistMu.")
+		log.Printf("[admin] ERROR: denylist handler invoked with URLDenylistMu unset — failing closed. Every entry point that can run concurrently with the agent's hostDecision path must wire Deps.URLDenylistMu to the config's WebFetchDenylistMu.")
 		return nil, ErrDenylistMuUnwired
 	}
 	return d.URLDenylistMu, nil

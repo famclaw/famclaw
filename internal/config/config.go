@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/honeybadger"
@@ -28,6 +29,40 @@ type Config struct {
 	Storage   StorageConfig   `yaml:"storage"`
 	SecCheck  SecCheckConfig  `yaml:"seccheck"` // deprecated — use honeybadger instead
 	Tools     ToolsConfig     `yaml:"tools,omitempty"`
+
+	// WebFetchDenylistMu guards every in-process read/write of
+	// Tools.WebFetch.URLDenylist. It lives on the shared *Config — not on
+	// any per-instance caller — because the accessors span components
+	// that each build their own state but all hold this one object:
+	//
+	//   readers: Agent.hostDecision (and the WebFetch struct snapshots in
+	//     Agent.handleWebFetch / handleWebSearch), the admin denylist
+	//     tools (denylist_list/add/remove), the web settings GET view
+	//     copy, and the whole-config marshal inside the admin allowlist
+	//     tools' persist step;
+	//   writers: the admin denylist add/remove tools and the web settings
+	//     POST (which replaces the whole WebFetch section, rolls it back
+	//     on persist failure, and marshals the config for persistence).
+	//
+	// The lock cannot live on the web Server (its cfgMu is invisible to
+	// the agent) or on the Agent (agents are constructed per chat turn,
+	// so two concurrent turns would each hold a different mutex over the
+	// same shared slice). It also cannot be a package-level global
+	// (no-global-state rule): the shared *Config is the only object every
+	// accessor already receives.
+	//
+	// Lock order with the web Server.cfgMu: cfgMu first, then this lock.
+	// The settings handlers take both; no path takes cfgMu while holding
+	// this lock (the agent and admin paths never see the web server), so
+	// the order is acyclic.
+	//
+	// Zero value usable; Config is only ever used as *Config (go vet
+	// copylocks enforces). Excluded from YAML persistence (yaml:"-"), and
+	// each Config loaded at startup or on a file reload carries its own
+	// instance — an object is shared only by the components handed the
+	// same pointer, which is exactly the set of components that must
+	// serialize on its denylist.
+	WebFetchDenylistMu sync.RWMutex `yaml:"-"`
 }
 
 // ToolsConfig groups configuration for built-in tools registered with the LLM.
@@ -178,9 +213,9 @@ type WebFetchConfig struct {
 	// (case-insensitive exact-or-subdomain match, trailing dot trimmed).
 	// Ignored in allowlist mode. Parent-managed via the denylist admin tools
 	// (W3); also editable directly in config.yaml.
-	URLDenylist []string `yaml:"url_denylist,omitempty"`
-	MaxBytes    int64    `yaml:"max_bytes,omitempty"`     // 0 = 256KB default
-	TimeoutSec  int      `yaml:"timeout_seconds,omitempty"`
+	URLDenylist  []string `yaml:"url_denylist,omitempty"`
+	MaxBytes     int64    `yaml:"max_bytes,omitempty"` // 0 = 256KB default
+	TimeoutSec   int      `yaml:"timeout_seconds,omitempty"`
 	AllowedRoles []string `yaml:"allowed_roles,omitempty"` // default ["parent"]
 	// BlockPrivateNetworks opts INTO rejecting private/loopback/RFC1918/
 	// link-local addresses at the dialer. famclaw's product model is a

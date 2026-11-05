@@ -979,8 +979,9 @@ func TestHostDecision_NoStaleDenylistSlice(t *testing.T) {
 // parent-facing admin handlers rewrite it concurrently through the shared
 // config. A concurrent slice-header write racing a read is undefined
 // behavior (torn header → OOB read or panic), so every such access goes
-// through Agent.urlDenylistMu — the same mutex the admin handlers receive
-// via Deps.URLDenylistMu. This test only has teeth under -race; run with
+// through config.WebFetchDenylistMu — the same mutex the admin handlers
+// receive via Deps.URLDenylistMu and the web settings handler takes.
+// This test only has teeth under -race; run with
 // `go test -race ./internal/agent/...`.
 func TestHostDecision_DenylistConcurrentReadWrite(t *testing.T) {
 	db, err := store.Open(":memory:")
@@ -1008,7 +1009,7 @@ func TestHostDecision_DenylistConcurrentReadWrite(t *testing.T) {
 		Cfg:           a.cfg,
 		Actor:         "parent",
 		Gateway:       "test",
-		URLDenylistMu: &a.urlDenylistMu,
+		URLDenylistMu: &a.cfg.WebFetchDenylistMu,
 	}
 
 	// Reader host: deterministically unblocked by every other gate

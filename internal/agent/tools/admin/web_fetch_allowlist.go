@@ -97,9 +97,18 @@ func HandleAllowlistAdd(ctx context.Context, deps Deps, args map[string]any) (st
 
 	// Persist to disk immediately
 	if deps.ConfigPath != "" {
-		if err := writeConfigInline(deps.ConfigPath, deps.Cfg); err != nil {
-			log.Printf("[admin] failed to persist allowlist_add: %v", err)
-			return fmt.Sprintf("added %q to in-memory allowlist, but failed to persist to disk: %v", host, err), nil
+		// The whole-config marshal in writeConfigInline reads the
+		// URLDenylist slice header, so take the shared denylist lock in
+		// read intent (this handler never writes URLDenylist; its
+		// URLAllowlist RMW stays outside the lock, as it always has).
+		// Same instance the denylist handlers, hostDecision, and the web
+		// settings handler use — see config.WebFetchDenylistMu.
+		deps.Cfg.WebFetchDenylistMu.RLock()
+		pErr := writeConfigInline(deps.ConfigPath, deps.Cfg)
+		deps.Cfg.WebFetchDenylistMu.RUnlock()
+		if pErr != nil {
+			log.Printf("[admin] failed to persist allowlist_add: %v", pErr)
+			return fmt.Sprintf("added %q to in-memory allowlist, but failed to persist to disk: %v", host, pErr), nil
 		}
 	}
 
@@ -164,9 +173,18 @@ func HandleAllowlistRemove(ctx context.Context, deps Deps, args map[string]any) 
 
 	// Persist to disk immediately
 	if deps.ConfigPath != "" {
-		if err := writeConfigInline(deps.ConfigPath, deps.Cfg); err != nil {
-			log.Printf("[admin] failed to persist allowlist_remove: %v", err)
-			return fmt.Sprintf("removed %q from in-memory allowlist, but failed to persist to disk: %v", host, err), nil
+		// The whole-config marshal in writeConfigInline reads the
+		// URLDenylist slice header, so take the shared denylist lock in
+		// read intent (this handler never writes URLDenylist; its
+		// URLAllowlist RMW stays outside the lock, as it always has).
+		// Same instance the denylist handlers, hostDecision, and the web
+		// settings handler use — see config.WebFetchDenylistMu.
+		deps.Cfg.WebFetchDenylistMu.RLock()
+		pErr := writeConfigInline(deps.ConfigPath, deps.Cfg)
+		deps.Cfg.WebFetchDenylistMu.RUnlock()
+		if pErr != nil {
+			log.Printf("[admin] failed to persist allowlist_remove: %v", pErr)
+			return fmt.Sprintf("removed %q from in-memory allowlist, but failed to persist to disk: %v", host, pErr), nil
 		}
 	}
 

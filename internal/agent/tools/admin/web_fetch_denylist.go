@@ -90,10 +90,11 @@ func DenylistAddDefinition() agentcore.Tool {
 func HandleDenylistAdd(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	// Exclusive lock over the whole read-modify-write + persist + audit
 	// span: the slice-header write below must not race hostDecision's
-	// decision-time read, and the on-disk snapshot written by
-	// writeConfigInline must be consistent with the in-memory list it
-	// just mutated; denylistMu() fails closed when the mutex is unwired
-	// (ErrDenylistMuUnwired).
+	// decision-time read or the web settings POST's section replace —
+	// all of them take the shared cfg.WebFetchDenylistMu; and the
+	// on-disk snapshot written by writeConfigInline must be consistent
+	// with the in-memory list it just mutated; denylistMu() fails closed
+	// when the mutex is unwired (ErrDenylistMuUnwired).
 	mu, err := deps.denylistMu()
 	if err != nil {
 		return "", err
