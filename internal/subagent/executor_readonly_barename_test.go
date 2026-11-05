@@ -69,3 +69,38 @@ func TestSubagentReadOnlyBareNameLookup(t *testing.T) {
 		})
 	}
 }
+
+// TestSubagentBareNameNormalizedForToolErrorDisplay proves a bare-form
+// "web_search" emitted by the LLM is normalized to the namespaced registry
+// form before dispatch and before ToolErrorDisplay. Regression: dispatch
+// had no bare-name normalization step (unlike the main tool loop), so with
+// an allowlist keyed on the namespaced name the bare call was rejected as
+// an unknown tool, and a bare web_search failure could never reach
+// ToolErrorDisplay's builtin__web_search-specific safe-marker branch.
+func TestSubagentBareNameNormalizedForToolErrorDisplay(t *testing.T) {
+	marker := agentcore.WebSearchMarkerUnavailable
+	var dispatchedAs string
+	deps := ExecutorDeps{
+		// Keyed on both forms, exactly as agent.handleSpawnAgent builds it.
+		BuiltinReadOnly: map[string]bool{"builtin__web_search": true, "web_search": true},
+	}
+	deps.BuiltinHandler = func(_ context.Context, name string, _ map[string]any) (string, error) {
+		dispatchedAs = name
+		return marker, errors.New("boom")
+	}
+
+	call := llm.ToolCall{Function: llm.ToolCallFunction{Name: "web_search", Arguments: map[string]any{}}}
+	// The allowlist is keyed on the namespaced registry name, exactly as
+	// filterBuiltinDefs produces it from the parent's namespaced defs.
+	allowedBuiltins := map[string]bool{"builtin__web_search": true}
+	result, ok := dispatchSubagentTool(context.Background(), call, deps, map[string]bool{}, allowedBuiltins, time.Now())
+	if !ok {
+		t.Fatal("bare web_search was not dispatched to the builtin handler; want it normalized and allowed")
+	}
+	if dispatchedAs != "builtin__web_search" {
+		t.Errorf("handler dispatched as %q, want normalized %q", dispatchedAs, "builtin__web_search")
+	}
+	if result != marker {
+		t.Errorf("display = %q, want specific web_search marker %q", result, marker)
+	}
+}

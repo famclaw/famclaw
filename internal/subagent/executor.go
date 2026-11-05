@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
@@ -243,6 +244,23 @@ func dispatchSubagentTool(
 	start time.Time,
 ) (string, bool) {
 	name := tc.Function.Name
+
+	// Local LLMs occasionally emit the bare tool name ("web_search")
+	// instead of the namespaced registry form ("builtin__web_search").
+	// Normalize to the canonical form before the allowlist gate,
+	// dispatch and ToolErrorDisplay, mirroring the main tool loop
+	// (agentcore/stage_tool_loop.go): rewrite only when the namespaced
+	// builtin form is in the allowlist, so bare MCP tool names are
+	// untouched. Without this, a bare builtin call is rejected as an
+	// unknown tool, and a bare web_search failure could never match
+	// ToolErrorDisplay's builtin__web_search-specific safe-marker
+	// branch.
+	if !strings.HasPrefix(name, "builtin__") && !strings.HasPrefix(name, "mcp__") {
+		if allowedBuiltins["builtin__"+name] {
+			log.Printf("[subagent] tool_call normalized: %s -> builtin__%s", name, name)
+			name = "builtin__" + name
+		}
+	}
 
 	if allowedBuiltins[name] && deps.BuiltinHandler != nil {
 		out, err := deps.BuiltinHandler(ctx, name, tc.Function.Arguments)
