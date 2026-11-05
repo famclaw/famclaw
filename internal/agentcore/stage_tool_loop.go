@@ -748,20 +748,28 @@ func outcomeWarning(calls []ToolResult, registry []Tool) string {
 		}
 	}
 	var notes []string
+	// Every applicable attempted-category note is emitted, not just the
+	// first: a turn can contain both a mutating-tool failure and a
+	// read-only failure (likewise both uncertain outcomes), and silently
+	// dropping a category would hide it from the warning. Mutation notes
+	// come first — they are the more important ones.
 	if mutationFailure && success {
 		notes = append(notes, "Some tool calls succeeded, but another reported a failure; some changes may have occurred. Verify before trying again.")
 	} else if mutationFailure {
 		notes = append(notes, "The tool reported a failure; some changes may still have occurred. Verify before trying again.")
-	} else if readOnlyFailure && success {
+	}
+	if readOnlyFailure && success {
 		notes = append(notes, "Some tool calls succeeded, but a read-only tool failed. No changes were made by the failed call.")
 	} else if readOnlyFailure {
 		notes = append(notes, "The tool reported a failure. No changes were made.")
-	} else if success && (mutationUnknown || readOnlyUnknown) {
+	}
+	if success && (mutationUnknown || readOnlyUnknown) && !mutationFailure && !readOnlyFailure {
 		notes = append(notes, "Some tool calls succeeded.")
 	}
 	if mutationUnknown {
 		notes = append(notes, "A tool outcome is uncertain; some changes may have occurred. Verify before trying again.")
-	} else if readOnlyUnknown {
+	}
+	if readOnlyUnknown {
 		notes = append(notes, "A tool outcome is uncertain; no changes were made.")
 	}
 	if denied {
@@ -812,6 +820,10 @@ var ErrToolAlreadyFailed = fmt.Errorf("tool call already failed this turn")
 // The scan is bounded by the current turn's iteration and batch limits.
 func priorUnsuccessfulCall(name string, args map[string]any, results []ToolResult) (ToolResult, bool) {
 	for _, r := range results {
+		// A DispositionSkipped result without an Error is intentionally NOT
+		// deduplicated: skipped means "not available, try a different tool",
+		// so a re-emitted call simply gets the same skip message again —
+		// correct behavior, not a retry that should be short-circuited.
 		if r.Error == nil && !(r.Disposition == DispositionAttempted && r.Outcome != OutcomeSuccess) {
 			continue
 		}

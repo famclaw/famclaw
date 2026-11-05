@@ -185,9 +185,9 @@ func TestStagePolicyToolCall_DispositionSemantics(t *testing.T) {
 			},
 		},
 		{
-			name:  "allowed call keeps DispositionAttempted (it will execute)",
+			name:  "allowed call stays DispositionUnknown until the loop dispatches it",
 			tool:  "builtin__web_fetch",
-			wantD: DispositionAttempted,
+			wantD: DispositionUnknown,
 			eval: &fakeToolEval{
 				decisions: map[string]policy.ToolDecision{
 					"web_fetch": {Allow: true},
@@ -208,6 +208,39 @@ func TestStagePolicyToolCall_DispositionSemantics(t *testing.T) {
 				t.Errorf("Disposition = %v, want %v", got, tt.wantD)
 			}
 		})
+	}
+}
+
+// TestStagePolicyToolCall_AllowedCallIsRetryable is the regression test for
+// the premature DispositionAttempted mark: a tool allowed by policy must NOT
+// be marked "attempted" before the tool loop dispatches it. If the loop
+// later fails to locate the tool (not found in the pool) or hits a transport
+// error, the policy-marked entry is what persists in turn.ToolCalls — and
+// priorUnsuccessfulCall treats DispositionAttempted + OutcomeUnknown as
+// "do not re-execute", which would suppress a legitimate retry of a call
+// that never actually ran.
+func TestStagePolicyToolCall_AllowedCallIsRetryable(t *testing.T) {
+	const tool = "mcp__ghost__ghost_tool"
+	args := map[string]any{"q": "x"}
+	turn := &Turn{
+		User:      &config.UserConfig{Name: "alice", Role: "child", AgeGroup: "age_8_12"},
+		ToolCalls: []ToolResult{{ToolName: tool, Args: args}},
+	}
+	eval := &fakeToolEval{
+		decisions: map[string]policy.ToolDecision{"ghost_tool": {Allow: true}},
+	}
+	if err := NewStagePolicyToolCall(eval)(context.Background(), turn); err != nil {
+		t.Fatalf("stage returned error: %v", err)
+	}
+	got := turn.ToolCalls[0]
+	if got.Disposition == DispositionAttempted {
+		t.Errorf("allowed call pre-dispatch must not be marked DispositionAttempted, got %v", got.Disposition)
+	}
+	if got.Error != nil {
+		t.Errorf("allowed call must carry no error, got %v", got.Error)
+	}
+	if _, found := priorUnsuccessfulCall(tool, args, turn.ToolCalls); found {
+		t.Errorf("policy-allowed result matched priorUnsuccessfulCall; a call failing later in the tool loop would be deduped instead of retried")
 	}
 }
 

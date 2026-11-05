@@ -5,6 +5,40 @@ import (
 	"testing"
 )
 
+// TestOutcomeWarning_BothFailureCategories is the regression test for the
+// co-occurring attempted-category gap: a turn containing both a mutating
+// tool failure and a read-only tool failure must mention BOTH categories
+// (previously the else-if chain emitted only the mutation note and silently
+// dropped the read-only one), with the more important mutation note first.
+func TestOutcomeWarning_BothFailureCategories(t *testing.T) {
+	registry := []Tool{
+		{Name: "builtin__web_search", ReadOnly: true},
+		{Name: "builtin__file_write"},
+	}
+	calls := []ToolResult{
+		{ToolName: "builtin__web_search", Disposition: DispositionAttempted, Outcome: OutcomeFailure},
+		{ToolName: "builtin__file_write", Disposition: DispositionAttempted, Outcome: OutcomeFailure},
+	}
+	s := strings.ToLower(outcomeWarning(calls, registry))
+	const mutNote = "some changes may still have occurred"
+	const roNote = "no changes were made"
+	if iMut, iRO := strings.Index(s, mutNote), strings.Index(s, roNote); iMut < 0 || iRO < 0 {
+		t.Fatalf("warning must contain both the mutation note (%q) and the read-only note (%q), got: %q", mutNote, roNote, s)
+	}
+	if iMut, iRO := strings.Index(s, mutNote), strings.Index(s, roNote); iMut > iRO {
+		t.Errorf("mutation note must come before the read-only note, got: %q", s)
+	}
+	// Same assertion with a co-occurring success in the turn: both notes are
+	// re-worded for the success case, so check the success-qualified forms.
+	calls = append([]ToolResult{{ToolName: "builtin__web_fetch", Disposition: DispositionAttempted, Outcome: OutcomeSuccess}}, calls...)
+	s = strings.ToLower(outcomeWarning(calls, registry))
+	const mutNoteSuccess = "another reported a failure; some changes may have occurred"
+	const roNoteSuccess = "a read-only tool failed. no changes were made by the failed call"
+	if iMut, iRO := strings.Index(s, mutNoteSuccess), strings.Index(s, roNoteSuccess); iMut < 0 || iRO < 0 {
+		t.Errorf("with a success present the warning must still contain both notes, got: %q", s)
+	}
+}
+
 func TestOutcomeWarningStates(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -56,8 +90,18 @@ func TestOutcomeWarningStates(t *testing.T) {
 				{ToolName: "builtin__file_write", Disposition: DispositionAttempted, Outcome: OutcomeFailure},
 			},
 			[]Tool{{Name: "builtin__web_search", ReadOnly: true}, {Name: "builtin__file_write"}},
-			[]string{"failure", "changes may still have occurred"},
-			[]string{"no changes were made"},
+			[]string{"failure", "changes may still have occurred", "no changes were made"},
+			nil,
+		},
+		{
+			"mixed mutation and read-only unknown",
+			[]ToolResult{
+				{ToolName: "builtin__file_write", Disposition: DispositionAttempted, Outcome: OutcomeUnknown},
+				{ToolName: "builtin__web_search", Disposition: DispositionAttempted, Outcome: OutcomeUnknown},
+			},
+			[]Tool{{Name: "builtin__web_search", ReadOnly: true}, {Name: "builtin__file_write"}},
+			[]string{"changes may have occurred", "no changes were made"},
+			nil,
 		},
 		{
 			"read-only failure with success",
