@@ -1619,37 +1619,17 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 	}
 }
 
-// suspiciousNotifiedSeen reports whether a parent push for this suspicious-site
-// approval has already been delivered successfully within this Agent's
-// lifetime.
-func (a *Agent) suspiciousNotifiedSeen(id string) bool {
-	a.suspiciousNotifyMu.Lock()
-	defer a.suspiciousNotifyMu.Unlock()
-	return a.suspiciousNotified != nil && a.suspiciousNotified[id]
-}
-
-// markSuspiciousNotified records that a parent push for this approval was
-// delivered successfully, so hostDecision does not re-notify on re-encounter.
-func (a *Agent) markSuspiciousNotified(id string) {
-	a.suspiciousNotifyMu.Lock()
-	defer a.suspiciousNotifyMu.Unlock()
-	if a.suspiciousNotified == nil {
-		a.suspiciousNotified = make(map[string]bool)
-	}
-	a.suspiciousNotified[id] = true
-}
-
 // clearSuspiciousNotified removes the successful-push memo for one approval
-// ID so the next re-encounter may re-notify. It mirrors
-// markSuspiciousNotified: called from the same single call site, after
-// RequeueApproval has reset an expired grant to a fresh pending window,
-// because the earlier push referred to the old (now expired) grant and the
-// parent must be pinged again for the new decision (PR #423 B1).
+// ID so the next re-encounter may re-notify. Called from the same single call
+// site as the requeue path in hostDecision, after RequeueApproval has reset
+// an expired grant to a fresh pending window, because the earlier push
+// referred to the old (now expired) grant and the parent must be pinged again
+// for the new decision (PR #423 B1).
 func (a *Agent) clearSuspiciousNotified(id string) {
 	a.suspiciousNotifyMu.Lock()
 	defer a.suspiciousNotifyMu.Unlock()
 	if a.suspiciousNotified == nil {
-		a.suspiciousNotified = make(map[string]bool)
+		return
 	}
 	delete(a.suspiciousNotified, id)
 }
@@ -1658,11 +1638,21 @@ func (a *Agent) clearSuspiciousNotified(id string) {
 // approval when (1) no successful push has been recorded yet for this approval in
 // this Agent and (2) the caller is not a parent (a parent gets no
 // self-notification for their own web_fetch — mirroring the notifier's own
-// kid-only policy). On a nil return it records success so the same session does
-// not double-notify. This is the B1 retry path: a host whose first push failed
+// kid-only policy). This is the B1 retry path: a host whose first push failed
 // (notifier error) is re-surfaced on the child's next web_fetch of the same host,
 // instead of staying silently pending until the parent happens to open the
 // dashboard.
+//
+// Concurrency (PR #423 TOCTOU finding): the "already notified?" check and the
+// memo claim are ONE atomic step under suspiciousNotifyMu — claim-before-call.
+// The ID is marked notified BEFORE onNewSuspiciousApproval runs, so two
+// concurrent hostDecision calls for the same host cannot both observe "not yet
+// notified" and both push (which duplicated the parent notification). The
+// notifier itself is invoked WITHOUT the lock held: it is a slow external push,
+// and holding the lock across it would serialize every suspicious host on this
+// Agent. If the push fails, the claim is released under the same lock so the
+// next encounter retries (B1); on success the claim stays, so re-encounters do
+// not double-notify within this Agent's lifetime.
 func (a *Agent) notifySuspiciousApprovalIfNeeded(ctx context.Context, id string, approval *store.Approval) {
 	if a.onNewSuspiciousApproval == nil {
 		return
@@ -1670,15 +1660,30 @@ func (a *Agent) notifySuspiciousApprovalIfNeeded(ctx context.Context, id string,
 	if a.user == nil || a.user.Role == "parent" {
 		return
 	}
-	if a.suspiciousNotifiedSeen(id) {
+
+	// Atomic check-and-claim (see doc comment).
+	a.suspiciousNotifyMu.Lock()
+	if a.suspiciousNotified != nil && a.suspiciousNotified[id] {
+		a.suspiciousNotifyMu.Unlock()
 		return
 	}
+	if a.suspiciousNotified == nil {
+		a.suspiciousNotified = make(map[string]bool)
+	}
+	a.suspiciousNotified[id] = true
+	a.suspiciousNotifyMu.Unlock()
+
 	if nerr := a.onNewSuspiciousApproval(ctx, approval); nerr != nil {
-		// Not marked, so the next encounter re-attempts the push.
+		// Release the claim under the lock so the next encounter re-attempts
+		// the push (B1 retry).
+		a.suspiciousNotifyMu.Lock()
+		delete(a.suspiciousNotified, id)
+		a.suspiciousNotifyMu.Unlock()
 		log.Printf("[agent] suspicious-site approval notification failed for %q: %v (will retry on next encounter)", id, nerr)
 		return
 	}
-	a.markSuspiciousNotified(id)
+	// Push delivered: the claim taken above stays, so this Agent does not
+	// double-notify on re-encounter.
 }
 
 // hostGateError builds the typed, sanitized error for a rejected host, using

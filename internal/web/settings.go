@@ -277,7 +277,14 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		newWebFetch.URLAllowlist = deduped
 	}
-	if len(update.WebFetch.URLDenylist) > 0 {
+	// JSON unmarshal semantics carry the "present vs absent" distinction:
+	// an absent url_denylist decodes to a nil slice (keep the existing
+	// list), while an explicit "url_denylist": [] decodes to a non-nil
+	// empty slice (clear the list). The old "len > 0" guard collapsed the
+	// two, so a parent could add denylist hosts but never clear the
+	// denylist via /api/settings (PR #423 finding). Guard on nil instead
+	// so the explicit empty array applies and clears.
+	if update.WebFetch.URLDenylist != nil {
 		// Deduplicate, trim whitespace, and validate hosts (same shape as allowlist).
 		seen := make(map[string]struct{}, len(update.WebFetch.URLDenylist))
 		deduped := make([]string, 0, len(update.WebFetch.URLDenylist))

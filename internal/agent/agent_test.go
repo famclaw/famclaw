@@ -1213,6 +1213,91 @@ func TestHostDecision_SuspiciousSiteRequeueReNotify(t *testing.T) {
 	}
 }
 
+// TestHostDecision_SuspiciousNotifyNoDuplicateRace verifies the PR #423
+// TOCTOU fix end-to-end: two concurrent hostDecision calls for the same
+// suspicious host must deliver exactly ONE parent push. Pre-fix, the
+// "already notified?" check and the success-mark were separate locked
+// steps, so both callers could observe "not yet notified", both push, and
+// both mark — duplicating the parent notification. The fix makes
+// check-and-claim one atomic step (claim-before-call), so the 2nd caller
+// sees the in-flight claim and returns without pushing.
+func TestHostDecision_SuspiciousNotifyNoDuplicateRace(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := context.Background()
+	var (
+		mu          sync.Mutex
+		notifyCalls int
+		firstIn     = make(chan struct{}) // closed when the 1st call enters the notifier
+		release     = make(chan struct{}) // closed to let the 1st (slow) push finish
+	)
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+		onNewSuspiciousApproval: func(context.Context, *store.Approval) error {
+			mu.Lock()
+			notifyCalls++
+			first := notifyCalls == 1
+			mu.Unlock()
+			if first {
+				close(firstIn)
+				<-release // hold the 1st push in flight while the 2nd arrives
+			}
+			return nil
+		},
+	}
+
+	// 1st encounter: "googl.com" (distance-1 typo-squat of google.com) creates
+	// the pending row and enters the notifier, which blocks on release.
+	done1 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+			t.Errorf("1st hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+		}
+	}()
+	<-firstIn // the 1st call is inside the notifier; its claim is live
+
+	// 2nd concurrent encounter while the 1st push is in flight: it must see
+	// the claim and NOT deliver a second push. (Pre-fix this raced the
+	// seen-check and pushed again → notifyCalls would be 2.)
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("2nd hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+
+	close(release)
+	<-done1
+
+	mu.Lock()
+	calls := notifyCalls
+	mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("notifyCalls = %d, want 1 (no duplicate parent push under concurrent hostDecision)", calls)
+	}
+
+	// 3rd encounter after the push succeeded: the memoized claim must still
+	// prevent a third push within this Agent's lifetime.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("3rd hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	mu.Lock()
+	calls = notifyCalls
+	mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("after 3rd encounter notifyCalls = %d, want 1 (no double-notify)", calls)
+	}
+}
+
 // TestHostDecision_IPLiteralRanges verifies that local (private/loopback/
 // link-local) IP literals pass the gate by default under the home-LAN model
 // (design §1.5), while raw PUBLIC IP literals are routed to the parent-
