@@ -180,6 +180,18 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				turnAllowed[t.Name] = true
 			}
 
+			// turnReadOnly mirrors the allowlist for tools declared ReadOnly in
+			// the registry: a read-only call cannot mutate external state, so a
+			// per-call error shown to the LLM must not claim that changes may
+			// have occurred (same conservative rule as outcomeWarning — tools
+			// absent from the registry stay potentially mutating).
+			turnReadOnly := make(map[string]bool, len(turn.Tools))
+			for _, t := range turn.Tools {
+				if t.ReadOnly {
+					turnReadOnly[t.Name] = true
+				}
+			}
+
 			// pageChanged is reset per-batch: set when a mutating tool call
 			// produces a different URL than the last known one.
 			pageChanged := false
@@ -378,6 +390,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					if err != nil {
 						log.Printf("[agentcore] builtin tool reported an error (%s)", duration)
 						display := "Tool reported an error; some changes may still have occurred. Verify before trying again."
+						if turnReadOnly[tc.Function.Name] {
+							display = "Tool reported an error. No changes were made."
+						}
 						if tc.Function.Name == "builtin__web_search" && safeSearchMarker(result) {
 							display = result
 						}
@@ -461,6 +476,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						outcome = OutcomeUnknown
 					}
 					toolText = "Tool reported an error; some changes may still have occurred. Verify before trying again."
+					if turnReadOnly[tc.Function.Name] {
+						toolText = "Tool reported an error. No changes were made."
+					}
 					if result == nil {
 						toolText = "Tool outcome uncertain; verify before trying again."
 					}
