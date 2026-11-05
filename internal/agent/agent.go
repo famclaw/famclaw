@@ -1655,11 +1655,13 @@ func (a *Agent) clearSuspiciousNotified(id string) {
 // approval when (1) no successful push has been recorded yet for this approval in
 // this Agent and (2) the caller is not a parent (a parent gets no
 // self-notification for their own web_fetch — mirroring the notifier's own
-// kid-only policy). On a nil return it records success so the same session does
-// not double-notify. This is the B1 retry path: a host whose first push failed
-// (notifier error) is re-surfaced on the child's next web_fetch of the same host,
-// instead of staying silently pending until the parent happens to open the
-// dashboard.
+// kid-only policy). The memo entry is claimed under suspiciousNotifyMu BEFORE
+// invoking the notifier so concurrent calls for the same approval cannot race
+// past the check (claim-before-call); on a notifier error the claim is released
+// so the next encounter retries. This is the B1 retry path: a host whose first
+// push failed (notifier error) is re-surfaced on the child's next web_fetch of
+// the same host, instead of staying silently pending until the parent happens to
+// open the dashboard.
 func (a *Agent) notifySuspiciousApprovalIfNeeded(ctx context.Context, id string, approval *store.Approval) {
 	if a.onNewSuspiciousApproval == nil {
 		return
@@ -1667,15 +1669,26 @@ func (a *Agent) notifySuspiciousApprovalIfNeeded(ctx context.Context, id string,
 	if a.user == nil || a.user.Role == "parent" {
 		return
 	}
-	if a.suspiciousNotifiedSeen(id) {
+	a.suspiciousNotifyMu.Lock()
+	if a.suspiciousNotified != nil && a.suspiciousNotified[id] {
+		a.suspiciousNotifyMu.Unlock()
 		return
 	}
+	if a.suspiciousNotified == nil {
+		a.suspiciousNotified = make(map[string]bool)
+	}
+	// Claim before calling to prevent a TOCTOU race.
+	a.suspiciousNotified[id] = true
+	a.suspiciousNotifyMu.Unlock()
+
 	if nerr := a.onNewSuspiciousApproval(ctx, approval); nerr != nil {
-		// Not marked, so the next encounter re-attempts the push.
+		// Release the claim so a retry can re-notify.
+		a.suspiciousNotifyMu.Lock()
+		delete(a.suspiciousNotified, id)
+		a.suspiciousNotifyMu.Unlock()
 		log.Printf("[agent] suspicious-site approval notification failed for %q: %v (will retry on next encounter)", id, nerr)
 		return
 	}
-	a.markSuspiciousNotified(id)
 }
 
 // hostGateError builds the typed, sanitized error for a rejected host, using

@@ -45,3 +45,6 @@ docs/superpowers/
 
 # Serena per-developer local config — never commit
 .serena/
+
+# Sandbox directory
+data/sandbox/
