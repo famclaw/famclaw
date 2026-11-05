@@ -74,7 +74,7 @@ func NewStagePolicyToolCall(eval ToolPolicyEvaluator) Stage {
 					tc.Disposition = DispositionPending
 				} else {
 					tc.Error = ErrToolBlocked
-					tc.Outcome = OutcomeFailure
+					tc.Outcome = OutcomeUnknown
 					tc.Disposition = DispositionDenied
 				}
 			} else {
