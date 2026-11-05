@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,12 +14,15 @@ import (
 	"github.com/famclaw/famclaw/internal/familystate"
 	"github.com/famclaw/famclaw/internal/identity"
 	"github.com/famclaw/famclaw/internal/store"
+	"github.com/famclaw/famclaw/internal/web/middleware"
 )
 
 // newFamilyStateTestServer wires a *Server with familystate.Store backed by
 // an in-memory DB, plus a tiny family config used for subject validation.
-// Auth middleware is intentionally bypassed — these tests exercise handler
-// behaviour. End-to-end auth is covered in middleware tests.
+// End-to-end auth over the live mux is covered in family_state_auth_test.go;
+// this fixture still runs handlers in-process, with doAs supplying the
+// session identity they need (F8 moved the manager gate into the mutation
+// handlers, which read the identity the session middleware attaches).
 func newFamilyStateTestServer(t *testing.T) (*Server, func()) {
 	t.Helper()
 	dir := t.TempDir()
@@ -37,9 +41,26 @@ func newFamilyStateTestServer(t *testing.T) (*Server, func()) {
 		db:          db,
 		identStore:  identity.NewStore(db),
 		familyState: familystate.NewStore(db),
+		sessions:    store.NewSessionStore(db.SQL()),
 		cfgMu:       sync.RWMutex{},
 	}
 	return srv, func() { _ = db.Close() }
+}
+
+// doAs runs h through the real session middleware with a fresh session bound
+// to user — the same authn chain production routes use. Returns the recorded
+// response; the caller asserts on it as before.
+func doAs(t *testing.T, srv *Server, user, method, path string, body []byte, h http.HandlerFunc) *httptest.ResponseRecorder {
+	t.Helper()
+	sid, err := srv.sessions.Create(context.Background(), user, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatalf("sessions.Create (%s): %v", user, err)
+	}
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	req.AddCookie(&http.Cookie{Name: "famclaw_session", Value: sid})
+	rec := httptest.NewRecorder()
+	middleware.WithSession(srv.sessions)(h).ServeHTTP(rec, req)
+	return rec
 }
 
 func TestFamilyStateFacts_Post_Upsert(t *testing.T) {
@@ -85,9 +106,7 @@ func TestFamilyStateFacts_Post_Upsert(t *testing.T) {
 			defer cleanup()
 
 			body, _ := json.Marshal(tc.body)
-			req := httptest.NewRequest(http.MethodPost, "/api/family-state/facts", bytes.NewReader(body))
-			rec := httptest.NewRecorder()
-			srv.handleFamilyStateFacts(rec, req)
+			rec := doAs(t, srv, "dep", http.MethodPost, "/api/family-state/facts", body, srv.handleFamilyStateFacts)
 
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d (body: %s)", rec.Code, tc.wantStatus, rec.Body.String())
@@ -103,10 +122,9 @@ func TestFamilyStateFacts_Get_List(t *testing.T) {
 	srv, cleanup := newFamilyStateTestServer(t)
 	defer cleanup()
 
-	// Seed via the same upsert path the handler uses.
+	// Seed via the same upsert path the handler uses (as the parent).
 	body := mustMarshal(t, map[string]any{"category": "pets", "subject": "family", "label": "Rex", "value": "dog"})
-	rec := httptest.NewRecorder()
-	srv.handleFamilyStateFacts(rec, httptest.NewRequest(http.MethodPost, "/api/family-state/facts", bytes.NewReader(body)))
+	rec := doAs(t, srv, "dep", http.MethodPost, "/api/family-state/facts", body, srv.handleFamilyStateFacts)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("seed: status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -130,8 +148,7 @@ func TestFamilyStateFact_Delete(t *testing.T) {
 	defer cleanup()
 
 	body := mustMarshal(t, map[string]any{"category": "pets", "subject": "family", "label": "Rex", "value": "dog"})
-	rec := httptest.NewRecorder()
-	srv.handleFamilyStateFacts(rec, httptest.NewRequest(http.MethodPost, "/api/family-state/facts", bytes.NewReader(body)))
+	rec := doAs(t, srv, "dep", http.MethodPost, "/api/family-state/facts", body, srv.handleFamilyStateFacts)
 	var seeded familystate.Fact
 	if err := json.NewDecoder(rec.Body).Decode(&seeded); err != nil {
 		t.Fatalf("decode seed: %v", err)
@@ -150,8 +167,7 @@ func TestFamilyStateFact_Delete(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			srv.handleFamilyStateFact(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			rec := doAs(t, srv, "dep", tc.method, tc.path, nil, srv.handleFamilyStateFact)
 			if rec.Code != tc.wantStatus {
 				t.Errorf("status=%d want=%d (body=%s)", rec.Code, tc.wantStatus, rec.Body.String())
 			}
@@ -177,9 +193,7 @@ func TestFamilyStateCategories_Post(t *testing.T) {
 			srv, cleanup := newFamilyStateTestServer(t)
 			defer cleanup()
 			body := mustMarshal(t, tc.body)
-			req := httptest.NewRequest(http.MethodPost, "/api/family-state/categories", bytes.NewReader(body))
-			rec := httptest.NewRecorder()
-			srv.handleFamilyStateCategories(rec, req)
+			rec := doAs(t, srv, "dep", http.MethodPost, "/api/family-state/categories", body, srv.handleFamilyStateCategories)
 			if rec.Code != tc.wantStatus {
 				t.Errorf("status=%d want=%d (body=%s)", rec.Code, tc.wantStatus, rec.Body.String())
 			}
@@ -194,10 +208,9 @@ func TestFamilyStateCategory_Delete(t *testing.T) {
 	srv, cleanup := newFamilyStateTestServer(t)
 	defer cleanup()
 
-	// Seed a custom category.
+	// Seed a custom category (as the parent).
 	body := mustMarshal(t, map[string]any{"name": "to_delete", "description": "tmp"})
-	rec := httptest.NewRecorder()
-	srv.handleFamilyStateCategories(rec, httptest.NewRequest(http.MethodPost, "/api/family-state/categories", bytes.NewReader(body)))
+	rec := doAs(t, srv, "dep", http.MethodPost, "/api/family-state/categories", body, srv.handleFamilyStateCategories)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("seed: %s", rec.Body.String())
 	}
@@ -215,8 +228,7 @@ func TestFamilyStateCategory_Delete(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			srv.handleFamilyStateCategory(rec, httptest.NewRequest(http.MethodDelete, tc.path, nil))
+			rec := doAs(t, srv, "dep", http.MethodDelete, tc.path, nil, srv.handleFamilyStateCategory)
 			if rec.Code != tc.wantStatus {
 				t.Errorf("status=%d want=%d (body=%s)", rec.Code, tc.wantStatus, rec.Body.String())
 			}

@@ -277,6 +277,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/unknown-accounts/dismiss", s.protectParent(s.handleUnknownAccountDismiss))
 	mux.Handle("/api/conversations", s.protectParent(s.handleConversations))
 	mux.Handle("/api/reminders/undelivered", s.protectParent(s.handleUndeliveredReminders))
+	// F8: reads stay open to every household member (s.protect); the
+	// manager gate for POST/DELETE mutations lives inside the handlers
+	// (requireManager in familystate_handler.go) so a child's GET is not
+	// blocked by a role check that only applies to writes.
 	mux.Handle("/api/family-state/facts", s.protect(s.handleFamilyStateFacts))
 	mux.Handle("/api/family-state/facts/", s.protect(s.handleFamilyStateFact))
 	mux.Handle("/api/family-state/categories", s.protect(s.handleFamilyStateCategories))
