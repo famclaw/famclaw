@@ -91,13 +91,19 @@ func filterBuiltinDefs(defs []llm.ToolDef, allow, deny []string) ([]llm.ToolDef,
 }
 
 // filterTools applies the default-deny allowlist + denylist to MCP tool infos.
-// Empty allow yields zero tools and an empty allowedTools map (so the
-// subagent has NO MCP tools by default). Denied entries are subtracted after
-// the allowlist filter.
-func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map[string]bool) {
+// Empty allow yields zero tools and empty maps (so the subagent has NO MCP
+// tools by default). Denied entries are subtracted after the allowlist
+// filter. Also returns the subset of allowed tools that are declared
+// ReadOnly (mcp.ToolInfo.ReadOnly, from the server's readOnlyHint
+// annotation) so dispatchSubagentTool can apply the same truthful failure
+// display as the main tool loop: a read-only MCP tool failure reports
+// "no changes were made" instead of the conservative "changes may have
+// occurred". Tools without the hint stay out of the map (conservative).
+func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map[string]bool, map[string]bool) {
 	allowed := make(map[string]bool)
+	readOnly := make(map[string]bool)
 	if len(allow) == 0 {
-		return nil, allowed
+		return nil, allowed, readOnly
 	}
 	allowSet := make(map[string]bool, len(allow))
 	for _, a := range allow {
@@ -116,6 +122,9 @@ func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map
 			continue
 		}
 		allowed[info.Name] = true
+		if info.ReadOnly {
+			readOnly[info.Name] = true
+		}
 		tools = append(tools, llm.ToolDef{
 			Type: "function",
 			Function: llm.ToolDefFunc{
@@ -125,7 +134,7 @@ func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map
 			},
 		})
 	}
-	return tools, allowed
+	return tools, allowed, readOnly
 }
 
 // buildSystemPrompt assembles the subagent's system prompt.
@@ -160,8 +169,9 @@ func Execute(ctx context.Context, cfg Config, deps ExecutorDeps) (string, error)
 	// a tool name not in the definitions, the executor won't call it.
 	var tools []llm.ToolDef
 	allowedTools := make(map[string]bool)
+	mcpReadOnly := make(map[string]bool)
 	if deps.Pool != nil {
-		tools, allowedTools = filterTools(deps.Pool.ListToolInfos(), cfg.Tools, cfg.DenyTools)
+		tools, allowedTools, mcpReadOnly = filterTools(deps.Pool.ListToolInfos(), cfg.Tools, cfg.DenyTools)
 	}
 	// Builtin tools (web_fetch, etc.) are also gated by the same allow/deny
 	// lists. Without this branch the subagent is limited to MCP tools only,
@@ -211,7 +221,7 @@ func Execute(ctx context.Context, cfg Config, deps ExecutorDeps) (string, error)
 		for _, tc := range msg.ToolCalls {
 			log.Printf("[subagent] tool_call: %s", tc.Function.Name)
 			start := time.Now()
-			toolText, ok := dispatchSubagentTool(ctx, tc, deps, allowedTools, allowedBuiltins, start)
+			toolText, ok := dispatchSubagentTool(ctx, tc, deps, allowedTools, allowedBuiltins, mcpReadOnly, start)
 			if !ok {
 				toolText = fmt.Sprintf("Error: unknown tool %q", tc.Function.Name)
 			}
@@ -241,6 +251,7 @@ func dispatchSubagentTool(
 	tc llm.ToolCall,
 	deps ExecutorDeps,
 	allowedTools, allowedBuiltins map[string]bool,
+	mcpReadOnly map[string]bool,
 	start time.Time,
 ) (string, bool) {
 	name := tc.Function.Name
@@ -285,7 +296,11 @@ func dispatchSubagentTool(
 		}
 		if result.IsError {
 			log.Printf("[subagent] tool reported an error (%s)", duration)
-			return agentcore.ToolErrorDisplay(name, deps.BuiltinReadOnly[name], ""), true
+			// mcpReadOnly (from filterTools) covers MCP tools; the
+			// BuiltinReadOnly lookup is always false for MCP names, so
+			// without this a read-only MCP tool failure would degrade to
+			// the conservative "changes may have occurred" display.
+			return agentcore.ToolErrorDisplay(name, mcpReadOnly[name] || deps.BuiltinReadOnly[name], ""), true
 		}
 		if result != nil && len(result.Content) > 0 {
 			resultJSON, _ := json.Marshal(result.Content)

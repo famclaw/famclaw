@@ -518,6 +518,11 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 				Source:      "mcp",
 				ServerName:  info.ServerName,
 				ScanTarget:  info.ScanTarget,
+				// Propagate the server's readOnlyHint so the loop's
+				// turnReadOnly / outcomeWarning classification covers MCP
+				// tools too; without it a read-only MCP failure degrades to
+				// the conservative "changes may have occurred" display.
+				ReadOnly: info.ReadOnly,
 			}
 			if t.AllowedForRole(a.user.Role) {
 				turn.Tools = append(turn.Tools, t)

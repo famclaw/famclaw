@@ -59,7 +59,7 @@ func TestSubagentReadOnlyBareNameLookup(t *testing.T) {
 			// The allowlist gate (filterBuiltinDefs) is a separate mechanism;
 			// here it is opened for the emitted name so the read-only
 			// classification lookup itself is what is under test.
-			result, ok := dispatchSubagentTool(context.Background(), call, deps, map[string]bool{}, map[string]bool{tc.emitted: true}, time.Now())
+			result, ok := dispatchSubagentTool(context.Background(), call, deps, map[string]bool{}, map[string]bool{tc.emitted: true}, map[string]bool{}, time.Now())
 			if !ok {
 				t.Fatal("tool not dispatched")
 			}
@@ -93,7 +93,7 @@ func TestSubagentBareNameNormalizedForToolErrorDisplay(t *testing.T) {
 	// The allowlist is keyed on the namespaced registry name, exactly as
 	// filterBuiltinDefs produces it from the parent's namespaced defs.
 	allowedBuiltins := map[string]bool{"builtin__web_search": true}
-	result, ok := dispatchSubagentTool(context.Background(), call, deps, map[string]bool{}, allowedBuiltins, time.Now())
+	result, ok := dispatchSubagentTool(context.Background(), call, deps, map[string]bool{}, allowedBuiltins, map[string]bool{}, time.Now())
 	if !ok {
 		t.Fatal("bare web_search was not dispatched to the builtin handler; want it normalized and allowed")
 	}

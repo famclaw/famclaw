@@ -490,6 +490,12 @@ type ToolInfo struct {
 	InputSchema map[string]any
 	ServerName  string
 	ScanTarget  string // URL or binary path for security scanning
+	// ReadOnly is true when the MCP server declares the tool with a
+	// readOnlyHint annotation (it performs no external state mutation).
+	// An absent hint stays false: consumers then keep the conservative
+	// "changes may have occurred" treatment, so this field can only make
+	// failure display more precise, never less truthful.
+	ReadOnly bool
 }
 
 // ListToolInfos returns tool metadata for all available tools.
@@ -529,6 +535,7 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 				InputSchema: schema,
 				ServerName:  name,
 				ScanTarget:  scanTarget,
+				ReadOnly:    tool.Annotations.ReadOnlyHint != nil && *tool.Annotations.ReadOnlyHint,
 			})
 		}
 	}

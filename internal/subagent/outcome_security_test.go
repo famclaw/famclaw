@@ -45,7 +45,7 @@ func TestSubagentToolErrorDisplay(t *testing.T) {
 				return tc.out, errors.New("boom")
 			}
 			call := llm.ToolCall{Function: llm.ToolCallFunction{Name: tc.tool, Arguments: map[string]any{}}}
-			result, ok := dispatchSubagentTool(context.Background(), call, deps, map[string]bool{}, map[string]bool{tc.tool: true}, time.Now())
+			result, ok := dispatchSubagentTool(context.Background(), call, deps, map[string]bool{}, map[string]bool{tc.tool: true}, map[string]bool{}, time.Now())
 			if !ok {
 				t.Fatal("tool not dispatched")
 			}
@@ -97,7 +97,7 @@ func TestOutcomeSubagentDispatch(t *testing.T) {
 				}
 			}
 			call := llm.ToolCall{Function: llm.ToolCallFunction{Name: name, Arguments: map[string]any{}}}
-			result, ok := dispatchSubagentTool(context.Background(), call, deps, map[string]bool{name: !tc.builtin}, map[string]bool{name: tc.builtin}, time.Now())
+			result, ok := dispatchSubagentTool(context.Background(), call, deps, map[string]bool{name: !tc.builtin}, map[string]bool{name: tc.builtin}, map[string]bool{}, time.Now())
 			if !ok {
 				t.Fatal("tool not dispatched")
 			}
