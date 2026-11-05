@@ -50,18 +50,18 @@ func HandleDenylistList(ctx context.Context, deps Deps, args map[string]any) (st
 	}
 	mu.RLock()
 	defer mu.RUnlock()
-	return formatDenylistList(deps.Cfg.Tools.WebFetch.URLDenylist)
+	return formatDenylistList(deps.Cfg.Tools.WebFetch.URLDenylist), nil
 }
 
-func formatDenylistList(hosts []string) (string, error) {
+func formatDenylistList(hosts []string) string {
 	if len(hosts) == 0 {
-		return "web_fetch URL denylist is empty — no hosts are explicitly denied by the parent. (The bundled kid-safe baseline is always active in denylist mode.)", nil
+		return "web_fetch URL denylist is empty — no hosts are explicitly denied by the parent. (The bundled kid-safe baseline is always active in denylist mode.)"
 	}
 	var lines []string
 	for _, h := range hosts {
 		lines = append(lines, "  \u2022 "+h)
 	}
-	return fmt.Sprintf("web_fetch URL denylist (%d hosts):\n%s", len(hosts), strings.Join(lines, "\n")), nil
+	return fmt.Sprintf("web_fetch URL denylist (%d hosts):\n%s", len(hosts), strings.Join(lines, "\n"))
 }
 
 // DenylistAddDefinition returns the parent-only tool that adds a host to the

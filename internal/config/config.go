@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/famclaw/famclaw/internal/honeybadger"
+	"github.com/famclaw/famclaw/internal/webfilter"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
@@ -63,6 +64,45 @@ type Config struct {
 	// same pointer, which is exactly the set of components that must
 	// serialize on its denylist.
 	WebFetchDenylistMu sync.RWMutex `yaml:"-"`
+
+	// webFetchBaseline is the shared read-only kid-safe baseline
+	// blocklist (the bundled baseline.txt), allocated at most once per
+	// Config by WebFetchBaseline. It lives on the shared *Config — not
+	// on any per-turn Agent — because agents are constructed on every
+	// chat turn, and a per-Agent store would re-parse the embedded
+	// baseline into a fresh map on every turn. The store is immutable
+	// after construction, so a single instance is safe to share across
+	// every agent (and goroutine) handed this same Config. Excluded
+	// from YAML persistence (yaml:"-"); each Config loaded at startup
+	// or on a file reload carries its own instance.
+	webFetchBaseline     *webfilter.BaselineStore `yaml:"-"`
+	webFetchBaselineOnce sync.Once                `yaml:"-"`
+}
+
+// WebFetchBaseline returns the shared read-only kid-safe baseline
+// blocklist, allocating it at most once per Config. The store is
+// immutable after construction, so all agents (and goroutines) that
+// hold this Config share one instance, which eliminates the per-turn
+// allocation that a per-Agent sync.Once would cause.
+//
+// The one-time publication is taken under the EXCLUSIVE
+// WebFetchDenylistMu, not only the sync.Once. The web settings POST
+// marshals the whole Config with yaml while holding that same lock for
+// the entire POST (see config.WebFetchDenylistMu), and yaml reflects
+// over every field — including this one. So the pointer write must be
+// mutually exclusive with that marshal, or the -race detector flags the
+// write against the yaml read. The store is read-only thereafter, so
+// the sync.Once provides the happens-before edge for every subsequent
+// lock-free read here (reads never race reads). Call this accessor
+// unconditionally — no preceding `== nil` read — matching the
+// discipline of the other shared WebFetch state on this Config.
+func (c *Config) WebFetchBaseline() *webfilter.BaselineStore {
+	c.webFetchBaselineOnce.Do(func() {
+		c.WebFetchDenylistMu.Lock()
+		defer c.WebFetchDenylistMu.Unlock()
+		c.webFetchBaseline = webfilter.NewBaselineStore()
+	})
+	return c.webFetchBaseline
 }
 
 // ToolsConfig groups configuration for built-in tools registered with the LLM.

@@ -102,14 +102,6 @@ type Agent struct {
 	// suspiciousDetector. Per-Agent, so webfilter keeps no package-level
 	// global state.
 	suspiciousApprovalOnce sync.Once
-	// baselineStore is the bundled kid-safe blocklist. Per-Agent, so
-	// webfilter keeps no package-level global state. Nil until
-	// baselineStoreOnce allocates it on the first denylist-mode
-	// hostDecision call (single allocation point; NewAgent does not
-	// pre-allocate it).
-	baselineStore *webfilter.BaselineStore
-	// baselineStoreOnce is the single allocation point for baselineStore.
-	baselineStoreOnce sync.Once
 	// onNewSuspiciousApproval — see AgentDeps.OnNewSuspiciousApproval.
 	// Set once in NewAgent; nil disables notification.
 	onNewSuspiciousApproval func(ctx context.Context, a *store.Approval) error
@@ -1467,16 +1459,20 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 		// (a) Bundled kid-safe baseline (CC0-sourced, design §2) — always
 		// active in denylist mode; reason class "baseline" drives the
 		// kid-safe no-leak message (design §3.3).
-		// baselineStore is lazily allocated exactly once here (the single
-		// allocation point; NewAgent does not pre-allocate it). Call Do
-		// unconditionally — no preceding `== nil` pointer read — because a
-		// bare unsynchronized read racing a concurrent Do writer would be a
-		// data race; this matches the suspiciousDetector allocation below in
-		// this same function. sync.Once provides the happens-before edge for
-		// the subsequent read.
-		a.baselineStoreOnce.Do(func() { a.baselineStore = webfilter.NewBaselineStore() })
-		baselineStore := a.baselineStore
-		if baselineStore.Blocks(host) {
+		// The baseline is a shared read-only instance on the Config,
+		// allocated at most once per Config (a.cfg.WebFetchBaseline())
+		// rather than per Agent. Agents are constructed on every chat
+		// turn, so the old per-Agent sync.Once re-parsed the embedded
+		// baseline.txt into a fresh map on every turn; hoisting the
+		// store to the shared *Config (which outlives per-turn agents)
+		// eliminates that per-turn allocation without adding mutable
+		// global state. WebFetchBaseline's own sync.Once provides the
+		// happens-before edge for the returned store, and the store is
+		// immutable after construction, so no further locking is needed
+		// around its reads. Call the accessor unconditionally — no
+		// preceding `== nil` read — matching the suspiciousDetector
+		// allocation below in this same function.
+		if a.cfg.WebFetchBaseline().Blocks(host) {
 			return false, "baseline"
 		}
 		// (b) Parent-maintained deny entries. Read the slice directly from
