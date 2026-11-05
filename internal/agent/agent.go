@@ -1677,6 +1677,10 @@ func (a *Agent) notifySuspiciousApprovalIfNeeded(ctx context.Context, id string,
 	if a.suspiciousNotified == nil {
 		a.suspiciousNotified = make(map[string]bool)
 	}
+	// Enforce cap: if map is at limit, reset it (same as markSuspiciousNotified)
+	if len(a.suspiciousNotified) >= 1000 {
+		a.suspiciousNotified = make(map[string]bool)
+	}
 	// Claim before calling to prevent a TOCTOU race.
 	a.suspiciousNotified[id] = true
 	a.suspiciousNotifyMu.Unlock()
