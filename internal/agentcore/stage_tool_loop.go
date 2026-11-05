@@ -393,7 +393,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						if turnReadOnly[tc.Function.Name] {
 							display = "Tool reported an error. No changes were made."
 						}
-						if tc.Function.Name == "builtin__web_search" && safeSearchMarker(result) {
+						if tc.Function.Name == "builtin__web_search" && IsSafeWebSearchMarker(result) {
 							display = result
 						}
 						llmMsgs = append(llmMsgs, llm.Message{
@@ -847,20 +847,6 @@ func isMutatingBrowserAction(name string) bool {
 	return false
 }
 
-// safeSearchMarker accepts only fixed, non-diagnostic search classifications.
-func safeSearchMarker(s string) bool {
-	switch s {
-	case "web_search: host not permitted", "web_search: provider not configured",
-		"web_search: rate limited", "web_search: search backend error",
-		"web_search: search timed out", "web_search: search backend unreachable",
-		"web_search: search backend auth or config error", "web_search: invalid search backend response",
-		"web_search: unavailable":
-		return true
-	default:
-		return false
-	}
-}
-
 // extractFirstURL parses the URL from a tool result that starts with
 // "URL: <url>\n". Returns "" when the text does not start with that prefix.
 // This mirrors the snapshotReply format used by the browser handlers.
@@ -910,7 +896,7 @@ func rebuildResultLine(tr ToolResult) string {
 		case DispositionAttempted:
 			if tr.Outcome == OutcomeUnknown {
 				state = "outcome uncertain; effects may have occurred"
-			} else if tr.ToolName == "builtin__web_search" && safeSearchMarker(tr.Output) {
+			} else if tr.ToolName == "builtin__web_search" && IsSafeWebSearchMarker(tr.Output) {
 				state = tr.Output
 			}
 		}

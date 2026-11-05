@@ -1670,13 +1670,13 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 		AllowPrivateNetworks: !fcfg.BlockPrivateNetworks,
 		TavilyAPIKey:         cfg.TavilyAPIKey,
 	})
-	// Marker returned directly to tool loop; safeSearchMarker consumes it without intermediate discard.
+	// Marker returned directly to tool loop; IsSafeWebSearchMarker consumes it without intermediate discard.
 	if provErr != nil {
 		return webSearchError(provErr, cfg.Endpoint)
 	}
 
 	hits, err := prov.Search(ctx, query, maxResults)
-	// Marker returned directly to tool loop; safeSearchMarker consumes it without intermediate discard.
+	// Marker returned directly to tool loop; IsSafeWebSearchMarker consumes it without intermediate discard.
 	if err != nil {
 		return webSearchError(err, cfg.Endpoint)
 	}
@@ -1686,6 +1686,9 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 
 // webSearchError preserves the diagnostic cause while returning a static,
 // neutral classification for the tool loop to render from its allowlist.
+// The marker constants are owned by agentcore (websearch_markers.go): the
+// tool loop only renders them verbatim when IsSafeWebSearchMarker accepts
+// them, so producer and consumer share one definition.
 // Unknown errors return no display text. Neither endpoint nor cause is logged.
 func webSearchError(err error, endpoint string) (string, error) {
 	if err == nil {
@@ -1693,13 +1696,13 @@ func webSearchError(err error, endpoint string) (string, error) {
 	}
 	var hostErr *webfetch.HostNotAllowedError
 	if errors.As(err, &hostErr) {
-		return "web_search: host not permitted", err
+		return agentcore.WebSearchMarkerHostNotPermitted, err
 	}
 	// Provider-boundary configuration gaps (web-retrieval plan, Slice 1):
 	// unknown provider name or hosted provider without a key. Classified by
 	// the sentinel, so upstream rewording cannot break the mapping.
 	if errors.Is(err, websearch.ErrProviderNotConfigured) {
-		return "web_search: provider not configured", err
+		return agentcore.WebSearchMarkerProviderNotConfigured, err
 	}
 	// Classified backend failures (web-retrieval plan, Slice 2): check the
 	// specific classes BEFORE the ErrUnavailable umbrella they all wrap —
@@ -1708,25 +1711,25 @@ func webSearchError(err error, endpoint string) (string, error) {
 	switch {
 	case errors.Is(err, websearch.ErrRateLimited):
 		log.Print("[agent] web_search backend error")
-		return "web_search: rate limited", err
+		return agentcore.WebSearchMarkerRateLimited, err
 	case errors.Is(err, websearch.ErrProvider5xx):
 		log.Print("[agent] web_search backend error")
-		return "web_search: search backend error", err
+		return agentcore.WebSearchMarkerBackendError, err
 	case errors.Is(err, websearch.ErrTimeout):
 		log.Print("[agent] web_search backend error")
-		return "web_search: search timed out", err
+		return agentcore.WebSearchMarkerTimeout, err
 	case errors.Is(err, websearch.ErrConnection):
 		log.Print("[agent] web_search backend error")
-		return "web_search: search backend unreachable", err
+		return agentcore.WebSearchMarkerBackendUnreachable, err
 	case errors.Is(err, websearch.ErrAuthConfig):
 		log.Print("[agent] web_search backend error")
-		return "web_search: search backend auth or config error", err
+		return agentcore.WebSearchMarkerBackendAuthConfig, err
 	case errors.Is(err, websearch.ErrMalformed):
 		log.Print("[agent] web_search backend error")
-		return "web_search: invalid search backend response", err
+		return agentcore.WebSearchMarkerInvalidResponse, err
 	case errors.Is(err, websearch.ErrUnavailable):
 		log.Print("[agent] web_search backend error")
-		return "web_search: unavailable", err
+		return agentcore.WebSearchMarkerUnavailable, err
 	}
 	return "", err
 }

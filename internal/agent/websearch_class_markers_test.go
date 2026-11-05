@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
 )
@@ -94,6 +95,12 @@ func TestWebSearchError_ClassMarkers(t *testing.T) {
 			}
 			if msg != tc.want {
 				t.Errorf("marker = %q, want %q", msg, tc.want)
+			}
+			// PR #431 invariant: every marker webSearchError returns must be
+			// accepted by the tool loop's allowlist, or the tool loop falls
+			// back to the generic error display and the classification is lost.
+			if tc.want != "" && !agentcore.IsSafeWebSearchMarker(tc.want) {
+				t.Errorf("producer marker %q is not accepted by agentcore.IsSafeWebSearchMarker — maintenance coupling between webSearchError and the tool loop allowlist", tc.want)
 			}
 			// The endpoint (and anything it carries) must never reach the
 			// family chat via the marker.
