@@ -38,8 +38,13 @@ type ExecutorDeps struct {
 	// posture (the parent already passed the OPA tool gate to even reach
 	// here).
 	BuiltinHandler func(ctx context.Context, name string, args map[string]any) (string, error)
-	// BuiltinReadOnly records which namespaced builtin tool names are
-	// declared ReadOnly in the parent's tool registry. Lets
+	// BuiltinReadOnly records which builtin tools are declared ReadOnly in
+	// the parent's tool registry. It is keyed by both the namespaced tool
+	// name ("builtin__web_search") and its bare form ("web_search")
+	// (agent.handleSpawnAgent builds it that way, mirroring turnReadOnly in
+	// the main tool loop), because dispatchSubagentTool looks it up with
+	// the name as emitted by the LLM and local models may emit either form.
+	// Lets
 	// dispatchSubagentTool apply the same truthful failure display as the
 	// parent's tool loop (agentcore.ToolErrorDisplay): a ReadOnly tool
 	// failure reports "no changes were made", and a web_search failure

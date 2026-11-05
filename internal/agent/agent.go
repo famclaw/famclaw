@@ -1210,13 +1210,22 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	// Subagents inherit the parent's identity but stay read-only: any tool
 	// that mutates shared family state is filtered out here.
 	builtinDefs := make([]llm.ToolDef, 0, len(a.builtinTools))
-	builtinReadOnly := make(map[string]bool, len(a.builtinTools))
+	builtinReadOnly := make(map[string]bool, len(a.builtinTools)*2)
 	for _, t := range a.builtinTools {
 		if isSubagentExcludedTool(t.Name) {
 			continue
 		}
 		if t.ReadOnly {
+			// Key both name forms, mirroring turnReadOnly in the main tool
+			// loop (agentcore/stage_tool_loop.go): dispatchSubagentTool
+			// looks up deps.BuiltinReadOnly[name] with the name as emitted
+			// by the LLM, and local LLMs may emit the bare form
+			// ("web_search") rather than the namespaced registry form
+			// ("builtin__web_search"). A lookup keyed on a single form
+			// would silently miss the other and conservatively report a
+			// read-only failure as potentially mutating.
 			builtinReadOnly[t.Name] = true
+			builtinReadOnly[strings.TrimPrefix(t.Name, "builtin__")] = true
 		}
 		builtinDefs = append(builtinDefs, llm.ToolDef{
 			Type: "function",
