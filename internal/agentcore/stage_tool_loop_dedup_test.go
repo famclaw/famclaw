@@ -372,3 +372,95 @@ func TestStageToolLoop_DedupReasonByDisposition(t *testing.T) {
 		})
 	}
 }
+
+// TestStageToolLoop_DedupReasonAllowlistDenied verifies that when a tool is
+// absent from the turn allowlist and the model re-emits the same call, the
+// dedup reason names the allowlist instead of claiming a policy block: the
+// tool was never available this turn, so policy never saw it.
+func TestStageToolLoop_DedupReasonAllowlistDenied(t *testing.T) {
+	const deniedName = "builtin__file_write"
+	args := map[string]any{"path": "test.txt", "content": "hello"}
+
+	chatter := &dedupChatter{
+		responses: []llm.Message{
+			// 2nd LLM call: the model re-emits the same (denied) call.
+			{
+				Role:    "assistant",
+				Content: "retrying",
+				ToolCalls: []llm.ToolCall{{
+					ID:       "call_retry",
+					Function: llm.ToolCallFunction{Name: deniedName, Arguments: args},
+				}},
+			},
+			// 3rd LLM call: the model gives up (final answer).
+			{Role: "assistant", Content: "done"},
+		},
+	}
+
+	var builtinCalls int
+	deps := ToolLoopDeps{
+		MaxIterations: 10,
+		BuiltinHandler: func(_ context.Context, _ string, _ map[string]any) (string, error) {
+			builtinCalls++
+			return "ok", nil
+		},
+		ClientFactory: func(*Turn) llm.Chatter { return chatter },
+	}
+
+	turn := &Turn{
+		User:  &config.UserConfig{Name: "kid", Role: "child"},
+		Tools: []Tool{{Name: "builtin__echo"}}, // allowlist excludes deniedName
+	}
+	turn.SetMeta("pending_tool_calls", []llm.ToolCall{{
+		ID:       "call1",
+		Function: llm.ToolCallFunction{Name: deniedName, Arguments: args},
+	}})
+	turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "write a file"}})
+
+	stage := NewStageToolLoop(deps)
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatalf("stage error: %v", err)
+	}
+
+	// 1) The tool never executed in either iteration.
+	if builtinCalls != 0 {
+		t.Errorf("builtin handler calls = %d, want 0 (the call never executed)", builtinCalls)
+	}
+
+	// 2) Iteration 1 recorded the allowlist denial; iteration 2 the dedup
+	//    short-circuit.
+	if len(turn.ToolCalls) != 2 {
+		t.Fatalf("expected 2 results (allowlist denial + short-circuit), got %d: %+v", len(turn.ToolCalls), turn.ToolCalls)
+	}
+	first, second := turn.ToolCalls[0], turn.ToolCalls[1]
+	if first.Disposition != DispositionDenied {
+		t.Errorf("iteration 1 disposition = %v, want DispositionDenied", first.Disposition)
+	}
+	if !errors.Is(second.Error, ErrToolAlreadyFailed) {
+		t.Errorf("iteration 2 error = %v, want ErrToolAlreadyFailed (dedup short-circuit)", second.Error)
+	}
+
+	// 3) The dedup message in the LLM transcript names the allowlist and
+	//    must not claim a policy block.
+	if len(chatter.captured) < 2 {
+		t.Fatalf("expected at least 2 LLM calls, got %d", len(chatter.captured))
+	}
+	var sawAllowlist, sawPolicy string
+	for _, m := range chatter.captured[1] {
+		if m.Role != "tool" {
+			continue
+		}
+		if strings.Contains(m.Content, "not in the turn allowlist") {
+			sawAllowlist = m.Content
+		}
+		if strings.Contains(m.Content, "blocked by policy earlier in this turn") {
+			sawPolicy = m.Content
+		}
+	}
+	if sawPolicy != "" {
+		t.Errorf("dedup message must not claim a policy block; got: %q", sawPolicy)
+	}
+	if sawAllowlist == "" {
+		t.Errorf("dedup message must name the turn allowlist; captured[1]: %+v", chatter.captured[1])
+	}
+}

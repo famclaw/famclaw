@@ -247,7 +247,17 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					reason := "this call was not successful earlier in this turn."
 					switch prior.Disposition {
 					case DispositionDenied:
-						reason = "this call was blocked by policy earlier in this turn; try a different approach instead of repeating it."
+						// A denial has two distinct causes: the tool is absent
+						// from the turn allowlist (never executed, and never
+						// will be this turn) or a policy gate blocked it.
+						// Name which, so the model isn't told an allowlisted
+						// tool "was blocked by policy" when the real cause is
+						// the allowlist.
+						if len(turnAllowed) > 0 && !turnAllowed[tc.Function.Name] {
+							reason = "this tool was not available for this turn (not in the turn allowlist); it was denied earlier. Do not retry it this turn."
+						} else {
+							reason = "this call was blocked by policy earlier in this turn; try a different approach instead of repeating it."
+						}
 					case DispositionPending:
 						reason = "this call is pending approval earlier in this turn; try a different approach instead of repeating it."
 					case DispositionAttempted:
