@@ -61,6 +61,41 @@ func TestSuspiciousSiteDetector_Check(t *testing.T) {
 			},
 		},
 		{
+			// Confusables are matched on the POST-LOWERCASE host form: the
+			// production caller canonicalizes with strings.ToLower before
+			// Check. Greek small α (the lowercase of the dead U+0391 entry)
+			// on a non-known-good host must flag — the IDN check does not
+			// (idna.ToASCII succeeds on Greek) and typo-squat has no
+			// known-good anchor for it.
+			name: "Greek 'α' confusable, post-lowercase form, non-known-good host",
+			host: "p\u03B1ypal.com",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "punycode or confusable characters detected",
+			},
+		},
+		{
+			// Cyrillic 'а' is lowercase-invariant — the live entry.
+			name: "Cyrillic 'а' confusable, post-lowercase form",
+			host: "\u0430pple.com",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "punycode or confusable characters detected",
+			},
+		},
+		{
+			// Documented residual: Kelvin sign K lowercases to ASCII 'k', so
+			// "gk00gle.com" is not confusable-shaped anymore. Multi-edit leet
+			// is covered by the curated kid-safe baseline and the parent
+			// denylist (B2 trade-off, isTypoSquat), not by this detector.
+			name: "Kelvin-leet host post-lowercase (ASCII residual)",
+			host: "gk00gle.com",
+			expected: Verdict{
+				Action: "warn_allow",
+				Reason: "host passed suspicious site checks",
+			},
+		},
+		{
 			name: "High entropy single label",
 			host: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
 			expected: Verdict{
@@ -222,6 +257,25 @@ func TestSuspiciousSiteDetector_Punycode(t *testing.T) {
 		{
 			name: "Regular host",
 			host: "example.com",
+			want: false,
+		},
+		{
+			// Post-lowercase confusable forms must flag: Cyrillic 'а' is
+			// invariant, Greek 'α' is the lowercase of the dead U+0391 entry.
+			name: "Cyrillic 'а' host (post-lowercase)",
+			host: "\u0430pple.com",
+			want: true,
+		},
+		{
+			name: "Greek 'α' host (post-lowercase form of dead U+0391 entry)",
+			host: "p\u03B1ypal.com",
+			want: true,
+		},
+		{
+			// Kelvin sign lowercases to ASCII 'k' — not confusable-shaped;
+			// covered by baseline/denylist per the B2 trade-off.
+			name: "Kelvin-leet host post-lowercase (ASCII residual)",
+			host: "gk00gle.com",
 			want: false,
 		},
 	}
