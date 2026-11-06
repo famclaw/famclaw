@@ -1435,6 +1435,23 @@ func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
 	//     hostDecision call; the allowlist admin tools still write
 	//     URLAllowlist outside the lock, as they always have (a
 	//     pre-existing sibling gap, tracked separately).
+	// Accepted trade-off (PR #423 review sign-off, 2026-11): that
+	// one-decision-stale window for mode switches is confirmed and
+	// accepted, not just safe-in-practice. A mode switch is a rare
+	// parent operational action (a settings POST that holds this lock
+	// exclusively for the whole request), the window is bounded to the
+	// single in-flight decision, and it self-heals on the next call.
+	// Worst case per direction: allowlist → denylist (loosening), the
+	// stale decision is fail-CLOSED (it may deny a host the new mode
+	// would allow); denylist → allowlist (tightening), at most one
+	// in-flight decision may allow a host outside the new allowlist,
+	// with the orthogonal gates (scheme gate, kid-safe baseline,
+	// suspicious-host gate, dialer private-IP vetting) still applied
+	// to that call, and the settings POST refusing to persist
+	// allowlist mode with an empty allowlist. This is the same class
+	// as the previously accepted settings-POST "lock during disk I/O"
+	// trade-off: a bounded, documented, self-healing staleness window
+	// in exchange for not holding RLock across per-call matching work.
 	// Trap: if a caller ever needs the mode decision and the
 	// allowlist/denylist data to be consistent within ONE call (e.g. an
 	// atomic mode-switch + list-replacement tool), the snapshot is no
