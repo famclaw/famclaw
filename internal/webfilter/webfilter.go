@@ -28,8 +28,22 @@ var (
 		"reddit.com", "netflix.com", "spotify.com", "ebay.com",
 		"microsoft.com", "apple.com", "github.com", "stackoverflow.com",
 	}
-	standardPorts   = map[string]bool{"80": true, "443": true}
-	confusableChars = []rune{'\u0430', '\u0391', '\u212A'} // Cyrillic 'a', Greek 'A', Kelvin sign
+	standardPorts = map[string]bool{"80": true, "443": true}
+	// confusableChars lists the homoglyphs the detector hunts for in the
+	// host. Entries are the POST-LOWERCASE forms: the sole production
+	// caller (agent.hostDecision) canonicalizes the host with
+	// strings.ToLower before Check, so the list must hold what each
+	// confusable looks like after that canonicalization — not raw input
+	// forms. (Raw-form entries were dead weight: '\u0391' Greek capital A
+	// canonicalizes to '\u03B1' before the loop ever sees it, and the
+	// preceding IDN check does not cover it, because idna.ToASCII
+	// succeeds on Greek hosts and the check then breaks without
+	// flagging. '\u212A' Kelvin sign K canonicalizes to ASCII 'k' and is
+	// indistinguishable from a legitimate 'k' post-lowercase; its
+	// multi-edit leet variants remain covered by the curated kid-safe
+	// baseline and parent denylist per the B2 trade-off documented in
+	// isTypoSquat.)
+	confusableChars = []rune{'\u0430', '\u03B1'} // Cyrillic 'a', Greek 'α' (post-lowercase)
 )
 
 // Verdict represents the result of a suspicious site check.
@@ -326,7 +340,7 @@ func editDistance(s1, s2 string) int {
 			if r1Char == r2Char {
 				m[i+1][j+1] = m[i][j]
 			} else {
-				m[i+1][j+1] = min(m[i][j+1]+1, m[i+1][j]+1, m[i][j]+1)
+				m[i+1][j+1] = min3(m[i][j+1]+1, m[i+1][j]+1, m[i][j]+1)
 			}
 		}
 	}
@@ -335,7 +349,7 @@ func editDistance(s1, s2 string) int {
 }
 
 // Helper function to find minimum of three integers
-func min(a, b, c int) int {
+func min3(a, b, c int) int {
 	minVal := a
 	if b < minVal {
 		minVal = b
