@@ -275,14 +275,27 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	// O(YAML marshal of full config + 1 fsync + 1 rename); the fsync
 	// term is the worst-case durable write-back of that temp-file
 	// write, not an explicit Sync() call. On SD-card-backed filesystems
-	// this can be 50-200ms under I/O pressure, during which every
-	// hostDecision reader (owner.RLock) is blocked. This is a LATENCY
-	// coupling, not a deadlock or race: the lock order cfgMu (outer) ->
-	// M (inner) -> T (innermost) is cycle-free (see
-	// policy_owner.go:21-30). If future work moves the disk write
-	// outside the M span (bot path (a): publish in-memory under M,
-	// write to disk under T only), update this comment and the
-	// policy_owner.go lock-order doc to reflect the new span boundary.
+	// this can be 50-200ms under I/O pressure (reviewer estimate, not
+	// a measurement), during which every hostDecision reader
+	// (owner.RLock) is blocked. This is a LATENCY coupling, not a
+	// deadlock or race: the lock order cfgMu (outer) -> M (inner) -> T
+	// (innermost) is cycle-free (see policy_owner.go:21-30).
+	//
+	// Accepted trade-off, re-resolved this cycle: this same finding has
+	// been raised in 4 prior review cycles and resolved as an accepted
+	// deferral each time. Do NOT shorten the M span by breaking atomic
+	// config persistence — the whole read-merge-publish-commit-rollback
+	// transaction stays under ONE M hold because writeConfig is an
+	// all-or-nothing on-disk persist (temp-file + rename) and the
+	// in-memory rollback on a failed write (the snap* restore above)
+	// must stay serialized with readers, or a hostDecision reader could
+	// observe a published-then-reverted or half-applied config. The
+	// stall is bounded and infrequent: a settings POST is a rare parent
+	// action. Future path if it ever matters (bot path (a)): publish
+	// in-memory under M, write to disk under T only — keeping the
+	// temp+rename atomicity, not dropping it. If that split is ever
+	// made, update this comment and the policy_owner.go lock-order doc
+	// to reflect the new span boundary.
 	owner := s.cfg.WebFetchPolicyOwner()
 	owner.Lock()
 	newWebFetch := s.cfg.Tools.WebFetch
