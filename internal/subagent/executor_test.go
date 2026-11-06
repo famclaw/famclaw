@@ -178,12 +178,15 @@ func TestFilterTools_DefaultDeny(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			tools, allowed := filterTools(infos, tc.allow, tc.deny)
+			tools, allowed, readOnly := filterTools(infos, tc.allow, tc.deny)
 			if len(tools) != tc.wantNum {
 				t.Errorf("len(tools) = %d, want %d (tools=%v)", len(tools), tc.wantNum, tools)
 			}
 			if len(allowed) != tc.wantNum {
 				t.Errorf("len(allowed) = %d, want %d (allowed=%v)", len(allowed), tc.wantNum, allowed)
+			}
+			if len(readOnly) != 0 {
+				t.Errorf("readOnly = %v, want empty (fixture infos carry no ReadOnly hint)", readOnly)
 			}
 			for _, name := range tc.wantHave {
 				if !allowed[name] {

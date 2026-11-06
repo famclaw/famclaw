@@ -276,13 +276,12 @@ func mapEqual(a, b map[string]string) bool {
 }
 
 type managedClient struct {
-	mu         sync.Mutex
-	lastError  error
-	client     *Client
-	name       string
-	cfg        config.MCPServerConfig
-	env        map[string]string
-	restartCnt int
+	mu        sync.Mutex
+	lastError error
+	client    *Client
+	name      string
+	cfg       config.MCPServerConfig
+	env       map[string]string
 }
 
 // NewPool creates an empty MCP pool. sandboxRoot is the on-disk directory
@@ -400,8 +399,15 @@ func (p *Pool) StartAll(ctx context.Context) error {
 	return nil
 }
 
+// toolCallError retains the private cause for errors.Is/As without formatting it
+// into messages or logs. A transport error does not prove whether effects occurred.
+type toolCallError struct{ cause error }
+
+func (e *toolCallError) Error() string { return "MCP tool outcome uncertain" }
+func (e *toolCallError) Unwrap() error { return e.cause }
+
 // CallTool calls a tool by name, lazily starting the server if needed.
-// Restarts failed servers once. Resets restart count on success.
+// A failed call is never reissued: its effect may already have occurred.
 func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {
 	p.mu.RLock()
 	mc, ok := p.clients[name]
@@ -423,28 +429,29 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 
 	result, err := mc.client.CallTool(ctx, name, args)
 	if err == nil {
-		mc.restartCnt = 0
 		return result, nil
 	}
 
-	// Auto-restart once on failure
-	if mc.restartCnt < 1 {
-		log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
-		mc.restartCnt++
-		mc.client.Stop()
-		mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
-		mc.client.env = mc.env
-		if startErr := mc.client.Start(ctx); startErr != nil {
-			return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
-		}
-		result, err = mc.client.CallTool(ctx, name, args)
-		if err == nil {
-			mc.restartCnt = 0
-		}
-		return result, err
-	}
-
-	return nil, err
+	// Discard the connection for a future call, but preserve the original
+	// error: the server may have applied this call before its reply was lost.
+	// Retain the last discovered tools while disconnected so callers can still
+	// discover reconciliation tools. Start refreshes this snapshot on a
+	// successful tools/list; it is not evidence that the server is reachable.
+	// The preserved snapshot is intentionally stale: if the server's tool list
+	// changed between the last successful tools/list and this failed call,
+	// HasTool/ListTools reflect the old set until the next successful Start.
+	tools := mc.client.Tools()
+	mc.client.Stop()
+	// Replace with a fresh client left deliberately unstarted. The next
+	// CallTool triggers lazy start: both Pool.CallTool (the inner == nil
+	// guard above) and Client.CallTool start the client on demand. We do
+	// not call Start() here: it would block this error path on a reconnect
+	// (up to its 15s timeout), and a failed reconnect would still leave the
+	// same unstarted state that lazy start already handles.
+	mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
+	mc.client.env = mc.env
+	mc.client.tools = tools
+	return nil, &toolCallError{cause: err}
 }
 
 // HasTool returns true if the pool has a handler for the given tool.
@@ -483,6 +490,12 @@ type ToolInfo struct {
 	InputSchema map[string]any
 	ServerName  string
 	ScanTarget  string // URL or binary path for security scanning
+	// ReadOnly is true when the MCP server declares the tool with a
+	// readOnlyHint annotation (it performs no external state mutation).
+	// An absent hint stays false: consumers then keep the conservative
+	// "changes may have occurred" treatment, so this field can only make
+	// failure display more precise, never less truthful.
+	ReadOnly bool
 }
 
 // ListToolInfos returns tool metadata for all available tools.
@@ -522,6 +535,7 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 				InputSchema: schema,
 				ServerName:  name,
 				ScanTarget:  scanTarget,
+				ReadOnly:    tool.Annotations.ReadOnlyHint != nil && *tool.Annotations.ReadOnlyHint,
 			})
 		}
 	}

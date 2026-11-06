@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/config"
 	"github.com/famclaw/famclaw/internal/llm"
 	"github.com/famclaw/famclaw/internal/mcp"
@@ -37,6 +39,18 @@ type ExecutorDeps struct {
 	// posture (the parent already passed the OPA tool gate to even reach
 	// here).
 	BuiltinHandler func(ctx context.Context, name string, args map[string]any) (string, error)
+	// BuiltinReadOnly records which builtin tools are declared ReadOnly in
+	// the parent's tool registry. It is keyed by both the namespaced tool
+	// name ("builtin__web_search") and its bare form ("web_search")
+	// (agent.handleSpawnAgent builds it that way, mirroring turnReadOnly in
+	// the main tool loop), because dispatchSubagentTool looks it up with
+	// the name as emitted by the LLM and local models may emit either form.
+	// Lets
+	// dispatchSubagentTool apply the same truthful failure display as the
+	// parent's tool loop (agentcore.ToolErrorDisplay): a ReadOnly tool
+	// failure reports "no changes were made", and a web_search failure
+	// renders its safe classification marker verbatim.
+	BuiltinReadOnly map[string]bool
 }
 
 // filterBuiltinDefs applies the same allowlist/denylist as filterTools
@@ -77,13 +91,19 @@ func filterBuiltinDefs(defs []llm.ToolDef, allow, deny []string) ([]llm.ToolDef,
 }
 
 // filterTools applies the default-deny allowlist + denylist to MCP tool infos.
-// Empty allow yields zero tools and an empty allowedTools map (so the
-// subagent has NO MCP tools by default). Denied entries are subtracted after
-// the allowlist filter.
-func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map[string]bool) {
+// Empty allow yields zero tools and empty maps (so the subagent has NO MCP
+// tools by default). Denied entries are subtracted after the allowlist
+// filter. Also returns the subset of allowed tools that are declared
+// ReadOnly (mcp.ToolInfo.ReadOnly, from the server's readOnlyHint
+// annotation) so dispatchSubagentTool can apply the same truthful failure
+// display as the main tool loop: a read-only MCP tool failure reports
+// "no changes were made" instead of the conservative "changes may have
+// occurred". Tools without the hint stay out of the map (conservative).
+func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map[string]bool, map[string]bool) {
 	allowed := make(map[string]bool)
+	readOnly := make(map[string]bool)
 	if len(allow) == 0 {
-		return nil, allowed
+		return nil, allowed, readOnly
 	}
 	allowSet := make(map[string]bool, len(allow))
 	for _, a := range allow {
@@ -102,6 +122,9 @@ func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map
 			continue
 		}
 		allowed[info.Name] = true
+		if info.ReadOnly {
+			readOnly[info.Name] = true
+		}
 		tools = append(tools, llm.ToolDef{
 			Type: "function",
 			Function: llm.ToolDefFunc{
@@ -111,7 +134,7 @@ func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map
 			},
 		})
 	}
-	return tools, allowed
+	return tools, allowed, readOnly
 }
 
 // buildSystemPrompt assembles the subagent's system prompt.
@@ -146,8 +169,9 @@ func Execute(ctx context.Context, cfg Config, deps ExecutorDeps) (string, error)
 	// a tool name not in the definitions, the executor won't call it.
 	var tools []llm.ToolDef
 	allowedTools := make(map[string]bool)
+	mcpReadOnly := make(map[string]bool)
 	if deps.Pool != nil {
-		tools, allowedTools = filterTools(deps.Pool.ListToolInfos(), cfg.Tools, cfg.DenyTools)
+		tools, allowedTools, mcpReadOnly = filterTools(deps.Pool.ListToolInfos(), cfg.Tools, cfg.DenyTools)
 	}
 	// Builtin tools (web_fetch, etc.) are also gated by the same allow/deny
 	// lists. Without this branch the subagent is limited to MCP tools only,
@@ -197,7 +221,7 @@ func Execute(ctx context.Context, cfg Config, deps ExecutorDeps) (string, error)
 		for _, tc := range msg.ToolCalls {
 			log.Printf("[subagent] tool_call: %s", tc.Function.Name)
 			start := time.Now()
-			toolText, ok := dispatchSubagentTool(ctx, tc, deps, allowedTools, allowedBuiltins, start)
+			toolText, ok := dispatchSubagentTool(ctx, tc, deps, allowedTools, allowedBuiltins, mcpReadOnly, start)
 			if !ok {
 				toolText = fmt.Sprintf("Error: unknown tool %q", tc.Function.Name)
 			}
@@ -227,16 +251,34 @@ func dispatchSubagentTool(
 	tc llm.ToolCall,
 	deps ExecutorDeps,
 	allowedTools, allowedBuiltins map[string]bool,
+	mcpReadOnly map[string]bool,
 	start time.Time,
 ) (string, bool) {
 	name := tc.Function.Name
+
+	// Local LLMs occasionally emit the bare tool name ("web_search")
+	// instead of the namespaced registry form ("builtin__web_search").
+	// Normalize to the canonical form before the allowlist gate,
+	// dispatch and ToolErrorDisplay, mirroring the main tool loop
+	// (agentcore/stage_tool_loop.go): rewrite only when the namespaced
+	// builtin form is in the allowlist, so bare MCP tool names are
+	// untouched. Without this, a bare builtin call is rejected as an
+	// unknown tool, and a bare web_search failure could never match
+	// ToolErrorDisplay's builtin__web_search-specific safe-marker
+	// branch.
+	if !strings.HasPrefix(name, "builtin__") && !strings.HasPrefix(name, "mcp__") {
+		if allowedBuiltins["builtin__"+name] {
+			log.Printf("[subagent] tool_call normalized: %s -> builtin__%s", name, name)
+			name = "builtin__" + name
+		}
+	}
 
 	if allowedBuiltins[name] && deps.BuiltinHandler != nil {
 		out, err := deps.BuiltinHandler(ctx, name, tc.Function.Arguments)
 		duration := time.Since(start)
 		if err != nil {
-			log.Printf("[subagent] tool_error: %s (%v, %s)", name, err, duration)
-			return fmt.Sprintf("Error: %v", err), true
+			log.Printf("[subagent] builtin tool reported an error (%s)", duration)
+			return agentcore.ToolErrorDisplay(name, deps.BuiltinReadOnly[name], out), true
 		}
 		log.Printf("[subagent] tool_ok: %s (%s)", name, duration)
 		if out == "" {
@@ -248,9 +290,17 @@ func dispatchSubagentTool(
 	if allowedTools[name] && deps.Pool != nil && deps.Pool.HasTool(name) {
 		result, err := deps.Pool.CallTool(ctx, name, tc.Function.Arguments)
 		duration := time.Since(start)
-		if err != nil {
-			log.Printf("[subagent] tool_error: %s (%v, %s)", name, err, duration)
-			return fmt.Sprintf("Error: %v", err), true
+		if err != nil || result == nil {
+			log.Printf("[subagent] tool outcome uncertain (%s)", duration)
+			return "Tool outcome uncertain; some changes may have occurred. Verify before trying again.", true
+		}
+		if result.IsError {
+			log.Printf("[subagent] tool reported an error (%s)", duration)
+			// mcpReadOnly (from filterTools) covers MCP tools; the
+			// BuiltinReadOnly lookup is always false for MCP names, so
+			// without this a read-only MCP tool failure would degrade to
+			// the conservative "changes may have occurred" display.
+			return agentcore.ToolErrorDisplay(name, mcpReadOnly[name] || deps.BuiltinReadOnly[name], ""), true
 		}
 		if result != nil && len(result.Content) > 0 {
 			resultJSON, _ := json.Marshal(result.Content)
