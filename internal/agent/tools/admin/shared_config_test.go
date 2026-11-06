@@ -172,10 +172,18 @@ func TestSaveConfig_RenameFailureRemovesTempFile(t *testing.T) {
 	if err == nil {
 		t.Fatalf("SaveConfig() succeeded against a directory destination, want rename failure")
 	}
-	// The temp file must not survive the failed commit.
-	tempPath := destination + ".tmp"
-	if _, statErr := os.Stat(tempPath); !os.IsNotExist(statErr) {
-		t.Fatalf("temp file leaked after rename failure: %s still exists (stat err=%v)", tempPath, statErr)
+	// The temp file must not survive the failed commit. SaveConfig names
+	// it <basename>.tmp.<random> via os.CreateTemp (per-call unique
+	// suffix, #430 17:42 finding), so glob the real naming pattern —
+	// stat-ing the exact "config.yaml.tmp" name is vacuous: no such
+	// file ever exists under CreateTemp, and the assertion could never
+	// fail (false green).
+	leaked, err := filepath.Glob(destination + ".tmp.*")
+	if err != nil {
+		t.Fatalf("globbing for leaked temp files: %v", err)
+	}
+	if len(leaked) > 0 {
+		t.Fatalf("temp file leaked after rename failure: %v still exist", leaked)
 	}
 	// Destination unchanged: still a directory.
 	if fi, statErr := os.Stat(destination); statErr != nil || !fi.IsDir() {
