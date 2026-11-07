@@ -15,25 +15,59 @@ const defaultMaxBytes = 256 * 1024
 const defaultTimeout = 15 * time.Second
 const defaultUserAgent = "famclaw-webfetch/1 (+https://github.com/famclaw/famclaw)"
 
-// HostNotAllowedError is returned when a host is rejected by the URL
-// allowlist — a configuration decision, not a transient network failure.
-// The message is written so the LLM (and thus the user) can tell it apart
-// from a real connectivity error and report it as a gap the parent can fix
-// by editing tools.web_fetch.url_allowlist.
+// HostNotAllowedError is returned when a host is rejected by the URL policy
+// (allowlist or denylist) — a configuration decision, not a transient network
+// failure. The message names only the requested host plus the reason class,
+// never the list contents, so the LLM (and thus the family chat) can tell it
+// apart from a real connectivity error without leaking configuration (design
+// §3.3 no-leak rule).
 //
-// Callers should construct it via NewHostNotAllowedError so that
-// errors.As can distinguish it from genuine network failures.
+// Callers should construct it via NewHostNotAllowedError (allowlist
+// rejection, legacy message) or NewHostDeniedError (deny-class rejection) so
+// that errors.As can distinguish it from genuine network failures.
 type HostNotAllowedError struct {
 	Host string
+	// Reason is the policy reason class: "" or "allowlist" (allowlist
+	// rejection — legacy wording), "denylist" (parent-added deny entry),
+	// "baseline" (bundled kid-unsafe baseline), "suspicious" (offline
+	// detector verdict), or "policy" (generic). It drives the message
+	// wording only; it is never the list contents.
+	Reason string
 }
 
 func (e *HostNotAllowedError) Error() string {
-	return fmt.Sprintf(`host %q is not on the URL allowlist (tools.web_fetch.url_allowlist): access was blocked by configuration, not by a network failure. A parent can add this host to tools.web_fetch.url_allowlist to permit it`, e.Host)
+	switch e.Reason {
+	case "denylist", "baseline":
+		// Kid-safe neutral message (design §3.3): names the requested host and
+		// the family web-policy block. Never says "on the block list", never
+		// enumerates entries, never names config paths.
+		return fmt.Sprintf(`host %q is not available on this family's FamClaw (blocked by the family's web policy, not by a network failure). If you think it should be available, ask a parent`, e.Host)
+	case "suspicious":
+		return fmt.Sprintf(`host %q looks unusual, so it was not opened (family web policy, not a network failure). A parent can allow it if they approve`, e.Host)
+	case "policy":
+		return fmt.Sprintf(`host %q was blocked by the URL policy (a configuration decision, not a network failure)`, e.Host)
+	default:
+		// "" / "allowlist" — legacy allowlist rejection, unchanged wording.
+		// The allowlist is a parent-maintained allow-set the parent edits to
+		// fix this, so naming the config key here is correct (and historical).
+		return fmt.Sprintf(`host %q is not on the URL allowlist (tools.web_fetch.url_allowlist): access was blocked by configuration, not by a network failure. A parent can add this host to tools.web_fetch.url_allowlist to permit it`, e.Host)
+	}
 }
 
-// NewHostNotAllowedError creates a HostNotAllowedError for the given host.
+// NewHostNotAllowedError creates a HostNotAllowedError for the given host
+// with the legacy allowlist reason (empty Reason preserves the historical
+// message for back-compat with existing errors.As callers and messages).
 func NewHostNotAllowedError(host string) *HostNotAllowedError {
 	return &HostNotAllowedError{Host: host}
+}
+
+// NewHostDeniedError creates a HostNotAllowedError carrying a deny-class
+// reason (e.g. "denylist", "baseline", "suspicious") so the butler-facing
+// message is chosen precisely without leaking the full list (design §1.2,
+// §3.3). It is the SAME type as NewHostNotAllowedError so all
+// errors.As(*webfetch.HostNotAllowedError) classification sites keep working.
+func NewHostDeniedError(host, reason string) *HostNotAllowedError {
+	return &HostNotAllowedError{Host: host, Reason: reason}
 }
 
 // defaultAllowedTypes returns a fresh slice each call so callers cannot
@@ -54,7 +88,7 @@ type Options struct {
 	// fetch. Callers use this to enforce per-host allowlists across
 	// redirects (preventing an allowed host from 302-ing to a disallowed
 	// one).
-	HostValidator func(host string) error
+	HostValidator func(ctx context.Context, host string) error
 
 	// AllowPrivateNetworks disables the default DNS-resolution-time IP
 	// guard that rejects loopback, private (RFC1918/ULA), link-local,
@@ -113,7 +147,7 @@ func Fetch(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("web fetch: scheme %q not allowed", parsed.Scheme)
 	}
 	if opts.HostValidator != nil {
-		if err := opts.HostValidator(parsed.Hostname()); err != nil {
+		if err := opts.HostValidator(ctx, parsed.Hostname()); err != nil {
 			return nil, err
 		}
 	}
@@ -150,7 +184,7 @@ func Fetch(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 				return fmt.Errorf("redirect to disallowed scheme %q", req.URL.Scheme)
 			}
 			if opts.HostValidator != nil {
-				if err := opts.HostValidator(req.URL.Hostname()); err != nil {
+				if err := opts.HostValidator(req.Context(), req.URL.Hostname()); err != nil {
 					return fmt.Errorf("redirect blocked: %w", err)
 				}
 			}

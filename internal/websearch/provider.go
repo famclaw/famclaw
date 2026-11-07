@@ -54,7 +54,7 @@ type ProviderConfig struct {
 	// HostValidator gates the search endpoint host for the searxng
 	// provider (the agent passes the web_fetch url_allowlist gate). The
 	// hosted providers do not use it — see TavilyProvider for why.
-	HostValidator func(host string) error
+	HostValidator func(ctx context.Context, host string) error
 	// AllowPrivateNetworks relaxes the DNS-time private-IP guard for the
 	// searxng endpoint (self-hosted SearXNG commonly runs on the home LAN;
 	// the operator opts in via tools.web_fetch.block_private_networks).

@@ -42,3 +42,6 @@ docs/superpowers/
 
 # Root-level Go build artifacts (from `go build` of the main package at root)
 /android-control
+
+# Serena per-developer local config — never commit
+.serena/
