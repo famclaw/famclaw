@@ -29,8 +29,12 @@ func TestPoolDiscoverySurvivesAmbiguousCall(t *testing.T) {
 		return protocol.NewToolResultText("observed"), nil
 	})
 	h := server.NewStreamableHTTPServer(s)
-	var dropped atomic.Bool
+	var dropped, offline atomic.Bool
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if offline.Load() {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Error(err)
@@ -98,16 +102,57 @@ func TestPoolDiscoverySurvivesAmbiguousCall(t *testing.T) {
 	if !reflect.DeepEqual(infos, afterInfos) {
 		t.Errorf("metadata lost after reset: before=%+v after=%+v", infos, afterInfos)
 	}
+	// A known reconciliation tool remains discoverable even while the
+	// transport is down. Trying it cannot replay the ambiguous mutation.
+	offline.Store(true)
+	if !p.HasTool("reconcile") || p.HasTool("new_tool") {
+		t.Fatal("unexpected alias availability while disconnected")
+	}
+	result, err = p.CallTool(context.Background(), "reconcile", map[string]any{"key": "x"})
+	if err == nil || result != nil || mutations.Load() != 1 || reconciliations.Load() != 0 {
+		t.Fatalf("offline reconciliation: result=%v err=%v mutation calls=%d reconciliation calls=%d", result, err, mutations.Load(), reconciliations.Load())
+	}
+	// New metadata arrives on reconnect, but aliases are only rebuilt by
+	// StartAll; a miss must not become a permanent negative entry.
+	s.AddTool(protocol.NewTool("new_tool"), func(context.Context, protocol.CallToolRequest) (*protocol.CallToolResult, error) {
+		return protocol.NewToolResultText("new"), nil
+	})
+	offline.Store(false)
 	result, err = p.CallTool(context.Background(), "reconcile", map[string]any{"key": "x"})
 	if err != nil || result == nil || reconciliations.Load() != 1 || mutations.Load() != 1 {
 		t.Errorf("distinct reconnect: result=%v err=%v reconciliation calls=%d mutation calls=%d", result, err, reconciliations.Load(), mutations.Load())
+	}
+	if p.HasTool("new_tool") {
+		t.Fatal("lazy reconnect unexpectedly rebuilt pool aliases")
+	}
+	if got := p.ListTools(); !containsTool(got, "new_tool") {
+		t.Fatalf("lazy reconnect did not refresh client tools: %v", got)
+	}
+	if err := p.StartAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !p.HasTool("new_tool") {
+		t.Fatal("new tool unavailable after pool alias rebuild")
+	}
+	result, err = p.CallTool(context.Background(), "new_tool", nil)
+	if err != nil || result == nil {
+		t.Fatalf("new tool after rebuild: result=%v err=%v", result, err)
 	}
 	result, err = p.CallTool(context.Background(), "other", nil)
 	if err != nil || result == nil || otherCalls.Load() != 1 {
 		t.Errorf("unrelated success: result=%v err=%v calls=%d", result, err, otherCalls.Load())
 	}
 	finalNames, finalInfos := snapshot()
-	if !reflect.DeepEqual(names, finalNames) || !reflect.DeepEqual(infos, finalInfos) {
-		t.Errorf("discovery changed after reconnect: names=%v infos=%+v", finalNames, finalInfos)
+	if !reflect.DeepEqual(finalNames, []string{"mutate", "new_tool", "other", "reconcile"}) || len(finalInfos) != 4 {
+		t.Errorf("unexpected discovery after refresh: names=%v infos=%+v", finalNames, finalInfos)
 	}
+}
+
+func containsTool(names []string, target string) bool {
+	for _, name := range names {
+		if name == target {
+			return true
+		}
+	}
+	return false
 }

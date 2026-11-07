@@ -271,6 +271,8 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						} else {
 							reason = "this call was blocked by policy earlier in this turn; try a different approach instead of repeating it."
 						}
+					case DispositionSkipped:
+						reason = "this call was skipped earlier in this turn and was not run; try a different approach instead of repeating it."
 					case DispositionPending:
 						reason = "this call is pending approval earlier in this turn; try a different approach instead of repeating it."
 					case DispositionAttempted:

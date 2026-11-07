@@ -437,9 +437,10 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 	// Retain the last discovered tools while disconnected so callers can still
 	// discover reconciliation tools. Start refreshes this snapshot on a
 	// successful tools/list; it is not evidence that the server is reachable.
-	// The preserved snapshot is intentionally stale: if the server's tool list
-	// changed between the last successful tools/list and this failed call,
-	// HasTool/ListTools reflect the old set until the next successful Start.
+	// This snapshot may be stale. A successful lazy Start refreshes the client
+	// metadata returned by ListTools, but does not rebuild HasTool aliases.
+	// StartAll maps the refreshed tool names; in the application this happens
+	// when the pool is initialized. A restart rebuilds the pool at present.
 	tools := mc.client.Tools()
 	mc.client.Stop()
 	// Replace with a fresh client left deliberately unstarted. The next
