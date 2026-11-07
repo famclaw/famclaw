@@ -3,14 +3,13 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/config"
-	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -41,8 +40,6 @@ func HandleAllowlistList(ctx context.Context, deps Deps, args map[string]any) (s
 	// Snapshot under the shared owner's read lock (review F1: the allowlist
 	// handlers previously took NO lock at all). The copy excludes every
 	// concurrent allowlist/denylist writer and the settings publish span.
-	// policyOwner() fails closed when the owner is unwired
-	// (ErrPolicyOwnerUnwired).
 	owner, err := deps.policyOwner()
 	if err != nil {
 		return "", err
@@ -88,7 +85,7 @@ func AllowlistAddDefinition() agentcore.Tool {
 func HandleAllowlistAdd(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	host, _ := args["host"].(string)
 	if host == "" {
-		return "", fmt.Errorf("allowlist_add requires a 'host' argument (e.g. allowlist_add(host=\"example.com\"))")
+		return "", fmt.Errorf("allowlist_add requires a 'host' argument (e.g. allowlist_add(host=%q))", "example.com")
 	}
 
 	// Canonicalize: accepts bare host, full URL, or URL with scheme/port.
@@ -99,43 +96,77 @@ func HandleAllowlistAdd(ctx context.Context, deps Deps, args map[string]any) (st
 	}
 
 	// #423 round 18 (review F1 + S2): the config's ONE shared policy owner
-	// is taken with no other lock held and spans the whole
-	// read-modify-write + persist. Before this round the allowlist handlers
-	// took NO lock at all and rewrote Cfg.Tools.WebFetch.URLAllowlist
-	// unsynchronized against hostDecision's decision-time snapshot — a data
-	// race. policyOwner() fails closed when the owner is unwired
-	// (ErrPolicyOwnerUnwired).
+	// (M) is taken with no other lock held and spans the whole
+	// read-modify-write + commit; SaveConfig takes T inside M. Before this
+	// round the allowlist handlers took NO lock at all and rewrote
+	// Cfg.Tools.WebFetch.URLAllowlist unsynchronized against hostDecision's
+	// decision-time snapshot.
 	owner, err := deps.policyOwner()
 	if err != nil {
 		return "", err
 	}
 	owner.Lock()
-	defer owner.Unlock()
 
 	wf := &deps.Cfg.Tools.WebFetch
 	for _, existing := range wf.URLAllowlist {
 		if strings.EqualFold(existing, host) {
+			owner.Unlock()
 			return fmt.Sprintf("%q is already in the allowlist", existing), nil
 		}
 	}
 
-	// Append to allowlist in-memory.
-	wf.URLAllowlist = append(wf.URLAllowlist, host)
-
-	// Persist to disk immediately.
-	if deps.ConfigPath != "" {
-		pErr := writeConfigInline(deps.ConfigPath, deps.Cfg)
-		if pErr != nil {
-			log.Printf("[admin] failed to persist allowlist_add: %v", pErr)
-			return fmt.Sprintf("added %q to in-memory allowlist, but failed to persist to disk: %v", host, pErr), nil
+	// S4 (fail-closed precondition): read the on-disk content token before
+	// building or saving; a read failure aborts with no mutation.
+	persist := deps.ConfigPath != "" && deps.SharedConfig != nil
+	var token string
+	if persist {
+		if token, err = deps.SharedConfig.CurrentToken(); err != nil {
+			owner.Unlock()
+			return "", fmt.Errorf("allowlist_add: reading config content token: %w", err)
 		}
 	}
 
+	// Plan §B commit order (scoped, live config): publish the in-memory
+	// mutation under M, commit the file under T (inside M — the observed
+	// order is always M -> T, never T -> M), and roll back on operator
+	// conflict so existing config is preserved (review S3). `next` is a
+	// fresh backing array: publishing it can never mutate the old array a
+	// decision-time snapshot is iterating.
+	next := make([]string, len(wf.URLAllowlist), len(wf.URLAllowlist)+1)
+	copy(next, wf.URLAllowlist)
+	next = append(next, host)
+
+	previous := wf.URLAllowlist
+	wf.URLAllowlist = next
+
+	if persist {
+		if _, err = deps.SharedConfig.SaveConfig(deps.Cfg, token); err != nil {
+			if errors.Is(err, ErrOperatorConflict) {
+				// S3: the disk changed after the precondition read —
+				// roll back the in-memory mutation and surface the
+				// sentinel for caller re-read + retry.
+				wf.URLAllowlist = previous
+				owner.Unlock()
+				return "", err
+			}
+			// B3: non-conflict commit failure — keep the in-memory
+			// change and report the persistence failure.
+			owner.Unlock()
+			log.Printf("[admin] failed to persist allowlist_add: %v", err)
+			return fmt.Sprintf("added %q to in-memory allowlist, but failed to persist to disk: %v", host, err), nil
+		}
+	}
+	// Publish confirmed (or memory-only entry point).
+	owner.Unlock()
+
+	// Plan §C: DB audit runs WITHOUT M (no lock held) — and the response
+	// is built from the local `next`, never a re-read of the (now
+	// unlocked) shared slice.
 	auditArgs, _ := json.Marshal(map[string]any{"host": host})
 	if err := logAudit(ctx, deps, toolNameAllowlistAdd, json.RawMessage(auditArgs)); err != nil {
 		log.Printf("[admin] audit log failed for %s: %v", toolNameAllowlistAdd, err)
 	}
-	return fmt.Sprintf("added %q to web_fetch URL allowlist (%d total)", host, len(wf.URLAllowlist)), nil
+	return fmt.Sprintf("added %q to web_fetch URL allowlist (%d total)", host, len(next)), nil
 }
 
 // AllowlistRemoveDefinition returns the parent-only tool that removes a host
@@ -164,7 +195,7 @@ func AllowlistRemoveDefinition() agentcore.Tool {
 func HandleAllowlistRemove(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	host, _ := args["host"].(string)
 	if host == "" {
-		return "", fmt.Errorf("allowlist_remove requires a 'host' argument (e.g. allowlist_remove(host=\"example.com\"))")
+		return "", fmt.Errorf("allowlist_remove requires a 'host' argument (e.g. allowlist_remove(host=%q))", "example.com")
 	}
 
 	// Canonicalize: accepts bare host, full URL, or URL with scheme/port.
@@ -174,15 +205,12 @@ func HandleAllowlistRemove(ctx context.Context, deps Deps, args map[string]any) 
 		return "", fmt.Errorf("allowlist_remove: %w", err)
 	}
 
-	// #423 round 18 (review F1 + S2): same exclusive-owner span as
-	// HandleAllowlistAdd — the whole read-modify-write + persist is under the
-	// config's shared policy owner so it never races hostDecision's snapshot.
+	// Same shared-owner span as HandleAllowlistAdd (review F1 + S2).
 	owner, err := deps.policyOwner()
 	if err != nil {
 		return "", err
 	}
 	owner.Lock()
-	defer owner.Unlock()
 
 	wf := &deps.Cfg.Tools.WebFetch
 	found := false
@@ -196,36 +224,47 @@ func HandleAllowlistRemove(ctx context.Context, deps Deps, args map[string]any) 
 	}
 
 	if !found {
+		owner.Unlock()
 		return fmt.Sprintf("%q is not in the allowlist", host), nil
 	}
 
-	wf.URLAllowlist = newAllowlist
-
-	// Persist to disk immediately.
-	if deps.ConfigPath != "" {
-		pErr := writeConfigInline(deps.ConfigPath, deps.Cfg)
-		if pErr != nil {
-			log.Printf("[admin] failed to persist allowlist_remove: %v", pErr)
-			return fmt.Sprintf("removed %q from in-memory allowlist, but failed to persist to disk: %v", host, pErr), nil
+	// S4 fail-closed precondition (same as add).
+	persist := deps.ConfigPath != "" && deps.SharedConfig != nil
+	var token string
+	if persist {
+		if token, err = deps.SharedConfig.CurrentToken(); err != nil {
+			owner.Unlock()
+			return "", fmt.Errorf("allowlist_remove: reading config content token: %w", err)
 		}
 	}
 
+	// Same plan §B commit order as add: publish under M, commit under T
+	// inside M, roll back on operator conflict (S3).
+	previous := wf.URLAllowlist
+	wf.URLAllowlist = newAllowlist
+
+	if persist {
+		if _, err = deps.SharedConfig.SaveConfig(deps.Cfg, token); err != nil {
+			if errors.Is(err, ErrOperatorConflict) {
+				// S3: roll back the in-memory mutation; surface the
+				// sentinel for caller re-read + retry.
+				wf.URLAllowlist = previous
+				owner.Unlock()
+				return "", err
+			}
+			// B3: keep the in-memory change, report the persistence failure.
+			owner.Unlock()
+			log.Printf("[admin] failed to persist allowlist_remove: %v", err)
+			return fmt.Sprintf("removed %q from in-memory allowlist, but failed to persist to disk: %v", host, err), nil
+		}
+	}
+	// Publish confirmed (or memory-only entry point).
+	owner.Unlock()
+
+	// Plan §C: DB audit runs WITHOUT M.
 	auditArgs, _ := json.Marshal(map[string]any{"host": host})
 	if err := logAudit(ctx, deps, toolNameAllowlistRemove, json.RawMessage(auditArgs)); err != nil {
 		log.Printf("[admin] audit log failed for %s: %v", toolNameAllowlistRemove, err)
 	}
 	return fmt.Sprintf("removed %q from web_fetch URL allowlist (%d remaining)", host, len(newAllowlist)), nil
-}
-
-// writeConfigInline marshals the config and writes it to disk.
-func writeConfigInline(cfgPath string, cfg *config.Config) error {
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshaling config: %w", err)
-	}
-	header := "# FamClaw configuration (managed by web UI)\n# Edit via the Settings page in the web UI, or edit this file and restart.\n\n"
-	if err := os.WriteFile(cfgPath, append([]byte(header), data...), 0600); err != nil {
-		return fmt.Errorf("failed to write config file %s: %w", cfgPath, err)
-	}
-	return nil
 }

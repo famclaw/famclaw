@@ -64,6 +64,14 @@ type Deps struct {
 	// value sync.RWMutex: a value field would be copied into each Deps and
 	// could not be shared across Agents.
 	SharedPolicyOwner *config.WebFetchPolicyOwner
+
+	// SharedConfig is the shared configuration manager for atomic
+	// save/reload of the config file (transactional: content-token
+	// precondition, temp-file + rename commit, operator-conflict rollback).
+	// The denylist/allowlist add/remove tools call its SaveConfig inside
+	// the policy-owner (M) span; a nil value means the entry point is
+	// memory-only (no on-disk persistence), and persist is then skipped.
+	SharedConfig *SharedConfigManager
 }
 
 // ErrPolicyOwnerUnwired is returned by policyOwner() when
@@ -118,6 +126,9 @@ func isKnownSubject(cfg *config.Config, subject string) bool {
 
 // logAudit writes an audit record. args must be JSON-marshalable.
 func logAudit(ctx context.Context, deps Deps, toolName string, args any) error {
+	if deps.DB == nil {
+		return nil
+	}
 	b, err := json.Marshal(args)
 	if err != nil {
 		return fmt.Errorf("marshal audit args: %w", err)

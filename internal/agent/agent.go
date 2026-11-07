@@ -117,6 +117,13 @@ type Agent struct {
 	// (which leave it nil) stay safe.
 	suspiciousNotified map[string]bool
 
+	// sharedConfigManager is used for atomic config save/reload operations
+	// with proper transactional semantics and conflict detection
+	// (admin.SharedConfigManager: content-token precondition + temp-file/
+	// rename commit). It is constructed in NewAgent when a config path is
+	// provided, and handed to the denylist/allowlist tool Deps.
+	sharedConfigManager *admin.SharedConfigManager
+
 	// cache is the tool-result spillover store. When non-nil, large
 	// handleWebFetch (and other large-result) tool replies are written
 	// to the cache and only a budget-sized head slice is returned to the
@@ -381,6 +388,12 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		effectiveSandboxRoot = ""
 	}
 
+	// Initialize shared config manager if config path is provided
+	var sharedConfigManager *admin.SharedConfigManager
+	if deps.ConfigPath != "" {
+		sharedConfigManager = admin.NewSharedConfigManager(deps.ConfigPath)
+	}
+
 	return &Agent{
 		user:                    user,
 		cfg:                     cfg,
@@ -413,6 +426,7 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		configPath:              deps.ConfigPath,
 		lifetimeCtx:             deps.LifetimeCtx,
 		reasoningCache:          deps.ReasoningCache,
+		sharedConfigManager:     sharedConfigManager,
 	}, nil
 }
 
@@ -917,22 +931,22 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath}
 			return admin.HandleMCPRemove(ctx, deps, args)
 		case "builtin__allowlist_list":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedPolicyOwner: a.sharedPolicyOwner()}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleAllowlistList(ctx, deps, args)
 		case "builtin__allowlist_add":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedPolicyOwner: a.sharedPolicyOwner()}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleAllowlistAdd(ctx, deps, args)
 		case "builtin__allowlist_remove":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedPolicyOwner: a.sharedPolicyOwner()}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleAllowlistRemove(ctx, deps, args)
 		case "builtin__denylist_list":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedPolicyOwner: a.sharedPolicyOwner()}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleDenylistList(ctx, deps, args)
 		case "builtin__denylist_add":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedPolicyOwner: a.sharedPolicyOwner()}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleDenylistAdd(ctx, deps, args)
 		case "builtin__denylist_remove":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedPolicyOwner: a.sharedPolicyOwner()}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleDenylistRemove(ctx, deps, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)

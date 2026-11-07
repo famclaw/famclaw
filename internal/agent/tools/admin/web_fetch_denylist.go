@@ -8,6 +8,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -88,49 +89,92 @@ func DenylistAddDefinition() agentcore.Tool {
 
 // HandleDenylistAdd dispatches builtin__denylist_add.
 func HandleDenylistAdd(ctx context.Context, deps Deps, args map[string]any) (string, error) {
-	// Exclusive lock over the whole read-modify-write + persist + audit
-	// span: the slice-header write below must not race hostDecision's
-	// decision-time snapshot or the web settings POST's section replace —
-	// all of them take the config's shared WebFetch policy owner; and the
-	// on-disk snapshot written by writeConfigInline must be consistent
-	// with the in-memory list it just mutated; policyOwner() fails closed
-	// when the owner is unwired (ErrPolicyOwnerUnwired).
-	owner, err := deps.policyOwner()
-	if err != nil {
-		return "", err
-	}
-	owner.Lock()
-	defer owner.Unlock()
 	host, _ := args["host"].(string)
 	if host == "" {
 		return "", fmt.Errorf("denylist_add requires a 'host' argument (e.g. denylist_add(host=\"example.com\"))")
 	}
 
-	host, err = config.NormalizeAllowlistHost(host)
+	host, err := config.NormalizeAllowlistHost(host)
 	if err != nil {
 		return "", fmt.Errorf("denylist_add: %w", err)
 	}
 
-	for _, existing := range deps.Cfg.Tools.WebFetch.URLDenylist {
+	// #423 round 18 lock order (plan §C, scoped): the config's ONE shared
+	// policy owner (M) is taken with no other lock held and spans the
+	// whole read-modify-write + commit; SaveConfig takes T
+	// (SharedConfigManager.mu) inside M, never the reverse. hostDecision
+	// on every Agent snapshots under M's read lock, so this writer
+	// excludes all decision-time readers process-wide. policyOwner() fails
+	// closed when the owner is unwired (ErrPolicyOwnerUnwired).
+	owner, err := deps.policyOwner()
+	if err != nil {
+		return "", err
+	}
+	owner.Lock()
+
+	wf := &deps.Cfg.Tools.WebFetch
+	for _, existing := range wf.URLDenylist {
 		if strings.EqualFold(existing, host) {
+			owner.Unlock()
 			return fmt.Sprintf("%q is already in the denylist", existing), nil
 		}
 	}
 
-	deps.Cfg.Tools.WebFetch.URLDenylist = append(deps.Cfg.Tools.WebFetch.URLDenylist, host)
+	// S4 (fail-closed precondition): before building or saving, read the
+	// on-disk content token. A read failure (file present but unreadable)
+	// means the disk state is unknown — abort with no mutation, instead of
+	// saving against a blind overwrite. (A missing file reads as "" —
+	// precondition vacuous by design for new files.)
+	persist := deps.ConfigPath != "" && deps.SharedConfig != nil
+	var token string
+	if persist {
+		if token, err = deps.SharedConfig.CurrentToken(); err != nil {
+			owner.Unlock()
+			return "", fmt.Errorf("denylist_add: reading config content token: %w", err)
+		}
+	}
 
-	if deps.ConfigPath != "" {
-		if err := writeConfigInline(deps.ConfigPath, deps.Cfg); err != nil {
+	// Plan §B commit order (scoped, live config): publish the in-memory
+	// mutation under M, commit the file under T (inside M — the observed
+	// order is always M -> T, never T -> M), and roll back on operator
+	// conflict so existing config is preserved (review S3). `next` is a
+	// fresh backing array: publishing it can never mutate the old array a
+	// decision-time snapshot is iterating.
+	next := make([]string, len(wf.URLDenylist), len(wf.URLDenylist)+1)
+	copy(next, wf.URLDenylist)
+	next = append(next, host)
+
+	previous := wf.URLDenylist
+	wf.URLDenylist = next
+
+	if persist {
+		if _, err = deps.SharedConfig.SaveConfig(deps.Cfg, token); err != nil {
+			if errors.Is(err, ErrOperatorConflict) {
+				// S3: the disk changed after the precondition read —
+				// roll back the in-memory mutation and surface the
+				// sentinel for caller re-read + retry.
+				wf.URLDenylist = previous
+				owner.Unlock()
+				return "", err
+			}
+			// B3: non-conflict commit failure — keep the in-memory
+			// change and report the persistence failure.
+			owner.Unlock()
 			log.Printf("[admin] failed to persist denylist_add: %v", err)
 			return fmt.Sprintf("added %q to in-memory denylist, but failed to persist to disk: %v", host, err), nil
 		}
 	}
+	// Publish confirmed (or memory-only entry point).
+	owner.Unlock()
 
+	// Plan §C: DB audit runs WITHOUT M (no lock held) — and the response
+	// is built from the local `next`, never a re-read of the (now
+	// unlocked) shared slice.
 	auditArgs, _ := json.Marshal(map[string]any{"host": host})
 	if err := logAudit(ctx, deps, toolNameDenylistAdd, json.RawMessage(auditArgs)); err != nil {
 		log.Printf("[admin] audit log failed for %s: %v", toolNameDenylistAdd, err)
 	}
-	return fmt.Sprintf("added %q to web_fetch URL denylist (%d total)", host, len(deps.Cfg.Tools.WebFetch.URLDenylist)), nil
+	return fmt.Sprintf("added %q to web_fetch URL denylist (%d total)", host, len(next)), nil
 }
 
 // DenylistRemoveDefinition returns the parent-only tool that removes a host
@@ -157,28 +201,30 @@ func DenylistRemoveDefinition() agentcore.Tool {
 
 // HandleDenylistRemove dispatches builtin__denylist_remove.
 func HandleDenylistRemove(ctx context.Context, deps Deps, args map[string]any) (string, error) {
-	// Exclusive lock over the whole read-modify-write + persist + audit
-	// span — same rationale as HandleDenylistAdd (see Deps.SharedPolicyOwner;
-	// policyOwner() fails closed when unwired, ErrPolicyOwnerUnwired).
-	owner, err := deps.policyOwner()
-	if err != nil {
-		return "", err
-	}
-	owner.Lock()
-	defer owner.Unlock()
 	host, _ := args["host"].(string)
 	if host == "" {
 		return "", fmt.Errorf("denylist_remove requires a 'host' argument (e.g. denylist_remove(host=\"example.com\"))")
 	}
 
-	host, err = config.NormalizeAllowlistHost(host)
+	host, err := config.NormalizeAllowlistHost(host)
 	if err != nil {
 		return "", fmt.Errorf("denylist_remove: %w", err)
 	}
 
+	// Same shared-owner span as HandleDenylistAdd: M taken first, no other
+	// lock held; SaveConfig takes T inside M; audit runs without M.
+	// policyOwner() fails closed when the owner is unwired
+	// (ErrPolicyOwnerUnwired).
+	owner, err := deps.policyOwner()
+	if err != nil {
+		return "", err
+	}
+	owner.Lock()
+
+	wf := &deps.Cfg.Tools.WebFetch
 	found := false
-	newDenylist := make([]string, 0, len(deps.Cfg.Tools.WebFetch.URLDenylist))
-	for _, existing := range deps.Cfg.Tools.WebFetch.URLDenylist {
+	newDenylist := make([]string, 0, len(wf.URLDenylist))
+	for _, existing := range wf.URLDenylist {
 		if strings.EqualFold(existing, host) {
 			found = true
 			continue
@@ -187,18 +233,44 @@ func HandleDenylistRemove(ctx context.Context, deps Deps, args map[string]any) (
 	}
 
 	if !found {
+		owner.Unlock()
 		return fmt.Sprintf("%q is not in the denylist", host), nil
 	}
 
-	deps.Cfg.Tools.WebFetch.URLDenylist = newDenylist
+	// S4 fail-closed precondition (same as add).
+	persist := deps.ConfigPath != "" && deps.SharedConfig != nil
+	var token string
+	if persist {
+		if token, err = deps.SharedConfig.CurrentToken(); err != nil {
+			owner.Unlock()
+			return "", fmt.Errorf("denylist_remove: reading config content token: %w", err)
+		}
+	}
 
-	if deps.ConfigPath != "" {
-		if err := writeConfigInline(deps.ConfigPath, deps.Cfg); err != nil {
+	// Same plan §B commit order as add: publish under M, commit under T
+	// inside M, roll back on operator conflict (S3).
+	previous := wf.URLDenylist
+	wf.URLDenylist = newDenylist
+
+	if persist {
+		if _, err = deps.SharedConfig.SaveConfig(deps.Cfg, token); err != nil {
+			if errors.Is(err, ErrOperatorConflict) {
+				// S3: roll back the in-memory mutation; surface the
+				// sentinel for caller re-read + retry.
+				wf.URLDenylist = previous
+				owner.Unlock()
+				return "", err
+			}
+			// B3: keep the in-memory change, report the persistence failure.
+			owner.Unlock()
 			log.Printf("[admin] failed to persist denylist_remove: %v", err)
 			return fmt.Sprintf("removed %q from in-memory denylist, but failed to persist to disk: %v", host, err), nil
 		}
 	}
+	// Publish confirmed (or memory-only entry point).
+	owner.Unlock()
 
+	// Plan §C: DB audit runs WITHOUT M (no lock held).
 	auditArgs, _ := json.Marshal(map[string]any{"host": host})
 	if err := logAudit(ctx, deps, toolNameDenylistRemove, json.RawMessage(auditArgs)); err != nil {
 		log.Printf("[admin] audit log failed for %s: %v", toolNameDenylistRemove, err)
