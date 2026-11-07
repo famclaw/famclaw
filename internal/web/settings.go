@@ -295,7 +295,8 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if len(update.WebFetch.URLAllowlist) > 0 {
+	// Preserve an omitted list and apply an explicit empty array.
+	if update.WebFetch.URLAllowlist != nil {
 		// Deduplicate, trim whitespace, and validate hosts
 		seen := make(map[string]struct{}, len(update.WebFetch.URLAllowlist))
 		deduped := make([]string, 0, len(update.WebFetch.URLAllowlist))

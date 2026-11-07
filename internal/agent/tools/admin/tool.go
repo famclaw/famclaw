@@ -127,6 +127,7 @@ func isKnownSubject(cfg *config.Config, subject string) bool {
 // logAudit writes an audit record. args must be JSON-marshalable.
 func logAudit(ctx context.Context, deps Deps, toolName string, args any) error {
 	if deps.DB == nil {
+		log.Print("[admin] WARNING: audit store unavailable; action was not audited")
 		return nil
 	}
 	b, err := json.Marshal(args)

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -26,7 +27,14 @@ var ErrApprovalAlreadyDecided = errors.New("approval not found or already decide
 
 // DB is the FamClaw database.
 type DB struct {
-	sql *sql.DB
+	sql               *sql.DB
+	approvalNotifyMu  sync.Mutex
+	approvalNotifying map[approvalNotificationKey]struct{}
+}
+
+type approvalNotificationKey struct {
+	id     string
+	expiry string
 }
 
 // Open opens (or creates) the SQLite database at the given path.
@@ -415,6 +423,13 @@ func (d *DB) migrate() error {
 		}
 	}
 
+	// Persist successful parent notifications with their approval generation.
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE approvals ADD COLUMN notification_sent INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add approval notification state: %w", err)
+		}
+	}
+
 	// Guard for existing deployments that predate the reminders table migration.
 	// SQLite does not support ADD COLUMN IF NOT EXISTS, so we attempt the
 	// ALTER TABLE and ignore the error when the column already exists.
@@ -717,7 +732,7 @@ func (d *DB) RequeueApproval(ctx context.Context, id string) (bool, error) {
 	now := time.Now().UTC()
 	res, err := d.sql.ExecContext(ctx, `
 		UPDATE approvals SET status = 'pending', decided_by = '', decision_note = '',
-			expires_at = ?, updated_at = CURRENT_TIMESTAMP
+			expires_at = ?, notification_sent = 0, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND status = 'approved' AND expires_at < ?`,
 		now.Add(24*time.Hour), id, now)
 	if err != nil {
@@ -728,6 +743,69 @@ func (d *DB) RequeueApproval(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// approvalNotificationState reads the pending generation without holding the
+// in-flight claim mutex across a potentially blocked database query.
+func (d *DB) approvalNotificationState(ctx context.Context, id string) (string, bool, error) {
+	var expiry string
+	var sent int
+	err := d.sql.QueryRowContext(ctx, `SELECT CAST(expires_at AS TEXT), notification_sent FROM approvals WHERE id = ? AND status = 'pending'`, id).Scan(&expiry, &sent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read approval notification state: %w", err)
+	}
+	return expiry, sent == 0, nil
+}
+
+// NotifyApprovalOnce claims one pending approval generation, delivers without
+// holding a lock, and persists successful delivery. Failed sends can be retried.
+// A crash between delivery and recording it, or a partially successful send,
+// can still cause a later retry. Marker writes are bounded by the server lifetime;
+// when no lifetime is supplied, the caller context is used instead.
+func (d *DB) NotifyApprovalOnce(ctx, lifetime context.Context, id string, notify func() error) error {
+	expiry, pending, err := d.approvalNotificationState(ctx, id)
+	if err != nil || !pending {
+		return err
+	}
+	key := approvalNotificationKey{id: id, expiry: expiry}
+	d.approvalNotifyMu.Lock()
+	if _, ok := d.approvalNotifying[key]; ok {
+		d.approvalNotifyMu.Unlock()
+		return nil
+	}
+	if d.approvalNotifying == nil {
+		d.approvalNotifying = make(map[approvalNotificationKey]struct{})
+	}
+	d.approvalNotifying[key] = struct{}{}
+	d.approvalNotifyMu.Unlock()
+	defer func() {
+		d.approvalNotifyMu.Lock()
+		delete(d.approvalNotifying, key)
+		d.approvalNotifyMu.Unlock()
+	}()
+
+	// An earlier claimant may have completed after our first read but before
+	// we acquired the claim. Recheck the same generation before sending.
+	current, pending, err := d.approvalNotificationState(ctx, id)
+	if err != nil || !pending || current != expiry {
+		return err
+	}
+	if err := notify(); err != nil {
+		return fmt.Errorf("send approval notification: %w", err)
+	}
+	if lifetime == nil {
+		lifetime = ctx
+	}
+	commitCtx, cancel := context.WithTimeout(lifetime, 5*time.Second)
+	defer cancel()
+	_, err = d.sql.ExecContext(commitCtx, `UPDATE approvals SET notification_sent = 1 WHERE id = ? AND status = 'pending' AND CAST(expires_at AS TEXT) = ?`, id, expiry)
+	if err != nil {
+		return fmt.Errorf("record approval notification: %w", err)
+	}
+	return nil
 }
 
 func (d *DB) GetApproval(ctx context.Context, id string) (*Approval, error) {

@@ -583,6 +583,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		MsgContext:              gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
 		ReasoningCache:          s.reasoningCache,
 		OnNewSuspiciousApproval: s.notifySuspiciousApproval,
+		LifetimeCtx:             s.lifetimeCtx,
 	})
 	if err != nil {
 		log.Printf("[ws] failed to create agent for %s: %v", userCfg.DisplayName, err)
@@ -626,6 +627,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				MsgContext:              gateway.MsgContext{Gateway: "web", ExternalID: current.Name},
 				ReasoningCache:          s.reasoningCache,
 				OnNewSuspiciousApproval: s.notifySuspiciousApproval,
+				LifetimeCtx:             s.lifetimeCtx,
 			})
 			lastRole = currentRole
 			if err != nil {
