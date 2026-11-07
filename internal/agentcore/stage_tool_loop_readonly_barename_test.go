@@ -37,9 +37,9 @@ func TestTurnReadOnlyLookupBothForms(t *testing.T) {
 	}
 
 	cases := []struct {
-		name string
+		name       string
 		probedName string
-		want bool
+		want       bool
 	}{
 		{"builtin namespaced form", "builtin__web_search", true},
 		{"builtin bare form", "web_search", true},
@@ -99,6 +99,7 @@ func runReadOnlyFailureLoop(t *testing.T, callName string) (string, string) {
 // self-contained.)
 type bareNameMockChatter struct {
 	responses []llm.Message
+	messages  []llm.Message
 }
 
 func (m *bareNameMockChatter) Chat(ctx context.Context, messages []llm.Message, temp float64, maxTokens int, onToken func(string)) (string, error) {
@@ -120,6 +121,7 @@ func (m *bareNameMockChatter) ChatMessage(ctx context.Context, messages []llm.Me
 }
 
 func (m *bareNameMockChatter) ChatWithTools(ctx context.Context, msgs []llm.Message, temperature float64, maxTokens int, toolDefs []llm.ToolDef) (*llm.Message, error) {
+	m.messages = append([]llm.Message(nil), msgs...)
 	if len(m.responses) == 0 {
 		return nil, errors.New("no more responses")
 	}
@@ -164,5 +166,49 @@ func TestStageToolLoop_ReadOnlyBareNameEndToEnd(t *testing.T) {
 				t.Errorf("final output does not contain %q: %q", noChanges, output)
 			}
 		})
+	}
+}
+
+// TestStageToolLoopWebSearchMarker reaches the handler and the next LLM call
+// with both names a model can emit, including a marker with private details.
+func TestStageToolLoopWebSearchMarker(t *testing.T) {
+	for _, name := range []string{"web_search", "builtin__web_search"} {
+		for _, tc := range []struct {
+			name, result, want string
+		}{
+			{"safe", WebSearchMarkerRateLimited, WebSearchMarkerRateLimited},
+			{"unsafe", WebSearchMarkerRateLimited + ": 429 from 10.0.0.7", ToolErrorDisplayNoChanges},
+		} {
+			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				var dispatched string
+				client := &bareNameMockChatter{responses: []llm.Message{{Content: "Search failed."}}}
+				deps := ToolLoopDeps{
+					MaxIterations: 1,
+					ClientFactory: func(*Turn) llm.Chatter { return client },
+					BuiltinHandler: func(_ context.Context, name string, _ map[string]any) (string, error) {
+						dispatched = name
+						return tc.result, errors.New("private diagnostic")
+					},
+				}
+				turn := &Turn{User: &config.UserConfig{Name: "tester", Role: "child"}, Tools: []Tool{{Name: "builtin__web_search", ReadOnly: true}}}
+				turn.SetMeta("pending_tool_calls", []llm.ToolCall{{ID: "call1", Function: llm.ToolCallFunction{Name: name, Arguments: map[string]any{"query": "sample"}}}})
+				turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "hello"}})
+				if err := NewStageToolLoop(deps)(context.Background(), turn); err != nil {
+					t.Fatal(err)
+				}
+				if dispatched != "builtin__web_search" {
+					t.Errorf("handler saw %q", dispatched)
+				}
+				var outputs []string
+				for _, msg := range client.messages {
+					if msg.Role == "tool" && msg.ToolCallID == "call1" {
+						outputs = append(outputs, msg.Content)
+					}
+				}
+				if len(outputs) != 1 || outputs[0] != tc.want {
+					t.Errorf("LLM tool messages = %q, want [%q]", outputs, tc.want)
+				}
+			})
+		}
 	}
 }

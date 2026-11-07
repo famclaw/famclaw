@@ -70,7 +70,8 @@ const (
 // This is the single source of truth shared by the parent agent's tool loop
 // (stage_tool_loop.go) and the subagent's tool dispatch
 // (internal/subagent/executor.go), so both surfaces classify the same
-// failure identically.
+// failure identically. Both stage_tool_loop.go and subagent/executor.go
+// normalize allowlisted bare builtin names before calling this helper.
 func ToolErrorDisplay(toolName string, readOnly bool, result string) string {
 	display := ToolErrorDisplayChangesMayHaveOccurred
 	if readOnly {

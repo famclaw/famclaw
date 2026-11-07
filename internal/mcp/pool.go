@@ -474,6 +474,7 @@ func (p *Pool) ListTools() []string {
 		tools := mc.client.Tools()
 		mc.mu.Unlock()
 		for _, tool := range tools {
+			// StartAll uses the raw tool.Name from Tools() as the alias key, subject to collisions.
 			if p.clients[tool.Name] != mc {
 				continue
 			}
@@ -515,6 +516,7 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 		name := mc.name
 		mc.mu.Unlock()
 		for _, tool := range tools {
+			// StartAll uses the raw tool.Name from Tools() as the alias key, subject to collisions.
 			if p.clients[tool.Name] != mc {
 				continue
 			}
