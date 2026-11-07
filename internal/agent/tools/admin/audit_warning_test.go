@@ -10,7 +10,7 @@ import (
 
 func TestMissingAuditStoreWarning(t *testing.T) {
 	if os.Getenv("FAMCLAW_TEST_MISSING_AUDIT") == "1" {
-		if err := logAudit(context.Background(), Deps{Actor: "private-actor", Gateway: "private-gateway"}, "private-tool", map[string]any{"secret": "private-payload"}); err != nil {
+		if err := logAudit(context.Background(), Deps{Actor: "fake-actor", Gateway: "fake-gateway"}, "fake-tool", map[string]any{"secret": "fake-payload"}); err != nil {
 			t.Fatal(err)
 		}
 		return
@@ -25,7 +25,7 @@ func TestMissingAuditStoreWarning(t *testing.T) {
 	if !strings.Contains(text, "audit") || !strings.Contains(text, "unavailable") {
 		t.Fatalf("missing audit warning: %q", text)
 	}
-	for _, secret := range []string{"private-actor", "private-gateway", "private-tool", "private-payload"} {
+	for _, secret := range []string{"fake-actor", "fake-gateway", "fake-tool", "fake-payload"} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("warning leaked private value: %q", secret)
 		}
