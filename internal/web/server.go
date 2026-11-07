@@ -682,7 +682,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 			// Notify parent if approval needed
 			if resp.PolicyAction == "request_approval" {
-				s.spawnBackground(func() { s.requestApproval(userCfg, string(resp.Category), payload.Text) })
+				s.spawnBackground(func() { s.requestApproval(r.Context(), userCfg, string(resp.Category), payload.Text) })
 			}
 
 			// Broadcast dashboard update
@@ -1167,7 +1167,15 @@ func (s *Server) decideURLs(a *store.Approval) (approve, deny string) {
 	return approve, deny
 }
 
-func (s *Server) requestApproval(user *config.UserConfig, category, queryText string) {
+// requestApproval records the pending parent-approval row for a chat-turn
+// request_approval policy action and pushes the /decide links to the parent
+// notifier. It runs fire-and-forget in a spawnBackground goroutine, but
+// threads the caller's context (the chat connection's r.Context() in
+// handleChat) into the DB upsert and the notification so both abort on
+// connection close / server shutdown instead of running against a torn-down
+// store on context.Background(). Mirrors notifySuspiciousApproval's ctx
+// discipline for its Notify call.
+func (s *Server) requestApproval(ctx context.Context, user *config.UserConfig, category, queryText string) {
 	import_approval_id := agent.ApprovalID(user.Name, category)
 	a := &store.Approval{
 		ID:          import_approval_id,
@@ -1177,14 +1185,14 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 		Category:    category,
 		QueryText:   queryText,
 	}
-	isNew, err := s.db.UpsertApproval(context.Background(), a)
+	isNew, err := s.db.UpsertApproval(ctx, a)
 	if err != nil {
 		log.Printf("[web] approval upsert: %v", err)
 		return
 	}
 	if isNew && s.notifier != nil {
 		approveURL, denyURL := s.decideURLs(a)
-		s.notifier.Notify(context.Background(), a, approveURL, denyURL)
+		s.notifier.Notify(ctx, a, approveURL, denyURL)
 	}
 }
 
