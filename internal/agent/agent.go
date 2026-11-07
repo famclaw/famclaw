@@ -1699,7 +1699,7 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 	if err != nil {
 		return webSearchError(err)
 	}
-	log.Printf("[agent][%s] web_search provider=%s query=%q hits=%d", a.user.Name, prov.Name(), query, len(hits))
+	log.Printf("[agent] web_search hits=%d", len(hits))
 	return websearch.FormatHits(hits), nil
 }
 

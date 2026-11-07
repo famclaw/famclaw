@@ -822,10 +822,8 @@ var ErrToolAlreadyFailed = fmt.Errorf("tool call already failed this turn")
 // The scan is bounded by the current turn's iteration and batch limits.
 func priorUnsuccessfulCall(name string, args map[string]any, results []ToolResult) (ToolResult, bool) {
 	for _, r := range results {
-		// A DispositionSkipped result without an Error is intentionally NOT
-		// deduplicated: skipped means "not available, try a different tool",
-		// so a re-emitted call simply gets the same skip message again —
-		// correct behavior, not a retry that should be short-circuited.
+		// Skips with errors (such as unavailable tools) are deduplicated.
+		// Intentional page-change skips have no error and may be retried.
 		if r.Error == nil && !(r.Disposition == DispositionAttempted && r.Outcome != OutcomeSuccess) {
 			continue
 		}
