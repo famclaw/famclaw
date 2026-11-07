@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/honeybadger"
@@ -31,39 +32,20 @@ type Config struct {
 	SecCheck  SecCheckConfig  `yaml:"seccheck"` // deprecated — use honeybadger instead
 	Tools     ToolsConfig     `yaml:"tools,omitempty"`
 
-	// WebFetchDenylistMu guards every in-process read/write of
-	// Tools.WebFetch.URLDenylist. It lives on the shared *Config — not on
-	// any per-instance caller — because the accessors span components
-	// that each build their own state but all hold this one object:
+	// webFetchPolicyOwner is the one shared WebFetchPolicyOwner for this
+	// Config instance (#423 plan §B ownership model: one owner per config,
+	// shared by every Agent/handler built from this *Config). Lazily
+	// allocated on first WebFetchPolicyOwner() call; unexported so
+	// allocation stays internal to config, YAML-invisible, and never part
+	// of the config file. See policy_owner.go.
 	//
-	//   readers: Agent.hostDecision (and the WebFetch struct snapshots in
-	//     Agent.handleWebFetch / handleWebSearch), the admin denylist
-	//     tools (denylist_list/add/remove), the web settings GET view
-	//     copy, and the whole-config marshal inside the admin allowlist
-	//     tools' persist step;
-	//   writers: the admin denylist add/remove tools and the web settings
-	//     POST (which replaces the whole WebFetch section, rolls it back
-	//     on persist failure, and marshals the config for persistence).
-	//
-	// The lock cannot live on the web Server (its cfgMu is invisible to
-	// the agent) or on the Agent (agents are constructed per chat turn,
-	// so two concurrent turns would each hold a different mutex over the
-	// same shared slice). It also cannot be a package-level global
-	// (no-global-state rule): the shared *Config is the only object every
-	// accessor already receives.
-	//
-	// Lock order with the web Server.cfgMu: cfgMu first, then this lock.
-	// The settings handlers take both; no path takes cfgMu while holding
-	// this lock (the agent and admin paths never see the web server), so
-	// the order is acyclic.
-	//
-	// Zero value usable; Config is only ever used as *Config (go vet
-	// copylocks enforces). Excluded from YAML persistence (yaml:"-"), and
-	// each Config loaded at startup or on a file reload carries its own
-	// instance — an object is shared only by the components handed the
-	// same pointer, which is exactly the set of components that must
-	// serialize on its denylist.
-	WebFetchDenylistMu sync.RWMutex `yaml:"-"`
+	// This replaces the old value-embedded WebFetchDenylistMu
+	// sync.RWMutex: a value mutex plus a value sync.Once made any
+	// Config value-copy a go vet -copylocks violation and would have
+	// split the lock across copies. An atomic.Pointer to one
+	// heap-allocated owner is copy-safe — even a value-copied Config
+	// reaches the SAME owner.
+	webFetchPolicyOwner atomic.Pointer[WebFetchPolicyOwner]
 
 	// webFetchBaseline is the shared read-only kid-safe baseline
 	// blocklist (the bundled baseline.txt), allocated at most once per
@@ -79,6 +61,24 @@ type Config struct {
 	webFetchBaselineOnce sync.Once                `yaml:"-"`
 }
 
+// WebFetchPolicyOwner returns the one shared WebFetchPolicyOwner for this
+// Config instance. Every caller that holds this *Config — Agents, admin
+// tool Deps, the web settings endpoint — reaches the SAME owner through
+// this method, which is what makes the cross-Agent exclusion work (the
+// rounds 16/17 failure mode was a per-Agent VALUE mutex that could never
+// be shared).
+func (c *Config) WebFetchPolicyOwner() *WebFetchPolicyOwner {
+	if p := c.webFetchPolicyOwner.Load(); p != nil {
+		return p
+	}
+	p := &WebFetchPolicyOwner{}
+	if c.webFetchPolicyOwner.CompareAndSwap(nil, p) {
+		return p
+	}
+	// Lost the race against a concurrent first call: use the winner.
+	return c.webFetchPolicyOwner.Load()
+}
+
 // WebFetchBaseline returns the shared read-only kid-safe baseline
 // blocklist, allocating it at most once per Config. The store is
 // immutable after construction, so all agents (and goroutines) that
@@ -86,9 +86,9 @@ type Config struct {
 // allocation that a per-Agent sync.Once would cause.
 //
 // The one-time publication is taken under the EXCLUSIVE
-// WebFetchDenylistMu, not only the sync.Once. The web settings POST
+// WebFetchPolicyOwner, not only the sync.Once. The web settings POST
 // marshals the whole Config with yaml while holding that same lock for
-// the entire POST (see config.WebFetchDenylistMu), and yaml reflects
+// the entire POST (see config.WebFetchPolicyOwner), and yaml reflects
 // over every field — including this one. So the pointer write must be
 // mutually exclusive with that marshal, or the -race detector flags the
 // write against the yaml read. The store is read-only thereafter, so
@@ -98,8 +98,8 @@ type Config struct {
 // discipline of the other shared WebFetch state on this Config.
 func (c *Config) WebFetchBaseline() *webfilter.BaselineStore {
 	c.webFetchBaselineOnce.Do(func() {
-		c.WebFetchDenylistMu.Lock()
-		defer c.WebFetchDenylistMu.Unlock()
+		c.WebFetchPolicyOwner().Lock()
+		defer c.WebFetchPolicyOwner().Unlock()
 		c.webFetchBaseline = webfilter.NewBaselineStore()
 	})
 	return c.webFetchBaseline

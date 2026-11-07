@@ -25,9 +25,9 @@ import (
 // two independent locks guarding one slice, so the concurrent
 // slice-header write/read below is a data race (and two concurrent chat
 // turns would race even the reader-vs-admin-writer pair, since agents are
-// constructed per turn). After the fix both sides take the shared lock
-// owned by the *Config they both hold (config.WebFetchDenylistMu; lock
-// order cfgMu → WebFetchDenylistMu, documented on that field). This test
+// constructed per turn). After the fix both sides take the shared owner
+// locked by the *Config they both hold (config.WebFetchPolicyOwner; lock
+// order cfgMu → WebFetchPolicyOwner, documented on that field). This test
 // only has teeth under -race; run with
 // `go test -race ./internal/web/...`.
 func TestSettingsPost_DenylistConcurrentWithHostDecision(t *testing.T) {

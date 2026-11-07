@@ -42,14 +42,14 @@ func DenylistListDefinition() agentcore.Tool {
 // HandleDenylistList dispatches builtin__denylist_list.
 func HandleDenylistList(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	// Read-lock so the slice-header read cannot tear against a concurrent
-	// denylist_add/remove rewrite sharing the same mutex; denylistMu()
-	// fails closed when the mutex is unwired (ErrDenylistMuUnwired).
-	mu, err := deps.denylistMu()
+	// denylist_add/remove rewrite sharing the same owner; policyOwner()
+	// fails closed when the owner is unwired (ErrPolicyOwnerUnwired).
+	owner, err := deps.policyOwner()
 	if err != nil {
 		return "", err
 	}
-	mu.RLock()
-	defer mu.RUnlock()
+	owner.RLock()
+	defer owner.RUnlock()
 	return formatDenylistList(deps.Cfg.Tools.WebFetch.URLDenylist), nil
 }
 
@@ -90,17 +90,17 @@ func DenylistAddDefinition() agentcore.Tool {
 func HandleDenylistAdd(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	// Exclusive lock over the whole read-modify-write + persist + audit
 	// span: the slice-header write below must not race hostDecision's
-	// decision-time read or the web settings POST's section replace —
-	// all of them take the shared cfg.WebFetchDenylistMu; and the
+	// decision-time snapshot or the web settings POST's section replace —
+	// all of them take the config's shared WebFetch policy owner; and the
 	// on-disk snapshot written by writeConfigInline must be consistent
-	// with the in-memory list it just mutated; denylistMu() fails closed
-	// when the mutex is unwired (ErrDenylistMuUnwired).
-	mu, err := deps.denylistMu()
+	// with the in-memory list it just mutated; policyOwner() fails closed
+	// when the owner is unwired (ErrPolicyOwnerUnwired).
+	owner, err := deps.policyOwner()
 	if err != nil {
 		return "", err
 	}
-	mu.Lock()
-	defer mu.Unlock()
+	owner.Lock()
+	defer owner.Unlock()
 	host, _ := args["host"].(string)
 	if host == "" {
 		return "", fmt.Errorf("denylist_add requires a 'host' argument (e.g. denylist_add(host=\"example.com\"))")
@@ -158,14 +158,14 @@ func DenylistRemoveDefinition() agentcore.Tool {
 // HandleDenylistRemove dispatches builtin__denylist_remove.
 func HandleDenylistRemove(ctx context.Context, deps Deps, args map[string]any) (string, error) {
 	// Exclusive lock over the whole read-modify-write + persist + audit
-	// span — same rationale as HandleDenylistAdd (see Deps.URLDenylistMu;
-	// denylistMu() fails closed when unwired, ErrDenylistMuUnwired).
-	mu, err := deps.denylistMu()
+	// span — same rationale as HandleDenylistAdd (see Deps.SharedPolicyOwner;
+	// policyOwner() fails closed when unwired, ErrPolicyOwnerUnwired).
+	owner, err := deps.policyOwner()
 	if err != nil {
 		return "", err
 	}
-	mu.Lock()
-	defer mu.Unlock()
+	owner.Lock()
+	defer owner.Unlock()
 	host, _ := args["host"].(string)
 	if host == "" {
 		return "", fmt.Errorf("denylist_remove requires a 'host' argument (e.g. denylist_remove(host=\"example.com\"))")

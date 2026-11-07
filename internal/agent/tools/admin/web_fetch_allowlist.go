@@ -38,7 +38,20 @@ func AllowlistListDefinition() agentcore.Tool {
 
 // HandleAllowlistList dispatches builtin__allowlist_list.
 func HandleAllowlistList(ctx context.Context, deps Deps, args map[string]any) (string, error) {
-	hosts := deps.Cfg.Tools.WebFetch.URLAllowlist
+	// Snapshot under the shared owner's read lock (review F1: the allowlist
+	// handlers previously took NO lock at all). The copy excludes every
+	// concurrent allowlist/denylist writer and the settings publish span.
+	// policyOwner() fails closed when the owner is unwired
+	// (ErrPolicyOwnerUnwired).
+	owner, err := deps.policyOwner()
+	if err != nil {
+		return "", err
+	}
+	owner.RLock()
+	hosts := make([]string, len(deps.Cfg.Tools.WebFetch.URLAllowlist))
+	copy(hosts, deps.Cfg.Tools.WebFetch.URLAllowlist)
+	owner.RUnlock()
+
 	if len(hosts) == 0 {
 		return "web_fetch URL allowlist is empty — no hosts are permitted", nil
 	}
@@ -85,26 +98,32 @@ func HandleAllowlistAdd(ctx context.Context, deps Deps, args map[string]any) (st
 		return "", fmt.Errorf("allowlist_add: %w", err)
 	}
 
-	// Check for duplicate (case-insensitive)
-	for _, existing := range deps.Cfg.Tools.WebFetch.URLAllowlist {
+	// #423 round 18 (review F1 + S2): the config's ONE shared policy owner
+	// is taken with no other lock held and spans the whole
+	// read-modify-write + persist. Before this round the allowlist handlers
+	// took NO lock at all and rewrote Cfg.Tools.WebFetch.URLAllowlist
+	// unsynchronized against hostDecision's decision-time snapshot — a data
+	// race. policyOwner() fails closed when the owner is unwired
+	// (ErrPolicyOwnerUnwired).
+	owner, err := deps.policyOwner()
+	if err != nil {
+		return "", err
+	}
+	owner.Lock()
+	defer owner.Unlock()
+
+	wf := &deps.Cfg.Tools.WebFetch
+	for _, existing := range wf.URLAllowlist {
 		if strings.EqualFold(existing, host) {
 			return fmt.Sprintf("%q is already in the allowlist", existing), nil
 		}
 	}
 
-	// Append to allowlist in-memory
-	deps.Cfg.Tools.WebFetch.URLAllowlist = append(deps.Cfg.Tools.WebFetch.URLAllowlist, host)
+	// Append to allowlist in-memory.
+	wf.URLAllowlist = append(wf.URLAllowlist, host)
 
-	// Persist to disk immediately
+	// Persist to disk immediately.
 	if deps.ConfigPath != "" {
-		// The whole-config marshal in writeConfigInline reads the
-		// URLDenylist slice header, so take the shared denylist lock in
-		// read intent (this handler never writes URLDenylist; its
-		// URLAllowlist RMW stays outside the lock, as it always has).
-		// Same instance the denylist handlers, hostDecision, and the web
-		// settings handler use — see config.WebFetchDenylistMu.
-		deps.Cfg.WebFetchDenylistMu.RLock()
-		defer deps.Cfg.WebFetchDenylistMu.RUnlock()
 		pErr := writeConfigInline(deps.ConfigPath, deps.Cfg)
 		if pErr != nil {
 			log.Printf("[admin] failed to persist allowlist_add: %v", pErr)
@@ -116,7 +135,7 @@ func HandleAllowlistAdd(ctx context.Context, deps Deps, args map[string]any) (st
 	if err := logAudit(ctx, deps, toolNameAllowlistAdd, json.RawMessage(auditArgs)); err != nil {
 		log.Printf("[admin] audit log failed for %s: %v", toolNameAllowlistAdd, err)
 	}
-	return fmt.Sprintf("added %q to web_fetch URL allowlist (%d total)", host, len(deps.Cfg.Tools.WebFetch.URLAllowlist)), nil
+	return fmt.Sprintf("added %q to web_fetch URL allowlist (%d total)", host, len(wf.URLAllowlist)), nil
 }
 
 // AllowlistRemoveDefinition returns the parent-only tool that removes a host
@@ -155,9 +174,20 @@ func HandleAllowlistRemove(ctx context.Context, deps Deps, args map[string]any) 
 		return "", fmt.Errorf("allowlist_remove: %w", err)
 	}
 
+	// #423 round 18 (review F1 + S2): same exclusive-owner span as
+	// HandleAllowlistAdd — the whole read-modify-write + persist is under the
+	// config's shared policy owner so it never races hostDecision's snapshot.
+	owner, err := deps.policyOwner()
+	if err != nil {
+		return "", err
+	}
+	owner.Lock()
+	defer owner.Unlock()
+
+	wf := &deps.Cfg.Tools.WebFetch
 	found := false
-	newAllowlist := make([]string, 0, len(deps.Cfg.Tools.WebFetch.URLAllowlist))
-	for _, existing := range deps.Cfg.Tools.WebFetch.URLAllowlist {
+	newAllowlist := make([]string, 0, len(wf.URLAllowlist))
+	for _, existing := range wf.URLAllowlist {
 		if strings.EqualFold(existing, host) {
 			found = true
 			continue // skip this entry
@@ -169,18 +199,10 @@ func HandleAllowlistRemove(ctx context.Context, deps Deps, args map[string]any) 
 		return fmt.Sprintf("%q is not in the allowlist", host), nil
 	}
 
-	deps.Cfg.Tools.WebFetch.URLAllowlist = newAllowlist
+	wf.URLAllowlist = newAllowlist
 
-	// Persist to disk immediately
+	// Persist to disk immediately.
 	if deps.ConfigPath != "" {
-		// The whole-config marshal in writeConfigInline reads the
-		// URLDenylist slice header, so take the shared denylist lock in
-		// read intent (this handler never writes URLDenylist; its
-		// URLAllowlist RMW stays outside the lock, as it always has).
-		// Same instance the denylist handlers, hostDecision, and the web
-		// settings handler use — see config.WebFetchDenylistMu.
-		deps.Cfg.WebFetchDenylistMu.RLock()
-		defer deps.Cfg.WebFetchDenylistMu.RUnlock()
 		pErr := writeConfigInline(deps.ConfigPath, deps.Cfg)
 		if pErr != nil {
 			log.Printf("[admin] failed to persist allowlist_remove: %v", pErr)

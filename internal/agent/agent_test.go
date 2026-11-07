@@ -979,8 +979,8 @@ func TestHostDecision_NoStaleDenylistSlice(t *testing.T) {
 // parent-facing admin handlers rewrite it concurrently through the shared
 // config. A concurrent slice-header write racing a read is undefined
 // behavior (torn header → OOB read or panic), so every such access goes
-// through config.WebFetchDenylistMu — the same mutex the admin handlers
-// receive via Deps.URLDenylistMu and the web settings handler takes.
+// through config.WebFetchPolicyOwner — the same owner the admin handlers
+// receive via Deps.SharedPolicyOwner and the web settings handler takes.
 // This test only has teeth under -race; run with
 // `go test -race ./internal/agent/...`.
 func TestHostDecision_DenylistConcurrentReadWrite(t *testing.T) {
@@ -1005,11 +1005,11 @@ func TestHostDecision_DenylistConcurrentReadWrite(t *testing.T) {
 	// the shared db — exactly the concurrent access pattern hostDecision
 	// races against.
 	deps := admin.Deps{
-		DB:            db,
-		Cfg:           a.cfg,
-		Actor:         "parent",
-		Gateway:       "test",
-		URLDenylistMu: &a.cfg.WebFetchDenylistMu,
+		DB:                db,
+		Cfg:               a.cfg,
+		Actor:             "parent",
+		Gateway:           "test",
+		SharedPolicyOwner: a.cfg.WebFetchPolicyOwner(),
 	}
 
 	// Reader host: deterministically unblocked by every other gate
@@ -1052,6 +1052,83 @@ func TestHostDecision_DenylistConcurrentReadWrite(t *testing.T) {
 
 	if got := a.cfg.Tools.WebFetch.URLDenylist; len(got) != 0 {
 		t.Fatalf("denylist after paired add/remove cycles = %v; want empty", got)
+	}
+}
+
+// TestAllowlistConcurrentReadWrite pins the #423 round 18 allowlist fix
+// (review F1: the allowlist handlers previously took NO lock at all and
+// rewrote Cfg.Tools.WebFetch.URLAllowlist unsynchronized). hostDecision in
+// allowlist mode copies the URLAllowlist slice header under the shared
+// config's WebFetch policy owner, and the allowlist_add / allowlist_remove
+// handlers now publish the list under the SAME owner's exclusive lock, so
+// the concurrent slice-header read/write the #423 base exposed (see
+// allowlist_race_probe_test.go on the base) is serialized. This test only
+// has teeth under -race; run with `go test -race ./internal/agent/...`.
+func TestAllowlistConcurrentReadWrite(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "allowlist",
+			}},
+		},
+		db: db,
+	}
+
+	// The handlers churn the shared allowlist and write audit rows through
+	// the shared db — exactly the concurrent access pattern hostDecision
+	// races against. Both sides take the config's ONE shared policy owner,
+	// so the writer's exclusive lock excludes the reader's snapshot.
+	deps := admin.Deps{
+		DB:                db,
+		Cfg:               a.cfg,
+		Actor:             "parent",
+		Gateway:           "test",
+		SharedPolicyOwner: a.cfg.WebFetchPolicyOwner(),
+	}
+
+	// Reader host: never in the allowlist, so every call deterministically
+	// reaches the allowlist gate and copies the shared slice header.
+	const readerHost = "reader.example"
+	const cycles = 100
+	var wg sync.WaitGroup
+
+	// Writer: paired add/remove keeps churning the slice header.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h := "churn.example"
+		for i := 0; i < cycles; i++ {
+			if _, err := admin.HandleAllowlistAdd(context.Background(), deps, map[string]any{"host": h}); err != nil {
+				return
+			}
+			if _, err := admin.HandleAllowlistRemove(context.Background(), deps, map[string]any{"host": h}); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Reader: the agent's host gate against the same shared cfg.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < cycles*20; i++ {
+			_, _ = a.HostDecision(context.Background(), readerHost)
+		}
+	}()
+
+	wg.Wait()
+
+	// Settled state: paired add/remove cycles leave the allowlist empty.
+	if got := a.cfg.Tools.WebFetch.URLAllowlist; len(got) != 0 {
+		t.Fatalf("allowlist after paired add/remove cycles = %v; want empty", got)
 	}
 }
 

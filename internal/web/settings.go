@@ -86,12 +86,13 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	defer s.cfgMu.RUnlock()
 
 	// The view copy below reads the URLDenylist slice header; take the
-	// shared denylist lock (cfg.WebFetchDenylistMu; see that field's doc
-	// for the accessor list) so it cannot tear against a concurrent
-	// settings-POST replace or an admin denylist tool rewrite. Lock
-	// order: cfgMu, then WebFetchDenylistMu (never reversed).
-	s.cfg.WebFetchDenylistMu.RLock()
-	defer s.cfg.WebFetchDenylistMu.RUnlock()
+	// shared WebFetch policy owner (cfg.WebFetchPolicyOwner(); see
+	// policy_owner.go for the accessor list) so it cannot tear against a
+	// concurrent settings-POST replace or an admin denylist tool rewrite.
+	// Lock order: cfgMu, then the owner (never reversed).
+	owner := s.cfg.WebFetchPolicyOwner()
+	owner.RLock()
+	defer owner.RUnlock()
 
 	defCopy := s.cfg.LLM.Default
 	view := settingsView{
@@ -169,17 +170,30 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	// replace below and the rollback), reads it (the newWebFetch and
 	// snapTools copies), and marshals the whole config for persistence —
 	// every one of those must serialize with the agent's hostDecision
-	// reads and the admin denylist tools, which all take the shared lock
-	// on the *Config both sides hold (cfg.WebFetchDenylistMu; see that
-	// field's doc for the full accessor list). cfgMu alone did not cover
-	// them — that two-lock gap was PR #423's current-head data-race
-	// finding. The lock lives on the config object because the web
-	// server has no reference to the agent (agents are per-turn) and the
-	// agent has no reference to this server's cfgMu. Held for the whole
-	// POST: lock order cfgMu → WebFetchDenylistMu, acyclic (no path
-	// takes cfgMu while holding the denylist lock).
-	s.cfg.WebFetchDenylistMu.Lock()
-	defer s.cfg.WebFetchDenylistMu.Unlock()
+	// reads and the admin denylist/allowlist tools, which all take the
+	// shared WebFetch policy owner on the *Config both sides hold
+	// (cfg.WebFetchPolicyOwner(); see policy_owner.go for the full
+	// accessor list). cfgMu alone did not cover them — that two-lock gap
+	// was PR #423's current-head data-race finding. The owner lives on the
+	// config object because the web server has no reference to the agent
+	// (agents are per-turn) and the agent has no reference to this
+	// server's cfgMu. Held for the whole POST: lock order cfgMu → owner,
+	// acyclic (no path takes cfgMu while holding the owner).
+	//
+	// Disk I/O under the owner (the writeConfig() below) is a re-resolved
+	// ACCEPTED DEFERRAL, not a bug: the in-memory publish and the rollback
+	// on a failed write must stay serialized with readers, or a
+	// hostDecision reader could observe a published-then-reverted or
+	// half-applied config. The stall is bounded and infrequent — a
+	// settings POST is a rare parent action. The future path, if it ever
+	// matters, is to publish in-memory under the owner (M) and write to
+	// disk under the commit lock (T) only — keeping the temp+rename
+	// atomicity, not dropping it. If that split is ever made, update this
+	// comment and the policy_owner.go lock-order doc to reflect the new
+	// span boundary.
+	owner := s.cfg.WebFetchPolicyOwner()
+	owner.Lock()
+	defer owner.Unlock()
 
 	// Build updated config values first, validate everything, then assign
 	// LLM config — legacy single endpoint
