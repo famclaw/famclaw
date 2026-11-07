@@ -168,7 +168,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 
 	// This handler rewrites cfg.Tools.WebFetch.URLDenylist (the section
 	// replace below and the rollback), reads it (the newWebFetch and
-	// snapTools copies), and marshals the whole config for persistence —
+	// snapWebFetch copies), and marshals the whole config for persistence —
 	// every one of those must serialize with the agent's hostDecision
 	// reads and the admin denylist/allowlist tools, which all take the
 	// shared WebFetch policy owner on the *Config both sides hold
@@ -364,10 +364,17 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	snapUsers := make([]config.UserConfig, len(s.cfg.Users))
 	copy(snapUsers, s.cfg.Users)
 	snapGateways := s.cfg.Gateways
-	snapTools := s.cfg.Tools
+	// Snapshot only the section this handler owns. A whole-struct
+	// snapshot + rollback write (the old `s.cfg.Tools = snapTools`)
+	// would re-store every Tools sub-field — including WebSearch,
+	// which handleWebSearch reads lock-free on every chat turn
+	// (agent.go) — so the rollback raced a live reader. Snapshotting
+	// and restoring just WebFetch keeps the write scoped to the one
+	// section this handler mutates (#423 followup 2).
+	snapWebFetch := s.cfg.Tools.WebFetch
 	if s.cfg.Tools.WebFetch.URLAllowlist != nil {
-		snapTools.WebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
-		copy(snapTools.WebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
+		snapWebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
+		copy(snapWebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
 	}
 
 	// Assign all validated values at once
@@ -382,7 +389,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			s.cfg.LLM = snapLLM
 			s.cfg.Users = snapUsers
 			s.cfg.Gateways = snapGateways
-			s.cfg.Tools = snapTools
+			s.cfg.Tools.WebFetch = snapWebFetch
 			jsonErr(w, fmt.Errorf("saving config: %w", err), http.StatusInternalServerError)
 			return
 		}
