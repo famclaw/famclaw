@@ -57,8 +57,15 @@ type Config struct {
 	// every agent (and goroutine) handed this same Config. Excluded
 	// from YAML persistence (yaml:"-"); each Config loaded at startup
 	// or on a file reload carries its own instance.
-	webFetchBaseline     *webfilter.BaselineStore `yaml:"-"`
-	webFetchBaselineOnce sync.Once                `yaml:"-"`
+	webFetchBaseline *webfilter.BaselineStore `yaml:"-"`
+
+	// webFetchBaselineOnce guards the one-time allocation of
+	// webFetchBaseline. A sync.Once must not be value-copied after first
+	// use, so a Config holding it must never be value-copied either:
+	// production always uses *Config (the same discipline the
+	// webFetchPolicyOwner note above records). A value-copied Config would
+	// split the Once — and is a go vet -copylocks violation.
+	webFetchBaselineOnce sync.Once `yaml:"-"`
 }
 
 // WebFetchPolicyOwner returns the one shared WebFetchPolicyOwner for this
