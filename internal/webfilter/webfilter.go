@@ -268,6 +268,7 @@ func hasHighEntropySingleLabel(host string) bool {
 // per-fetch cost (an approval lookup + upsert) is bounded by the 24h approval
 // expiry, so repeated lookups stop mattering after one day.
 func isTypoSquat(host string) bool {
+	host = strings.ToLower(host)
 	// Early return for known good hosts
 	for _, knownHost := range knownGoodHosts {
 		if host == knownHost {
@@ -418,20 +419,29 @@ func loadBaseline() map[string]struct{} {
 		// than a broken build).
 		return map[string]struct{}{}
 	}
-	// Split once: the entry count is also the exact map preallocation
-	// hint, so a baseline larger than the old 128 hint no longer forces
-	// regrowth on every insertion (review finding: unbounded hint).
-	lines := strings.Split(string(data), "\n")
+	return parseBaseline(string(data))
+}
+
+func parseBaseline(data string) map[string]struct{} {
+	// Split once so the entry count bounds the map preallocation hint.
+	lines := strings.Split(data, "\n")
 	set := make(map[string]struct{}, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// Normalize: lowercase, strip trailing dot, strip port.
+		// Preserve bare IPv6; strip syntactic host:port with a nonempty port.
 		host := strings.ToLower(line)
-		if idx := strings.LastIndexByte(host, ':'); idx > 0 {
-			host = host[:idx]
+		if parsedHost, port, err := net.SplitHostPort(host); err == nil && port != "" {
+			host = parsedHost
+		} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = host[1 : len(host)-1]
+			if net.ParseIP(host) == nil {
+				continue
+			}
+		} else if strings.Contains(host, ":") && net.ParseIP(host) == nil {
+			continue
 		}
 		host = strings.TrimSuffix(host, ".")
 		if host != "" {

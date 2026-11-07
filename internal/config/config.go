@@ -102,7 +102,8 @@ func (c *Config) WebFetchPolicyOwner() *WebFetchPolicyOwner {
 // the sync.Once provides the happens-before edge for every subsequent
 // lock-free read here (reads never race reads). Call this accessor
 // unconditionally — no preceding `== nil` read — matching the
-// discipline of the other shared WebFetch state on this Config.
+// discipline of the other shared WebFetch state on this Config. Call it
+// outside the policy-owner lock: its initial load acquires that lock itself.
 func (c *Config) WebFetchBaseline() *webfilter.BaselineStore {
 	c.webFetchBaselineOnce.Do(func() {
 		c.WebFetchPolicyOwner().Lock()
