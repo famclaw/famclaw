@@ -125,8 +125,10 @@ func TestPoolDiscoverySurvivesAmbiguousCall(t *testing.T) {
 	if p.HasTool("new_tool") {
 		t.Fatal("lazy reconnect unexpectedly rebuilt pool aliases")
 	}
-	if got := p.ListTools(); !containsTool(got, "new_tool") {
-		t.Fatalf("lazy reconnect did not refresh client tools: %v", got)
+	// The refreshed client must not advertise a name without a route.
+	reconnectedNames, reconnectedInfos := snapshot()
+	if !reflect.DeepEqual(names, reconnectedNames) || !reflect.DeepEqual(infos, reconnectedInfos) {
+		t.Errorf("unroutable tool advertised after lazy reconnect: names=%v infos=%+v", reconnectedNames, reconnectedInfos)
 	}
 	if err := p.StartAll(context.Background()); err != nil {
 		t.Fatal(err)
@@ -143,16 +145,7 @@ func TestPoolDiscoverySurvivesAmbiguousCall(t *testing.T) {
 		t.Errorf("unrelated success: result=%v err=%v calls=%d", result, err, otherCalls.Load())
 	}
 	finalNames, finalInfos := snapshot()
-	if !reflect.DeepEqual(finalNames, []string{"mutate", "new_tool", "other", "reconcile"}) || len(finalInfos) != 4 {
+	if !reflect.DeepEqual(finalNames, []string{"mutate", "new_tool", "other", "reconcile"}) || len(finalInfos) != 4 || finalInfos[1].Name != "new_tool" {
 		t.Errorf("unexpected discovery after refresh: names=%v infos=%+v", finalNames, finalInfos)
 	}
-}
-
-func containsTool(names []string, target string) bool {
-	for _, name := range names {
-		if name == target {
-			return true
-		}
-	}
-	return false
 }

@@ -437,10 +437,9 @@ func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (
 	// Retain the last discovered tools while disconnected so callers can still
 	// discover reconciliation tools. Start refreshes this snapshot on a
 	// successful tools/list; it is not evidence that the server is reachable.
-	// This snapshot may be stale. A successful lazy Start refreshes the client
-	// metadata returned by ListTools, but does not rebuild HasTool aliases.
-	// StartAll maps the refreshed tool names; in the application this happens
-	// when the pool is initialized. A restart rebuilds the pool at present.
+	// This snapshot may be stale. A successful lazy Start refreshes client
+	// metadata but does not rebuild HasTool aliases. Discovery only advertises
+	// names routed to this client; StartAll can add refreshed aliases.
 	tools := mc.client.Tools()
 	mc.client.Stop()
 	// Replace with a fresh client left deliberately unstarted. The next
@@ -463,7 +462,7 @@ func (p *Pool) HasTool(name string) bool {
 	return ok
 }
 
-// ListTools returns all available tool names.
+// ListTools returns tool names with registered routes, not a reachability check.
 func (p *Pool) ListTools() []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -475,6 +474,9 @@ func (p *Pool) ListTools() []string {
 		tools := mc.client.Tools()
 		mc.mu.Unlock()
 		for _, tool := range tools {
+			if p.clients[tool.Name] != mc {
+				continue
+			}
 			if !seen[tool.Name] {
 				seen[tool.Name] = true
 				names = append(names, tool.Name)
@@ -499,7 +501,7 @@ type ToolInfo struct {
 	ReadOnly bool
 }
 
-// ListToolInfos returns tool metadata for all available tools.
+// ListToolInfos returns metadata for routed tools; a route does not imply reachability.
 func (p *Pool) ListToolInfos() []ToolInfo {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -513,6 +515,9 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 		name := mc.name
 		mc.mu.Unlock()
 		for _, tool := range tools {
+			if p.clients[tool.Name] != mc {
+				continue
+			}
 			if seen[tool.Name] {
 				continue
 			}
