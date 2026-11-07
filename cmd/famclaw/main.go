@@ -908,7 +908,7 @@ func main() {
 	}
 
 	// Web server
-	srv := web.NewServer(cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
+	srv := web.NewServer(gwCtx, cfg, *cfgPath, db, sessions, vault, identStore, evaluator, clf, notifier, enabledSkills, reg, mcpPool)
 	srv.SetMCPScanner(hbScanner)
 	srv.SetVaultMismatch(vaultMismatch)
 	srv.SetMCPSkipped(skippedMCPs)
@@ -1128,6 +1128,9 @@ func main() {
 	defer cancel2()
 	if err := httpSrv.Shutdown(ctx); err != nil {
 		log.Printf("Shutdown error: %v", err)
+	}
+	if err := srv.WaitForBackground(ctx); err != nil {
+		log.Printf("Waiting for web background work: %v", err)
 	}
 	log.Println("Stopped.")
 }

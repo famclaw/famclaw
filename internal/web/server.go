@@ -45,7 +45,8 @@ var staticFiles embed.FS
 // Server is the FamClaw web server.
 type Server struct {
 	cfg           *config.Config
-	cfgPath       string // path to config.yaml for settings API
+	lifetimeCtx   context.Context // cancelled during server shutdown
+	cfgPath       string          // path to config.yaml for settings API
 	db            *store.DB
 	identStore    *identity.Store
 	evaluator     *policy.Evaluator
@@ -142,7 +143,8 @@ func (s *Server) ReloadConfig(newCfg *config.Config) error {
 	return nil
 }
 
-func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store.SessionStore, vault *credstore.Vault,
+// NewServer creates a web server whose approval work is cancelled with lifetimeCtx.
+func NewServer(lifetimeCtx context.Context, cfg *config.Config, cfgPath string, db *store.DB, sessions *store.SessionStore, vault *credstore.Vault,
 	identStore *identity.Store, evaluator *policy.Evaluator, clf *classifier.Classifier, notifier *notify.MultiNotifier,
 	skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool) *Server {
 	var fs *familystate.Store
@@ -151,6 +153,7 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store
 	}
 	s := &Server{
 		cfg:           cfg,
+		lifetimeCtx:   lifetimeCtx,
 		cfgPath:       cfgPath,
 		db:            db,
 		sessions:      sessions,
@@ -682,7 +685,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 			// Notify parent if approval needed
 			if resp.PolicyAction == "request_approval" {
-				s.spawnBackground(func() { s.requestApproval(r.Context(), userCfg, string(resp.Category), payload.Text) })
+				s.enqueueApproval(userCfg, string(resp.Category), payload.Text)
 			}
 
 			// Broadcast dashboard update
@@ -1167,14 +1170,31 @@ func (s *Server) decideURLs(a *store.Approval) (approve, deny string) {
 	return approve, deny
 }
 
-// requestApproval records the pending parent-approval row for a chat-turn
-// request_approval policy action and pushes the /decide links to the parent
-// notifier. It runs fire-and-forget in a spawnBackground goroutine, but
-// threads the caller's context (the chat connection's r.Context() in
-// handleChat) into the DB upsert and the notification so both abort on
-// connection close / server shutdown instead of running against a torn-down
-// store on context.Background(). Mirrors notifySuspiciousApproval's ctx
-// discipline for its Notify call.
+// enqueueApproval keeps the approval independent of the chat connection while
+// bounding the work by both the server lifetime and an operation deadline.
+func (s *Server) enqueueApproval(user *config.UserConfig, category, queryText string) {
+	s.bgMu.Lock()
+	if s.lifetimeCtx == nil {
+		s.bgMu.Unlock()
+		log.Print("[web] approval skipped: server lifetime context is not configured")
+		return
+	}
+	if s.lifetimeCtx.Err() != nil {
+		s.bgMu.Unlock()
+		return
+	}
+	s.bgWG.Add(1)
+	s.bgMu.Unlock()
+	go func() {
+		defer s.bgWG.Done()
+		ctx, cancel := context.WithTimeout(s.lifetimeCtx, 30*time.Second)
+		defer cancel()
+		s.requestApproval(ctx, user, category, queryText)
+	}()
+}
+
+// requestApproval persists an approval and notifies the parent using the
+// bounded server-lifetime context supplied by the caller.
 func (s *Server) requestApproval(ctx context.Context, user *config.UserConfig, category, queryText string) {
 	import_approval_id := agent.ApprovalID(user.Name, category)
 	a := &store.Approval{
@@ -1192,7 +1212,9 @@ func (s *Server) requestApproval(ctx context.Context, user *config.UserConfig, c
 	}
 	if isNew && s.notifier != nil {
 		approveURL, denyURL := s.decideURLs(a)
-		s.notifier.Notify(ctx, a, approveURL, denyURL)
+		if err := s.notifier.Notify(ctx, a, approveURL, denyURL); err != nil {
+			log.Print("[web] approval notification failed; see notifier logs for details")
+		}
 	}
 }
 
@@ -1202,6 +1224,10 @@ func (s *Server) requestApproval(ctx context.Context, user *config.UserConfig, c
 // comment on bgMu for why the edge matters).
 func (s *Server) spawnBackground(fn func()) {
 	s.bgMu.Lock()
+	if s.lifetimeCtx != nil && s.lifetimeCtx.Err() != nil {
+		s.bgMu.Unlock()
+		return
+	}
 	s.bgWG.Add(1)
 	s.bgMu.Unlock()
 	go func() {

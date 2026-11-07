@@ -11,17 +11,8 @@ import (
 	"github.com/famclaw/famclaw/internal/store"
 )
 
-// TestRequestApproval_HonorsContext locks in the #423 sovereign-codereviewer
-// fix for requestApproval using context.Background(). The function must
-// thread the caller's context into the approval upsert (and the parent
-// notification) so that both abort when the context is cancelled — e.g. on
-// WebSocket connection close or server shutdown — instead of running
-// fire-and-forget against a store that may already be torn down.
-//
-// A context cancelled before the call must therefore leave NO approval row
-// in the DB. The unfixed code (context.Background()) ignores the
-// cancellation and persists the row, so this test is RED on the unfixed code
-// and GREEN once the ctx is threaded through.
+// TestRequestApproval_HonorsContext verifies that approval persistence respects
+// cancellation of its server-lifetime operation context, including shutdown.
 func TestRequestApproval_HonorsContext(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, err := store.Open(filepath.Join(tmpDir, "test.db"))
@@ -56,6 +47,6 @@ func TestRequestApproval_HonorsContext(t *testing.T) {
 		t.Fatalf("GetApproval: %v", gerr)
 	}
 	if got != nil {
-		t.Fatalf("requestApproval persisted an approval row (status=%q) despite a cancelled context; it must honor the caller's context, not context.Background()", got.Status)
+		t.Fatalf("requestApproval persisted an approval row (status=%q) despite a cancelled context; it must honor its operation context", got.Status)
 	}
 }
