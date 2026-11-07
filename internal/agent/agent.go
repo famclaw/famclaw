@@ -1611,7 +1611,21 @@ func (a *Agent) notifySuspiciousApprovalIfNeeded(ctx context.Context, id string,
 	if err := a.db.NotifyApprovalOnce(ctx, a.lifetimeCtx, id, func() error {
 		return a.onNewSuspiciousApproval(ctx, approval)
 	}); err != nil {
-		log.Print("[agent] suspicious-site approval notification failed; a later encounter may retry")
+		var failure *store.ApprovalNotificationError
+		if errors.As(err, &failure) {
+			switch failure.Phase {
+			case store.ApprovalNotificationRead:
+				log.Print("[agent] suspicious-site approval notification read failed; a later encounter may retry")
+			case store.ApprovalNotificationSend:
+				log.Print("[agent] suspicious-site approval notification send failed; a later encounter may retry")
+			case store.ApprovalNotificationRecord:
+				log.Print("[agent] suspicious-site approval notification record failed; a later encounter may retry")
+			default:
+				log.Print("[agent] suspicious-site approval notification failed; a later encounter may retry")
+			}
+		} else {
+			log.Print("[agent] suspicious-site approval notification failed; a later encounter may retry")
+		}
 	}
 }
 
@@ -1715,7 +1729,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// authoritative; a second render would add latency, not text.
 	browserTried := false
 	if err != nil {
-		log.Printf("[agent][%s] web_fetch url=%q err=%v", a.user.Name, rawURL, err)
+		log.Print("[agent] web_fetch failed")
 		// F7 fix (web-retrieval plan, slice 3b): a 403/429 is usually
 		// upstream bot-blocking of this client, not a dead page — the same
 		// URL often renders fine in a real browser. When the browser
@@ -1728,18 +1742,16 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		if result != nil && isBotBlockStatus(result.StatusCode) &&
 			cfg.FallbackToBrowser && a.browserPool != nil {
 			directStatus := result.StatusCode
-			log.Printf("[agent][%s] web_fetch: direct fetch got HTTP %d for %s; trying browser fallback",
-				a.user.Name, directStatus, rawURL)
+			log.Printf("[agent] web_fetch: direct fetch got HTTP %d; trying browser fallback", directStatus)
 			browserResult, fbErr := a.fetchWithBrowser(ctx, a.browserPool, rawURL, a.hostValidator)
 			if fbErr != nil {
-				log.Printf("[agent][%s] web_fetch: browser fallback after HTTP %d failed for %s; returning original error: %v",
-					a.user.Name, directStatus, rawURL, fbErr)
+				log.Printf("[agent] web_fetch: browser fallback after HTTP %d failed", directStatus)
 			} else {
 				result = browserResult
 				err = nil
 				browserTried = true
-				log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback after HTTP %d)",
-					a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated, directStatus)
+				log.Printf("[agent] web_fetch status=%d bytes=%d truncated=%v (browser fallback after HTTP %d)",
+					result.StatusCode, result.Bytes, result.Truncated, directStatus)
 			}
 		}
 		if err != nil {
@@ -1747,8 +1759,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		}
 	}
 	if result != nil {
-		log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v",
-			a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+		log.Printf("[agent] web_fetch status=%d bytes=%d truncated=%v", result.StatusCode, result.Bytes, result.Truncated)
 		text := strings.TrimSpace(result.Text)
 		minLength := a.cfg.Tools.WebFetch.FallbackMinTextLength
 		if minLength == 0 {
@@ -1764,7 +1775,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 				// by the else-branch below, not passed into fetchWithBrowser.
 				browserResult, err := a.fetchWithBrowser(ctx, a.browserPool, rawURL, a.hostValidator)
 				if err != nil {
-					log.Printf("[agent][%s] web_fetch browser fallback failed for %s, using original result: %v", a.user.Name, rawURL, err)
+					log.Print("[agent] web_fetch browser fallback failed; using original result")
 				} else {
 					result = &webfetch.Result{
 						URL:         browserResult.URL,
@@ -1774,8 +1785,8 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 						Truncated:   browserResult.Truncated,
 						Text:        browserResult.Text,
 					}
-					log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback)",
-						a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+					log.Printf("[agent] web_fetch status=%d bytes=%d truncated=%v (browser fallback)",
+						result.StatusCode, result.Bytes, result.Truncated)
 				}
 			} else {
 				// Browser fallback is enabled but no browser pool is available
@@ -1783,8 +1794,8 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 				// failed to initialize). This is a degraded state, not a crash:
 				// return the thin HTTP text as-is, but log the missed fallback so
 				// the operator can see the degradation rather than silent thin text.
-				log.Printf("[agent][%s] web_fetch: browser fallback is enabled but no browser pool is configured; cannot fall back for %s (plain fetch returned %d chars, threshold %d)",
-					a.user.Name, rawURL, len(text), minLength)
+				log.Printf("[agent] web_fetch: browser fallback is enabled but no browser pool is configured (plain fetch returned %d chars, threshold %d)",
+					len(text), minLength)
 			}
 		}
 		if strings.TrimSpace(result.Text) == "" {
@@ -1824,8 +1835,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		// Cache write failed — log and fall through to legacy inline path
 		// so the user still gets a (possibly oversize) response rather
 		// than no response at all.
-		log.Printf("[agent][%s] cache spillover failed, returning full payload inline: %v",
-			a.user.Name, cerr)
+		log.Print("[agent] cache spillover failed, returning full payload inline")
 	}
 
 	// Legacy path: no cache configured, or cache write failed.

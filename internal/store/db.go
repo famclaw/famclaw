@@ -745,6 +745,26 @@ func (d *DB) RequeueApproval(ctx context.Context, id string) (bool, error) {
 	return n > 0, nil
 }
 
+// ApprovalNotificationPhase identifies the stage that failed without exposing
+// notification payloads or transport errors in logs.
+type ApprovalNotificationPhase uint8
+
+const (
+	ApprovalNotificationRead ApprovalNotificationPhase = iota + 1
+	ApprovalNotificationSend
+	ApprovalNotificationRecord
+)
+
+// ApprovalNotificationError records a safe failure phase and retains the cause
+// for errors.Is and errors.As without formatting it into the error message.
+type ApprovalNotificationError struct {
+	Phase ApprovalNotificationPhase
+	cause error
+}
+
+func (e *ApprovalNotificationError) Error() string { return "approval notification failed" }
+func (e *ApprovalNotificationError) Unwrap() error { return e.cause }
+
 // approvalNotificationState reads the pending generation without holding the
 // in-flight claim mutex across a potentially blocked database query.
 func (d *DB) approvalNotificationState(ctx context.Context, id string) (string, bool, error) {
@@ -755,7 +775,7 @@ func (d *DB) approvalNotificationState(ctx context.Context, id string) (string, 
 		return "", false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("read approval notification state: %w", err)
+		return "", false, &ApprovalNotificationError{Phase: ApprovalNotificationRead, cause: err}
 	}
 	return expiry, sent == 0, nil
 }
@@ -794,7 +814,7 @@ func (d *DB) NotifyApprovalOnce(ctx, lifetime context.Context, id string, notify
 		return err
 	}
 	if err := notify(); err != nil {
-		return fmt.Errorf("send approval notification: %w", err)
+		return &ApprovalNotificationError{Phase: ApprovalNotificationSend, cause: err}
 	}
 	if lifetime == nil {
 		lifetime = ctx
@@ -803,7 +823,7 @@ func (d *DB) NotifyApprovalOnce(ctx, lifetime context.Context, id string, notify
 	defer cancel()
 	_, err = d.sql.ExecContext(commitCtx, `UPDATE approvals SET notification_sent = 1 WHERE id = ? AND status = 'pending' AND CAST(expires_at AS TEXT) = ?`, id, expiry)
 	if err != nil {
-		return fmt.Errorf("record approval notification: %w", err)
+		return &ApprovalNotificationError{Phase: ApprovalNotificationRecord, cause: err}
 	}
 	return nil
 }

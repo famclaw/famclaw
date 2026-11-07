@@ -187,3 +187,44 @@ func TestApprovalNotificationStalledClaimDoesNotBlockShutdown(t *testing.T) {
 		t.Fatal("competing read did not stop")
 	}
 }
+
+func TestApprovalNotificationFailurePhase(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		phase ApprovalNotificationPhase
+	}{
+		{"read", ApprovalNotificationRead}, {"send", ApprovalNotificationSend}, {"record", ApprovalNotificationRecord},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := Open(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lifetime, shutdown := context.WithCancel(context.Background())
+			defer shutdown()
+			if _, err := db.UpsertApproval(context.Background(), &Approval{ID: "a", UserName: "child", UserDisplay: "Child", AgeGroup: "age_5_12", Category: "suspicious_site", QueryText: "example.com"}); err != nil {
+				t.Fatal(err)
+			}
+			cause := errors.New("fake-credential-url")
+			if tc.name == "read" {
+				cancel()
+				cause = context.Canceled
+			}
+			err = db.NotifyApprovalOnce(ctx, lifetime, "a", func() error {
+				if tc.name == "record" {
+					shutdown()
+					cause = context.Canceled
+					return nil
+				}
+				return cause
+			})
+			var failure *ApprovalNotificationError
+			if !errors.As(err, &failure) || failure.Phase != tc.phase || !errors.Is(err, cause) {
+				t.Fatalf("error=%v phase/cause mismatch", err)
+			}
+		})
+	}
+}
