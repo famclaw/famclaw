@@ -496,10 +496,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					outcome := OutcomeFailure
 					if result == nil {
 						outcome = OutcomeUnknown
-					}
-					toolText = ToolErrorDisplay(tc.Function.Name, turnReadOnlyLookup(turnReadOnly, tc.Function.Name), "")
-					if result == nil {
 						toolText = "Tool outcome uncertain; verify before trying again."
+					} else {
+						toolText = ToolErrorDisplay(tc.Function.Name, turnReadOnlyLookup(turnReadOnly, tc.Function.Name), "")
 					}
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName:    tc.Function.Name,
