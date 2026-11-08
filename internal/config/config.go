@@ -43,8 +43,8 @@ type Config struct {
 	// sync.RWMutex: a value mutex plus a value sync.Once made any
 	// Config value-copy a go vet -copylocks violation and would have
 	// split the lock across copies. An atomic.Pointer to one
-	// heap-allocated owner is copy-safe — even a value-copied Config
-	// reaches the SAME owner.
+	// heap-allocated owner supplies the shared lock. Config itself must not
+	// be copied after use because it also contains synchronization state.
 	webFetchPolicyOwner atomic.Pointer[WebFetchPolicyOwner]
 
 	// webFetchBaseline is the shared read-only kid-safe baseline
@@ -66,6 +66,32 @@ type Config struct {
 	// webFetchPolicyOwner note above records). A value-copied Config would
 	// split the Once — and is a go vet -copylocks violation.
 	webFetchBaselineOnce sync.Once `yaml:"-"`
+}
+
+// configYAML contains only the configuration fields persisted to YAML.
+// Keep its fields and tags in sync with the exported fields of Config.
+type configYAML struct {
+	Server    ServerConfig    `yaml:"server"`
+	LLM       LLMConfig       `yaml:"llm"`
+	Inference InferenceConfig `yaml:"inference"`
+	Users     []UserConfig    `yaml:"users"`
+	Gateways  GatewaysConfig  `yaml:"gateways"`
+	Policies  PoliciesConfig  `yaml:"policies"`
+	Approval  ApprovalConfig  `yaml:"approval"`
+	Skills    SkillsConfig    `yaml:"skills"`
+	Storage   StorageConfig   `yaml:"storage"`
+	SecCheck  SecCheckConfig  `yaml:"seccheck"`
+	Tools     ToolsConfig     `yaml:"tools,omitempty"`
+}
+
+// MarshalYAML avoids reflecting over Config's synchronization state. Callers
+// must still synchronize concurrent writes to the exported configuration fields.
+func (c *Config) MarshalYAML() (any, error) {
+	return configYAML{
+		Server: c.Server, LLM: c.LLM, Inference: c.Inference, Users: c.Users,
+		Gateways: c.Gateways, Policies: c.Policies, Approval: c.Approval,
+		Skills: c.Skills, Storage: c.Storage, SecCheck: c.SecCheck, Tools: c.Tools,
+	}, nil
 }
 
 // WebFetchPolicyOwner returns the one shared WebFetchPolicyOwner for this
@@ -92,18 +118,9 @@ func (c *Config) WebFetchPolicyOwner() *WebFetchPolicyOwner {
 // hold this Config share one instance, which eliminates the per-turn
 // allocation that a per-Agent sync.Once would cause.
 //
-// The one-time publication is taken under the EXCLUSIVE
-// WebFetchPolicyOwner, not only the sync.Once. The web settings POST
-// marshals the whole Config with yaml while holding that same lock for
-// the entire POST (see config.WebFetchPolicyOwner), and yaml reflects
-// over every field — including this one. So the pointer write must be
-// mutually exclusive with that marshal, or the -race detector flags the
-// write against the yaml read. The store is read-only thereafter, so
-// the sync.Once provides the happens-before edge for every subsequent
-// lock-free read here (reads never race reads). Call this accessor
-// unconditionally — no preceding `== nil` read — matching the
-// discipline of the other shared WebFetch state on this Config. Call it
-// outside the policy-owner lock: its initial load acquires that lock itself.
+// The initial publication takes the shared policy-owner lock. Call this
+// accessor outside that lock, and unconditionally rather than reading the
+// pointer first; sync.Once coordinates initialization and later reads.
 func (c *Config) WebFetchBaseline() *webfilter.BaselineStore {
 	c.webFetchBaselineOnce.Do(func() {
 		c.WebFetchPolicyOwner().Lock()

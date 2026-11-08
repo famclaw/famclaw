@@ -405,7 +405,7 @@ func TestSendOpensDMChannel(t *testing.T) {
 	// request, so UserChannelCreate is not invoked again. (A second full Send via
 	// the discordgo REST client against the httptest server is unreliable, so we
 	// exercise the cache directly.)
-	cachedID, err := b.dmChannelID(userID)
+	cachedID, err := b.dmChannelID(context.Background(), userID)
 	assert.NoError(t, err)
 	if cachedID != "dm-channel-456" {
 		t.Errorf("cached dm channel = %q, want %q", cachedID, "dm-channel-456")

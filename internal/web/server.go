@@ -1183,6 +1183,7 @@ func (s *Server) enqueueApproval(user *config.UserConfig, category, queryText st
 	}
 	if s.lifetimeCtx.Err() != nil {
 		s.bgMu.Unlock()
+		log.Print("[web] approval skipped: server shutdown has begun")
 		return
 	}
 	s.bgWG.Add(1)
