@@ -48,8 +48,8 @@ var adminRoutes = []struct {
 func TestChildSessionForbiddenOnAdminRoutes(t *testing.T) {
 	ts, deps := newJoinSecurityServer(t, "")
 
-	// emma is config.Users[1] → synthesised session user ID 2.
-	sessID, err := deps.sessions.Create(context.Background(), 2, "127.0.0.1", "test")
+	// emma is a child; her session principal is her stable config name.
+	sessID, err := deps.sessions.Create(context.Background(), "emma", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create: %v", err)
 	}
@@ -86,8 +86,8 @@ func TestChildSessionForbiddenOnAdminRoutes(t *testing.T) {
 func TestChildSessionCannotReadForeignConversations(t *testing.T) {
 	ts, deps := newJoinSecurityServer(t, "")
 
-	// emma (child) = config.Users[1] → synthesized session user ID 2.
-	childSess, err := deps.sessions.Create(context.Background(), 2, "127.0.0.1", "test")
+	// emma (child): session principal is the stable config name.
+	childSess, err := deps.sessions.Create(context.Background(), "emma", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create (emma): %v", err)
 	}
@@ -118,7 +118,7 @@ func TestChildSessionCannotReadForeignConversations(t *testing.T) {
 	}
 
 	// Control: the parent session still uses the dashboard listing.
-	parentSess, err := deps.sessions.Create(context.Background(), 1, "127.0.0.1", "test")
+	parentSess, err := deps.sessions.Create(context.Background(), "parent", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create (parent): %v", err)
 	}
@@ -149,8 +149,8 @@ func TestChildSessionCannotReadForeignConversations(t *testing.T) {
 func TestParentSessionAllowedOnAdminRoutes(t *testing.T) {
 	ts, deps := newJoinSecurityServer(t, "")
 
-	// parent is config.Users[0] → synthesised session user ID 1.
-	sessID, err := deps.sessions.Create(context.Background(), 1, "127.0.0.1", "test")
+	// parent: session principal is the stable config name.
+	sessID, err := deps.sessions.Create(context.Background(), "parent", "127.0.0.1", "test")
 	if err != nil {
 		t.Fatalf("sessions.Create: %v", err)
 	}

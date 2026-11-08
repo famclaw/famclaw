@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"testing"
@@ -43,7 +44,7 @@ func TestSessionStore(t *testing.T) {
 				s.now = func() time.Time { return now }
 
 				ctx := context.Background()
-				id, err := s.Create(ctx, 42, "10.0.0.1", "Mozilla/5.0")
+				id, err := s.Create(ctx, "user42", "10.0.0.1", "Mozilla/5.0")
 				if err != nil {
 					t.Fatalf("Create: %v", err)
 				}
@@ -58,8 +59,8 @@ func TestSessionStore(t *testing.T) {
 				if sess.ID != id {
 					t.Errorf("ID = %q, want %q", sess.ID, id)
 				}
-				if sess.UserID != 42 {
-					t.Errorf("UserID = %d, want 42", sess.UserID)
+				if sess.UserName != "user42" {
+					t.Errorf("UserName = %q, want %q", sess.UserName, "user42")
 				}
 				if sess.IP != "10.0.0.1" {
 					t.Errorf("IP = %q, want %q", sess.IP, "10.0.0.1")
@@ -113,7 +114,7 @@ func TestSessionStore(t *testing.T) {
 				s.now = fixedClock(&clock)
 
 				ctx := context.Background()
-				id, err := s.Create(ctx, 7, "1.2.3.4", "ua")
+				id, err := s.Create(ctx, "user7", "1.2.3.4", "ua")
 				if err != nil {
 					t.Fatalf("Create: %v", err)
 				}
@@ -141,7 +142,7 @@ func TestSessionStore(t *testing.T) {
 				s.now = fixedClock(&clock)
 
 				ctx := context.Background()
-				id, err := s.Create(ctx, 1, "", "")
+				id, err := s.Create(ctx, "user1", "", "")
 				if err != nil {
 					t.Fatalf("Create: %v", err)
 				}
@@ -169,7 +170,7 @@ func TestSessionStore(t *testing.T) {
 				defer cleanup()
 
 				ctx := context.Background()
-				id, err := s.Create(ctx, 5, "", "")
+				id, err := s.Create(ctx, "user5", "", "")
 				if err != nil {
 					t.Fatalf("Create: %v", err)
 				}
@@ -198,7 +199,7 @@ func TestSessionStore(t *testing.T) {
 				ctx := context.Background()
 				var oldIDs []string
 				for i := 0; i < 3; i++ {
-					id, err := s.Create(ctx, int64(100+i), "", "")
+					id, err := s.Create(ctx, fmt.Sprintf("user%d", 100+i), "", "")
 					if err != nil {
 						t.Fatalf("Create old #%d: %v", i, err)
 					}
@@ -207,7 +208,7 @@ func TestSessionStore(t *testing.T) {
 
 				// Advance past TTL, then create one fresh session.
 				clock = t0.Add(8 * 24 * time.Hour)
-				freshID, err := s.Create(ctx, 999, "", "")
+				freshID, err := s.Create(ctx, "user999", "", "")
 				if err != nil {
 					t.Fatalf("Create fresh: %v", err)
 				}
@@ -249,7 +250,7 @@ func TestSessionStore(t *testing.T) {
 				ctx := context.Background()
 				seen := make(map[string]struct{}, 100)
 				for i := 0; i < 100; i++ {
-					id, err := s.Create(ctx, int64(i), "", "")
+					id, err := s.Create(ctx, fmt.Sprintf("user%d", i), "", "")
 					if err != nil {
 						t.Fatalf("Create #%d: %v", i, err)
 					}

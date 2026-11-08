@@ -1,6 +1,8 @@
 package discord
 
 import (
+	"context"
+
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/famclaw/famclaw/internal/gateway"
@@ -14,8 +16,15 @@ import (
 // Tests typically pair this with overriding discordgo.EndpointChannelMessages
 // to point at an httptest.Server.
 func SendChunked(s *discordgo.Session, channelID, text string) error {
+	return sendChunked(context.Background(), s, channelID, text)
+}
+
+func sendChunked(ctx context.Context, s *discordgo.Session, channelID, text string) error {
 	for _, chunk := range gateway.ChunkMessage(text, 2000) {
-		if _, err := s.ChannelMessageSend(channelID, chunk); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := s.ChannelMessageSend(channelID, chunk, discordgo.WithContext(ctx)); err != nil {
 			return err
 		}
 	}

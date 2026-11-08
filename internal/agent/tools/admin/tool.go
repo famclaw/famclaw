@@ -6,7 +6,9 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/config"
@@ -41,6 +43,59 @@ type Deps struct {
 	// to persist new MCP server entries so they survive restarts.
 	ConfigPath string
 	Scanner    skillbridge.Scanner
+
+	// SharedPolicyOwner is the single shared lock guarding this config's
+	// WebFetch host policy slices (URLAllowlist / URLDenylist): one
+	// instance per *config.Config, shared by every Agent and every handler
+	// built from that config (#423 round 18 — replaces the per-Agent value
+	// mutex urlDenylistMu, which could never exclude across Agents). The
+	// denylist_* and allowlist_* handlers take it (RLock / Lock) so their
+	// read-modify-writes never race hostDecision's decision-time snapshots
+	// on ANY Agent, and never tear the slice headers.
+	//
+	// It is REQUIRED for any entry point that can run concurrently with the
+	// agent's hostDecision path: when nil, policyOwner() returns
+	// ErrPolicyOwnerUnwired and every web-policy handler fails closed
+	// instead of touching the lists, so a misconfigured entry point
+	// surfaces the error at the call site rather than degrading to an
+	// unsynchronized read-modify-write.
+	//
+	// NOTE: the field is a pointer to the config's shared owner — never a
+	// value sync.RWMutex: a value field would be copied into each Deps and
+	// could not be shared across Agents.
+	SharedPolicyOwner *config.WebFetchPolicyOwner
+
+	// SharedConfig is the shared configuration manager for atomic
+	// save/reload of the config file (transactional: content-token
+	// precondition, temp-file + rename commit, operator-conflict rollback).
+	// The denylist/allowlist add/remove tools call its SaveConfig inside
+	// the policy-owner (M) span; a nil value means the entry point is
+	// memory-only (no on-disk persistence), and persist is then skipped.
+	SharedConfig *SharedConfigManager
+}
+
+// ErrPolicyOwnerUnwired is returned by policyOwner() when
+// Deps.SharedPolicyOwner is nil. All web-policy handlers (denylist AND
+// allowlist) fail closed on it: proceeding without the config's shared
+// owner would let their read-modify-write of Cfg.Tools.WebFetch lists race
+// hostDecision's decision-time snapshot on any Agent, so the
+// misconfiguration is returned to the caller instead of being logged and
+// continued.
+var ErrPolicyOwnerUnwired = errors.New("admin web policy: Deps.SharedPolicyOwner is not wired to the config's shared WebFetchPolicyOwner; refusing to touch the URL policy unsynchronized")
+
+// policyOwner returns the config's shared WebFetch policy owner for a
+// web-policy handler. When Deps.SharedPolicyOwner is wired it returns that
+// instance so the handler's read-modify-write of Cfg.Tools.WebFetch lists
+// never races hostDecision's decision-time snapshot on any Agent. When
+// unwired it logs a prominent error and returns ErrPolicyOwnerUnwired, so
+// the handler fails closed at the call site rather than degrading to an
+// unsynchronized read-modify-write.
+func (d Deps) policyOwner() (*config.WebFetchPolicyOwner, error) {
+	if d.SharedPolicyOwner == nil {
+		log.Printf("[admin] ERROR: web policy handler invoked with SharedPolicyOwner unset — failing closed. Every entry point that can run concurrently with the agent's hostDecision path must wire Deps.SharedPolicyOwner to the config's shared owner (cfg.WebFetchPolicyOwner()).")
+		return nil, ErrPolicyOwnerUnwired
+	}
+	return d.SharedPolicyOwner, nil
 }
 
 // MCPManager abstracts MCP server lifecycle management needed by the
@@ -71,6 +126,10 @@ func isKnownSubject(cfg *config.Config, subject string) bool {
 
 // logAudit writes an audit record. args must be JSON-marshalable.
 func logAudit(ctx context.Context, deps Deps, toolName string, args any) error {
+	if deps.DB == nil {
+		log.Print("[admin] WARNING: audit store unavailable; action was not audited")
+		return nil
+	}
 	b, err := json.Marshal(args)
 	if err != nil {
 		return fmt.Errorf("marshal audit args: %w", err)
@@ -87,6 +146,7 @@ func AllReadOnlyDefinitions() []agentcore.Tool {
 		ListUnknownAccountsDefinition(),
 		MCPListDefinition(),
 		AllowlistListDefinition(),
+		DenylistListDefinition(),
 	}
 }
 
@@ -107,6 +167,8 @@ func AllMutatingDefinitions() []agentcore.Tool {
 		MCPRemoveDefinition(),
 		AllowlistAddDefinition(),
 		AllowlistRemoveDefinition(),
+		DenylistAddDefinition(),
+		DenylistRemoveDefinition(),
 	}
 }
 

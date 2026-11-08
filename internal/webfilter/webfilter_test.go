@@ -1,0 +1,407 @@
+package webfilter
+
+import (
+	"testing"
+)
+
+func TestSuspiciousSiteDetector_Check(t *testing.T) {
+	detector := NewSuspiciousSiteDetector()
+
+	tests := []struct {
+		name     string
+		host     string
+		expected Verdict
+	}{
+		{
+			name: "Private IPv4 literal (home-LAN)",
+			host: "192.168.1.1",
+			expected: Verdict{
+				Action: "warn_allow",
+				Reason: "private/loopback/link-local IP literal permitted by default (home-LAN model)",
+			},
+		},
+		{
+			name: "Loopback IPv6 literal (home-LAN)",
+			host: "[::1]",
+			expected: Verdict{
+				Action: "warn_allow",
+				Reason: "private/loopback/link-local IP literal permitted by default (home-LAN model)",
+			},
+		},
+		{
+			name: "Public IPv4 literal",
+			host: "203.0.113.5",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "public IP literal host",
+			},
+		},
+		{
+			name: "Public IPv6 literal",
+			host: "2001:db8::1",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "public IP literal host",
+			},
+		},
+		{
+			name: "Non-standard port",
+			host: "example.com:8080",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "non-standard port detected",
+			},
+		},
+		{
+			name: "Punycode host",
+			host: "example.xn--fsq.xn--fiqs8s",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "punycode or confusable characters detected",
+			},
+		},
+		{
+			// Confusables are matched on the POST-LOWERCASE host form: the
+			// production caller canonicalizes with strings.ToLower before
+			// Check. Greek small α (the lowercase of the dead U+0391 entry)
+			// on a non-known-good host must flag — the IDN check does not
+			// (idna.ToASCII succeeds on Greek) and typo-squat has no
+			// known-good anchor for it.
+			name: "Greek 'α' confusable, post-lowercase form, non-known-good host",
+			host: "p\u03B1ypal.com",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "punycode or confusable characters detected",
+			},
+		},
+		{
+			// Cyrillic 'а' is lowercase-invariant — the live entry.
+			name: "Cyrillic 'а' confusable, post-lowercase form",
+			host: "\u0430pple.com",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "punycode or confusable characters detected",
+			},
+		},
+		{
+			// Documented residual: Kelvin sign K lowercases to ASCII 'k', so
+			// "gk00gle.com" is not confusable-shaped anymore. Multi-edit leet
+			// is covered by the curated kid-safe baseline and the parent
+			// denylist (B2 trade-off, isTypoSquat), not by this detector.
+			name: "Kelvin-leet host post-lowercase (ASCII residual)",
+			host: "gk00gle.com",
+			expected: Verdict{
+				Action: "warn_allow",
+				Reason: "host passed suspicious site checks",
+			},
+		},
+		{
+			name: "High entropy single label",
+			host: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "high entropy single label detected",
+			},
+		},
+		{
+			name: "Typo squatting",
+			host: "googl.com",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "typo-squatting detected",
+			},
+		},
+		{
+			// B2: a distance-1 real typo-squat still routes to the parent.
+			name: "Distance-1 typo squat still flagged",
+			host: "facebok.com",
+			expected: Verdict{
+				Action: "ask_parent",
+				Reason: "typo-squatting detected",
+			},
+		},
+		{
+			// B2: a distance-2 near-miss no longer auto-blocks; under the
+			// previous <= 2 bound this host would have been flagged and held
+			// every child for up to 24 h.
+			name: "Distance-2 near-miss no longer blocked",
+			host: "g00gle.com",
+			expected: Verdict{
+				Action: "warn_allow",
+				Reason: "host passed suspicious site checks",
+			},
+		},
+		{
+			name: "Normal host",
+			host: "example.com",
+			expected: Verdict{
+				Action: "warn_allow",
+				Reason: "host passed suspicious site checks",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := detector.Check(tt.host)
+			if result.Action != tt.expected.Action {
+				t.Errorf("Check() action = %v, want %v", result.Action, tt.expected.Action)
+			}
+			if result.Reason != tt.expected.Reason {
+				t.Errorf("Check() reason = %v, want %v", result.Reason, tt.expected.Reason)
+			}
+		})
+	}
+}
+
+func TestSuspiciousSiteDetector_IPLiteral(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "IPv4 literal",
+			host: "192.168.1.1",
+			want: true,
+		},
+		{
+			name: "IPv6 literal",
+			host: "[::1]",
+			want: true,
+		},
+		{
+			name: "IPv4 with port",
+			host: "192.168.1.1:8080",
+			want: true,
+		},
+		{
+			name: "Regular host",
+			host: "example.com",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isIPLiteral(tt.host); got != tt.want {
+				t.Errorf("isIPLiteral() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSuspiciousSiteDetector_NonStandardPort(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "Standard HTTPS port",
+			host: "example.com:443",
+			want: false,
+		},
+		{
+			name: "Standard HTTP port",
+			host: "example.com:80",
+			want: false,
+		},
+		{
+			name: "Non-standard port",
+			host: "example.com:8080",
+			want: true,
+		},
+		{
+			name: "Regular host without port",
+			host: "example.com",
+			want: false,
+		},
+		{
+			name: "Bare IPv4 literal (no port)",
+			host: "192.168.1.50",
+			want: false,
+		},
+		{
+			name: "Bare IPv6 literal (no port)",
+			host: "::1",
+			want: false,
+		},
+		{
+			name: "IPv4 with non-standard port",
+			host: "192.168.1.1:8080",
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasNonStandardPort(tt.host); got != tt.want {
+				t.Errorf("hasNonStandardPort() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSuspiciousSiteDetector_Punycode(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "Punycode host",
+			host: "example.xn--fsq.xn--fiqs8s",
+			want: true,
+		},
+		{
+			name: "Regular host",
+			host: "example.com",
+			want: false,
+		},
+		{
+			// Post-lowercase confusable forms must flag: Cyrillic 'а' is
+			// invariant, Greek 'α' is the lowercase of the dead U+0391 entry.
+			name: "Cyrillic 'а' host (post-lowercase)",
+			host: "\u0430pple.com",
+			want: true,
+		},
+		{
+			name: "Greek 'α' host (post-lowercase form of dead U+0391 entry)",
+			host: "p\u03B1ypal.com",
+			want: true,
+		},
+		{
+			// Kelvin sign lowercases to ASCII 'k' — not confusable-shaped;
+			// covered by baseline/denylist per the B2 trade-off.
+			name: "Kelvin-leet host post-lowercase (ASCII residual)",
+			host: "gk00gle.com",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasPunycodeOrConfusables(tt.host); got != tt.want {
+				t.Errorf("hasPunycodeOrConfusables() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSuspiciousSiteDetector_HighEntropy(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "High entropy single label",
+			host: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+			want: true,
+		},
+		{
+			name: "Normal single label",
+			host: "example.com",
+			want: false,
+		},
+		{
+			name: "Short single label",
+			host: "abc.com",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasHighEntropySingleLabel(tt.host); got != tt.want {
+				t.Errorf("hasHighEntropySingleLabel() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSuspiciousSiteDetector_TypoSquat(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "Typo squatting",
+			host: "googl.com",
+			want: true,
+		},
+		{
+			name: "Regular host",
+			host: "google.com",
+			want: false,
+		},
+		// B2: distance-1 real typo-squats are still caught.
+		{
+			name: "Distance-1 real typo-squat (facebok.com)",
+			host: "facebok.com",
+			want: true,
+		},
+		{
+			name: "Distance-1 real typo-squat (gogle.com)",
+			host: "gogle.com",
+			want: true,
+		},
+		// B2: distance-2 near-misses no longer flagged — this was the
+		// false-positive surface that auto-blocked legitimate child fetches
+		// for up to 24 h.
+		{
+			name: "Distance-2 near-miss no longer flagged (g00gle.com)",
+			host: "g00gle.com",
+			want: false,
+		},
+		// Documented B2 tradeoff: faceb00k.com is Levenshtein distance 2 from
+		// facebook.com (both 'o' -> '0'), so under the tightened <= 1 bound the
+		// detector no longer auto-flags it. The detector layer stays distance
+		// based on purpose; the curated fail-safe for this specific squat lives
+		// in the bundled baseline (see TestBaselineStore_TypoSquatCurated),
+		// which hostDecision consults before any detector verdict.
+		{
+			name: "Distance-2 leet variant no longer flagged by detector (faceb00k.com)",
+			host: "faceb00k.com",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTypoSquat(tt.host); got != tt.want {
+				t.Errorf("isTypoSquat() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBaselineStore_TypoSquatCurated pins the documented B2 tradeoff (PM
+// decision 2026-10-31, Option 2): distance-2 leet squats that the
+// <= 1 edit-distance heuristic intentionally does not flag are covered by
+// the bundled kid-safe baseline, the repo's default URL denylist. faceb00k.com
+// is a curated entry there (known typo-squat of facebook.com), so children are
+// blocked regardless of distance heuristics; the real host and the
+// distance-2 near-miss g00gle.com are NOT curated, so B2's false-positive fix
+// stays intact at both layers.
+func TestBaselineStore_TypoSquatCurated(t *testing.T) {
+	store := NewBaselineStore()
+
+	// Curated typo-squat: blocked, including subdomain-suffix matching.
+	for _, host := range []string{"faceb00k.com", "www.faceb00k.com", "FACEB00K.COM"} {
+		if !store.Blocks(host) {
+			t.Errorf("BaselineStore.Blocks(%q) = false, want true (curated known typo-squat of facebook.com)", host)
+		}
+	}
+
+	// Not curated: the real known-good host stays fetchable, and the
+	// distance-2 near-miss g00gle.com is not auto-blocked at the baseline
+	// layer either (B2 false-positive fix preserved).
+	for _, host := range []string{"facebook.com", "g00gle.com"} {
+		if store.Blocks(host) {
+			t.Errorf("BaselineStore.Blocks(%q) = true, want false", host)
+		}
+	}
+}

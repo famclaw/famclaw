@@ -19,20 +19,16 @@ import (
 var familyCategoryNameRE = regexp.MustCompile(`^[a-z0-9_]+$`)
 
 // actorName resolves an audit-log "actor" string from the authenticated
-// session. Identity carries only UserID (int64). Map back to the
-// corresponding config.Users[].Name; falls back to a generic "web_user"
-// label if the mapping cannot be made (the audit row still records the
-// numeric UserID via other fields).
+// session. Identity carries the user's stable config name (the session
+// principal), so no index mapping is needed; we fall back to a generic
+// "web_user" label only when the context has no identity at all.
 func (s *Server) actorName(ctx context.Context) string {
 	id, ok := middleware.IdentityFrom(ctx)
 	if !ok {
 		return "web_unauthenticated"
 	}
-	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	idx := int(id.UserID - 1)
-	if idx >= 0 && idx < len(s.cfg.Users) {
-		return s.cfg.Users[idx].Name
+	if id.UserName != "" {
+		return id.UserName
 	}
 	return "web_user"
 }
@@ -42,6 +38,26 @@ func (s *Server) actorName(ctx context.Context) string {
 func (s *Server) requireFamilyState(w http.ResponseWriter) bool {
 	if s.familyState == nil {
 		http.Error(w, "family state not configured", http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
+
+// requireManager gates a family-state mutation behind the manager role,
+// mirroring s.protectParent's check: the session's user must resolve to the
+// effective "parent" role. F8: family-state reads stay open to every
+// household member, so the role gate lives on the POST/DELETE branches only
+// rather than on the routes. Unreachable 401 branch fails closed when the
+// handler ever runs without the session middleware in front of it.
+func (s *Server) requireManager(w http.ResponseWriter, r *http.Request) bool {
+	identity, ok := middleware.IdentityFrom(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return false
+	}
+	userCfg := s.userForSession(r.Context(), identity.UserName)
+	if !s.isManager(r.Context(), userCfg) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return false
 	}
 	return true
@@ -75,13 +91,17 @@ type familyStateFactRequest struct {
 }
 
 // handleFamilyStateFacts dispatches GET (list) and POST (upsert) on
-// /api/family-state/facts. Session auth is enforced by s.protect; this
-// handler trusts the middleware and does not re-check.
+// /api/family-state/facts. GET is open to every session-holding household
+// member; POST is manager-only (F8) via s.requireManager — the route itself
+// is session-gated by s.protect, which this handler trusts for authn.
 func (s *Server) handleFamilyStateFacts(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.familyStateListFacts(w, r)
 	case http.MethodPost:
+		if !s.requireManager(w, r) {
+			return
+		}
 		s.familyStateUpsertFact(w, r)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -149,9 +169,13 @@ func (s *Server) familyStateUpsertFact(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleFamilyStateFact dispatches DELETE on /api/family-state/facts/{id}.
+// Deletion is a mutation: manager-only (F8), checked before any state access.
 func (s *Server) handleFamilyStateFact(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireManager(w, r) {
 		return
 	}
 	if !s.requireFamilyState(w) {
@@ -175,7 +199,8 @@ func (s *Server) handleFamilyStateFact(w http.ResponseWriter, r *http.Request) {
 // ── /api/family-state/categories ──────────────────────────────────────────────
 
 // handleFamilyStateCategories dispatches GET (list) and POST (upsert)
-// on /api/family-state/categories.
+// on /api/family-state/categories. GET is open to every household member;
+// POST is manager-only (F8).
 func (s *Server) handleFamilyStateCategories(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFamilyState(w) {
 		return
@@ -189,6 +214,9 @@ func (s *Server) handleFamilyStateCategories(w http.ResponseWriter, r *http.Requ
 		}
 		jsonOK(w, cats)
 	case http.MethodPost:
+		if !s.requireManager(w, r) {
+			return
+		}
 		var req struct {
 			Name         string `json:"name"`
 			Description  string `json:"description"`
@@ -230,9 +258,13 @@ func (s *Server) handleFamilyStateCategories(w http.ResponseWriter, r *http.Requ
 }
 
 // handleFamilyStateCategory dispatches DELETE on /api/family-state/categories/{name}.
+// Deletion is a mutation: manager-only (F8), checked before any state access.
 func (s *Server) handleFamilyStateCategory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireManager(w, r) {
 		return
 	}
 	if !s.requireFamilyState(w) {

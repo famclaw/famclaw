@@ -59,10 +59,14 @@ type gatewaySettingsView struct {
 	} `json:"discord"`
 }
 
-// webFetchSettingsView carries the web_fetch allowlist and enable flag.
+// webFetchSettingsView carries the web_fetch URL policy, allowlist, and
+// denylist. The denylist + bundled baseline are the kid-safe default (W2);
+// the allowlist is the back-compat parent-maintained mode.
 type webFetchSettingsView struct {
 	Enabled      bool     `json:"enabled"`
+	URLPolicy    string   `json:"url_policy,omitempty"`
 	URLAllowlist []string `json:"url_allowlist"`
+	URLDenylist  []string `json:"url_denylist"`
 }
 
 // handleSettings handles GET (read config) and POST (update config).
@@ -80,6 +84,15 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
+
+	// The view copy below reads the URLDenylist slice header; take the
+	// shared WebFetch policy owner (cfg.WebFetchPolicyOwner(); see
+	// policy_owner.go for the accessor list) so it cannot tear against a
+	// concurrent settings-POST replace or an admin denylist tool rewrite.
+	// Lock order: cfgMu, then the owner (never reversed).
+	owner := s.cfg.WebFetchPolicyOwner()
+	owner.RLock()
+	defer owner.RUnlock()
 
 	defCopy := s.cfg.LLM.Default
 	view := settingsView{
@@ -128,9 +141,12 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 
 	// WebFetch settings
 	view.WebFetch.Enabled = s.cfg.Tools.WebFetch.Enabled
+	view.WebFetch.URLPolicy = s.cfg.Tools.WebFetch.URLPolicy
 	// Copy the allowlist so the view is stable against concurrent writes
 	view.WebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
 	copy(view.WebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
+	view.WebFetch.URLDenylist = make([]string, len(s.cfg.Tools.WebFetch.URLDenylist))
+	copy(view.WebFetch.URLDenylist, s.cfg.Tools.WebFetch.URLDenylist)
 
 	jsonOK(w, view)
 }
@@ -149,6 +165,35 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
+
+	// This handler rewrites cfg.Tools.WebFetch.URLDenylist (the section
+	// replace below and the rollback), reads it (the newWebFetch and
+	// snapWebFetch copies), and marshals the whole config for persistence —
+	// every one of those must serialize with the agent's hostDecision
+	// reads and the admin denylist/allowlist tools, which all take the
+	// shared WebFetch policy owner on the *Config both sides hold
+	// (cfg.WebFetchPolicyOwner(); see policy_owner.go for the full
+	// accessor list). cfgMu alone did not cover them — that two-lock gap
+	// was PR #423's current-head data-race finding. The owner lives on the
+	// config object because the web server has no reference to the agent
+	// (agents are per-turn) and the agent has no reference to this
+	// server's cfgMu. Held for the whole POST: lock order cfgMu → owner,
+	// acyclic (no path takes cfgMu while holding the owner).
+	//
+	// Disk I/O under the owner (the writeConfig() below) is a re-resolved
+	// ACCEPTED DEFERRAL, not a bug: the in-memory publish and the rollback
+	// on a failed write must stay serialized with readers, or a
+	// hostDecision reader could observe a published-then-reverted or
+	// half-applied config. The stall is bounded and infrequent — a
+	// settings POST is a rare parent action. The future path, if it ever
+	// matters, is to publish in-memory under the owner (M) and write to
+	// disk under the commit lock (T) only — keeping the temp+rename
+	// atomicity, not dropping it. If that split is ever made, update this
+	// comment and the policy_owner.go lock-order doc to reflect the new
+	// span boundary.
+	owner := s.cfg.WebFetchPolicyOwner()
+	owner.Lock()
+	defer owner.Unlock()
 
 	// Build updated config values first, validate everything, then assign
 	// LLM config — legacy single endpoint
@@ -235,12 +280,23 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		newGateways.Discord.Token = update.Gateways.Discord.Token
 	}
 
-	// WebFetch — allowlist and enable flag
+	// WebFetch — policy, allowlist, denylist, and enable flag
 	newWebFetch := s.cfg.Tools.WebFetch
 	if update.WebFetch.Enabled != s.cfg.Tools.WebFetch.Enabled {
 		newWebFetch.Enabled = update.WebFetch.Enabled
 	}
-	if len(update.WebFetch.URLAllowlist) > 0 {
+	if update.WebFetch.URLPolicy != "" {
+		// Only accept an explicit policy override when it's a known mode.
+		switch strings.ToLower(strings.TrimSpace(update.WebFetch.URLPolicy)) {
+		case "allowlist", "denylist":
+			newWebFetch.URLPolicy = strings.ToLower(strings.TrimSpace(update.WebFetch.URLPolicy))
+		default:
+			jsonErr(w, fmt.Errorf("web_fetch.url_policy must be %q or %q", "allowlist", "denylist"), http.StatusBadRequest)
+			return
+		}
+	}
+	// Preserve an omitted list and apply an explicit empty array.
+	if update.WebFetch.URLAllowlist != nil {
 		// Deduplicate, trim whitespace, and validate hosts
 		seen := make(map[string]struct{}, len(update.WebFetch.URLAllowlist))
 		deduped := make([]string, 0, len(update.WebFetch.URLAllowlist))
@@ -260,10 +316,40 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		newWebFetch.URLAllowlist = deduped
 	}
+	// JSON unmarshal semantics carry the "present vs absent" distinction:
+	// an absent url_denylist decodes to a nil slice (keep the existing
+	// list), while an explicit "url_denylist": [] decodes to a non-nil
+	// empty slice (clear the list). The old "len > 0" guard collapsed the
+	// two, so a parent could add denylist hosts but never clear the
+	// denylist via /api/settings (PR #423 finding). Guard on nil instead
+	// so the explicit empty array applies and clears.
+	if update.WebFetch.URLDenylist != nil {
+		// Deduplicate, trim whitespace, and validate hosts (same shape as allowlist).
+		seen := make(map[string]struct{}, len(update.WebFetch.URLDenylist))
+		deduped := make([]string, 0, len(update.WebFetch.URLDenylist))
+		for _, host := range update.WebFetch.URLDenylist {
+			trimmed := strings.TrimSpace(host)
+			if trimmed == "" {
+				continue
+			}
+			if _, ok := seen[trimmed]; !ok {
+				if _, err := config.NormalizeAllowlistHost(trimmed); err != nil {
+					jsonErr(w, fmt.Errorf("invalid host %q: %w", trimmed, err), http.StatusBadRequest)
+					return
+				}
+				seen[trimmed] = struct{}{}
+				deduped = append(deduped, trimmed)
+			}
+		}
+		newWebFetch.URLDenylist = deduped
+	}
 
-	// Validate web_fetch config before assignment
-	if newWebFetch.Enabled && len(newWebFetch.URLAllowlist) == 0 {
-		jsonErr(w, fmt.Errorf("web_fetch is enabled but url_allowlist is empty — set at least one host or disable web_fetch"), http.StatusBadRequest)
+	// Validate web_fetch config before assignment. In allowlist mode an empty
+	// allowlist would deny all fetches — reject that. In denylist mode (the
+	// zero-config default) an empty allowlist is expected and valid; the
+	// bundled baseline + any denylist entries still gate access.
+	if newWebFetch.Enabled && newWebFetch.ResolvedURLPolicy() == "allowlist" && len(newWebFetch.URLAllowlist) == 0 {
+		jsonErr(w, fmt.Errorf("web_fetch is enabled in allowlist mode but url_allowlist is empty — add at least one host, or set url_policy: denylist"), http.StatusBadRequest)
 		return
 	}
 
@@ -279,10 +365,21 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	snapUsers := make([]config.UserConfig, len(s.cfg.Users))
 	copy(snapUsers, s.cfg.Users)
 	snapGateways := s.cfg.Gateways
-	snapTools := s.cfg.Tools
+	// Snapshot only the section this handler owns. A whole-struct
+	// snapshot + rollback write (the old `s.cfg.Tools = snapTools`)
+	// would re-store every Tools sub-field — including WebSearch,
+	// which handleWebSearch reads lock-free on every chat turn
+	// (agent.go) — so the rollback raced a live reader. Snapshotting
+	// and restoring just WebFetch keeps the write scoped to the one
+	// section this handler mutates (#423 followup 2).
+	snapWebFetch := s.cfg.Tools.WebFetch
 	if s.cfg.Tools.WebFetch.URLAllowlist != nil {
-		snapTools.WebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
-		copy(snapTools.WebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
+		snapWebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
+		copy(snapWebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
+	}
+	if s.cfg.Tools.WebFetch.URLDenylist != nil {
+		snapWebFetch.URLDenylist = make([]string, len(s.cfg.Tools.WebFetch.URLDenylist))
+		copy(snapWebFetch.URLDenylist, s.cfg.Tools.WebFetch.URLDenylist)
 	}
 
 	// Assign all validated values at once
@@ -297,7 +394,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			s.cfg.LLM = snapLLM
 			s.cfg.Users = snapUsers
 			s.cfg.Gateways = snapGateways
-			s.cfg.Tools = snapTools
+			s.cfg.Tools.WebFetch = snapWebFetch
 			jsonErr(w, fmt.Errorf("saving config: %w", err), http.StatusInternalServerError)
 			return
 		}
