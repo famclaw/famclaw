@@ -940,7 +940,11 @@ func rebuildResultLine(tr ToolResult) string {
 				state = tr.Output
 			}
 		}
-		line = fmt.Sprintf("[%s args=[redacted] err=%s]", tr.ToolName, state)
+		label := "err"
+		if tr.Disposition == DispositionSkipped && tr.Error == nil {
+			label = "skip"
+		}
+		line = fmt.Sprintf("[%s args=[redacted] %s=%s]", tr.ToolName, label, state)
 	} else {
 		line = fmt.Sprintf("[%s args=%s ok bytes=%d]", tr.ToolName, argsJSON, len(tr.Output))
 	}

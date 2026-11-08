@@ -218,7 +218,7 @@ func TestStageToolLoopWebSearchMarker(t *testing.T) {
 func TestPageChangeSkipAllowsBareBuiltinRetry(t *testing.T) {
 	for _, retryName := range []string{"browser_extract", "builtin__browser_extract"} {
 		t.Run(retryName, func(t *testing.T) {
-			args := map[string]any{"mode": "text"}
+			args := map[string]any{"mode": "fake-private-detail"}
 			client := &bareNameMockChatter{responses: []llm.Message{
 				{ToolCalls: []llm.ToolCall{{ID: "retry", Function: llm.ToolCallFunction{Name: retryName, Arguments: args}}}},
 				{Content: "done"},
@@ -226,7 +226,7 @@ func TestPageChangeSkipAllowsBareBuiltinRetry(t *testing.T) {
 			var dispatched []string
 			deps := ToolLoopDeps{
 				ClientFactory: func(*Turn) llm.Chatter { return client },
-				MaxIterations: 2, AbortQueueOnPageChange: true,
+				MaxIterations: 2, AbortQueueOnPageChange: true, RebuildHistory: true,
 				BuiltinHandler: func(_ context.Context, name string, _ map[string]any) (string, error) {
 					dispatched = append(dispatched, name)
 					switch name {
@@ -263,6 +263,13 @@ func TestPageChangeSkipAllowsBareBuiltinRetry(t *testing.T) {
 			}
 			if len(dispatched) != 3 || dispatched[2] != "builtin__browser_extract" {
 				t.Errorf("handler dispatches = %v", dispatched)
+			}
+			var history string
+			for _, msg := range client.messages {
+				history += msg.Content
+			}
+			if !strings.Contains(history, "[browser_extract args=[redacted] skip=skipped; not run]") || strings.Contains(history, "err=skipped; not run") {
+				t.Errorf("rebuilt history misrepresents or leaks skip: %q", history)
 			}
 		})
 	}

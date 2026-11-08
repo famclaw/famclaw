@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1351,6 +1352,31 @@ func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gat
 	return true, nil
 }
 
+// webFetchFailureClass returns only fixed labels or a bounded HTTP status.
+// It never formats the URL or the underlying diagnostic error.
+func webFetchFailureClass(result *webfetch.Result, err error) string {
+	if result != nil && result.StatusCode >= 100 && result.StatusCode <= 599 {
+		return fmt.Sprintf("status=%d", result.StatusCode)
+	}
+	var hostErr *webfetch.HostNotAllowedError
+	var dnsErr *net.DNSError
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "class=canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "class=deadline"
+	case errors.As(err, &hostErr):
+		return "class=host_denied"
+	case errors.As(err, &dnsErr):
+		return "class=dns"
+	case errors.As(err, &netErr):
+		return "class=network"
+	default:
+		return "class=unknown"
+	}
+}
+
 // handleWebFetch dispatches the builtin__web_fetch tool. Auth boundary:
 // validates scheme, enforces the per-host URL allowlist (must be non-empty
 // — empty list is treated as deny-all to prevent SSRF into the home LAN),
@@ -1443,7 +1469,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// authoritative; a second render would add latency, not text.
 	browserTried := false
 	if err != nil {
-		log.Print("[agent] web_fetch failed")
+		log.Printf("[agent] web_fetch failed %s", webFetchFailureClass(result, err))
 		// F7 fix (web-retrieval plan, slice 3b): a 403/429 is usually
 		// upstream bot-blocking of this client, not a dead page — the same
 		// URL often renders fine in a real browser. When the browser
