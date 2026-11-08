@@ -44,8 +44,11 @@ func TestFetchWithBrowser_Integration(t *testing.T) {
 
 	// hostAllowed mirrors the production gate: the test server is on the
 	// loopback address.
-	hostAllowed := func(h string) bool {
-		return h == "127.0.0.1" || h == "localhost"
+	hostAllowed := func(_ context.Context, h string) error {
+		if h == "127.0.0.1" || h == "localhost" {
+			return nil
+		}
+		return fmt.Errorf("host %q not permitted", h)
 	}
 
 	pool, err := browser.NewPool(context.Background(), browser.Config{
@@ -100,7 +103,12 @@ func TestFetchWithBrowser_IntegrationEmptyRender(t *testing.T) {
 	}
 	defer pool.Close()
 	a := &Agent{user: &config.UserConfig{Name: "it-user", Role: "parent"}}
-	_, err = a.fetchWithBrowser(context.Background(), pool, srv.URL, func(h string) bool { return h == "127.0.0.1" || h == "localhost" })
+	_, err = a.fetchWithBrowser(context.Background(), pool, srv.URL, func(_ context.Context, h string) error {
+		if h == "127.0.0.1" || h == "localhost" {
+			return nil
+		}
+		return fmt.Errorf("host %q not permitted", h)
+	})
 	if err == nil || !strings.Contains(err.Error(), "rendered content empty") {
 		t.Fatalf("error = %v, want rendered content empty", err)
 	}
@@ -119,7 +127,9 @@ func TestFetchWithBrowser_IntegrationHostGateRejects(t *testing.T) {
 	}
 	defer pool.Close()
 	a := &Agent{user: &config.UserConfig{Name: "it-user", Role: "parent"}}
-	_, err = a.fetchWithBrowser(context.Background(), pool, srv.URL, func(string) bool { return false })
+	_, err = a.fetchWithBrowser(context.Background(), pool, srv.URL, func(_ context.Context, h string) error {
+		return fmt.Errorf("host %q not permitted", h)
+	})
 	if err == nil || !strings.Contains(err.Error(), "host") {
 		t.Fatalf("error = %v, want host-gate rejection", err)
 	}

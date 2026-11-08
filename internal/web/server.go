@@ -1,6 +1,7 @@
 // Package web provides the FamClaw HTTP server.
 // Serves the embedded web UI and a REST+WebSocket API.
 // All local — no CDN dependencies, works offline on RPi/old phones.
+// Rebased onto main 2026-11-05: composed server.go conflict with #427 bgWG fix
 package web
 
 import (
@@ -44,7 +45,8 @@ var staticFiles embed.FS
 // Server is the FamClaw web server.
 type Server struct {
 	cfg           *config.Config
-	cfgPath       string // path to config.yaml for settings API
+	lifetimeCtx   context.Context // cancelled during server shutdown
+	cfgPath       string          // path to config.yaml for settings API
 	db            *store.DB
 	identStore    *identity.Store
 	evaluator     *policy.Evaluator
@@ -141,7 +143,8 @@ func (s *Server) ReloadConfig(newCfg *config.Config) error {
 	return nil
 }
 
-func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store.SessionStore, vault *credstore.Vault,
+// NewServer creates a web server whose approval work is cancelled with lifetimeCtx.
+func NewServer(lifetimeCtx context.Context, cfg *config.Config, cfgPath string, db *store.DB, sessions *store.SessionStore, vault *credstore.Vault,
 	identStore *identity.Store, evaluator *policy.Evaluator, clf *classifier.Classifier, notifier *notify.MultiNotifier,
 	skills []*skillbridge.Skill, skillRegistry *skillbridge.Registry, pool *mcp.Pool) *Server {
 	var fs *familystate.Store
@@ -150,6 +153,7 @@ func NewServer(cfg *config.Config, cfgPath string, db *store.DB, sessions *store
 	}
 	s := &Server{
 		cfg:           cfg,
+		lifetimeCtx:   lifetimeCtx,
 		cfgPath:       cfgPath,
 		db:            db,
 		sessions:      sessions,
@@ -578,10 +582,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		llmClient = llm.NewClient(ep.BaseURL, ep.Model, ep.APIKey).WithTimeout(ep.Timeout).WithReasoningCache(s.reasoningCache)
 	}
 	a, err := agent.NewAgent(adjustedUser, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
-		Skills:         s.skills,
-		Pool:           s.pool,
-		MsgContext:     gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
-		ReasoningCache: s.reasoningCache,
+		Skills:                  s.skills,
+		Pool:                    s.pool,
+		MsgContext:              gateway.MsgContext{Gateway: "web", ExternalID: adjustedUser.Name},
+		ReasoningCache:          s.reasoningCache,
+		OnNewSuspiciousApproval: s.notifySuspiciousApproval,
+		LifetimeCtx:             s.lifetimeCtx,
 	})
 	if err != nil {
 		log.Printf("[ws] failed to create agent for %s: %v", userCfg.DisplayName, err)
@@ -617,11 +623,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		currentRole, currentAgeGroup := current.Role, current.AgeGroup
 		if currentRole != lastRole || currentAgeGroup != lastAgeGroup {
 			// Recreate agent with the new effective role/ageGroup.
+			// `current` is the fully resolved config (resolveUserRole is the
+			// single source of truth), so all fields are preserved.
 			a, err = agent.NewAgent(current, s.cfg, llmClient, s.evaluator, s.clf, s.db, agent.AgentDeps{
-				Skills:         s.skills,
-				Pool:           s.pool,
-				MsgContext:     gateway.MsgContext{Gateway: "web", ExternalID: current.Name},
-				ReasoningCache: s.reasoningCache,
+				Skills:                  s.skills,
+				Pool:                    s.pool,
+				MsgContext:              gateway.MsgContext{Gateway: "web", ExternalID: current.Name},
+				ReasoningCache:          s.reasoningCache,
+				OnNewSuspiciousApproval: s.notifySuspiciousApproval,
+				LifetimeCtx:             s.lifetimeCtx,
 			})
 			lastRole = currentRole
 			if err != nil {
@@ -681,7 +691,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 			// Notify parent if approval needed
 			if resp.PolicyAction == "request_approval" {
-				s.spawnBackground(func() { s.requestApproval(userCfg, string(resp.Category), payload.Text) })
+				s.enqueueApproval(userCfg, string(resp.Category), payload.Text)
 			}
 
 			// Broadcast dashboard update
@@ -1148,7 +1158,51 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-func (s *Server) requestApproval(user *config.UserConfig, category, queryText string) {
+// decideURLs builds the one-click approve/deny /decide links for an
+// approval row, shared by requestApproval and notifySuspiciousApproval so
+// both web-server flows deliver byte-identical URLs for the same approval.
+// The base is cfg.Server.BaseURL() (internal/config), derived from the
+// configured mdns_name (".local") and server port — the same
+// local-network host requestApproval previously hardcoded inline;
+// BaseURL() additionally drops the redundant ":80" suffix on the default
+// port. It mirrors the gateway router's createApproval
+// (internal/gateway/router.go), which builds /decide links the same way.
+func (s *Server) decideURLs(a *store.Approval) (approve, deny string) {
+	baseURL := s.cfg.Server.BaseURL()
+	approve = fmt.Sprintf("%s/decide?id=%s&action=approve&token=%s",
+		baseURL, a.ID, notify.GenerateToken(a.ID, "approve", s.cfg.Server.Secret))
+	deny = fmt.Sprintf("%s/decide?id=%s&action=deny&token=%s",
+		baseURL, a.ID, notify.GenerateToken(a.ID, "deny", s.cfg.Server.Secret))
+	return approve, deny
+}
+
+// enqueueApproval keeps the approval independent of the chat connection while
+// bounding the work by both the server lifetime and an operation deadline.
+func (s *Server) enqueueApproval(user *config.UserConfig, category, queryText string) {
+	s.bgMu.Lock()
+	if s.lifetimeCtx == nil {
+		s.bgMu.Unlock()
+		log.Print("[web] approval skipped: server lifetime context is not configured")
+		return
+	}
+	if s.lifetimeCtx.Err() != nil {
+		s.bgMu.Unlock()
+		log.Print("[web] approval skipped: server shutdown has begun")
+		return
+	}
+	s.bgWG.Add(1)
+	s.bgMu.Unlock()
+	go func() {
+		defer s.bgWG.Done()
+		ctx, cancel := context.WithTimeout(s.lifetimeCtx, 30*time.Second)
+		defer cancel()
+		s.requestApproval(ctx, user, category, queryText)
+	}()
+}
+
+// requestApproval persists an approval and notifies the parent using the
+// bounded server-lifetime context supplied by the caller.
+func (s *Server) requestApproval(ctx context.Context, user *config.UserConfig, category, queryText string) {
 	import_approval_id := agent.ApprovalID(user.Name, category)
 	a := &store.Approval{
 		ID:          import_approval_id,
@@ -1158,19 +1212,16 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 		Category:    category,
 		QueryText:   queryText,
 	}
-	isNew, err := s.db.UpsertApproval(a)
+	isNew, err := s.db.UpsertApproval(ctx, a)
 	if err != nil {
 		log.Printf("[web] approval upsert: %v", err)
 		return
 	}
 	if isNew && s.notifier != nil {
-		approveURL := fmt.Sprintf("http://%s.local:%d/decide?id=%s&action=approve&token=%s",
-			s.cfg.Server.MDNSName, s.cfg.Server.Port, a.ID,
-			notify.GenerateToken(a.ID, "approve", s.cfg.Server.Secret))
-		denyURL := fmt.Sprintf("http://%s.local:%d/decide?id=%s&action=deny&token=%s",
-			s.cfg.Server.MDNSName, s.cfg.Server.Port, a.ID,
-			notify.GenerateToken(a.ID, "deny", s.cfg.Server.Secret))
-		s.notifier.Notify(context.Background(), a, approveURL, denyURL)
+		approveURL, denyURL := s.decideURLs(a)
+		if err := s.notifier.Notify(ctx, a, approveURL, denyURL); err != nil {
+			log.Print("[web] approval notification failed; see notifier logs for details")
+		}
 	}
 }
 
@@ -1180,12 +1231,38 @@ func (s *Server) requestApproval(user *config.UserConfig, category, queryText st
 // comment on bgMu for why the edge matters).
 func (s *Server) spawnBackground(fn func()) {
 	s.bgMu.Lock()
+	if s.lifetimeCtx != nil && s.lifetimeCtx.Err() != nil {
+		s.bgMu.Unlock()
+		return
+	}
 	s.bgWG.Add(1)
 	s.bgMu.Unlock()
 	go func() {
 		defer s.bgWG.Done()
 		fn()
 	}()
+}
+
+// notifySuspiciousApproval delivers the parent push notification when the
+// agent's hostDecision creates a NEW suspicious-site approval row (a child's
+// web_fetch of a detector-flagged host, internal/agent agent.go). It reuses
+// the shared decideURLs helper — the same /decide HMAC-token URLs
+// requestApproval delivers (local-network-reachable BaseURL, see
+// decideURLs) — and mirrors the gateway router's createApproval
+// (internal/gateway/router.go) with the same kid-only parent-skip policy,
+// so a parent fetching a flagged host does not get a self-notification.
+// Notification failures are logged by the caller; the approval row is
+// already durable and visible on the dashboard.
+func (s *Server) notifySuspiciousApproval(ctx context.Context, a *store.Approval) error {
+	if s.notifier == nil {
+		return nil
+	}
+	if u := s.resolveUserRole(ctx, a.UserName); u != nil && u.Role == "parent" {
+		log.Printf("[web] suspicious-site approval %s from parent %s — skipping notify (kid-only policy)", a.ID, a.UserName)
+		return nil
+	}
+	approveURL, denyURL := s.decideURLs(a)
+	return s.notifier.Notify(ctx, a, approveURL, denyURL)
 }
 
 // WaitForBackground blocks until all fire-and-forget goroutines spawned by

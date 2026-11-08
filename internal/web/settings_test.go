@@ -717,3 +717,102 @@ func TestSettingsPost_InvalidWebFetchHost(t *testing.T) {
 		t.Errorf("persisted config file differs after rejected update")
 	}
 }
+
+// TestSettingsPost_ClearDenylist verifies the PR #423 finding fix: an explicit
+// empty url_denylist CLEARS the denylist via /api/settings POST. The pre-fix
+// `len > 0` guard made "url_denylist": [] a no-op, so a parent could add
+// denylist hosts but never clear them. JSON unmarshal gives the handler the
+// distinction it needs: absent field → nil slice (keep existing list);
+// explicit [] → non-nil empty slice (clear it).
+func TestSettingsPost_ClearDenylist(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	newServer := func(denylist []string) *Server {
+		cfg := &config.Config{
+			LLM: config.LLMConfig{BaseURL: "https://api.openai.com", Model: "gpt-4"},
+			Users: []config.UserConfig{
+				{Name: "sarah", DisplayName: "Sarah", Role: "parent", PIN: "1234"},
+			},
+			Tools: config.ToolsConfig{
+				WebFetch: config.WebFetchConfig{
+					Enabled:     true,
+					URLPolicy:   "denylist",
+					URLDenylist: denylist,
+				},
+			},
+		}
+		data, _ := yaml.Marshal(cfg)
+		if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+			t.Fatalf("seed config: %v", err)
+		}
+		return &Server{cfg: cfg, cfgPath: cfgPath, cfgMu: sync.RWMutex{}}
+	}
+
+	post := func(s *Server, body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewReader([]byte(body)))
+		rec := httptest.NewRecorder()
+		s.handleSettingsPost(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST %s: status = %d, want 200 (body: %s)", body, rec.Code, rec.Body.String())
+		}
+		return rec.Code
+	}
+
+	denylen := func(s *Server) []string {
+		s.cfgMu.RLock()
+		defer s.cfgMu.RUnlock()
+		out := make([]string, len(s.cfg.Tools.WebFetch.URLDenylist))
+		copy(out, s.cfg.Tools.WebFetch.URLDenylist)
+		return out
+	}
+
+	// Explicit empty array clears the denylist (the cited finding).
+	s := newServer([]string{"bad-host.com", "ads.example.org"})
+	post(s, `{"web_fetch":{"enabled":true,"url_policy":"denylist","url_denylist":[]}}`)
+	if got := denylen(s); len(got) != 0 {
+		t.Fatalf("URLDenylist after explicit [] = %v, want cleared (empty)", got)
+	}
+
+	// The cleared state is what GET reports too (empty array, not omitted).
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettingsGet(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET: status = %d", rec.Code)
+	}
+	var view settingsView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("unmarshal GET response: %v", err)
+	}
+	if view.WebFetch.URLDenylist == nil || len(view.WebFetch.URLDenylist) != 0 {
+		t.Errorf("GET url_denylist = %#v, want non-nil empty after clear", view.WebFetch.URLDenylist)
+	}
+
+	// The clear was persisted to disk, not just memory.
+	disk, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	var persisted config.Config
+	if err := yaml.Unmarshal(disk, &persisted); err != nil {
+		t.Fatalf("unmarshal persisted config: %v", err)
+	}
+	if len(persisted.Tools.WebFetch.URLDenylist) != 0 {
+		t.Errorf("persisted URLDenylist = %v, want empty after clear", persisted.Tools.WebFetch.URLDenylist)
+	}
+
+	// Absent field keeps the existing list (nil ≠ [] — no accidental clear).
+	s = newServer([]string{"kept.com"})
+	post(s, `{"web_fetch":{"enabled":true}}`)
+	if got := denylen(s); len(got) != 1 || got[0] != "kept.com" {
+		t.Fatalf("URLDenylist after POST with absent url_denylist = %v, want [kept.com] preserved", got)
+	}
+
+	// A non-empty replacement still dedupes/validates as before.
+	s = newServer([]string{"old.com"})
+	post(s, `{"web_fetch":{"enabled":true,"url_denylist":["new.com", "new.com", ""]}}`)
+	if got := denylen(s); len(got) != 1 || got[0] != "new.com" {
+		t.Fatalf("URLDenylist after replacement = %v, want [new.com] (deduped, trimmed)", got)
+	}
+}

@@ -10,11 +10,14 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/famclaw/famclaw/internal/agent/tools/admin"
 	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/classifier"
 	"github.com/famclaw/famclaw/internal/compress"
@@ -571,14 +574,17 @@ func TestBuildMessages_OperatorOverrideIncludesCapabilities(t *testing.T) {
 }
 
 func TestHandleWebFetch(t *testing.T) {
-	newAgent := func(allowlist []string, fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
+	newAgent := func(allowlist, denylist []string, policy string,
+		fetcher func(context.Context, string, webfetch.Options) (*webfetch.Result, error)) *Agent {
 		return &Agent{
 			user: &config.UserConfig{Name: "testuser", Role: "parent"},
 			cfg: &config.Config{
 				Tools: config.ToolsConfig{
 					WebFetch: config.WebFetchConfig{
 						Enabled:      true,
+						URLPolicy:    policy,
 						URLAllowlist: allowlist,
+						URLDenylist:  denylist,
 						MaxBytes:     256 * 1024,
 						TimeoutSec:   5,
 					},
@@ -597,6 +603,8 @@ func TestHandleWebFetch(t *testing.T) {
 	tests := []struct {
 		name        string
 		allowlist   []string
+		denylist    []string
+		policy      string
 		args        map[string]any
 		fetcherErr  error
 		fetcherRes  *webfetch.Result
@@ -635,10 +643,87 @@ func TestHandleWebFetch(t *testing.T) {
 			wantCalled: true,
 		},
 		{
-			name:       "empty allowlist denied (SSRF guard)",
+			name:       "empty allowlist resolves to denylist: public host allowed (zero-config fix)",
 			allowlist:  nil,
 			args:       map[string]any{"url": "https://example.com/x"},
-			wantErrSub: "url_allowlist is empty",
+			fetcherRes: &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "denylist mode: host on url_denylist blocked",
+			policy:     "denylist",
+			denylist:   []string{"bad.example.com"},
+			args:       map[string]any{"url": "https://bad.example.com/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "denylist mode: subdomain of denylisted host blocked",
+			policy:     "denylist",
+			denylist:   []string{"bad.example.com"},
+			args:       map[string]any{"url": "https://sub.bad.example.com/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "denylist mode: public host not on denylist allowed",
+			policy:     "denylist",
+			denylist:   []string{"bad.example.com"},
+			args:       map[string]any{"url": "https://good.example.com/x"},
+			fetcherRes: &webfetch.Result{URL: "https://good.example.com/x", StatusCode: 200, ContentType: "text/plain", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "denylist mode: IP-literal host allowed (home-LAN service, not gated by suspicious detector)",
+			policy:     "denylist",
+			args:       map[string]any{"url": "http://192.168.1.50:8888/search?q=x"},
+			fetcherRes: &webfetch.Result{URL: "http://192.168.1.50:8888/search?q=x", StatusCode: 200, ContentType: "text/plain", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "denylist mode: bundled baseline host blocked (kid-safe message)",
+			policy:     "denylist",
+			args:       map[string]any{"url": "https://omegle.com/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "denylist mode: subdomain of baseline host blocked",
+			policy:     "denylist",
+			args:       map[string]any{"url": "https://www.omegle.com/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "zero-config: empty allowlist + baseline host blocked (the Butler fix boundary)",
+			policy:     "",
+			allowlist:  nil,
+			args:       map[string]any{"url": "https://kiwifarms.net/x"},
+			wantErrSub: "family's web policy",
+		},
+		{
+			name:       "zero-config: empty allowlist + public host allowed (the Butler fix)",
+			policy:     "",
+			allowlist:  nil,
+			args:       map[string]any{"url": "https://example.com/x"},
+			fetcherRes: &webfetch.Result{URL: "https://example.com/x", StatusCode: 200, ContentType: "text/html", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "allowlist mode: baseline does not apply (allowlist semantics preserved)",
+			policy:     "allowlist",
+			allowlist:  []string{"omegle.com"},
+			args:       map[string]any{"url": "https://omegle.com/x"},
+			fetcherRes: &webfetch.Result{URL: "https://omegle.com/x", StatusCode: 200, ContentType: "text/html", Text: "ok"},
+			wantOutSub: "ok",
+			wantCalled: true,
+		},
+		{
+			name:       "explicit allowlist + empty list: still deny-all (SSRF guard kept)",
+			policy:     "allowlist",
+			allowlist:  nil,
+			args:       map[string]any{"url": "https://example.com/x"},
+			wantErrSub: "url_allowlist",
 		},
 		{
 			name:       "non-http scheme rejected before fetcher",
@@ -689,14 +774,25 @@ func TestHandleWebFetch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var got *call
-			fetcher := func(_ context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error) {
+			fetcher := func(ctx context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error) {
+				// Mirror webfetch.Fetch: the host gate runs inside the fetcher,
+				// before any network I/O. handleWebFetch's early hostValidator
+				// call was removed, so a blocked host is rejected here and the
+				// fetch never happens (got stays nil for blocked cases).
+				if opts.HostValidator != nil {
+					if parsed, perr := url.Parse(rawURL); perr == nil {
+						if herr := opts.HostValidator(ctx, parsed.Hostname()); herr != nil {
+							return nil, herr
+						}
+					}
+				}
 				got = &call{rawURL: rawURL, opts: opts}
 				if tt.fetcherErr != nil {
 					return nil, tt.fetcherErr
 				}
 				return tt.fetcherRes, nil
 			}
-			a := newAgent(tt.allowlist, fetcher)
+			a := newAgent(tt.allowlist, tt.denylist, tt.policy, fetcher)
 
 			out, err := a.handleWebFetch(context.Background(), tt.args)
 
@@ -729,11 +825,607 @@ func TestHandleWebFetch(t *testing.T) {
 	}
 }
 
+// TestHostDecision_SuspiciousSiteAskParent verifies the W4 ask_parent flow:
+// suspicious host blocks + creates host-scoped approval; parent-approved
+// host is then allowed; distinct hosts get distinct approval IDs.
+func TestHostDecision_SuspiciousSiteAskParent(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+	}
+
+	// "googl.com" is a typo-squat of "google.com" → detector says ask_parent.
+	ok, reason := a.hostDecision(context.Background(), "googl.com")
+	if ok {
+		t.Fatalf("hostDecision(googl.com) = (%v, %q), want blocked", ok, reason)
+	}
+	if reason != "suspicious" {
+		t.Errorf("reason = %q, want %q", reason, "suspicious")
+	}
+
+	// A pending approval row should exist with a host-scoped ID.
+	approvalID := proposalApprovalID("teo", "suspicious_site", "googl.com")
+	apr, err := db.GetApproval(context.Background(), approvalID)
+	if err != nil {
+		t.Fatalf("get approval: %v", err)
+	}
+	if apr == nil {
+		t.Fatalf("expected approval row for host-scoped id %q, got nil", approvalID)
+	}
+	if apr.Status != "pending" {
+		t.Errorf("approval status = %q, want pending", apr.Status)
+	}
+
+	// Parent approves the host.
+	if err := db.DecideApproval(approvalID, "approved", "parent"); err != nil {
+		t.Fatalf("decide approval: %v", err)
+	}
+
+	// Now the same host should be allowed (approved + not yet expired).
+	ok, reason = a.hostDecision(context.Background(), "googl.com")
+	if !ok {
+		t.Fatalf("hostDecision(googl.com) after approval = (%v, %q), want allowed", ok, reason)
+	}
+
+	// A DIFFERENT suspicious host gets a DIFFERENT approval ID.
+	ok2, _ := a.hostDecision(context.Background(), "youtub.com") // typo-squat of youtube.com
+	if ok2 {
+		t.Error("hostDecision(youtub.com) should be blocked (not yet approved)")
+	}
+	otherID := proposalApprovalID("teo", "suspicious_site", "youtub.com")
+	if otherID == approvalID {
+		t.Error("distinct suspicious hosts produced the same approval ID — collision!")
+	}
+	// Confirm the second approval row was created.
+	apr2, err := db.GetApproval(context.Background(), otherID)
+	if err != nil || apr2 == nil {
+		t.Errorf("expected approval row for youtub.com: apr=%+v err=%v", apr2, err)
+	}
+}
+
+// TestHostDecision_BaselineTypoSquat pins the PM decision (2026-10-31, Option
+// 2): faceb00k.com — a distance-2 leet variant of facebook.com that B2's
+// <= 1 edit-distance heuristic intentionally does not flag — is caught by the
+// repo's default URL denylist (the bundled kid-safe baseline), so children are
+// hard-denied regardless of distance heuristics. g00gle.com stays unflagged,
+// asserting B2's false-positive fix is preserved end-to-end.
+func TestHostDecision_BaselineTypoSquat(t *testing.T) {
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+	}
+
+	// Curated baseline entry: hard deny via the denylist mechanism. Baseline
+	// checks are consulted before any detector verdict, so no ask_parent
+	// approval row is ever created for a child on this host.
+	if ok, reason := a.hostDecision(context.Background(), "faceb00k.com"); ok || reason != "baseline" {
+		t.Errorf("hostDecision(\"faceb00k.com\") = (%v, %q); want (false, \"baseline\") — caught by the repo's default URL denylist", ok, reason)
+	}
+
+	// g00gle.com: distance 2 from google.com, not curated, not flagged by the
+	// heuristic — allowed with no reason.
+	if ok, reason := a.hostDecision(context.Background(), "g00gle.com"); !ok || reason != "" {
+		t.Errorf("hostDecision(\"g00gle.com\") = (%v, %q); want (true, \"\") — B2 false-positive fix must stay intact", ok, reason)
+	}
+	// End-to-end gate: hostValidator wraps hostDecision into the typed error
+	// webfetch.Fetch applies to every redirect hop.
+	if err := a.hostValidator(context.Background(), "faceb00k.com"); err == nil {
+		t.Error("hostValidator(\"faceb00k.com\") = nil; want a host-denied error via the default URL denylist")
+	}
+	if err := a.hostValidator(context.Background(), "g00gle.com"); err != nil {
+		t.Errorf("hostValidator(\"g00gle.com\") = %v; want nil — B2 false-positive fix must stay intact", err)
+	}
+}
+
+// TestHostDecision_NoStaleDenylistSlice pins the reviewer fix for the stale
+// config slice read: hostDecision reads URLDenylist from the shared config at
+// decision time, not from a struct copy captured earlier. The denylist admin
+// tools (HandleDenylistAdd/HandleDenylistRemove) replace
+// Cfg.Tools.WebFetch.URLDenylist concurrently — a parent can block a host via
+// the web UI while a child's fetch is in flight — so a host the parent just
+// denied must be denied by the very next decision. A local-IP host keeps the
+// allow path deterministic: private IPs short-circuit the suspicious gate, so
+// this test never touches the db or the detector.
+func TestHostDecision_NoStaleDenylistSlice(t *testing.T) {
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+	}
+	ctx := context.Background()
+	host := "192.168.1.50"
+
+	if ok, reason := a.hostDecision(ctx, host); !ok || reason != "" {
+		t.Fatalf("hostDecision(%q) with empty denylist = (%v, %q); want (true, \"\")", host, ok, reason)
+	}
+
+	// Simulate HandleDenylistAdd's write to the shared config.
+	a.cfg.Tools.WebFetch.URLDenylist = append(a.cfg.Tools.WebFetch.URLDenylist, host)
+	if ok, reason := a.hostDecision(ctx, host); ok || reason != "denylist" {
+		t.Errorf("hostDecision(%q) after admin denylist add = (%v, %q); want (false, \"denylist\")", host, ok, reason)
+	}
+
+	// Simulate HandleDenylistRemove's replacement write; the host is allowed again.
+	a.cfg.Tools.WebFetch.URLDenylist = nil
+	if ok, reason := a.hostDecision(ctx, host); !ok || reason != "" {
+		t.Errorf("hostDecision(%q) after admin denylist remove = (%v, %q); want (true, \"\")", host, ok, reason)
+	}
+}
+
+// TestHostDecision_DenylistConcurrentReadWrite pins the synchronization
+// guard on cfg.Tools.WebFetch.URLDenylist (review finding: data race).
+// hostDecision reads the shared slice at decision time while the
+// parent-facing admin handlers rewrite it concurrently through the shared
+// config. A concurrent slice-header write racing a read is undefined
+// behavior (torn header → OOB read or panic), so every such access goes
+// through config.WebFetchPolicyOwner — the same owner the admin handlers
+// receive via Deps.SharedPolicyOwner and the web settings handler takes.
+// This test only has teeth under -race; run with
+// `go test -race ./internal/agent/...`.
+func TestHostDecision_DenylistConcurrentReadWrite(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+	}
+
+	// The handlers rewrite the shared slice and write audit rows through
+	// the shared db — exactly the concurrent access pattern hostDecision
+	// races against.
+	deps := admin.Deps{
+		DB:                db,
+		Cfg:               a.cfg,
+		Actor:             "parent",
+		Gateway:           "test",
+		SharedPolicyOwner: a.cfg.WebFetchPolicyOwner(),
+	}
+
+	// Reader host: deterministically unblocked by every other gate
+	// (not in the bundled baseline, not suspicious) — the only gate that
+	// can ever fire for it is the denylist we churn (same premise as
+	// TestHostDecision_NoStaleDenylistSlice). Writer host: never read,
+	// only ever in/out of the shared slice.
+	const host = "192.168.1.50"
+	const denied = "denied.example.com"
+	const cycles = 200
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < cycles*5; i++ {
+			if ok, reason := a.hostDecision(context.Background(), host); !ok || reason != "" {
+				t.Errorf("hostDecision(%q) during concurrent denylist churn = (%v, %q); want (true, \"\")", host, ok, reason)
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < cycles; i++ {
+			if _, err := admin.HandleDenylistAdd(context.Background(), deps, map[string]any{"host": denied}); err != nil {
+				t.Errorf("HandleDenylistAdd: %v", err)
+				return
+			}
+			if _, err := admin.HandleDenylistRemove(context.Background(), deps, map[string]any{"host": denied}); err != nil {
+				t.Errorf("HandleDenylistRemove: %v", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	if got := a.cfg.Tools.WebFetch.URLDenylist; len(got) != 0 {
+		t.Fatalf("denylist after paired add/remove cycles = %v; want empty", got)
+	}
+}
+
+// TestAllowlistConcurrentReadWrite pins the #423 round 18 allowlist fix
+// (review F1: the allowlist handlers previously took NO lock at all and
+// rewrote Cfg.Tools.WebFetch.URLAllowlist unsynchronized). hostDecision in
+// allowlist mode copies the URLAllowlist slice header under the shared
+// config's WebFetch policy owner, and the allowlist_add / allowlist_remove
+// handlers now publish the list under the SAME owner's exclusive lock, so
+// the concurrent slice-header read/write the #423 base exposed (see
+// allowlist_race_probe_test.go on the base) is serialized. This test only
+// has teeth under -race; run with `go test -race ./internal/agent/...`.
+func TestAllowlistConcurrentReadWrite(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "allowlist",
+			}},
+		},
+		db: db,
+	}
+
+	// The handlers churn the shared allowlist and write audit rows through
+	// the shared db — exactly the concurrent access pattern hostDecision
+	// races against. Both sides take the config's ONE shared policy owner,
+	// so the writer's exclusive lock excludes the reader's snapshot.
+	deps := admin.Deps{
+		DB:                db,
+		Cfg:               a.cfg,
+		Actor:             "parent",
+		Gateway:           "test",
+		SharedPolicyOwner: a.cfg.WebFetchPolicyOwner(),
+	}
+
+	// Reader host: never in the allowlist, so every call deterministically
+	// reaches the allowlist gate and copies the shared slice header.
+	const readerHost = "reader.example"
+	const cycles = 100
+	var wg sync.WaitGroup
+
+	// Writer: paired add/remove keeps churning the slice header.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h := "churn.example"
+		for i := 0; i < cycles; i++ {
+			if _, err := admin.HandleAllowlistAdd(context.Background(), deps, map[string]any{"host": h}); err != nil {
+				return
+			}
+			if _, err := admin.HandleAllowlistRemove(context.Background(), deps, map[string]any{"host": h}); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Reader: the agent's host gate against the same shared cfg.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < cycles*20; i++ {
+			_, _ = a.HostDecision(context.Background(), readerHost)
+		}
+	}()
+
+	wg.Wait()
+
+	// Settled state: paired add/remove cycles leave the allowlist empty.
+	if got := a.cfg.Tools.WebFetch.URLAllowlist; len(got) != 0 {
+		t.Fatalf("allowlist after paired add/remove cycles = %v; want empty", got)
+	}
+}
+
+// TestHostDecision_SuspiciousSiteNotificationRetry verifies B1: if the parent
+// push for a suspicious-site approval fails transiently (so no notification is
+// delivered), a later hostDecision for the same pending row retries it, and a
+// push that has already succeeded is NOT re-sent within the same Agent
+// lifetime.
+func TestHostDecision_SuspiciousSiteNotificationRetry(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := context.Background()
+	// First call fails transiently (no successful push recorded); the second
+	// succeeds. hostDecision is called sequentially on one goroutine, so a
+	// plain counter is enough.
+	notifyCalls := 0
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+		onNewSuspiciousApproval: func(context.Context, *store.Approval) error {
+			notifyCalls++
+			if notifyCalls == 1 {
+				return errors.New("transient push failure")
+			}
+			return nil
+		},
+	}
+
+	// "googl.com" is a distance-1 typo-squat of google.com -> ask_parent.
+	// 1st encounter: the pending row is created; the parent push fails, so the
+	// notification is NOT marked delivered.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("1st hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	if notifyCalls != 1 {
+		t.Fatalf("after 1st encounter notifyCalls = %d, want 1", notifyCalls)
+	}
+
+	// 2nd encounter: the pending row already exists and no successful push was
+	// recorded, so hostDecision retries the parent push - this time it succeeds.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("2nd hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	if notifyCalls != 2 {
+		t.Fatalf("after 2nd encounter notifyCalls = %d, want 2 (retry fired)", notifyCalls)
+	}
+
+	// 3rd encounter: the push now succeeded, so the per-Agent memo must prevent
+	// a double-notify.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("3rd hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	if notifyCalls != 2 {
+		t.Fatalf("after 3rd encounter notifyCalls = %d, want 2 (no double-notify)", notifyCalls)
+	}
+}
+
+// TestHostDecision_SuspiciousSiteRequeueReNotify verifies PR #423 B1
+// end-to-end: when a previously-approved suspicious-site grant EXPIRES and the
+// host is requested again, RequeueApproval resets the row to a fresh pending
+// window AND the parent push is retried for the new decision — even though
+// the earlier (now-expired) grant's push had already succeeded and was
+// memoized in suspiciousNotified. Without the memo clear, the requeued row
+// would sit pending with no parent push.
+func TestHostDecision_SuspiciousSiteRequeueReNotify(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := context.Background()
+	approvalID := proposalApprovalID("teo", "suspicious_site", "googl.com")
+	notifyCalls := 0
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+		onNewSuspiciousApproval: func(context.Context, *store.Approval) error {
+			notifyCalls++
+			return nil
+		},
+	}
+
+	// 1st encounter: "googl.com" is a distance-1 typo-squat of google.com
+	// -> ask_parent. The pending row is created and the parent push succeeds,
+	// so the per-Agent memo records a delivered push for this approval ID.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("1st hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	if notifyCalls != 1 {
+		t.Fatalf("after 1st encounter notifyCalls = %d, want 1", notifyCalls)
+	}
+
+	// Parent approves the host.
+	if err := db.DecideApproval(approvalID, "approved", "parent"); err != nil {
+		t.Fatalf("decide approval: %v", err)
+	}
+
+	// Grant still valid: allowed without touching the notification path.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); !ok || reason != "" {
+		t.Fatalf("hostDecision(googl.com) after approval = (%v, %q), want allowed", ok, reason)
+	}
+	if notifyCalls != 1 {
+		t.Fatalf("after valid grant notifyCalls = %d, want 1 (no re-notify)", notifyCalls)
+	}
+
+	// Let the granted window EXPIRE: push expires_at into the past.
+	if _, err := db.SQL().Exec(
+		"UPDATE approvals SET expires_at = ? WHERE id = ?",
+		time.Now().UTC().Add(-time.Hour), approvalID,
+	); err != nil {
+		t.Fatalf("expire approval: %v", err)
+	}
+
+	// Expired grant re-encounter: the row is requeued to a fresh pending
+	// window and the parent push is RETRIED despite the earlier successful
+	// push being memoized — this is the B1 regression the fix addresses.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("4th hostDecision(googl.com) = (%v, %q), want blocked/suspicious (requeued)", ok, reason)
+	}
+	if notifyCalls != 2 {
+		t.Fatalf("after expired re-encounter notifyCalls = %d, want 2 (requeue retried parent push)", notifyCalls)
+	}
+
+	// The requeued row is pending again with a fresh future window.
+	apr, err := db.GetApproval(ctx, approvalID)
+	if err != nil || apr == nil {
+		t.Fatalf("get requeued approval: apr=%+v err=%v", apr, err)
+	}
+	if apr.Status != "pending" {
+		t.Errorf("requeued approval status = %q, want pending", apr.Status)
+	}
+	if !time.Now().Before(apr.ExpiresAt) {
+		t.Errorf("requeued approval expires_at = %v, want a fresh (future) window", apr.ExpiresAt)
+	}
+
+	// Re-encounter of the requeued row: the retried push is now memoized
+	// again, so no double-notify within the same Agent lifetime.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("5th hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	if notifyCalls != 2 {
+		t.Fatalf("after re-encounter of requeued row notifyCalls = %d, want 2 (no double-notify)", notifyCalls)
+	}
+}
+
+// TestHostDecision_SuspiciousNotifyNoDuplicateRace verifies the PR #423
+// TOCTOU fix end-to-end: two concurrent hostDecision calls for the same
+// suspicious host must deliver exactly ONE parent push. Pre-fix, the
+// "already notified?" check and the success-mark were separate locked
+// steps, so both callers could observe "not yet notified", both push, and
+// both mark — duplicating the parent notification. The fix makes
+// check-and-claim one atomic step (claim-before-call), so the 2nd caller
+// sees the in-flight claim and returns without pushing.
+func TestHostDecision_SuspiciousNotifyNoDuplicateRace(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := context.Background()
+	var (
+		mu          sync.Mutex
+		notifyCalls int
+		firstIn     = make(chan struct{}) // closed when the 1st call enters the notifier
+		release     = make(chan struct{}) // closed to let the 1st (slow) push finish
+	)
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+		db: db,
+		onNewSuspiciousApproval: func(context.Context, *store.Approval) error {
+			mu.Lock()
+			notifyCalls++
+			first := notifyCalls == 1
+			mu.Unlock()
+			if first {
+				close(firstIn)
+				<-release // hold the 1st push in flight while the 2nd arrives
+			}
+			return nil
+		},
+	}
+
+	// 1st encounter: "googl.com" (distance-1 typo-squat of google.com) creates
+	// the pending row and enters the notifier, which blocks on release.
+	done1 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+			t.Errorf("1st hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+		}
+	}()
+	<-firstIn // the 1st call is inside the notifier; its claim is live
+
+	// 2nd concurrent encounter while the 1st push is in flight: it must see
+	// the claim and NOT deliver a second push. (Pre-fix this raced the
+	// seen-check and pushed again → notifyCalls would be 2.)
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("2nd hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+
+	close(release)
+	<-done1
+
+	mu.Lock()
+	calls := notifyCalls
+	mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("notifyCalls = %d, want 1 (no duplicate parent push under concurrent hostDecision)", calls)
+	}
+
+	// 3rd encounter after the push succeeded: the memoized claim must still
+	// prevent a third push within this Agent's lifetime.
+	if ok, reason := a.hostDecision(ctx, "googl.com"); ok || reason != "suspicious" {
+		t.Fatalf("3rd hostDecision(googl.com) = (%v, %q), want blocked/suspicious", ok, reason)
+	}
+	mu.Lock()
+	calls = notifyCalls
+	mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("after 3rd encounter notifyCalls = %d, want 1 (no double-notify)", calls)
+	}
+}
+
+// TestHostDecision_IPLiteralRanges verifies that local (private/loopback/
+// link-local) IP literals pass the gate by default under the home-LAN model
+// (design §1.5), while raw PUBLIC IP literals are routed to the parent-
+// approval gate instead of being silently allowed.
+func TestHostDecision_IPLiteralRanges(t *testing.T) {
+	a := &Agent{
+		user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"},
+		cfg: &config.Config{
+			Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{
+				Enabled:   true,
+				URLPolicy: "denylist",
+			}},
+		},
+	}
+
+	// Private IP (SearXNG) should pass without triggering the detector.
+	ok, reason := a.hostDecision(context.Background(), "192.168.1.50")
+	if !ok {
+		t.Fatalf("hostDecision(192.168.1.50) = (%v, %q), want allowed (home-LAN)", ok, reason)
+	}
+
+	// Loopback should also pass.
+	ok, reason = a.hostDecision(context.Background(), "127.0.0.1")
+	if !ok {
+		t.Fatalf("hostDecision(127.0.0.1) = (%v, %q), want allowed", ok, reason)
+	}
+
+	// IPv6 loopback should also pass.
+	ok, reason = a.hostDecision(context.Background(), "::1")
+	if !ok {
+		t.Fatalf("hostDecision(::1) = (%v, %q), want allowed", ok, reason)
+	}
+
+	// A raw PUBLIC IP literal must NOT be silently allowed: the domain-based
+	// baseline/denylist cannot match an IP, so it routes to the approval gate.
+	// (a.db is nil here, so no approval row is created; the gate is denied.)
+	pub, pubReason := a.hostDecision(context.Background(), "203.0.113.5")
+	if pub {
+		t.Errorf("hostDecision(203.0.113.5) = (%v, %q), want denied (public IP)", pub, pubReason)
+	}
+	if pubReason != "suspicious" {
+		t.Errorf("hostDecision(203.0.113.5) reason = %q, want %q", pubReason, "suspicious")
+	}
+}
+
 // TestHandleWebFetch_HostValidatorAppliesToRedirect ensures the validator
 // closure handed to webfetch enforces the same allowlist on redirect
 // targets as on the initial URL.
 func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
-	var capturedValidator func(string) error
+	var capturedValidator func(context.Context, string) error
 	a := &Agent{
 		user: &config.UserConfig{Name: "testuser", Role: "parent"},
 		cfg: &config.Config{
@@ -758,13 +1450,13 @@ func TestHandleWebFetch_HostValidatorAppliesToRedirect(t *testing.T) {
 	if capturedValidator == nil {
 		t.Fatal("HostValidator should have been passed to fetcher")
 	}
-	if err := capturedValidator("good.example"); err != nil {
+	if err := capturedValidator(context.Background(), "good.example"); err != nil {
 		t.Errorf("good.example should pass validator, got: %v", err)
 	}
-	if err := capturedValidator("api.good.example"); err != nil {
+	if err := capturedValidator(context.Background(), "api.good.example"); err != nil {
 		t.Errorf("api.good.example (subdomain) should pass validator, got: %v", err)
 	}
-	if err := capturedValidator("evil.example"); err == nil {
+	if err := capturedValidator(context.Background(), "evil.example"); err == nil {
 		t.Errorf("evil.example should be rejected by validator")
 	}
 }
@@ -810,10 +1502,10 @@ func TestHandleWebFetch_BlockedHostMessageIsClear(t *testing.T) {
 			fetcher := func(_ context.Context, _ string, opts webfetch.Options) (*webfetch.Result, error) {
 				// Simulate the host validator rejecting the host
 				if opts.HostValidator != nil {
-					if err := opts.HostValidator("www.clinicaltrials.gov"); err != nil {
+					if err := opts.HostValidator(context.Background(), "www.clinicaltrials.gov"); err != nil {
 						return nil, err
 					}
-					if err := opts.HostValidator("blocked.example.com"); err != nil {
+					if err := opts.HostValidator(context.Background(), "blocked.example.com"); err != nil {
 						return nil, err
 					}
 				}

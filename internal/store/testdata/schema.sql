@@ -77,7 +77,7 @@ CREATE TABLE approvals (
 		expires_at     DATETIME NOT NULL,
 		decided_by     TEXT,
 		decision_note  TEXT
-	);
+	, notification_sent INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE audit_log (
 		id          INTEGER PRIMARY KEY AUTOINCREMENT,

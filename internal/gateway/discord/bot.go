@@ -323,8 +323,8 @@ func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
 	if b.session == nil {
 		return fmt.Errorf("discord session not initialized")
 	}
-	err := b.postToUserDMChannel(channelID, func(dm string) error {
-		if err := SendChunked(b.session, dm, text); err != nil {
+	err := b.postToUserDMChannel(ctx, channelID, func(dm string) error {
+		if err := sendChunked(ctx, b.session, dm, text); err != nil {
 			return fmt.Errorf("sending discord message to %s: %w", dm, err)
 		}
 		return nil
@@ -341,16 +341,19 @@ func (b *Bot) Send(ctx context.Context, channelID string, text string) error {
 // permanently, so without this recovery every subsequent delivery to that
 // user would fail while inbound messages keep working. Shared by Send and
 // SendFile so text and file delivery recover identically.
-func (b *Bot) postToUserDMChannel(userID string, post func(channelID string) error) error {
-	channelID, err := b.dmChannelID(userID)
+func (b *Bot) postToUserDMChannel(ctx context.Context, userID string, post func(channelID string) error) error {
+	channelID, err := b.dmChannelID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("opening discord DM for %s: %w", userID, err)
 	}
 	if err := post(channelID); err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
 		// Cached DM channel may be stale (bot removed from the user's DMs).
 		// Invalidate and retry once with a fresh channel.
 		b.dmCache.Delete(userID)
-		channelID, err = b.dmChannelID(userID)
+		channelID, err = b.dmChannelID(ctx, userID)
 		if err != nil {
 			return fmt.Errorf("reopening discord DM for %s: %w", userID, err)
 		}
@@ -387,20 +390,20 @@ func (b *Bot) SendFile(ctx context.Context, dest gateway.OutboundDestination, fi
 	if dest.GroupID != "" {
 		return wrapInvalidChat(dest.GroupID, post(dest.GroupID))
 	}
-	return wrapInvalidChat(dest.ExternalID, b.postToUserDMChannel(dest.ExternalID, post))
+	return wrapInvalidChat(dest.ExternalID, b.postToUserDMChannel(ctx, dest.ExternalID, post))
 }
 
 // dmChannelID returns the DM channel ID for the given recipient user ID,
 // opening (via UserChannelCreate) and caching it on first use. Caching avoids
 // repeated DM-channel creation API calls (and rate-limit slots) across
 // reminder retries for the same recipient.
-func (b *Bot) dmChannelID(userID string) (string, error) {
+func (b *Bot) dmChannelID(ctx context.Context, userID string) (string, error) {
 	if cached, ok := b.dmCache.Load(userID); ok {
 		if id, ok := cached.(string); ok {
 			return id, nil
 		}
 	}
-	ch, err := b.session.UserChannelCreate(userID)
+	ch, err := b.session.UserChannelCreate(userID, discordgo.WithContext(ctx))
 	if err != nil {
 		return "", fmt.Errorf("creating DM channel for %s: %w", userID, err)
 	}

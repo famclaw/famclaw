@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -47,6 +48,7 @@ import (
 	"github.com/famclaw/famclaw/internal/toolcache"
 	"github.com/famclaw/famclaw/internal/usermemory"
 	"github.com/famclaw/famclaw/internal/webfetch"
+	"github.com/famclaw/famclaw/internal/webfilter"
 	"github.com/famclaw/famclaw/internal/websearch"
 )
 
@@ -88,6 +90,28 @@ type Agent struct {
 	// webfetch.Fetch in NewAgent. Tests can swap in a stub to assert the
 	// allowlist/scheme/empty-list gates without making real HTTP calls.
 	webFetcher func(ctx context.Context, rawURL string, opts webfetch.Options) (*webfetch.Result, error)
+
+	// suspiciousDetector runs the W4 suspicious-site heuristics in
+	// hostDecision. Shared and stateless — the detector holds no
+	// per-request state, so a single instance is safe to reuse across
+	// goroutines. Nil until suspiciousApprovalOnce allocates it on the
+	// first hostDecision call (single allocation point; NewAgent does not
+	// pre-allocate it).
+	suspiciousDetector *webfilter.SuspiciousSiteDetector
+	// suspiciousApprovalOnce is the single allocation point for
+	// suspiciousDetector. Per-Agent, so webfilter keeps no package-level
+	// global state.
+	suspiciousApprovalOnce sync.Once
+	// onNewSuspiciousApproval — see AgentDeps.OnNewSuspiciousApproval.
+	// Set once in NewAgent; nil disables notification.
+	onNewSuspiciousApproval func(ctx context.Context, a *store.Approval) error
+
+	// sharedConfigManager is used for atomic config save/reload operations
+	// with proper transactional semantics and conflict detection
+	// (admin.SharedConfigManager: content-token precondition + temp-file/
+	// rename commit). It is constructed in NewAgent when a config path is
+	// provided, and handed to the denylist/allowlist tool Deps.
+	sharedConfigManager *admin.SharedConfigManager
 
 	// cache is the tool-result spillover store. When non-nil, large
 	// handleWebFetch (and other large-result) tool replies are written
@@ -184,6 +208,16 @@ type AgentDeps struct {
 	// NowFn, when non-nil, is used to timestamp research status records.
 	// Optional — defaults to time.Now.
 	NowFn func() time.Time
+
+	// OnNewSuspiciousApproval is called from hostDecision when a NEW
+	// suspicious-site approval row is created for a host the detector
+	// flagged ask_parent (web_fetch path). Wire it up to deliver the
+	// parent push notification — internal/web/server.go does exactly that,
+	// mirroring the gateway router's createApproval (kid-only
+	// parent-skip, /decide HMAC token URLs). nil (gateway-router agents
+	// and tests) skips notification; the row still surfaces on the
+	// dashboard.
+	OnNewSuspiciousApproval func(ctx context.Context, a *store.Approval) error
 
 	// LifetimeCtx is the server-lifetime context. The subagent's timeout
 	// context is derived from it so that graceful shutdown cancels in-flight
@@ -343,36 +377,44 @@ func NewAgent(user *config.UserConfig, cfg *config.Config, llmClient llm.Chatter
 		effectiveSandboxRoot = ""
 	}
 
+	// Initialize shared config manager if config path is provided
+	var sharedConfigManager *admin.SharedConfigManager
+	if deps.ConfigPath != "" {
+		sharedConfigManager = admin.NewSharedConfigManager(deps.ConfigPath)
+	}
+
 	return &Agent{
-		user:                 user,
-		cfg:                  cfg,
-		llmClient:            llmClient,
-		evaluator:            evaluator,
-		classifier:           clf,
-		db:                   db,
-		pool:                 deps.Pool,
-		skills:               deps.Skills,
-		quarantine:           deps.Quarantine,
-		scanner:              deps.Scanner,
-		scheduler:            deps.Scheduler,
-		builtinTools:         builtins,
-		convID:               convID,
-		auditGateway:         deps.Gateway,
-		familyState:          fs,
-		todoStore:            ts,
-		userMemory:           um,
-		webFetcher:           webfetch.Fetch,
-		cache:                deps.Cache,
-		browserPool:          deps.BrowserPool,
-		msgContext:           deps.MsgContext,
-		transcriber:          deps.Transcriber,
-		effectiveSandboxRoot: effectiveSandboxRoot,
-		senderRegistry:       deps.SenderRegistry,
-		fileSenderRegistry:   deps.FileSenderRegistry,
-		nowFn:                deps.NowFn,
-		configPath:           deps.ConfigPath,
-		lifetimeCtx:          deps.LifetimeCtx,
-		reasoningCache:       deps.ReasoningCache,
+		user:                    user,
+		cfg:                     cfg,
+		llmClient:               llmClient,
+		evaluator:               evaluator,
+		classifier:              clf,
+		db:                      db,
+		pool:                    deps.Pool,
+		skills:                  deps.Skills,
+		quarantine:              deps.Quarantine,
+		scanner:                 deps.Scanner,
+		scheduler:               deps.Scheduler,
+		builtinTools:            builtins,
+		convID:                  convID,
+		auditGateway:            deps.Gateway,
+		familyState:             fs,
+		todoStore:               ts,
+		userMemory:              um,
+		webFetcher:              webfetch.Fetch,
+		onNewSuspiciousApproval: deps.OnNewSuspiciousApproval,
+		cache:                   deps.Cache,
+		browserPool:             deps.BrowserPool,
+		msgContext:              deps.MsgContext,
+		transcriber:             deps.Transcriber,
+		effectiveSandboxRoot:    effectiveSandboxRoot,
+		senderRegistry:          deps.SenderRegistry,
+		fileSenderRegistry:      deps.FileSenderRegistry,
+		nowFn:                   deps.NowFn,
+		configPath:              deps.ConfigPath,
+		lifetimeCtx:             deps.LifetimeCtx,
+		reasoningCache:          deps.ReasoningCache,
+		sharedConfigManager:     sharedConfigManager,
 	}, nil
 }
 
@@ -877,14 +919,23 @@ func (a *Agent) makeBuiltinHandler() func(ctx context.Context, name string, args
 			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, MCP: a.pool, ConfigPath: a.configPath}
 			return admin.HandleMCPRemove(ctx, deps, args)
 		case "builtin__allowlist_list":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleAllowlistList(ctx, deps, args)
 		case "builtin__allowlist_add":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleAllowlistAdd(ctx, deps, args)
 		case "builtin__allowlist_remove":
-			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath}
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
 			return admin.HandleAllowlistRemove(ctx, deps, args)
+		case "builtin__denylist_list":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
+			return admin.HandleDenylistList(ctx, deps, args)
+		case "builtin__denylist_add":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
+			return admin.HandleDenylistAdd(ctx, deps, args)
+		case "builtin__denylist_remove":
+			deps := admin.Deps{DB: a.db, Cfg: a.cfg, Actor: a.user.Name, Gateway: a.auditGateway, ConfigPath: a.configPath, SharedConfig: a.sharedConfigManager, SharedPolicyOwner: a.sharedPolicyOwner()}
+			return admin.HandleDenylistRemove(ctx, deps, args)
 		default:
 			return "", fmt.Errorf("unknown builtin tool: %s", name)
 		}
@@ -1332,19 +1383,306 @@ func (a *Agent) deliverResultToOrigin(agentID string, message string, msgCtx gat
 	return true, nil
 }
 
+// canonicalizeHost lowercases a host, trims surrounding whitespace and a
+// trailing dot, so "EXAMPLE.com." matches "example.com". It is the same
+// comparison form the legacy allowlist gates used, so host matching stays
+// byte-for-byte unchanged in allowlist mode.
+func canonicalizeHost(h string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+}
+
+// sharedPolicyOwner returns the one shared WebFetch policy owner for this
+// Agent's config. Every component built from the same *Config — agents,
+// the admin tools, the web settings endpoint — reaches the SAME owner this
+// way, which is what makes the cross-component exclusion work (a per-Agent
+// value mutex could never be shared across independently-constructed
+// agents). See config.WebFetchPolicyOwner.
+func (a *Agent) sharedPolicyOwner() *config.WebFetchPolicyOwner {
+	return a.cfg.WebFetchPolicyOwner()
+}
+
+// HostDecision is the exported form of hostDecision — the single source of
+// truth for the web_fetch host gate (see hostDecision). Production paths
+// call hostDecision directly; this wrapper exists so cross-package tests
+// (internal/web) can drive the agent's read side of the shared
+// cfg.WebFetchPolicyOwner() concurrently with the web settings writer.
+func (a *Agent) HostDecision(ctx context.Context, host string) (bool, string) {
+	return a.hostDecision(ctx, host)
+}
+
+// hostDecision is the single source of truth for the web_fetch host gate,
+// shared by web_fetch, web_search, the browser-fallback path, and
+// browser_navigate (design §1.2 — replaces the duplicated per-call-site
+// hostAllowed closures). It branches on the resolved URL policy mode:
+//
+//	allowlist: allowed iff host matches a url_allowlist entry (exact or
+//	            subdomain). An empty allowlist denies all (legacy SSRF guard).
+//	denylist:  allowed for any host unless it matches a url_denylist entry
+//	            (exact or subdomain).
+//
+// The scheme gate, redirect re-validation, and the dialer's private-IP vetting
+// are orthogonal and remain applied in both modes (design §1.4); hostDecision
+// only makes the host-level allow/deny decision. It returns (allowed, reason)
+// where reason is a short class ("allowlist" | "denylist") when !allowed.
+func (a *Agent) hostDecision(ctx context.Context, host string) (bool, string) {
+	host = canonicalizeHost(host)
+	// §A final snapshot: one coherent deep copy of the whole host policy —
+	// resolved mode, allowlist, and denylist — taken under the shared
+	// owner's read lock. The owner is per-config (not per-Agent), so the
+	// snapshot excludes every admin writer and the settings publish span
+	// process-wide; the deep-copied lists make the snapshot immutable, so
+	// the rest of this decision evaluates it with NO lock held — no
+	// callbacks, DB checks, or network work run under the owner, and no
+	// early-return path (allowlist match, private IP, baseline) bypasses
+	// the final snapshot. A concurrent admin publish is visible from the
+	// next decision and can never tear this one. This supersedes the
+	// earlier one-decision-stale mode window: mode and both lists are
+	// now captured atomically under one RLock, so a mode switch and a
+	// list replacement can never disagree within a single decision.
+	owner := a.sharedPolicyOwner()
+	owner.RLock()
+	fcfg := a.cfg.Tools.WebFetch
+	mode := fcfg.ResolvedURLPolicy()
+	allowlist := make([]string, len(fcfg.URLAllowlist))
+	copy(allowlist, fcfg.URLAllowlist)
+	denylist := make([]string, len(fcfg.URLDenylist))
+	copy(denylist, fcfg.URLDenylist)
+	owner.RUnlock()
+
+	switch mode {
+	case "allowlist":
+		for _, allowed := range allowlist {
+			allowed = canonicalizeHost(allowed)
+			if allowed == "" {
+				continue
+			}
+			if host == allowed || strings.HasSuffix(host, "."+allowed) {
+				return true, ""
+			}
+		}
+		return false, "allowlist"
+	default: // "denylist"
+		// (a) Bundled kid-safe baseline (CC0-sourced, design §2) — always
+		// active in denylist mode; reason class "baseline" drives the
+		// kid-safe no-leak message (design §3.3).
+		// The baseline is a shared read-only instance on the Config,
+		// allocated at most once per Config (a.cfg.WebFetchBaseline())
+		// rather than per Agent. Agents are constructed on every chat
+		// turn, so the old per-Agent sync.Once re-parsed the embedded
+		// baseline.txt into a fresh map on every turn; hoisting the
+		// store to the shared *Config (which outlives per-turn agents)
+		// eliminates that per-turn allocation without adding mutable
+		// global state. WebFetchBaseline's own sync.Once provides the
+		// happens-before edge for the returned store, and the store is
+		// immutable after construction, so no further locking is needed
+		// around its reads. Call the accessor unconditionally — no
+		// preceding `== nil` read — matching the suspiciousDetector
+		// allocation below in this same function.
+		if a.cfg.WebFetchBaseline().Blocks(host) {
+			return false, "baseline"
+		}
+		// (b) Parent-maintained deny entries. Match against the `denylist`
+		// deep copy taken under the shared owner's read lock at the top of
+		// this function (§A snapshot): denylist mode is allow-by-default,
+		// so the snapshot is the decision-time value and a concurrent
+		// publish (denylist admin tool or settings POST) is only visible
+		// from the next decision — never able to tear this one.
+		for _, denied := range denylist {
+			denied = canonicalizeHost(denied)
+			if denied == "" {
+				continue
+			}
+			if host == denied || strings.HasSuffix(host, "."+denied) {
+				return false, "denylist"
+			}
+		}
+
+		// (c) W4: host-level suspicion gate (design §4). The detector's
+		// heuristics target malicious PUBLIC domain names (punycode lookalikes,
+		// high-entropy C2 labels, typo-squats of known brands).
+		//
+		// IP literals: the home-LAN model (design §1.5) permits private/loopback/
+		// link-local endpoints (SearXNG, NAS, local services) by default — raw-IP
+		// security for those ranges is the orthogonal dialer gate's job
+		// (webfetch block_private_networks). A raw PUBLIC IP literal, however, is
+		// not a domain: the domain-based baseline + parent denylist above cannot
+		// match an IP, so a child could reach a baseline-blocked site by
+		// navigating to its public IP instead of its name. Public IPs are
+		// therefore routed to the parent-approval gate (ask_parent) rather than
+		// silently allowed.
+		//
+		// This IP classification intentionally mirrors webfilter's
+		// classifyIPLiteral / SuspiciousSiteDetector.Check IP branch (design
+		// §1.5) so the agent gate and the detector agree on local vs. public
+		// ranges; the agent short-circuits here (early allow for local IPs,
+		// ask_parent for public IPs) instead of calling Check. If the local-IP
+		// predicate below (IsPrivate/IsLoopback/IsLinkLocalUnicast/
+		// IsLinkLocalMulticast) changes, update webfilter.classifyIPLiteral to
+		// match.
+		var verdict webfilter.Verdict
+		if ip := net.ParseIP(host); ip != nil {
+			if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+				return true, ""
+			}
+			verdict = webfilter.Verdict{Action: "ask_parent", Reason: "public IP literal host"}
+		} else {
+			// suspiciousDetector is lazily allocated exactly once here (the
+			// single allocation point; NewAgent does not pre-allocate it):
+			// one shared instance per Agent instead of a fresh detector per
+			// hostDecision call. Do is unconditional — no `== nil` read
+			// racing a concurrent Do writer.
+			a.suspiciousApprovalOnce.Do(func() { a.suspiciousDetector = webfilter.NewSuspiciousSiteDetector() })
+			verdict = a.suspiciousDetector.Check(host)
+		}
+		if verdict.Action != "warn_allow" {
+			// Defensive: Check does not currently return "block"; if a future
+			// detector does, surface it as a distinct (non-approval) reason class.
+			if verdict.Action == "block" {
+				return false, "blocked"
+			}
+			// ask_parent: first honour a still-valid parent approval for this
+			// exact host, so a site a parent already OK'd is not re-blocked.
+			// ctx carries the request lifecycle: a cancelled request aborts
+			// the lookup/upsert before they complete.
+			if a.db != nil {
+				approvalID := proposalApprovalID(a.user.Name, "suspicious_site", host)
+				prev, err := a.db.GetApproval(ctx, approvalID)
+				if err != nil {
+					// Fail closed on lookup errors: surface a fresh pending row so
+					// the parent can decide, and log the fault.
+					log.Printf("[agent] host-decision: approval lookup for %q failed: %v", approvalID, err)
+					approval := &store.Approval{
+						ID: approvalID, UserName: a.user.Name, UserDisplay: a.user.DisplayName,
+						AgeGroup: a.user.AgeGroup, Category: "suspicious_site", QueryText: host,
+					}
+					if isNew, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
+						log.Printf("[agent] failed to create suspicious-site approval: %v", uerr)
+					} else if isNew {
+						a.notifySuspiciousApprovalIfNeeded(ctx, approvalID, approval)
+					}
+				} else if prev != nil && prev.Status == "approved" && a.now().Before(prev.ExpiresAt) {
+					// Still valid: allow without touching the row.
+					return true, ""
+				} else if prev != nil && prev.Status == "approved" {
+					// Granted earlier but now EXPIRED: reset to a fresh pending window
+					// so the parent re-sees it on the dashboard instead of the host
+					// staying silently blocked. (UpsertApproval is a no-op on an
+					// existing row, so it cannot re-surface it.)
+					if _, uerr := a.db.RequeueApproval(ctx, approvalID); uerr != nil {
+						log.Printf("[agent] failed to requeue expired suspicious-site approval %q: %v", approvalID, uerr)
+					} else {
+						approval := &store.Approval{
+							ID: approvalID, UserName: a.user.Name, UserDisplay: a.user.DisplayName,
+							AgeGroup: a.user.AgeGroup, Category: "suspicious_site", QueryText: host,
+						}
+						a.notifySuspiciousApprovalIfNeeded(ctx, approvalID, approval)
+					}
+				} else {
+					// First request, or a re-encounter with an existing row. A prior
+					// PENDING row whose parent push has not yet landed gets
+					// re-notified (B1 retry); a prior DENIAL is left blocked without
+					// re-nagging the parent. The helper no-ops when a successful push
+					// was already recorded for this approval generation, so
+					// re-encounters do not double-notify, and it skips a parent caller.
+					approval := &store.Approval{
+						ID: approvalID, UserName: a.user.Name, UserDisplay: a.user.DisplayName,
+						AgeGroup: a.user.AgeGroup, Category: "suspicious_site", QueryText: host,
+					}
+					if _, uerr := a.db.UpsertApproval(ctx, approval); uerr != nil {
+						log.Printf("[agent] failed to create suspicious-site approval: %v", uerr)
+					} else if prev == nil || prev.Status == "pending" {
+						a.notifySuspiciousApprovalIfNeeded(ctx, approvalID, approval)
+					}
+				}
+			}
+			return false, "suspicious"
+		}
+
+		return true, ""
+	}
+}
+
+// notifySuspiciousApprovalIfNeeded shares notification state across Agents via
+// the approval store. The store holds no lock during the external callback.
+func (a *Agent) notifySuspiciousApprovalIfNeeded(ctx context.Context, id string, approval *store.Approval) {
+	if a.onNewSuspiciousApproval == nil || a.user == nil || a.user.Role == "parent" {
+		return
+	}
+	lifetime := a.lifetimeCtx
+	if lifetime == nil {
+		lifetime = ctx
+	}
+	operationCtx, cancel := context.WithTimeout(lifetime, 30*time.Second)
+	defer cancel()
+	if err := a.db.NotifyApprovalOnce(operationCtx, lifetime, id, func() error {
+		return a.onNewSuspiciousApproval(operationCtx, approval)
+	}); err != nil {
+		var failure *store.ApprovalNotificationError
+		if errors.As(err, &failure) {
+			switch failure.Phase {
+			case store.ApprovalNotificationRead:
+				log.Print("[agent] suspicious-site approval notification read failed; a later encounter may retry")
+			case store.ApprovalNotificationSend:
+				log.Print("[agent] suspicious-site approval notification send failed; a later encounter may retry")
+			case store.ApprovalNotificationRecord:
+				log.Print("[agent] suspicious-site approval notification record failed; a later encounter may retry")
+			default:
+				log.Print("[agent] suspicious-site approval notification failed; a later encounter may retry")
+			}
+		} else {
+			log.Print("[agent] suspicious-site approval notification failed; a later encounter may retry")
+		}
+	}
+}
+
+// hostGateError builds the typed, sanitized error for a rejected host, using
+// the reason class to pick the butler-facing wording without ever leaking the
+// full allow/deny list (design §1.2, §3.3). It returns a
+// *webfetch.HostNotAllowedError so the errors.As classification that separates
+// configuration blocks from network failures keeps working across web_fetch,
+// web_search, and the browser paths.
+func (a *Agent) hostGateError(host, reason string) error {
+	switch reason {
+	case "denylist", "baseline", "suspicious":
+		// "suspicious" is the distinct kid-safe parent-approval reason class
+		// (a parent approval row is created in the approvals UI); the others
+		// are config blocks. All map to the host-denied typed error.
+		return webfetch.NewHostDeniedError(host, reason)
+	default:
+		return webfetch.NewHostNotAllowedError(host)
+	}
+}
+
+// hostValidator is the host-gate callback passed to webfetch.Fetch, the
+// search provider, and the browser pool: typed error on rejection, nil when
+// the host passes. All redirect re-checks therefore use one decision.
+func (a *Agent) hostValidator(ctx context.Context, host string) error {
+	if ok, reason := a.hostDecision(ctx, host); !ok {
+		return a.hostGateError(host, reason)
+	}
+	return nil
+}
+
 // handleWebFetch dispatches the builtin__web_fetch tool. Auth boundary:
-// validates scheme, enforces the per-host URL allowlist (must be non-empty
-// — empty list is treated as deny-all to prevent SSRF into the home LAN),
-// and propagates the same allowlist into webfetch.Fetch as a HostValidator
-// so it is re-applied to every redirect target. webfetch.Fetch additionally
-// blocks private/loopback/link-local IPs at the dialer.
+// validates scheme, enforces the mode-aware host gate (allowlist or denylist,
+// see hostDecision), and propagates the same gate into webfetch.Fetch as a
+// HostValidator so it is re-applied to every redirect target.
+// webfetch.Fetch additionally vetoes private/loopback/link-local IPs at the
+// dialer when block_private_networks is set.
 func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string, error) {
 	rawURL, _ := args["url"].(string)
 	if rawURL == "" {
 		return "", fmt.Errorf("web_fetch requires a 'url' argument")
 	}
 
+	// Guarded read-lock: the struct copy reads the URLDenylist slice
+	// header, which the denylist/allowlist admin tools and the web
+	// settings handler replace concurrently (see
+	// config.WebFetchPolicyOwner).
+	owner := a.sharedPolicyOwner()
+	owner.RLock()
 	cfg := a.cfg.Tools.WebFetch
+	owner.RUnlock()
 	if !cfg.Enabled {
 		return "", fmt.Errorf("web_fetch is disabled in this deployment")
 	}
@@ -1357,46 +1695,19 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		return "", fmt.Errorf("web_fetch only supports http(s) URLs, got %q", u.Scheme)
 	}
 
-	// Empty allowlist = deny-all. The previous "empty means any host"
-	// semantic was an SSRF footgun on home networks — a misconfigured
-	// deployment could let a jailbroken LLM reach 198.51.100.10/admin or
-	// other LAN services. Operators must explicitly list the hosts they
-	// want web_fetch to reach.
-	if len(cfg.URLAllowlist) == 0 {
-		return "", fmt.Errorf("web_fetch denied: tools.web_fetch.url_allowlist is empty (set at least one host to enable)")
-	}
-
-	// canonicalHost lowercases the hostname and strips a trailing dot so
-	// "EXAMPLE.com" and "example.com." both match an "example.com" entry.
-	canonicalHost := func(h string) string {
-		return strings.TrimSuffix(strings.ToLower(h), ".")
-	}
-	hostAllowed := func(host string) bool {
-		host = canonicalHost(host)
-		for _, allowed := range cfg.URLAllowlist {
-			allowed = canonicalHost(strings.TrimSpace(allowed))
-			if allowed == "" {
-				continue
-			}
-			if host == allowed || strings.HasSuffix(host, "."+allowed) {
-				return true
-			}
-		}
-		return false
-	}
-	if !hostAllowed(u.Hostname()) {
-		return "", webfetch.NewHostNotAllowedError(u.Hostname())
-	}
-
+	// Mode-aware host gate (design §1.2): hostDecision is the single source
+	// of truth shared by web_fetch, web_search, the browser fallback, and
+	// browser_navigate. In allowlist mode a non-empty allowlist gates fetches
+	// exactly as before; with an empty/absent allowlist the config resolves to
+	// denylist mode, so public hosts pass and only url_denylist hosts are
+	// blocked — the "empty allowlist denies everything" footgun is gone.
+	// The gate runs exactly once, inside webfetch.Fetch, via the HostValidator
+	// option set below; a redundant early check here would double the
+	// hostDecision GetApproval+upsert per successful fetch.
 	opts := webfetch.Options{
-		MaxBytes: cfg.MaxBytes,
-		Timeout:  time.Duration(cfg.TimeoutSec) * time.Second,
-		HostValidator: func(host string) error {
-			if !hostAllowed(host) {
-				return webfetch.NewHostNotAllowedError(host)
-			}
-			return nil
-		},
+		MaxBytes:      cfg.MaxBytes,
+		Timeout:       time.Duration(cfg.TimeoutSec) * time.Second,
+		HostValidator: a.hostValidator,
 		// famclaw is a home-LAN product — by default we allow private/loopback
 		// addresses so the bot can reach co-located services (SearXNG,
 		// Playwright, llama-server, etc.). Admins opt INTO enterprise-style
@@ -1424,7 +1735,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// authoritative; a second render would add latency, not text.
 	browserTried := false
 	if err != nil {
-		log.Printf("[agent][%s] web_fetch url=%q err=%v", a.user.Name, rawURL, err)
+		log.Print("[agent] web_fetch failed")
 		// F7 fix (web-retrieval plan, slice 3b): a 403/429 is usually
 		// upstream bot-blocking of this client, not a dead page — the same
 		// URL often renders fine in a real browser. When the browser
@@ -1437,18 +1748,16 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		if result != nil && isBotBlockStatus(result.StatusCode) &&
 			cfg.FallbackToBrowser && a.browserPool != nil {
 			directStatus := result.StatusCode
-			log.Printf("[agent][%s] web_fetch: direct fetch got HTTP %d for %s; trying browser fallback",
-				a.user.Name, directStatus, rawURL)
-			browserResult, fbErr := a.fetchWithBrowser(ctx, a.browserPool, rawURL, hostAllowed)
+			log.Printf("[agent] web_fetch: direct fetch got HTTP %d; trying browser fallback", directStatus)
+			browserResult, fbErr := a.fetchWithBrowser(ctx, a.browserPool, rawURL, a.hostValidator)
 			if fbErr != nil {
-				log.Printf("[agent][%s] web_fetch: browser fallback after HTTP %d failed for %s; returning original error: %v",
-					a.user.Name, directStatus, rawURL, fbErr)
+				log.Printf("[agent] web_fetch: browser fallback after HTTP %d failed", directStatus)
 			} else {
 				result = browserResult
 				err = nil
 				browserTried = true
-				log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback after HTTP %d)",
-					a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated, directStatus)
+				log.Printf("[agent] web_fetch status=%d bytes=%d truncated=%v (browser fallback after HTTP %d)",
+					result.StatusCode, result.Bytes, result.Truncated, directStatus)
 			}
 		}
 		if err != nil {
@@ -1456,14 +1765,13 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		}
 	}
 	if result != nil {
-		log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v",
-			a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+		log.Printf("[agent] web_fetch status=%d bytes=%d truncated=%v", result.StatusCode, result.Bytes, result.Truncated)
 		text := strings.TrimSpace(result.Text)
-		minLength := a.cfg.Tools.WebFetch.FallbackMinTextLength
+		minLength := cfg.FallbackMinTextLength
 		if minLength == 0 {
 			minLength = 10
 		}
-		if len(text) < minLength && a.cfg.Tools.WebFetch.FallbackToBrowser && !browserTried {
+		if len(text) < minLength && cfg.FallbackToBrowser && !browserTried {
 			if a.browserPool != nil {
 				// Attempt browser fallback for JS-heavy sites. fetchWithBrowser
 				// guarantees a non-empty result on success — every failure mode
@@ -1471,9 +1779,9 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 				// than an empty success, so there is no separate empty-render
 				// check for the fallback here. A nil/unavailable pool is handled
 				// by the else-branch below, not passed into fetchWithBrowser.
-				browserResult, err := a.fetchWithBrowser(ctx, a.browserPool, rawURL, hostAllowed)
+				browserResult, err := a.fetchWithBrowser(ctx, a.browserPool, rawURL, a.hostValidator)
 				if err != nil {
-					log.Printf("[agent][%s] web_fetch browser fallback failed for %s, using original result: %v", a.user.Name, rawURL, err)
+					log.Print("[agent] web_fetch browser fallback failed; using original result")
 				} else {
 					result = &webfetch.Result{
 						URL:         browserResult.URL,
@@ -1483,8 +1791,8 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 						Truncated:   browserResult.Truncated,
 						Text:        browserResult.Text,
 					}
-					log.Printf("[agent][%s] web_fetch url=%q status=%d bytes=%d truncated=%v (via browser fallback)",
-						a.user.Name, rawURL, result.StatusCode, result.Bytes, result.Truncated)
+					log.Printf("[agent] web_fetch status=%d bytes=%d truncated=%v (browser fallback)",
+						result.StatusCode, result.Bytes, result.Truncated)
 				}
 			} else {
 				// Browser fallback is enabled but no browser pool is available
@@ -1492,8 +1800,8 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 				// failed to initialize). This is a degraded state, not a crash:
 				// return the thin HTTP text as-is, but log the missed fallback so
 				// the operator can see the degradation rather than silent thin text.
-				log.Printf("[agent][%s] web_fetch: browser fallback is enabled but no browser pool is configured; cannot fall back for %s (plain fetch returned %d chars, threshold %d)",
-					a.user.Name, rawURL, len(text), minLength)
+				log.Printf("[agent] web_fetch: browser fallback is enabled but no browser pool is configured (plain fetch returned %d chars, threshold %d)",
+					len(text), minLength)
 			}
 		}
 		if strings.TrimSpace(result.Text) == "" {
@@ -1533,8 +1841,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 		// Cache write failed — log and fall through to legacy inline path
 		// so the user still gets a (possibly oversize) response rather
 		// than no response at all.
-		log.Printf("[agent][%s] cache spillover failed, returning full payload inline: %v",
-			a.user.Name, cerr)
+		log.Print("[agent] cache spillover failed, returning full payload inline")
 	}
 
 	// Legacy path: no cache configured, or cache write failed.
@@ -1569,9 +1876,9 @@ func isBotBlockStatus(status int) bool {
 }
 
 // fetchWithBrowser runs the browser fallback for JS-heavy sites: it
-// navigates the browser pool to rawURL and extracts rendered text. The same
-// host allowlist is applied to navigation (the pool re-checks the final URL
-// after redirects).
+// navigates the browser pool to rawURL and extracts rendered text. The
+// hostCheck validator (the shared hostValidator) is applied to navigation —
+// the pool re-checks the final URL after redirects with the same callback.
 //
 // Lifecycle is acquire-use-release through the pool: NavigateAndExtract
 // acquires/reuses a per-user page, reads it, and the pool's idle-sweeper
@@ -1587,15 +1894,9 @@ func isBotBlockStatus(status int) bool {
 //   - nil/unavailable pool: "browser fetch: browser pool is not configured"
 //   - navigate/extract failure: "browser fetch: <stage> <url>: <err>"
 //   - empty rendered result: "browser fetch: rendered content empty for <url>"
-func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawURL string, hostAllowed func(string) bool) (*webfetch.Result, error) {
+func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawURL string, hostCheck browser.HostValidator) (*webfetch.Result, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("browser fetch: browser pool is not configured (set tools.browser.endpoint; fallback_to_browser requires a browser pool)")
-	}
-	hostCheck := func(host string) error {
-		if !hostAllowed(host) {
-			return webfetch.NewHostNotAllowedError(host)
-		}
-		return nil
 	}
 	// One pool call does the navigate (host gate before and after redirects)
 	// and the rendered-text extract, and reports the page's actual wire size
@@ -1622,14 +1923,21 @@ func (a *Agent) fetchWithBrowser(ctx context.Context, pool BrowserFetcher, rawUR
 }
 
 // handleWebSearch dispatches the builtin__web_search tool. Auth boundary:
-// reuses the same per-host URL allowlist as web_fetch (the search endpoint
-// host must be in tools.web_fetch.url_allowlist) and the same private-net
-// policy. The model gets a compact title/url/snippet listing instead of
-// the raw 4-16KB SearXNG JSON.
+// reuses the same mode-aware host gate as web_fetch (hostDecision) plus the
+// same private-net policy. In allowlist mode the search endpoint host must be
+// allowlisted. In denylist mode the operator-pinned endpoint host still goes
+// through the full hostDecision: the bundled baseline + parent denylist apply,
+// and a public-IP-literal endpoint (e.g. a VPS-hosted SearXNG) is routed to a
+// one-time parent approval (ask_parent) before the first search succeeds — a
+// fail-safe for a home-LAN product where SearXNG normally runs locally
+// (design §1.5). The endpoint is operator-supplied (the LLM never supplies it),
+// so this gate is a config sanity check, not a user-facing host restriction.
+// The model gets a compact title/url/snippet listing instead of the raw
+// 4-16KB SearXNG JSON.
 func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (string, error) {
 	cfg := a.cfg.Tools.WebSearch
 	if !cfg.Enabled {
-		return "", fmt.Errorf("web_search is disabled; enable it via tools.web_search.enabled=true, with tools.web_fetch.enabled=true and the search endpoint host in tools.web_fetch.url_allowlist")
+		return "", fmt.Errorf("web_search is disabled; enable it via tools.web_search.enabled=true, with tools.web_fetch.enabled=true (the search endpoint host is gated by the web_fetch URL policy)")
 	}
 	query, _ := args["query"].(string)
 	if strings.TrimSpace(query) == "" {
@@ -1638,41 +1946,27 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 
 	maxResults := readIntArg(args, "max_results", cfg.MaxResults)
 
+	// Guarded read-lock: the struct copy reads the URLDenylist slice
+	// header, which the denylist/allowlist admin tools and the web
+	// settings handler replace concurrently (see
+	// config.WebFetchPolicyOwner).
+	owner := a.sharedPolicyOwner()
+	owner.RLock()
 	fcfg := a.cfg.Tools.WebFetch
-	canonicalHost := func(h string) string {
-		return strings.TrimSuffix(strings.ToLower(h), ".")
-	}
-	hostAllowed := func(host string) bool {
-		host = canonicalHost(host)
-		for _, allowed := range fcfg.URLAllowlist {
-			allowed = canonicalHost(strings.TrimSpace(allowed))
-			if allowed == "" {
-				continue
-			}
-			if host == allowed || strings.HasSuffix(host, "."+allowed) {
-				return true
-			}
-		}
-		return false
-	}
+	owner.RUnlock()
 
 	// Provider boundary (web-retrieval plan, Slice 1): the backend is
 	// selected from config; SearXNG is the default and keeps its current
-	// behavior byte-for-byte (same endpoint, same url_allowlist host gate,
-	// same private-net policy). The hosted Tavily path uses its fixed
-	// vendor host — NOT the user-fetch url_allowlist (a different surface;
-	// see websearch.TavilyProvider).
+	// behavior byte-for-byte (same endpoint, same host gate, same private-net
+	// policy). The hosted Tavily path uses its fixed vendor host — NOT the
+	// user-fetch host gate (a different surface; see websearch.TavilyProvider).
 	prov, provErr := websearch.ProviderFor(websearch.ProviderConfig{
 		Name:       cfg.Provider,
 		Endpoint:   cfg.Endpoint,
 		MaxResults: maxResults,
 		Timeout:    time.Duration(cfg.TimeoutSec) * time.Second,
-		HostValidator: func(host string) error {
-			if !hostAllowed(host) {
-				return webfetch.NewHostNotAllowedError(host)
-			}
-			return nil
-		},
+		// The mode-aware host gate, shared with web_fetch (design §1.2, §1.5).
+		HostValidator:        a.hostValidator,
 		AllowPrivateNetworks: !fcfg.BlockPrivateNetworks,
 		TavilyAPIKey:         cfg.TavilyAPIKey,
 	})
@@ -1684,7 +1978,7 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 	if err != nil {
 		return webSearchError(err, cfg.Endpoint)
 	}
-	log.Printf("[agent][%s] web_search provider=%s query=%q hits=%d", a.user.Name, prov.Name(), query, len(hits))
+	log.Printf("[agent] web_search hits=%d", len(hits))
 	return websearch.FormatHits(hits), nil
 }
 
@@ -1761,40 +2055,20 @@ func webSearchError(err error, endpoint string) (string, error) {
 }
 
 // handleBrowser dispatches all builtin__browser_* tools. Auth boundary:
-// reuses tools.web_fetch.url_allowlist as the navigation host gate (only
-// browser_navigate consults it; subsequent click/fill/extract act on the
-// current page so they inherit the validated host).
+// reuses the mode-aware web_fetch host gate (hostDecision) as the navigation
+// host gate (only browser_navigate consults it; subsequent click/fill/extract
+// act on the current page so they inherit the validated host).
 func (a *Agent) handleBrowser(ctx context.Context, toolName string, args map[string]any) (string, error) {
 	if a.browserPool == nil {
 		return "", fmt.Errorf("%s: browser tools are disabled in this deployment", toolName)
-	}
-	fcfg := a.cfg.Tools.WebFetch
-	canonicalHost := func(h string) string {
-		return strings.TrimSuffix(strings.ToLower(h), ".")
-	}
-	hostAllowed := func(host string) bool {
-		host = canonicalHost(host)
-		for _, allowed := range fcfg.URLAllowlist {
-			allowed = canonicalHost(strings.TrimSpace(allowed))
-			if allowed == "" {
-				continue
-			}
-			if host == allowed || strings.HasSuffix(host, "."+allowed) {
-				return true
-			}
-		}
-		return false
 	}
 	out, err := a.browserPool.Exec(ctx, browser.ExecInput{
 		User:     a.user.Name,
 		ToolName: toolName,
 		Args:     args,
-		HostCheck: func(host string) error {
-			if !hostAllowed(host) {
-				return webfetch.NewHostNotAllowedError(host)
-			}
-			return nil
-		},
+		// The pool re-checks the final URL after redirects with this same
+		// mode-aware gate (design §1.2, §1.4).
+		HostCheck: a.hostValidator,
 	})
 	if err != nil {
 		log.Printf("[agent][%s] %s err=%v", a.user.Name, toolName, err)
@@ -1930,7 +2204,7 @@ func (a *Agent) handleProposeFamilyFact(ctx context.Context, args map[string]any
 	if a.db == nil {
 		return "", fmt.Errorf("propose_family_fact: db not configured")
 	}
-	if _, err := a.db.UpsertApproval(approval); err != nil {
+	if _, err := a.db.UpsertApproval(ctx, approval); err != nil {
 		return "", fmt.Errorf("propose_family_fact approval: %w", err)
 	}
 	return "Proposal sent to parents.", nil

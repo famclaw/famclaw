@@ -20,7 +20,7 @@ type fakeApprovalStore struct {
 	readErr   error
 }
 
-func (f *fakeApprovalStore) UpsertApproval(a *store.Approval) (bool, error) {
+func (f *fakeApprovalStore) UpsertApproval(_ context.Context, a *store.Approval) (bool, error) {
 	if f.upsertErr != nil {
 		return false, f.upsertErr
 	}
