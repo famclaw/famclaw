@@ -225,6 +225,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						Content:    skipMsg,
 						ToolCallID: tc.ID,
 					})
+					// This unexecuted skip keeps the received name and has no error,
+					// so dedup ignores it; a later allowed call is normalized below.
+					// Revisit normalization if skips gain error semantics.
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName:    tc.Function.Name,
 						Args:        tc.Function.Arguments,

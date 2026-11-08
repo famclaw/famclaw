@@ -212,3 +212,58 @@ func TestStageToolLoopWebSearchMarker(t *testing.T) {
 		}
 	}
 }
+
+// TestPageChangeSkipAllowsBareBuiltinRetry covers a skip before name
+// normalization followed by a retry in the next batch.
+func TestPageChangeSkipAllowsBareBuiltinRetry(t *testing.T) {
+	for _, retryName := range []string{"browser_extract", "builtin__browser_extract"} {
+		t.Run(retryName, func(t *testing.T) {
+			args := map[string]any{"mode": "text"}
+			client := &bareNameMockChatter{responses: []llm.Message{
+				{ToolCalls: []llm.ToolCall{{ID: "retry", Function: llm.ToolCallFunction{Name: retryName, Arguments: args}}}},
+				{Content: "done"},
+			}}
+			var dispatched []string
+			deps := ToolLoopDeps{
+				ClientFactory: func(*Turn) llm.Chatter { return client },
+				MaxIterations: 2, AbortQueueOnPageChange: true,
+				BuiltinHandler: func(_ context.Context, name string, _ map[string]any) (string, error) {
+					dispatched = append(dispatched, name)
+					switch name {
+					case "builtin__browser_navigate":
+						return "URL: https://a.example/", nil
+					case "builtin__browser_click":
+						return "URL: https://b.example/", nil
+					default:
+						return "extracted", nil
+					}
+				},
+			}
+			turn := &Turn{User: &config.UserConfig{Name: "tester"}, Tools: []Tool{
+				{Name: "builtin__browser_navigate"}, {Name: "builtin__browser_click"}, {Name: "builtin__browser_extract"},
+			}}
+			turn.SetMeta("pending_tool_calls", []llm.ToolCall{
+				{ID: "navigate", Function: llm.ToolCallFunction{Name: "builtin__browser_navigate"}},
+				{ID: "click", Function: llm.ToolCallFunction{Name: "builtin__browser_click"}},
+				{ID: "skip", Function: llm.ToolCallFunction{Name: "browser_extract", Arguments: args}},
+			})
+			turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "extract"}})
+			if err := NewStageToolLoop(deps)(context.Background(), turn); err != nil {
+				t.Fatal(err)
+			}
+			if len(turn.ToolCalls) != 4 {
+				t.Fatalf("tool results = %+v", turn.ToolCalls)
+			}
+			skip, retry := turn.ToolCalls[2], turn.ToolCalls[3]
+			if skip.ToolName != "browser_extract" || skip.Disposition != DispositionSkipped || skip.Error != nil {
+				t.Errorf("unexpected skip: %+v", skip)
+			}
+			if retry.ToolName != "builtin__browser_extract" || retry.Disposition != DispositionAttempted || retry.Error != nil || retry.Output != "extracted" {
+				t.Errorf("retry did not execute canonically: %+v", retry)
+			}
+			if len(dispatched) != 3 || dispatched[2] != "builtin__browser_extract" {
+				t.Errorf("handler dispatches = %v", dispatched)
+			}
+		})
+	}
+}
