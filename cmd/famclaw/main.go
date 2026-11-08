@@ -1126,13 +1126,21 @@ func main() {
 
 	ctx, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel2()
-	if err := httpSrv.Shutdown(ctx); err != nil {
-		log.Printf("Shutdown error: %v", err)
+	httpErr, backgroundErr := shutdownWeb(ctx, httpSrv.Shutdown, srv.WaitForBackground)
+	if httpErr != nil {
+		log.Printf("Shutdown error: %v", httpErr)
 	}
-	if err := srv.WaitForBackground(ctx); err != nil {
-		log.Printf("Waiting for web background work: %v", err)
+	if backgroundErr != nil {
+		log.Printf("Waiting for web background work: %v", backgroundErr)
 	}
 	log.Println("Stopped.")
+}
+
+func shutdownWeb(ctx context.Context, shutdown, wait func(context.Context) error) (error, error) {
+	background := make(chan error, 1)
+	go func() { background <- wait(ctx) }()
+	httpErr := shutdown(ctx)
+	return httpErr, <-background
 }
 
 // runSecCheck removed — honeybadger replaces seccheck.

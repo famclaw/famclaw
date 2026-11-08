@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -203,5 +204,101 @@ func TestSuspiciousNotificationRecordedAfterTurnCancellation(t *testing.T) {
 	makeAgent().hostDecision(lifetime, "googl.com")
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("successful notification resent after turn cancellation: calls=%d", got)
+	}
+}
+
+func TestSuspiciousNotificationLifetimeOutlivesTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		shutdown bool
+	}{{"turn canceled", false}, {"server shutdown", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := store.Open(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			cfg := &config.Config{Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{Enabled: true, URLPolicy: "denylist"}}}
+			lifetime, shutdown := context.WithCancel(context.Background())
+			turn, cancelTurn := context.WithCancel(lifetime)
+			entered := make(chan context.Context, 1)
+			release := make(chan struct{})
+			done := make(chan struct{})
+			var once sync.Once
+			var calls atomic.Int32
+			notify := func(ctx context.Context, _ *store.Approval) error {
+				calls.Add(1)
+				entered <- ctx
+				<-release
+				return ctx.Err()
+			}
+			makeAgent := func() *Agent {
+				return &Agent{user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"}, cfg: cfg, db: db, lifetimeCtx: lifetime, onNewSuspiciousApproval: notify}
+			}
+			a := makeAgent()
+			go func() { defer close(done); a.hostDecision(turn, "googl.com") }()
+			t.Cleanup(func() {
+				cancelTurn()
+				shutdown()
+				once.Do(func() { close(release) })
+				select {
+				case <-done:
+				case <-time.After(3 * time.Second):
+					t.Error("notification did not stop")
+				}
+			})
+			var notifyCtx context.Context
+			select {
+			case notifyCtx = <-entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("notification did not start")
+			}
+			deadline, ok := notifyCtx.Deadline()
+			if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > 30*time.Second {
+				t.Fatal("notification operation does not have its bounded deadline")
+			}
+			if tc.shutdown {
+				shutdown()
+			} else {
+				cancelTurn()
+			}
+			if got := notifyCtx.Err(); tc.shutdown && got != context.Canceled {
+				t.Fatalf("notification context=%v want canceled", got)
+			} else if !tc.shutdown && got != nil {
+				t.Fatalf("turn cancellation stopped notification: %v", got)
+			}
+			once.Do(func() { close(release) })
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("host decision did not complete")
+			}
+			if !tc.shutdown {
+				makeAgent().hostDecision(lifetime, "googl.com")
+				if got := calls.Load(); got != 1 {
+					t.Fatalf("notification sent %d times; want once", got)
+				}
+			}
+		})
+	}
+}
+
+func TestSuspiciousNotificationNilLifetimeUsesCaller(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	cfg := &config.Config{Tools: config.ToolsConfig{WebFetch: config.WebFetchConfig{Enabled: true, URLPolicy: "denylist"}}}
+	caller, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
+	notify := func(ctx context.Context, _ *store.Approval) error { calls.Add(1); cancel(); return ctx.Err() }
+	first := &Agent{user: &config.UserConfig{Name: "teo", Role: "child", AgeGroup: "age_5_12"}, cfg: cfg, db: db, onNewSuspiciousApproval: notify}
+	first.hostDecision(caller, "googl.com")
+	second := &Agent{user: first.user, cfg: cfg, db: db, onNewSuspiciousApproval: func(context.Context, *store.Approval) error { calls.Add(1); return nil }}
+	second.hostDecision(context.Background(), "googl.com")
+	if calls.Load() != 2 {
+		t.Fatalf("canceled legacy caller should allow a later retry; calls=%d", calls.Load())
 	}
 }

@@ -1608,8 +1608,14 @@ func (a *Agent) notifySuspiciousApprovalIfNeeded(ctx context.Context, id string,
 	if a.onNewSuspiciousApproval == nil || a.user == nil || a.user.Role == "parent" {
 		return
 	}
-	if err := a.db.NotifyApprovalOnce(ctx, a.lifetimeCtx, id, func() error {
-		return a.onNewSuspiciousApproval(ctx, approval)
+	lifetime := a.lifetimeCtx
+	if lifetime == nil {
+		lifetime = ctx
+	}
+	operationCtx, cancel := context.WithTimeout(lifetime, 30*time.Second)
+	defer cancel()
+	if err := a.db.NotifyApprovalOnce(operationCtx, lifetime, id, func() error {
+		return a.onNewSuspiciousApproval(operationCtx, approval)
 	}); err != nil {
 		var failure *store.ApprovalNotificationError
 		if errors.As(err, &failure) {

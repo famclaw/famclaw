@@ -730,6 +730,8 @@ func (d *DB) UpsertApproval(ctx context.Context, a *Approval) (bool, error) {
 // left as-is so the parent is not re-nagged.
 func (d *DB) RequeueApproval(ctx context.Context, id string) (bool, error) {
 	now := time.Now().UTC()
+	// The guarded old expiry is before now, while the new expiry is after it;
+	// the new pending decision therefore has a distinct generation.
 	res, err := d.sql.ExecContext(ctx, `
 		UPDATE approvals SET status = 'pending', decided_by = '', decision_note = '',
 			expires_at = ?, notification_sent = 0, updated_at = CURRENT_TIMESTAMP
@@ -821,6 +823,8 @@ func (d *DB) NotifyApprovalOnce(ctx, lifetime context.Context, id string, notify
 	}
 	commitCtx, cancel := context.WithTimeout(lifetime, 5*time.Second)
 	defer cancel()
+	// Zero rows is expected if a parent decided or the approval was renewed
+	// during delivery; the old send must never mark a newer decision notified.
 	_, err = d.sql.ExecContext(commitCtx, `UPDATE approvals SET notification_sent = 1 WHERE id = ? AND status = 'pending' AND CAST(expires_at AS TEXT) = ?`, id, expiry)
 	if err != nil {
 		return &ApprovalNotificationError{Phase: ApprovalNotificationRecord, cause: err}

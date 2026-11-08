@@ -52,7 +52,7 @@ func TestSuspiciousNotificationFailureLogPhase(t *testing.T) {
 	}
 	a := &Agent{user: &config.UserConfig{Name: "fake-user", Role: "child"}, db: db, lifetimeCtx: lifetime, onNewSuspiciousApproval: notify}
 	if selected == "read" {
-		cancel()
+		shutdown()
 	}
 	var out bytes.Buffer
 	prev := log.Writer()
