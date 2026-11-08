@@ -1767,11 +1767,11 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	if result != nil {
 		log.Printf("[agent] web_fetch status=%d bytes=%d truncated=%v", result.StatusCode, result.Bytes, result.Truncated)
 		text := strings.TrimSpace(result.Text)
-		minLength := a.cfg.Tools.WebFetch.FallbackMinTextLength
+		minLength := cfg.FallbackMinTextLength
 		if minLength == 0 {
 			minLength = 10
 		}
-		if len(text) < minLength && a.cfg.Tools.WebFetch.FallbackToBrowser && !browserTried {
+		if len(text) < minLength && cfg.FallbackToBrowser && !browserTried {
 			if a.browserPool != nil {
 				// Attempt browser fallback for JS-heavy sites. fetchWithBrowser
 				// guarantees a non-empty result on success — every failure mode

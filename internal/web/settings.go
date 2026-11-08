@@ -377,6 +377,10 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		snapWebFetch.URLAllowlist = make([]string, len(s.cfg.Tools.WebFetch.URLAllowlist))
 		copy(snapWebFetch.URLAllowlist, s.cfg.Tools.WebFetch.URLAllowlist)
 	}
+	if s.cfg.Tools.WebFetch.URLDenylist != nil {
+		snapWebFetch.URLDenylist = make([]string, len(s.cfg.Tools.WebFetch.URLDenylist))
+		copy(snapWebFetch.URLDenylist, s.cfg.Tools.WebFetch.URLDenylist)
+	}
 
 	// Assign all validated values at once
 	s.cfg.LLM = newLLM
