@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"sync"
 
 	"time"
 
@@ -40,9 +41,13 @@ type Client struct {
 	// for platforms like macOS that lack landlock/seccomp, with a loud warning.
 	AllowUnconfined bool
 	env             map[string]string // per-skill credential env vars
+	mu              sync.Mutex
+	startGate       chan struct{}
 	inner           client.MCPClient
 	tools           []mcp.Tool
 	closed          bool
+	ready           bool
+	generation      uint64
 }
 
 // checkLandlockSupport returns true if Landlock is supported on the current system
@@ -88,13 +93,46 @@ func NewTransportClient(name string, cfg config.MCPServerConfig, sandboxRoot str
 // Start connects to the MCP server and performs the initialize handshake.
 // For stdio: spawns the process. For HTTP/SSE: connects to the remote server.
 func (c *Client) Start(ctx context.Context) error {
-	if c.inner != nil {
-		return nil
-	}
+	return c.start(ctx, true)
+}
 
-	// Timeout for connection — remote servers may be slow or unreachable
+// start serializes handshakes while allowing Stop to detach concurrently.
+func (c *Client) start(ctx context.Context, reopen bool) error {
 	startCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	c.mu.Lock()
+	generation := c.generation
+	if c.startGate == nil {
+		c.startGate = make(chan struct{}, 1)
+		c.startGate <- struct{}{}
+	}
+	gate := c.startGate
+	c.mu.Unlock()
+	select {
+	case <-startCtx.Done():
+		return startCtx.Err()
+	case <-gate:
+	}
+	defer func() { gate <- struct{}{} }()
+	c.mu.Lock()
+	if err := startCtx.Err(); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if c.generation != generation {
+		c.mu.Unlock()
+		return errClientStopped
+	}
+	if c.inner != nil && c.ready {
+		c.mu.Unlock()
+		return nil
+	}
+	if c.closed && !reopen {
+		c.mu.Unlock()
+		return errClientStopped
+	}
+	c.closed = false
+	c.mu.Unlock()
 
 	var inner client.MCPClient
 	var err error
@@ -174,59 +212,103 @@ func (c *Client) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating MCP client %q (%s): %w", c.name, c.transportType, err)
 	}
+	c.mu.Lock()
+	if c.closed || c.generation != generation {
+		c.mu.Unlock()
+		inner.Close()
+		return errClientStopped
+	}
 	c.inner = inner
+	c.mu.Unlock()
 
 	// Initialize handshake
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initReq.Params.ClientInfo = mcp.Implementation{Name: "famclaw", Version: "1.0.0"}
 
-	_, err = c.inner.Initialize(startCtx, initReq)
+	_, err = inner.Initialize(startCtx, initReq)
 	if err != nil {
-		c.inner.Close()
-		c.inner = nil
+		c.mu.Lock()
+		owned := c.inner == inner
+		if owned {
+			c.inner = nil
+		}
+		c.mu.Unlock()
+		if owned {
+			inner.Close()
+		}
 		return fmt.Errorf("MCP initialize %q: %w", c.name, err)
 	}
 
 	// List available tools
-	toolsResult, err := c.inner.ListTools(startCtx, mcp.ListToolsRequest{})
+	toolsResult, err := inner.ListTools(startCtx, mcp.ListToolsRequest{})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.inner != inner || c.closed || c.generation != generation {
+		return errClientStopped
+	}
 	if err != nil {
 		log.Printf("[mcp] tools/list failed for %q: %v", c.name, err)
 	} else {
 		c.tools = toolsResult.Tools
 	}
-
+	c.ready = true
 	return nil
 }
 
-// CallTool invokes a tool on the MCP server.
-func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {
-	if c.inner == nil {
-		if err := c.Start(ctx); err != nil {
-			return nil, err
-		}
-	}
+var errClientStopped = fmt.Errorf("MCP client stopped")
 
+// started reports whether a transport is currently attached.
+func (c *Client) started() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inner != nil && c.ready
+}
+
+// CallTool invokes a tool on the MCP server using a stable transport snapshot.
+func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {
+	if err := c.start(ctx, true); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	inner := c.inner
+	c.mu.Unlock()
+	if inner == nil {
+		return nil, errClientStopped
+	}
 	req := mcp.CallToolRequest{}
 	req.Params.Name = name
 	req.Params.Arguments = args
-
-	result, err := c.inner.CallTool(ctx, req)
+	result, err := inner.CallTool(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("calling tool %q on %q: %w", name, c.name, err)
 	}
 	return result, nil
 }
 
-// Tools returns the list of available tools.
-func (c *Client) Tools() []mcp.Tool { return c.tools }
+// Tools returns a snapshot of the available tools.
+func (c *Client) Tools() []mcp.Tool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]mcp.Tool(nil), c.tools...)
+}
 
-// Stop terminates the MCP server connection.
+// detach atomically prevents further use of this transport; Close may block.
+func (c *Client) detach() client.MCPClient {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	inner := c.inner
+	c.inner = nil
+	c.ready = false
+	c.closed = true
+	c.generation++
+	return inner
+}
+
+// Stop terminates the currently attached transport.
 func (c *Client) Stop() {
-	if c.inner != nil && !c.closed {
-		c.inner.Close()
-		c.closed = true
-		c.inner = nil
+	if inner := c.detach(); inner != nil {
+		inner.Close()
 	}
 }
 
