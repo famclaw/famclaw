@@ -634,7 +634,10 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 	return infos
 }
 
-// StopAll terminates all MCP server connections.
+// StopAll terminates all MCP server connections. It holds the pool lock during
+// sequential transport closure so fresh lookups cannot start replacements
+// while detached transports close. Readers wait for Close; this method does
+// not impose an overall deadline on transport shutdown.
 func (p *Pool) StopAll() {
 	p.mu.Lock()
 	seen := make(map[*managedClient]bool)

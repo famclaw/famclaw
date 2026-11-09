@@ -2033,7 +2033,10 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 // The marker constants are owned by agentcore (websearch_markers.go): the
 // tool loop only renders them verbatim when IsSafeWebSearchMarker accepts
 // them, so producer and consumer share one definition.
-// Unknown errors return no display text. Cause is not logged.
+// Providers may retry transient failures; any final failure remains an error.
+// The tool loop suppresses the same failed tool name and arguments for the rest
+// of that turn to avoid retry loops; a later turn may retry. Unknown errors
+// return no display text; causes are not logged.
 func webSearchError(err error) (string, error) {
 	if err == nil {
 		return "", nil
