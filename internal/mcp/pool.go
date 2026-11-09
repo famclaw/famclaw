@@ -283,23 +283,25 @@ func (p *Pool) ReloadConfig(cfg *config.Config) map[string]error {
 			defer cancel()
 			err := lifecycle.begin(ctx)
 			if err == nil {
-				mc.mu.Lock()
-				mc.stateMu.Lock()
-				c := mc.client
-				valid := mc.generation == generation
-				mc.stateMu.Unlock()
-				if valid {
-					err = c.start(ctx, false)
-				} else {
-					err = errClientStopped
-				}
-				lifecycle.finishStart()
-				mc.stateMu.Lock()
-				if mc.generation == generation {
-					mc.lastError = err
-				}
-				mc.stateMu.Unlock()
-				mc.mu.Unlock()
+				func() {
+					defer lifecycle.finishStart()
+					mc.mu.Lock()
+					defer mc.mu.Unlock()
+					mc.stateMu.Lock()
+					c := mc.client
+					valid := mc.generation == generation
+					mc.stateMu.Unlock()
+					if valid {
+						err = c.start(ctx, false)
+					} else {
+						err = errClientStopped
+					}
+					mc.stateMu.Lock()
+					if mc.generation == generation {
+						mc.lastError = err
+					}
+					mc.stateMu.Unlock()
+				}()
 			}
 
 			resultMu.Lock()
@@ -548,15 +550,17 @@ func (p *Pool) StartAll(ctx context.Context) error {
 			defer starts.Done()
 			err := entry.lifecycle.begin(ctx)
 			if err == nil {
-				entry.mc.stateMu.Lock()
-				current := entry.mc.client == entry.client && entry.mc.generation == entry.generation
-				entry.mc.stateMu.Unlock()
-				if current {
-					err = entry.client.start(ctx, false)
-				} else {
-					err = errClientStopped
-				}
-				entry.lifecycle.finishStart()
+				func() {
+					defer entry.lifecycle.finishStart()
+					entry.mc.stateMu.Lock()
+					current := entry.mc.client == entry.client && entry.mc.generation == entry.generation
+					entry.mc.stateMu.Unlock()
+					if current {
+						err = entry.client.start(ctx, false)
+					} else {
+						err = errClientStopped
+					}
+				}()
 			}
 			entry.mc.stateMu.Lock()
 			current := entry.mc.client == entry.client && entry.mc.generation == entry.generation

@@ -221,6 +221,15 @@ func (c *Client) start(ctx context.Context, reopen bool) error {
 	c.inner = inner
 	c.mu.Unlock()
 
+	// Keep ownership until startup is ready. On an unexpected unwind, close
+	// only this still-attached transport before releasing the startup gate.
+	ready := false
+	defer func() {
+		if !ready {
+			c.closeUnready(inner)
+		}
+	}()
+
 	// Initialize handshake
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
@@ -228,15 +237,6 @@ func (c *Client) start(ctx context.Context, reopen bool) error {
 
 	_, err = inner.Initialize(startCtx, initReq)
 	if err != nil {
-		c.mu.Lock()
-		owned := c.inner == inner
-		if owned {
-			c.inner = nil
-		}
-		c.mu.Unlock()
-		if owned {
-			inner.Close()
-		}
 		return fmt.Errorf("MCP initialize %q: %w", c.name, err)
 	}
 
@@ -253,6 +253,7 @@ func (c *Client) start(ctx context.Context, reopen bool) error {
 		c.tools = toolsResult.Tools
 	}
 	c.ready = true
+	ready = true
 	return nil
 }
 
@@ -291,6 +292,20 @@ func (c *Client) Tools() []mcp.Tool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]mcp.Tool(nil), c.tools...)
+}
+
+// closeUnready closes an interrupted startup only while it still owns it.
+func (c *Client) closeUnready(inner client.MCPClient) {
+	c.mu.Lock()
+	owned := c.inner == inner
+	if owned {
+		c.inner = nil
+		c.ready = false
+	}
+	c.mu.Unlock()
+	if owned {
+		_ = inner.Close()
+	}
 }
 
 // detach atomically prevents further use of this transport; Close may block.
