@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -251,5 +252,32 @@ func TestToolLoopOversizedArgumentsUseFallback(t *testing.T) {
 	}
 	if calls != 1 || len(turn.ToolCalls) != 2 || !errors.Is(turn.ToolCalls[1].Error, ErrToolAlreadyFailed) {
 		t.Errorf("calls = %d, results = %+v", calls, turn.ToolCalls)
+	}
+}
+
+// Different wire representations of no arguments must suppress the same failed retry.
+func TestToolLoopDeduplicatesDecodedEmptyArguments(t *testing.T) {
+	const name = "builtin__search"
+	var first, retry llm.ToolCallArguments
+	if err := json.Unmarshal([]byte(`null`), &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`"null"`), &retry); err != nil {
+		t.Fatal(err)
+	}
+	chatter := &dedupChatter{}
+	calls := 0
+	stage := NewStageToolLoop(ToolLoopDeps{MaxIterations: 1, ClientFactory: func(*Turn) llm.Chatter { return chatter }, BuiltinHandler: func(_ context.Context, _ string, _ map[string]any) (string, error) {
+		calls++
+		return "", errors.New("failed")
+	}})
+	turn := &Turn{User: &config.UserConfig{Name: "tester", Role: "child"}, Tools: []Tool{{Name: name}}}
+	turn.SetMeta("pending_tool_calls", []llm.ToolCall{{Function: llm.ToolCallFunction{Name: name, Arguments: first}}, {Function: llm.ToolCallFunction{Name: name, Arguments: retry}}})
+	turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "search"}})
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(turn.ToolCalls) != 2 || !errors.Is(turn.ToolCalls[1].Error, ErrToolAlreadyFailed) {
+		t.Errorf("handler calls = %d; retry was not deduplicated", calls)
 	}
 }

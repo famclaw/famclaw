@@ -653,6 +653,9 @@ func TestToolCallArguments_UnmarshalJSON(t *testing.T) {
 		{name: "lenient-object", raw: `{"city":"Boston"}`, want: map[string]any{"city": "Boston"}},
 		{name: "empty-string", raw: `""`, want: map[string]any{}},
 		{name: "null", raw: `null`, want: map[string]any{}},
+		{name: "encoded-null", raw: `"null"`, want: map[string]any{}},
+		{name: "encoded-null-with-whitespace", raw: `"  null  "`, want: map[string]any{}},
+		{name: "encoded-empty-object", raw: `"{}"`, want: map[string]any{}},
 		{name: "invalid-string", raw: `"not json"`, wantErr: true},
 	}
 	for _, tc := range tests {
