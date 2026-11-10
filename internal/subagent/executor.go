@@ -261,12 +261,12 @@ func dispatchSubagentTool(
 	// Normalize to the canonical form before the allowlist gate,
 	// dispatch and ToolErrorDisplay, mirroring the main tool loop
 	// (agentcore/stage_tool_loop.go): rewrite only when the namespaced
-	// builtin form is in the allowlist, so bare MCP tool names are
-	// untouched. Without this, a bare builtin call is rejected as an
-	// unknown tool, and a bare web_search failure could never match
+	// builtin form is in the allowlist and the bare MCP name is not
+	// offered, so exact MCP tool names are untouched. Otherwise a bare builtin
+	// call is rejected as unknown, and a bare web_search failure cannot match
 	// ToolErrorDisplay's builtin__web_search-specific safe-marker
 	// branch.
-	if !strings.HasPrefix(name, "builtin__") && !strings.HasPrefix(name, "mcp__") {
+	if !allowedTools[name] && !strings.HasPrefix(name, "builtin__") && !strings.HasPrefix(name, "mcp__") {
 		if allowedBuiltins["builtin__"+name] {
 			log.Printf("[subagent] tool_call normalized: %s -> builtin__%s", name, name)
 			name = "builtin__" + name
@@ -299,11 +299,8 @@ func dispatchSubagentTool(
 		}
 		if result.IsError {
 			log.Printf("[subagent] tool reported an error (%s)", duration)
-			// mcpReadOnly (from filterTools) covers MCP tools; the
-			// BuiltinReadOnly lookup is always false for MCP names, so
-			// without this a read-only MCP tool failure would degrade to
-			// the conservative "changes may have occurred" display.
-			return agentcore.ToolErrorDisplay(name, mcpReadOnly[name] || deps.BuiltinReadOnly[name], ""), true
+			// This branch dispatched an MCP tool, so only its own metadata applies.
+			return agentcore.ToolErrorDisplay(name, mcpReadOnly[name], ""), true
 		}
 		if result != nil && len(result.Content) > 0 {
 			resultJSON, _ := json.Marshal(result.Content)
