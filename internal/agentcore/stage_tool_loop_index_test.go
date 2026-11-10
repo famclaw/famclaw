@@ -157,11 +157,12 @@ func TestCallArgsKeyDepthBoundary(t *testing.T) {
 
 func TestUnsuccessfulCallIndexMatchesScan(t *testing.T) {
 	values := []map[string]any{nil, {}, {"x": float64(1)}, {"x": 1}, {"x": "\xff"}, {"x": "\xfe"}, {"x": []any{map[string]any(nil)}}}
+	dispositions := [...]ToolDisposition{DispositionDenied, DispositionPending, DispositionSkipped}
 	idx := newUnsuccessfulCallIndex()
 	var results []ToolResult
 	for i, args := range values {
 		results = append(results, ToolResult{ToolName: "tool", Args: args, Disposition: DispositionAttempted, Outcome: OutcomeSuccess})
-		results = append(results, ToolResult{ToolName: "tool", Args: args, Error: errors.New("failure"), Disposition: DispositionDenied + ToolDisposition(i%3)})
+		results = append(results, ToolResult{ToolName: "tool", Args: args, Error: errors.New("failure"), Disposition: dispositions[i%len(dispositions)]})
 		for _, query := range values {
 			want, wantOK := priorUnsuccessfulCall("tool", query, results)
 			got, gotOK := idx.find("tool", query, results)
