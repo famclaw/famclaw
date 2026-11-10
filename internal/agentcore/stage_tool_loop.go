@@ -163,6 +163,8 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		// end of each iteration after ChatWithTools returns.
 		lastModelText := turn.Output
 
+		failedCalls := newUnsuccessfulCallIndex()
+
 		// Execute tool calls
 		for i := 0; i < deps.MaxIterations; i++ {
 			if len(pendingCalls) == 0 {
@@ -259,7 +261,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				// the original operation may already have taken effect. A call
 				// that never executed (denied by policy, pending approval)
 				// must not be described as having failed either.
-				if prior, found := priorUnsuccessfulCall(tc.Function.Name, tc.Function.Arguments, turn.ToolCalls); found {
+				if prior, found := failedCalls.find(tc.Function.Name, tc.Function.Arguments, turn.ToolCalls); found {
 					reason := "this call was not successful earlier in this turn."
 					switch prior.Disposition {
 					case DispositionDenied:
@@ -411,6 +413,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					}
 				}
 
+				// Snapshot the actual invocation before a handler can mutate its arguments.
+				invocationArgs := snapshotCallArgs(tc.Function.Arguments)
+
 				// Builtin tools (spawn_agent, etc.) route to the handler, not MCP pool
 				if strings.HasPrefix(tc.Function.Name, "builtin__") && deps.BuiltinHandler != nil {
 					result, err := deps.BuiltinHandler(ctx, tc.Function.Name, tc.Function.Arguments)
@@ -425,7 +430,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						})
 						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 							ToolName:    tc.Function.Name,
-							Args:        tc.Function.Arguments,
+							Args:        invocationArgs,
 							Error:       err,
 							Output:      display,
 							Outcome:     OutcomeFailure,
@@ -441,7 +446,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						})
 						turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 							ToolName:    tc.Function.Name,
-							Args:        tc.Function.Arguments,
+							Args:        invocationArgs,
 							Output:      result,
 							Outcome:     OutcomeSuccess,
 							Disposition: DispositionAttempted,
@@ -470,7 +475,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					})
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName:    tc.Function.Name,
-						Args:        tc.Function.Arguments,
+						Args:        invocationArgs,
 						Error:       fmt.Errorf("unknown tool %q", tc.Function.Name),
 						Disposition: DispositionSkipped,
 						Duration:    time.Since(start),
@@ -486,7 +491,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					toolText = "Tool outcome uncertain; verify before trying again."
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName:    tc.Function.Name,
-						Args:        tc.Function.Arguments,
+						Args:        invocationArgs,
 						Error:       err,
 						Outcome:     OutcomeUnknown,
 						Disposition: DispositionAttempted,
@@ -502,7 +507,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					}
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName:    tc.Function.Name,
-						Args:        tc.Function.Arguments,
+						Args:        invocationArgs,
 						Error:       fmt.Errorf("tool did not return a successful result"),
 						Outcome:     outcome,
 						Disposition: DispositionAttempted,
@@ -537,7 +542,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					}
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName:    tc.Function.Name,
-						Args:        tc.Function.Arguments,
+						Args:        invocationArgs,
 						Output:      toolText,
 						Outcome:     OutcomeSuccess,
 						Disposition: DispositionAttempted,
@@ -821,7 +826,7 @@ var ErrToolAlreadyFailed = fmt.Errorf("tool call already failed this turn")
 
 // priorUnsuccessfulCall finds a matching prior error or attempted non-success.
 // Map comparison is order independent; successful attempts may run again.
-// The scan is bounded by the current turn's iteration and batch limits.
+// This fallback also supports arbitrary non-JSON Go values.
 func priorUnsuccessfulCall(name string, args map[string]any, results []ToolResult) (ToolResult, bool) {
 	for _, r := range results {
 		// Skips with errors (such as unavailable tools) are deduplicated.
