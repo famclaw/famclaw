@@ -63,7 +63,7 @@ func (idx *unsuccessfulCallIndex) find(name string, args map[string]any, results
 }
 
 func snapshotCallArgs(args map[string]any) map[string]any {
-	v, ok := copyJSONValue(args, 0, false, make(map[jsonVisit]bool))
+	v, ok := copyJSONValue(args, 0, false, newCopyBudget())
 	if !ok {
 		return args
 	}
@@ -71,7 +71,7 @@ func snapshotCallArgs(args map[string]any) map[string]any {
 }
 
 func callArgsKey(args map[string]any) (string, bool) {
-	v, ok := copyJSONValue(args, 0, true, make(map[jsonVisit]bool))
+	v, ok := copyJSONValue(args, 0, true, newCopyBudget())
 	if !ok {
 		return "", false
 	}
@@ -79,19 +79,43 @@ func callArgsKey(args map[string]any) (string, bool) {
 	return string(b), err == nil
 }
 
-// Restrict the fast path to ordinary JSON-decoded values. Cycles and values
-// nested more than 100 levels use the reflect fallback.
+// Snapshots are best effort: unsupported, cyclic, deeply nested or oversized
+// values retain their original arguments and use the reflect fallback.
+// The byte budget bounds raw keys and strings; JSON escaping can expand each
+// byte to at most six bytes, with additional bounded structural overhead.
+const (
+	maxCopyNodes       = 16384
+	maxCopyStringBytes = 1 << 20
+)
+
+type copyBudget struct {
+	nodes    int
+	bytes    int
+	visiting map[jsonVisit]bool
+}
+
+func newCopyBudget() *copyBudget {
+	return &copyBudget{nodes: maxCopyNodes, bytes: maxCopyStringBytes, visiting: make(map[jsonVisit]bool)}
+}
+
 type jsonVisit struct {
 	kind reflect.Kind
 	ptr  uintptr
 }
 
-func copyJSONValue(v any, depth int, normalizeZero bool, visiting map[jsonVisit]bool) (any, bool) {
-	if depth > 100 {
+func copyJSONValue(v any, depth int, normalizeZero bool, budget *copyBudget) (any, bool) {
+	if depth > 100 || budget.nodes == 0 {
 		return nil, false
 	}
+	budget.nodes--
 	switch x := v.(type) {
-	case nil, bool, string:
+	case nil, bool:
+		return x, true
+	case string:
+		if len(x) > budget.bytes {
+			return nil, false
+		}
+		budget.bytes -= len(x)
 		return x, true
 	case float64:
 		if math.IsNaN(x) || math.IsInf(x, 0) {
@@ -106,14 +130,23 @@ func copyJSONValue(v any, depth int, normalizeZero bool, visiting map[jsonVisit]
 			return map[string]any(nil), true
 		}
 		visit := jsonVisit{reflect.Map, uintptr(reflect.ValueOf(x).UnsafePointer())}
-		if visiting[visit] {
+		if budget.visiting[visit] {
 			return nil, false
 		}
-		visiting[visit] = true
-		defer delete(visiting, visit)
+		budget.visiting[visit] = true
+		defer delete(budget.visiting, visit)
+		if len(x) > budget.nodes {
+			return nil, false
+		}
+		for k := range x {
+			if len(k) > budget.bytes {
+				return nil, false
+			}
+			budget.bytes -= len(k)
+		}
 		m := make(map[string]any, len(x))
 		for k, value := range x {
-			item, ok := copyJSONValue(value, depth+1, normalizeZero, visiting)
+			item, ok := copyJSONValue(value, depth+1, normalizeZero, budget)
 			if !ok {
 				return nil, false
 			}
@@ -125,14 +158,17 @@ func copyJSONValue(v any, depth int, normalizeZero bool, visiting map[jsonVisit]
 			return []any(nil), true
 		}
 		visit := jsonVisit{reflect.Slice, uintptr(reflect.ValueOf(x).UnsafePointer())}
-		if visiting[visit] {
+		if budget.visiting[visit] {
 			return nil, false
 		}
-		visiting[visit] = true
-		defer delete(visiting, visit)
+		budget.visiting[visit] = true
+		defer delete(budget.visiting, visit)
+		if len(x) > budget.nodes {
+			return nil, false
+		}
 		a := make([]any, len(x))
 		for i, value := range x {
-			item, ok := copyJSONValue(value, depth+1, normalizeZero, visiting)
+			item, ok := copyJSONValue(value, depth+1, normalizeZero, budget)
 			if !ok {
 				return nil, false
 			}

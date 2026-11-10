@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/famclaw/famclaw/internal/config"
@@ -167,5 +168,88 @@ func TestUnsuccessfulCallIndexMatchesScan(t *testing.T) {
 				t.Fatalf("after %d results, query %#v: index = %+v, %v; scan = %+v, %v", len(results), query, got, gotOK, want, wantOK)
 			}
 		}
+	}
+}
+
+func TestCallArgsKeyCopyBudget(t *testing.T) {
+	shared := map[string]any{"v": true}
+	for i := 0; i < 14; i++ {
+		shared = map[string]any{"a": shared, "b": shared}
+	}
+	atNodeLimit := make(map[string]any, 16383)
+	for i := 0; i < 16383; i++ {
+		atNodeLimit[fmt.Sprint(i)] = nil
+	}
+	aboveNodeLimit := make(map[string]any, 16384)
+	for i := 0; i < 16384; i++ {
+		aboveNodeLimit[fmt.Sprint(i)] = nil
+	}
+	cases := []struct {
+		name    string
+		args    map[string]any
+		indexed bool
+	}{
+		{"shared graph", shared, false},
+		{"at node limit", atNodeLimit, true},
+		{"above node limit", aboveNodeLimit, false},
+		{"at string byte limit", map[string]any{"": strings.Repeat("x", 1<<20)}, true},
+		{"above string byte limit", map[string]any{"": strings.Repeat("x", (1<<20)+1)}, false},
+		{"above key byte limit", map[string]any{strings.Repeat("x", (1<<20)+1): nil}, false},
+		{"key and value share byte budget", map[string]any{strings.Repeat("k", 1<<19): strings.Repeat("v", (1<<19)+1)}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := callArgsKey(tc.args)
+			if ok != tc.indexed {
+				t.Errorf("indexed = %v, want %v", ok, tc.indexed)
+			}
+		})
+	}
+}
+
+func TestCallArgsKeyEscapedBytesBounded(t *testing.T) {
+	key := strings.Repeat("\x00", 10000)
+	encoded, ok := callArgsKey(map[string]any{key: "value"})
+	if !ok {
+		t.Fatal("ordinary escaped key unexpectedly rejected")
+	}
+	if len(encoded) > 6*(1<<20)+32*16384 {
+		t.Fatalf("encoded size %d exceeds conservative bound", len(encoded))
+	}
+}
+
+func TestUnsuccessfulCallIndexOversizedFallbackOrder(t *testing.T) {
+	oversized := map[string]any{"payload": strings.Repeat("x", (1<<20)+1)}
+	results := []ToolResult{{ToolName: "tool", Args: oversized, Error: errors.New("first"), Disposition: DispositionPending}, {ToolName: "tool", Args: oversized, Error: errors.New("second"), Disposition: DispositionDenied}}
+	idx := newUnsuccessfulCallIndex()
+	got, ok := idx.find("tool", oversized, results)
+	if !ok || got.Disposition != DispositionPending {
+		t.Errorf("fallback did not preserve first result: %+v %v", got, ok)
+	}
+	if len(idx.fallback) != 2 {
+		t.Errorf("fallback entries = %d, want 2", len(idx.fallback))
+	}
+}
+
+func TestToolLoopOversizedArgumentsUseFallback(t *testing.T) {
+	const name = "builtin__search"
+	args := map[string]any{"query": strings.Repeat("x", (1<<20)+1)}
+	chatter := &dedupChatter{}
+	calls := 0
+	stage := NewStageToolLoop(ToolLoopDeps{MaxIterations: 1, ClientFactory: func(*Turn) llm.Chatter { return chatter }, BuiltinHandler: func(_ context.Context, _ string, _ map[string]any) (string, error) {
+		calls++
+		return "", errors.New("failed")
+	}})
+	turn := &Turn{User: &config.UserConfig{Name: "tester", Role: "child"}, Tools: []Tool{{Name: name}}}
+	turn.SetMeta("pending_tool_calls", []llm.ToolCall{
+		{Function: llm.ToolCallFunction{Name: name, Arguments: args}},
+		{Function: llm.ToolCallFunction{Name: name, Arguments: map[string]any{"query": args["query"]}}},
+	})
+	turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "search"}})
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(turn.ToolCalls) != 2 || !errors.Is(turn.ToolCalls[1].Error, ErrToolAlreadyFailed) {
+		t.Errorf("calls = %d, results = %+v", calls, turn.ToolCalls)
 	}
 }
