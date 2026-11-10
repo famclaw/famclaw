@@ -182,30 +182,8 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				turnAllowed[t.Name] = true
 			}
 
-			// turnReadOnly mirrors the allowlist for tools declared ReadOnly in
-			// the registry: a read-only call cannot mutate external state, so a
-			// per-call error shown to the LLM must not claim that changes may
-			// have occurred (same conservative rule as outcomeWarning — tools
-			// absent from the registry stay potentially mutating).
-			//
-			// Like outcomeWarning's map, both the namespaced tool name
-			// ("builtin__web_search", "mcp__server__tool") and its bare form
-			// ("web_search", "tool") are keyed, and lookups go through
-			// turnReadOnlyLookup, which tries both. This matters because the
-			// per-call lookup sees tc.Function.Name in whichever form the LLM
-			// emitted: builtins are advertised under their bare names
-			// (toolsToLLMDefs strips the "builtin__" prefix), and the
-			// normalization step below only rewrites a bare call when its
-			// namespaced form is on the allowlist. A lookup keyed on a single
-			// form would silently mismatch the other and conservatively report
-			// a read-only failure as potentially mutating.
-			turnReadOnly := make(map[string]bool, len(turn.Tools)*2)
-			for _, t := range turn.Tools {
-				if t.ReadOnly {
-					turnReadOnly[t.Name] = true
-					turnReadOnly[bareToolName(t.Name)] = true
-				}
-			}
+			// Resolve read-only status without conflating tools with the same bare name.
+			turnReadOnly := buildReadOnlyIndex(turn.Tools)
 
 			// pageChanged is reset per-batch: set when a mutating tool call
 			// produces a different URL than the last known one.
@@ -245,10 +223,11 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				// Local LLMs occasionally emit the bare tool name
 				// ("web_fetch") instead of the namespaced form
 				// ("builtin__web_fetch"). If the bare name is unqualified
-				// and the prefixed builtin form is in the turn allowlist,
-				// rewrite to the canonical form for dispatch. Mismatches
+				// and is not itself offered, rewrite it when the prefixed
+				// builtin form is in the turn allowlist. Mismatches
 				// still fall through to the unknown-tool error below.
-				if !strings.HasPrefix(tc.Function.Name, "builtin__") && !strings.HasPrefix(tc.Function.Name, "mcp__") {
+				if !turnAllowed[tc.Function.Name] && !strings.HasPrefix(tc.Function.Name, "builtin__") &&
+					!strings.HasPrefix(tc.Function.Name, "mcp__") {
 					if turnAllowed["builtin__"+tc.Function.Name] {
 						log.Printf("[agentcore][%s] tool_call normalized: %s -> builtin__%s",
 							turn.User.Name, tc.Function.Name, tc.Function.Name)
@@ -320,7 +299,8 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				//   "pending"            → parent already notified, wait
 				//   "block"              → refuse with a reason
 				if deps.PolicyEvaluator != nil {
-					requestID := toolApprovalID(turn.User.Name, bareToolName(tc.Function.Name), tc.Function.Arguments)
+					legacyID := toolApprovalID(turn.User.Name, bareToolName(tc.Function.Name), tc.Function.Arguments)
+					requestID := "v2-" + toolApprovalID(turn.User.Name, tc.Function.Name, tc.Function.Arguments)
 					input := toolPolicyInput(turn, tc.Function.Name)
 					input.Args = tc.Function.Arguments
 					input.RequestID = requestID
@@ -337,6 +317,17 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							injectToolError(&llmMsgs, turn, tc, ErrToolBlocked, "approval unavailable", start)
 							continue
 						}
+					}
+
+					// Old bare-name approvals did not identify the implementation.
+					// Carry forward only denials, in an isolated OPA input map.
+					if legacy, ok := input.Approvals[legacyID].(map[string]any); ok && legacy["status"] == "denied" {
+						approvals := make(map[string]any, len(input.Approvals)+1)
+						for id, approval := range input.Approvals {
+							approvals[id] = approval
+						}
+						approvals[requestID] = legacy
+						input.Approvals = approvals
 					}
 
 					decision, perr := deps.PolicyEvaluator.EvaluateToolCall(ctx, input)
@@ -364,7 +355,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							UserDisplay: turn.User.DisplayName,
 							AgeGroup:    turn.User.AgeGroup,
 							Category:    "tool:" + bareToolName(tc.Function.Name),
-							QueryText:   approvalDescription(bareToolName(tc.Function.Name), tc.Function.Arguments),
+							QueryText:   approvalDescription(tc.Function.Name, tc.Function.Arguments),
 						}
 						if _, err := deps.ApprovalStore.UpsertApproval(ctx, a); err != nil {
 							log.Printf("[stage_tool_loop] approval creation failed for %s: %v (failing closed)", tc.Function.Name, err)
@@ -697,15 +688,35 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 	}
 }
 
-// turnReadOnlyLookup classifies a tool-call name against the per-call
-// turnReadOnly map built in the loop above. It tries the name as-is and
-// in its bare form (mirroring outcomeWarning's isReadOnly), so the
-// per-call ToolErrorDisplay read-only decision is correct for every name
-// form that reaches the lookup: the namespaced registry form
-// ("builtin__web_search", "mcp__server__tool") and the bare form the LLM
-// was actually advertised ("web_search", "tool").
+// buildReadOnlyIndex gives exact names priority and only adds unambiguous bare aliases.
+// Duplicate exact names are read-only only when every declaration says so.
+func buildReadOnlyIndex(tools []Tool) map[string]bool {
+	exact := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		if prior, ok := exact[tool.Name]; ok {
+			exact[tool.Name] = prior && tool.ReadOnly
+		} else {
+			exact[tool.Name] = tool.ReadOnly
+		}
+	}
+	aliases := make(map[string][]string, len(exact))
+	for name := range exact {
+		bare := bareToolName(name)
+		if bare != name && !strings.HasPrefix(bare, "builtin__") && !strings.HasPrefix(bare, "mcp__") {
+			aliases[bare] = append(aliases[bare], name)
+		}
+	}
+	for bare, owners := range aliases {
+		if _, exists := exact[bare]; !exists && len(owners) == 1 {
+			exact[bare] = exact[owners[0]]
+		}
+	}
+	return exact
+}
+
+// turnReadOnlyLookup defaults unknown and ambiguous identities to mutating.
 func turnReadOnlyLookup(set map[string]bool, name string) bool {
-	return set[name] || set[bareToolName(name)]
+	return set[name]
 }
 
 // outcomeWarning makes no claim that a failure had no effects, and never
@@ -715,15 +726,9 @@ func turnReadOnlyLookup(set map[string]bool, name string) bool {
 // reported without the "changes may have occurred" warning. Tools absent
 // from the registry stay conservatively treated as potentially mutating.
 func outcomeWarning(calls []ToolResult, registry []Tool) string {
-	readOnly := make(map[string]bool, len(registry)*2)
-	for _, tool := range registry {
-		if tool.ReadOnly {
-			readOnly[tool.Name] = true
-			readOnly[bareToolName(tool.Name)] = true
-		}
-	}
+	readOnly := buildReadOnlyIndex(registry)
 	isReadOnly := func(name string) bool {
-		return readOnly[name] || readOnly[bareToolName(name)]
+		return turnReadOnlyLookup(readOnly, name)
 	}
 
 	var success bool
