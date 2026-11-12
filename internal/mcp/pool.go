@@ -747,10 +747,8 @@ type ToolInfo struct {
 	ServerName  string
 	ScanTarget  string // URL or binary path for security scanning
 	// ReadOnly is true when the MCP server declares the tool with a
-	// readOnlyHint annotation (it performs no external state mutation).
-	// An absent hint stays false: consumers then keep the conservative
-	// "changes may have occurred" treatment, so this field can only make
-	// failure display more precise, never less truthful.
+	// readOnlyHint annotation. A server-provided hint is not proof of the
+	// tool's effects. An absent hint stays false.
 	ReadOnly bool
 }
 

@@ -123,7 +123,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 			setup: func(deps *ToolLoopDeps, turn *Turn) {
 				// Simulates a rate-limited search backend: the tool is
 				// declared ReadOnly in the turn registry, so its failure
-				// must not claim that changes may have occurred.
+				// must describe that declaration without asserting effects.
 				// Builtin handler that fails
 				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
 					return "", errors.New("search backend rate-limited")
@@ -151,7 +151,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 					}
 				}
 			},
-			wantOutputContains:    "The tool reported a failure. No changes were made.",
+			wantOutputContains:    "A tool marked read-only reported a failure; its effects are not verified.",
 			wantOutputNotContains: "changes may",
 		},
 		{

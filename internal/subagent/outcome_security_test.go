@@ -31,7 +31,7 @@ func TestSubagentToolErrorDisplay(t *testing.T) {
 		want     string
 	}{
 		{"builtin_generic", "builtin__operation", false, "", agentcore.ToolErrorDisplayChangesMayHaveOccurred},
-		{"builtin_read_only", "builtin__operation", true, "", agentcore.ToolErrorDisplayNoChanges},
+		{"builtin_read_only", "builtin__operation", true, "", agentcore.ToolErrorDisplayReadOnly},
 		{"builtin_web_search_marker", "builtin__web_search", false, agentcore.WebSearchMarkerRateLimited, agentcore.WebSearchMarkerRateLimited},
 		{"builtin_web_search_unsafe_result", "builtin__web_search", false, "searxng: HTTP 500 from 10.0.0.7", agentcore.ToolErrorDisplayChangesMayHaveOccurred},
 	} {

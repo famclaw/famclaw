@@ -21,7 +21,7 @@ func TestOutcomeWarning_BothFailureCategories(t *testing.T) {
 	}
 	s := strings.ToLower(outcomeWarning(calls, registry))
 	const mutNote = "some changes may still have occurred"
-	const roNote = "no changes were made"
+	const roNote = "marked read-only"
 	if iMut, iRO := strings.Index(s, mutNote), strings.Index(s, roNote); iMut < 0 || iRO < 0 {
 		t.Fatalf("warning must contain both the mutation note (%q) and the read-only note (%q), got: %q", mutNote, roNote, s)
 	}
@@ -33,7 +33,7 @@ func TestOutcomeWarning_BothFailureCategories(t *testing.T) {
 	calls = append([]ToolResult{{ToolName: "builtin__web_fetch", Disposition: DispositionAttempted, Outcome: OutcomeSuccess}}, calls...)
 	s = strings.ToLower(outcomeWarning(calls, registry))
 	const mutNoteSuccess = "another reported a failure; some changes may have occurred"
-	const roNoteSuccess = "a read-only tool failed. no changes were made by the failed call"
+	const roNoteSuccess = "a tool marked read-only reported a failure"
 	if iMut, iRO := strings.Index(s, mutNoteSuccess), strings.Index(s, roNoteSuccess); iMut < 0 || iRO < 0 {
 		t.Errorf("with a success present the warning must still contain both notes, got: %q", s)
 	}
@@ -59,14 +59,14 @@ func TestOutcomeWarningStates(t *testing.T) {
 			"read-only failure",
 			[]ToolResult{{ToolName: "builtin__web_search", Disposition: DispositionAttempted, Outcome: OutcomeFailure}},
 			[]Tool{{Name: "builtin__web_search", ReadOnly: true}},
-			[]string{"failure", "no changes were made"},
+			[]string{"failure", "marked read-only"},
 			[]string{"changes may"},
 		},
 		{
 			"read-only failure via bare name",
 			[]ToolResult{{ToolName: "web_search", Disposition: DispositionAttempted, Outcome: OutcomeFailure}},
 			[]Tool{{Name: "builtin__web_search", ReadOnly: true}},
-			[]string{"failure", "no changes were made"},
+			[]string{"failure", "marked read-only"},
 			[]string{"changes may"},
 		},
 		{
@@ -90,7 +90,7 @@ func TestOutcomeWarningStates(t *testing.T) {
 				{ToolName: "builtin__file_write", Disposition: DispositionAttempted, Outcome: OutcomeFailure},
 			},
 			[]Tool{{Name: "builtin__web_search", ReadOnly: true}, {Name: "builtin__file_write"}},
-			[]string{"failure", "changes may still have occurred", "no changes were made"},
+			[]string{"failure", "changes may still have occurred", "marked read-only"},
 			nil,
 		},
 		{
@@ -100,7 +100,7 @@ func TestOutcomeWarningStates(t *testing.T) {
 				{ToolName: "builtin__web_search", Disposition: DispositionAttempted, Outcome: OutcomeUnknown},
 			},
 			[]Tool{{Name: "builtin__web_search", ReadOnly: true}, {Name: "builtin__file_write"}},
-			[]string{"changes may have occurred", "no changes were made"},
+			[]string{"changes may have occurred", "marked read-only"},
 			nil,
 		},
 		{
@@ -110,14 +110,14 @@ func TestOutcomeWarningStates(t *testing.T) {
 				{ToolName: "builtin__web_search", Disposition: DispositionAttempted, Outcome: OutcomeFailure},
 			},
 			[]Tool{{Name: "builtin__web_fetch", ReadOnly: true}, {Name: "builtin__web_search", ReadOnly: true}},
-			[]string{"succeeded", "no changes were made"},
+			[]string{"succeeded", "marked read-only"},
 			[]string{"changes may"},
 		},
 		{
 			"read-only unknown",
 			[]ToolResult{{ToolName: "builtin__web_search", Disposition: DispositionAttempted, Outcome: OutcomeUnknown}},
 			[]Tool{{Name: "builtin__web_search", ReadOnly: true}},
-			[]string{"uncertain", "no changes were made"},
+			[]string{"uncertain", "marked read-only"},
 			[]string{"changes may"},
 		},
 		{

@@ -48,8 +48,8 @@ type ExecutorDeps struct {
 	// Lets
 	// dispatchSubagentTool apply the same truthful failure display as the
 	// parent's tool loop (agentcore.ToolErrorDisplay): a ReadOnly tool
-	// failure reports "no changes were made", and a web_search failure
-	// renders its safe classification marker verbatim.
+	// failure reports the declaration without asserting the call's effects,
+	// and a web_search failure renders its safe classification marker verbatim.
 	BuiltinReadOnly map[string]bool
 }
 
@@ -96,9 +96,9 @@ func filterBuiltinDefs(defs []llm.ToolDef, allow, deny []string) ([]llm.ToolDef,
 // filter. Also returns the subset of allowed tools that are declared
 // ReadOnly (mcp.ToolInfo.ReadOnly, from the server's readOnlyHint
 // annotation) so dispatchSubagentTool can apply the same truthful failure
-// display as the main tool loop: a read-only MCP tool failure reports
-// "no changes were made" instead of the conservative "changes may have
-// occurred". Tools without the hint stay out of the map (conservative).
+// display as the main tool loop: a read-only MCP tool failure reports the
+// declaration without asserting effects. Tools without the hint stay out
+// of the map (conservative).
 func filterTools(infos []mcp.ToolInfo, allow, deny []string) ([]llm.ToolDef, map[string]bool, map[string]bool) {
 	allowed := make(map[string]bool)
 	readOnly := make(map[string]bool)

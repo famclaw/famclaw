@@ -39,7 +39,7 @@ func TestToolErrorDisplay(t *testing.T) {
 	}{
 		{"generic", "builtin__todo", false, "", ToolErrorDisplayChangesMayHaveOccurred},
 		{"generic_ignores_unsafe_result", "builtin__web_fetch", false, "searxng: HTTP 500: dial 10.0.0.7:8080", ToolErrorDisplayChangesMayHaveOccurred},
-		{"read_only", "builtin__todo", true, "", ToolErrorDisplayNoChanges},
+		{"read_only", "builtin__todo", true, "", ToolErrorDisplayReadOnly},
 		{"web_search_marker_rate_limited", "builtin__web_search", false, WebSearchMarkerRateLimited, WebSearchMarkerRateLimited},
 		{"web_search_marker_unavailable", "builtin__web_search", false, WebSearchMarkerUnavailable, WebSearchMarkerUnavailable},
 		{"web_search_marker_wins_over_read_only", "builtin__web_search", true, WebSearchMarkerTimeout, WebSearchMarkerTimeout},
@@ -62,12 +62,12 @@ func TestToolErrorDisplay(t *testing.T) {
 func TestIsSafeWebSearchMarker_RejectsUnknown(t *testing.T) {
 	unknown := []string{
 		"",
-		"web_search: empty query",                      // provider-internal failure, not a marker
-		"web_search: unavailable (extra detail)",       // marker plus diagnostic text
-		"web_search: Unavailable",                      // case variant
-		"web_search: rate limited: 429 from 10.0.0.7",  // marker plus host
-		"Tool reported an error. No changes were made.", // generic display itself
-		"web_search: provider server error (5xx)",      // sentinel Error() text, not a marker
+		"web_search: empty query",                // provider-internal failure, not a marker
+		"web_search: unavailable (extra detail)", // marker plus diagnostic text
+		"web_search: Unavailable",                // case variant
+		"web_search: rate limited: 429 from 10.0.0.7",   // marker plus host
+		"Tool reported an error. No changes were made.", // former generic display
+		"web_search: provider server error (5xx)",       // sentinel Error() text, not a marker
 	}
 	for _, s := range unknown {
 		if IsSafeWebSearchMarker(s) {

@@ -47,13 +47,14 @@ const (
 
 // Canonical display strings for tool failures. A failed tool call is
 // reported to the model with exactly one of these: the read-only variant
-// when the tool is declared ReadOnly in the registry (no state could have
-// changed), otherwise the generic variant (side effects are possible).
+// when the tool is marked ReadOnly in the registry, otherwise the generic
+// variant (side effects are possible). A read-only declaration is not proof
+// that a call had no effects.
 // builtin__web_search additionally may render its fixed classification
 // marker verbatim (see ToolErrorDisplay below).
 const (
-	// ToolErrorDisplayNoChanges: failure of a ReadOnly tool.
-	ToolErrorDisplayNoChanges = "Tool reported an error. No changes were made."
+	// ToolErrorDisplayReadOnly describes the declaration without asserting effects.
+	ToolErrorDisplayReadOnly = "Tool reported an error. It is marked read-only; its effects are not verified."
 	// ToolErrorDisplayChangesMayHaveOccurred: failure of a tool that may
 	// mutate state; the model is told to verify before retrying.
 	ToolErrorDisplayChangesMayHaveOccurred = "Tool reported an error; some changes may still have occurred. Verify before trying again."
@@ -61,7 +62,7 @@ const (
 
 // ToolErrorDisplay computes the truthful failure display for a tool call
 // that reported an error:
-//   - a tool declared ReadOnly is reported as having made no changes;
+//   - a tool marked ReadOnly is described without asserting its effects;
 //   - a builtin__web_search failure whose result is a safe classification
 //     marker (IsSafeWebSearchMarker) is rendered verbatim with that specific
 //     classification;
@@ -75,7 +76,7 @@ const (
 func ToolErrorDisplay(toolName string, readOnly bool, result string) string {
 	display := ToolErrorDisplayChangesMayHaveOccurred
 	if readOnly {
-		display = ToolErrorDisplayNoChanges
+		display = ToolErrorDisplayReadOnly
 	}
 	if toolName == "builtin__web_search" && IsSafeWebSearchMarker(result) {
 		display = result

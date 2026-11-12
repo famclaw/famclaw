@@ -141,11 +141,10 @@ func (m *bareNameMockChatter) Ping(context.Context) error { return nil }
 // to the LLM under their bare names (toolsToLLMDefs strips "builtin__"), so
 // local models commonly emit the bare form ("web_search") even though the
 // registry entry is namespaced ("builtin__web_search"). Both forms must
-// yield the truthful read-only failure display — no "changes may have
-// occurred" claim.
+// yield the declaration-aware failure display without asserting effects.
 func TestStageToolLoop_ReadOnlyBareNameEndToEnd(t *testing.T) {
-	const noChanges = "No changes were made."
-	const perCallNoChanges = ToolErrorDisplayNoChanges
+	const readOnlyNote = "marked read-only"
+	const perCallReadOnly = ToolErrorDisplayReadOnly
 
 	for _, form := range []struct {
 		name     string
@@ -156,14 +155,14 @@ func TestStageToolLoop_ReadOnlyBareNameEndToEnd(t *testing.T) {
 	} {
 		t.Run(form.name, func(t *testing.T) {
 			display, output := runReadOnlyFailureLoop(t, form.callName)
-			if display != perCallNoChanges {
-				t.Errorf("per-call display for %q = %q, want %q", form.callName, display, perCallNoChanges)
+			if display != perCallReadOnly {
+				t.Errorf("per-call display for %q = %q, want %q", form.callName, display, perCallReadOnly)
 			}
 			if strings.Contains(output, "changes may") {
-				t.Errorf("final output claims mutations may have occurred for read-only tool %q: %q", form.callName, output)
+				t.Errorf("final output uses the mutation warning for read-only tool %q: %q", form.callName, output)
 			}
-			if !strings.Contains(output, noChanges) {
-				t.Errorf("final output does not contain %q: %q", noChanges, output)
+			if !strings.Contains(output, readOnlyNote) {
+				t.Errorf("final output does not contain %q: %q", readOnlyNote, output)
 			}
 		})
 	}
@@ -177,7 +176,7 @@ func TestStageToolLoopWebSearchMarker(t *testing.T) {
 			name, result, want string
 		}{
 			{"safe", WebSearchMarkerRateLimited, WebSearchMarkerRateLimited},
-			{"unsafe", WebSearchMarkerRateLimited + ": 429 from 10.0.0.7", ToolErrorDisplayNoChanges},
+			{"unsafe", WebSearchMarkerRateLimited + ": 429 from 10.0.0.7", ToolErrorDisplayReadOnly},
 		} {
 			t.Run(name+"/"+tc.name, func(t *testing.T) {
 				var dispatched string

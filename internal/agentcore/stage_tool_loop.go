@@ -719,12 +719,10 @@ func turnReadOnlyLookup(set map[string]bool, name string) bool {
 	return set[name]
 }
 
-// outcomeWarning makes no claim that a failure had no effects, and never
-// treats an unexecuted policy or duplicate disposition as an execution.
-// The exception is tools declared ReadOnly in the registry: a read-only
-// call cannot mutate external state, so its failure or uncertainty is
-// reported without the "changes may have occurred" warning. Tools absent
-// from the registry stay conservatively treated as potentially mutating.
+// outcomeWarning makes no claim that a failed or uncertain call had no effects,
+// and never treats an unexecuted policy or duplicate disposition as execution.
+// ReadOnly identifies a declaration, not proof of the effects of a call.
+// Tools absent from the registry remain potentially mutating.
 func outcomeWarning(calls []ToolResult, registry []Tool) string {
 	readOnly := buildReadOnlyIndex(registry)
 	isReadOnly := func(name string) bool {
@@ -773,9 +771,9 @@ func outcomeWarning(calls []ToolResult, registry []Tool) string {
 		notes = append(notes, "The tool reported a failure; some changes may still have occurred. Verify before trying again.")
 	}
 	if readOnlyFailure && success {
-		notes = append(notes, "Some tool calls succeeded, but a read-only tool failed. No changes were made by the failed call.")
+		notes = append(notes, "Some tool calls succeeded. A tool marked read-only reported a failure; its effects are not verified.")
 	} else if readOnlyFailure {
-		notes = append(notes, "The tool reported a failure. No changes were made.")
+		notes = append(notes, "A tool marked read-only reported a failure; its effects are not verified.")
 	}
 	if success && (mutationUnknown || readOnlyUnknown) && !mutationFailure && !readOnlyFailure {
 		notes = append(notes, "Some tool calls succeeded.")
@@ -784,7 +782,7 @@ func outcomeWarning(calls []ToolResult, registry []Tool) string {
 		notes = append(notes, "A tool outcome is uncertain; some changes may have occurred. Verify before trying again.")
 	}
 	if readOnlyUnknown {
-		notes = append(notes, "A tool outcome is uncertain; no changes were made.")
+		notes = append(notes, "The outcome of a tool marked read-only is uncertain; its effects are not verified.")
 	}
 	if denied {
 		notes = append(notes, "A tool call was denied and was not run.")

@@ -11,10 +11,9 @@ type Tool struct {
 	ServerName  string         // which MCP server owns this tool (empty for builtins)
 	ScanTarget  string         // URL or path for security scanning (empty = skip)
 	Roles       []string       // allowed roles (empty = all roles)
-	// ReadOnly marks tools that perform no external state mutation.
-	// Outcome warnings for such tools never claim changes may have
-	// occurred. Unset tools are conservatively treated as potentially
-	// mutating.
+	// ReadOnly marks tools declared to perform no external state mutation.
+	// A declaration does not verify the effects of a call. Unset tools are
+	// conservatively treated as potentially mutating.
 	ReadOnly bool
 }
 

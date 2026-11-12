@@ -40,7 +40,7 @@ func TestDispatchSubagentToolPreservesExactMCPIdentity(t *testing.T) {
 			out, ok := dispatchSubagentTool(context.Background(), llm.ToolCall{Function: llm.ToolCallFunction{Name: "web_search"}}, deps, allowed, builtins, readonly, time.Now())
 			want := "changes may"
 			if rawReadOnly {
-				want = "No changes were made"
+				want = "marked read-only"
 			}
 			if !ok || calls != 1 || builtinCalls != 0 || !strings.Contains(out, want) {
 				t.Errorf("requested raw MCP web_search, got MCP calls=%d builtin calls=%d display=%q", calls, builtinCalls, out)

@@ -44,9 +44,9 @@ func TestSubagentReadOnlyBareNameLookup(t *testing.T) {
 		emitted string
 		want    string
 	}{
-		{"bare read-only web_search", "web_search", agentcore.ToolErrorDisplayNoChanges},
-		{"bare read-only web_fetch", "web_fetch", agentcore.ToolErrorDisplayNoChanges},
-		{"namespaced read-only web_search", "builtin__web_search", agentcore.ToolErrorDisplayNoChanges},
+		{"bare read-only web_search", "web_search", agentcore.ToolErrorDisplayReadOnly},
+		{"bare read-only web_fetch", "web_fetch", agentcore.ToolErrorDisplayReadOnly},
+		{"namespaced read-only web_search", "builtin__web_search", agentcore.ToolErrorDisplayReadOnly},
 		{"bare mutating tool stays conservative", "todo", agentcore.ToolErrorDisplayChangesMayHaveOccurred},
 		{"namespaced mutating tool stays conservative", "builtin__todo", agentcore.ToolErrorDisplayChangesMayHaveOccurred},
 	} {

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,7 +40,7 @@ func newMCPReadonlyFailurePool(t *testing.T) *mcp.Pool {
 }
 
 // TestSubagentMCPReadOnlyToolErrorDisplay: a failing read-only MCP tool
-// must get the specific "no changes were made" display, and a failing
+// must get the declaration-aware display, and a failing
 // mutating MCP tool must keep the conservative "changes may have
 // occurred" display. Regression: dispatchSubagentTool classified every
 // MCP tool through deps.BuiltinReadOnly, which only ever contains
@@ -55,7 +57,7 @@ func TestSubagentMCPReadOnlyToolErrorDisplay(t *testing.T) {
 		tool string
 		want string
 	}{
-		{"read-only MCP failure reports no changes", "readonly_lookup", agentcore.ToolErrorDisplayNoChanges},
+		{"read-only MCP failure reports its declaration", "readonly_lookup", agentcore.ToolErrorDisplayReadOnly},
 		{"mutating MCP failure stays conservative", "mutating_write", agentcore.ToolErrorDisplayChangesMayHaveOccurred},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,14 +77,14 @@ func TestSubagentMCPReadOnlyToolErrorDisplay(t *testing.T) {
 // TestSubagentExecuteMCPReadOnlyFailureDisplay proves the full Execute
 // wiring (pool -> ListToolInfos -> filterTools -> dispatch): the
 // tool-role message a subagent's LLM sees after a read-only MCP tool
-// failure must be the specific "no changes were made" display, and a
+// failure must report the read-only declaration, and a
 // mutating MCP tool failure must keep the conservative display.
 func TestSubagentExecuteMCPReadOnlyFailureDisplay(t *testing.T) {
 	for _, tc := range []struct {
 		tool string
 		want string
 	}{
-		{"readonly_lookup", agentcore.ToolErrorDisplayNoChanges},
+		{"readonly_lookup", agentcore.ToolErrorDisplayReadOnly},
 		{"mutating_write", agentcore.ToolErrorDisplayChangesMayHaveOccurred},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
@@ -145,5 +147,30 @@ func TestSubagentExecuteMCPReadOnlyFailureDisplay(t *testing.T) {
 				t.Errorf("tool-role display = %q, want %q", capturedToolContent, tc.want)
 			}
 		})
+	}
+}
+
+// A server-provided read-only hint does not prove that the handler had no effects.
+func TestSubagentMCPMisdeclaredReadOnlyFailure(t *testing.T) {
+	var changed atomic.Bool
+	srv := mcpgoserver.NewMCPServer("misdeclared", "1")
+	srv.AddTool(mcpgo.NewTool("operation", mcpgo.WithReadOnlyHintAnnotation(true)),
+		func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			changed.Store(true)
+			return mcpgo.NewToolResultError("failed"), nil
+		})
+	pool := mcp.NewPool("", false, false)
+	if err := pool.RegisterInProcessServer("misdeclared", srv); err != nil {
+		t.Fatal(err)
+	}
+	defer pool.StopAll()
+	_, allowed, readOnly := filterTools(pool.ListToolInfos(), []string{"operation"}, nil)
+	call := llm.ToolCall{Function: llm.ToolCallFunction{Name: "operation", Arguments: map[string]any{}}}
+	got, ok := dispatchSubagentTool(context.Background(), call, ExecutorDeps{Pool: pool}, allowed, nil, readOnly, time.Now())
+	if !ok || !changed.Load() {
+		t.Fatalf("handler did not run and change state: dispatched=%v changed=%v", ok, changed.Load())
+	}
+	if !strings.Contains(strings.ToLower(got), "marked read-only") || strings.Contains(strings.ToLower(got), "no changes") {
+		t.Errorf("misleading tool result: %q", got)
 	}
 }
