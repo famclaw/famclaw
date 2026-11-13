@@ -44,6 +44,8 @@ type Client struct {
 	mu              sync.Mutex
 	startGate       chan struct{}
 	inner           client.MCPClient
+	lifetime        context.Context
+	cancelLifetime  context.CancelFunc
 	tools           []mcp.Tool
 	closed          bool
 	ready           bool
@@ -226,7 +228,10 @@ func (c *Client) start(ctx context.Context, reopen bool) error {
 		inner.Close()
 		return errClientStopped
 	}
+	lifetime, cancelLifetime := context.WithCancel(context.Background())
 	c.inner = inner
+	c.lifetime = lifetime
+	c.cancelLifetime = cancelLifetime
 	c.mu.Unlock()
 
 	// Keep ownership until startup is ready. On an unexpected unwind, close
@@ -237,6 +242,20 @@ func (c *Client) start(ctx context.Context, reopen bool) error {
 			c.closeUnready(inner)
 		}
 	}()
+
+	// SSE keeps its stream on the Start context after initialization. Bind it
+	// to this transport's lifetime while allowing startup cancellation.
+	stopStartupCancel := context.AfterFunc(startCtx, cancelLifetime)
+	defer stopStartupCancel()
+	if c.transportType == "sse" {
+		starter, ok := inner.(interface{ Start(context.Context) error })
+		if !ok {
+			return fmt.Errorf("MCP transport %q does not support startup", c.name)
+		}
+		if err := starter.Start(lifetime); err != nil {
+			return fmt.Errorf("starting MCP transport %q: %w", c.name, err)
+		}
+	}
 
 	// Initialize handshake
 	initReq := mcp.InitializeRequest{}
@@ -250,6 +269,10 @@ func (c *Client) start(ctx context.Context, reopen bool) error {
 
 	// List available tools
 	toolsResult, err := inner.ListTools(startCtx, mcp.ListToolsRequest{})
+	stopStartupCancel()
+	if err := startCtx.Err(); err != nil {
+		return err
+	}
 	if err := c.completeStartup(inner, generation, toolsResult, err); err != nil {
 		return err
 	}
@@ -289,14 +312,29 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	}
 	c.mu.Lock()
 	inner := c.inner
+	lifetime := c.lifetime
 	c.mu.Unlock()
 	if inner == nil {
 		return nil, errClientStopped
 	}
+	callCtx := ctx
+	if lifetime != nil {
+		if err := lifetime.Err(); err != nil {
+			return nil, errClientStopped
+		}
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		stop := context.AfterFunc(lifetime, cancel)
+		defer stop()
+		if lifetime.Err() != nil {
+			return nil, errClientStopped
+		}
+	}
 	req := mcp.CallToolRequest{}
 	req.Params.Name = name
 	req.Params.Arguments = args
-	result, err := inner.CallTool(ctx, req)
+	result, err := inner.CallTool(callCtx, req)
 	if err != nil {
 		return nil, fmt.Errorf("calling tool %q on %q: %w", name, c.name, err)
 	}
@@ -317,6 +355,11 @@ func (c *Client) closeUnready(inner client.MCPClient) {
 	if owned {
 		c.inner = nil
 		c.ready = false
+		if c.cancelLifetime != nil {
+			c.cancelLifetime()
+		}
+		c.lifetime = nil
+		c.cancelLifetime = nil
 	}
 	c.mu.Unlock()
 	if owned {
@@ -329,7 +372,12 @@ func (c *Client) detach() client.MCPClient {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	inner := c.inner
+	if c.cancelLifetime != nil {
+		c.cancelLifetime()
+	}
 	c.inner = nil
+	c.lifetime = nil
+	c.cancelLifetime = nil
 	c.ready = false
 	c.closed = true
 	c.generation++
