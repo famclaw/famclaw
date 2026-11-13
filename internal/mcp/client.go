@@ -253,6 +253,9 @@ func (c *Client) start(ctx context.Context, reopen bool) error {
 			return fmt.Errorf("MCP transport %q does not support startup", c.name)
 		}
 		if err := starter.Start(lifetime); err != nil {
+			if ctxErr := startCtx.Err(); ctxErr != nil {
+				return fmt.Errorf("starting MCP transport %q: %w", c.name, ctxErr)
+			}
 			return fmt.Errorf("starting MCP transport %q: %w", c.name, err)
 		}
 	}

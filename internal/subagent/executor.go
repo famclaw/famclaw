@@ -50,6 +50,8 @@ type ExecutorDeps struct {
 	// parent's tool loop (agentcore.ToolErrorDisplay): a ReadOnly tool
 	// failure reports the declaration without asserting the call's effects,
 	// and a web_search failure renders its safe classification marker verbatim.
+	// Callers supply declared flags; nil maps and missing names are treated as
+	// unknown and use the conservative failure display.
 	BuiltinReadOnly map[string]bool
 }
 

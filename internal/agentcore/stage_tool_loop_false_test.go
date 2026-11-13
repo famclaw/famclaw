@@ -494,7 +494,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
-			name: "cap exhausted: model never stops, last text preserved with notes trailed (language-independent)",
+			name: "cap exhausted: model never stops, notes lead and last text is preserved (language-independent)",
 			setup: func(deps *ToolLoopDeps, turn *Turn) {
 				// Builtin handler that always fails
 				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
@@ -517,7 +517,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				// MaxIterations=1 the loop exits by exhausting the cap.
 				// The cap must not hide an observed failure, and must not
 				// discard the model's last intermediate text: it is preserved,
-				// with the failure and cap notes trailed after it.
+				// with the failure and cap notes preceding it.
 				var callCount int
 				deps.ClientFactory = func(*Turn) llm.Chatter {
 					return &mockChatter{
@@ -534,7 +534,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 					}
 				}
 			},
-			wantOutputExact: "Let me check...\n\nThe tool reported a failure; some changes may still have occurred. Verify before trying again. Tool iteration limit reached; remaining requested calls were not run.",
+			wantOutputExact: "The tool reported a failure; some changes may still have occurred. Verify before trying again. Tool iteration limit reached; remaining requested calls were not run.\n\nLet me check...",
 		},
 	}
 
@@ -687,6 +687,52 @@ func TestShouldPrependFailureNote(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := shouldPrependFailureNote(tc.toolCalls, tc.modelStopped); got != tc.want {
 				t.Errorf("shouldPrependFailureNote(_, %v) = %v, want %v", tc.modelStopped, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOutcomeCapDisclosurePrecedesIntermediateText(t *testing.T) {
+	const capNote = "Tool iteration limit reached; remaining requested calls were not run."
+	const warning = "The tool reported a failure; some changes may still have occurred. Verify before trying again."
+	for _, tc := range []struct {
+		name, text string
+		fail       bool
+	}{
+		{"failure success claim", "Everything is complete.", true},
+		{"failure non-English", "Tout est terminé.", true},
+		{"success non-English", "Tout est terminé.", false},
+		{"success empty text", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := llm.ToolCall{ID: "one", Function: llm.ToolCallFunction{Name: "builtin__operation", Arguments: map[string]any{}}}
+			count, calls := 0, 0
+			chatter := &mockChatter{responses: []llm.Message{{Content: tc.text, ToolCalls: []llm.ToolCall{call}}}, callCount: &count}
+			turn := &Turn{User: &config.UserConfig{Name: "tester", Role: "child"}, Tools: []Tool{{Name: "builtin__operation"}}}
+			turn.SetMeta("pending_tool_calls", []llm.ToolCall{call})
+			turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "go"}})
+			deps := ToolLoopDeps{MaxIterations: 1, ClientFactory: func(*Turn) llm.Chatter { return chatter }, BuiltinHandler: func(context.Context, string, map[string]any) (string, error) {
+				calls++
+				if tc.fail {
+					return "", errors.New("failed")
+				}
+				return "ok", nil
+			}}
+			if err := NewStageToolLoop(deps)(context.Background(), turn); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("handler calls=%d, want 1", calls)
+			}
+			want := capNote
+			if tc.fail {
+				want = warning + " " + want
+			}
+			if tc.text != "" {
+				want += "\n\n" + tc.text
+			}
+			if turn.Output != want {
+				t.Errorf("output = %q, want %q", turn.Output, want)
 			}
 		})
 	}

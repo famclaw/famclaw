@@ -56,6 +56,29 @@ func TestSubagentToolErrorDisplay(t *testing.T) {
 	}
 }
 
+func TestSubagentBuiltinReadOnlyMetadata(t *testing.T) {
+	const name = "builtin__web_search"
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]bool
+		want     string
+	}{
+		{"unknown", nil, agentcore.ToolErrorDisplayChangesMayHaveOccurred},
+		{"declared read-only", map[string]bool{name: true}, agentcore.ToolErrorDisplayReadOnly},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := ExecutorDeps{BuiltinReadOnly: tc.metadata, BuiltinHandler: func(context.Context, string, map[string]any) (string, error) {
+				return "", errors.New("failed")
+			}}
+			call := llm.ToolCall{Function: llm.ToolCallFunction{Name: name}}
+			got, ok := dispatchSubagentTool(context.Background(), call, deps, nil, map[string]bool{name: true}, nil, time.Now())
+			if !ok || got != tc.want {
+				t.Errorf("display = %q, dispatched = %t; want %q, true", got, ok, tc.want)
+			}
+		})
+	}
+}
+
 func TestOutcomeSubagentDispatch(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

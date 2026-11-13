@@ -677,14 +677,14 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		if len(pendingCalls) > 0 {
 			// The model's last text is an intermediate report, not a completed
 			// answer: it still requests calls the budget prevented us from
-			// executing. Preserve that text and trail it with the disclosure
-			// notes instead of replacing the whole output.
+			// executing. Lead with the disclosure notes and preserve the
+			// intermediate text rather than replacing it.
 			capNote := "Tool iteration limit reached; remaining requested calls were not run."
 			if warning != "" {
 				capNote = warning + " " + capNote
 			}
 			if turn.Output != "" {
-				turn.Output = turn.Output + "\n\n" + capNote
+				turn.Output = capNote + "\n\n" + turn.Output
 			} else {
 				turn.Output = capNote
 			}
