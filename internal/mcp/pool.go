@@ -52,6 +52,7 @@ type serverLifecycle struct {
 	closes  int
 }
 
+// begin reserves a start without retaining the lifecycle mutex on return.
 func (l *serverLifecycle) begin(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -156,6 +157,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 	}
 	changed := make([]string, 0)
 	var transports []closingTransport
+	// Release the managed-client mutex before acquiring the lifecycle mutex.
 	retire := func(mc *managedClient) {
 		mc.mu.Lock()
 		inner := mc.retire()

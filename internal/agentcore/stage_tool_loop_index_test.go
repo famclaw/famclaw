@@ -44,6 +44,75 @@ func TestToolLoopSnapshotsInvocationArguments(t *testing.T) {
 	}
 }
 
+func TestToolLoopSignedZeroRetry(t *testing.T) {
+	const name = "builtin__search"
+	for _, firstNegative := range []bool{false, true} {
+		for _, fails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("firstNegative=%t/fails=%t", firstNegative, fails), func(t *testing.T) {
+				failure := errors.New("failed")
+				decode := func(negative bool) map[string]any {
+					raw := `{"nested":[{"x":0.0}]}`
+					if negative {
+						raw = `{"nested":[{"x":-0.0}]}`
+					}
+					var args map[string]any
+					if err := json.Unmarshal([]byte(raw), &args); err != nil {
+						t.Fatal(err)
+					}
+					return args
+				}
+				sign := func(args map[string]any) bool {
+					return math.Signbit(args["nested"].([]any)[0].(map[string]any)["x"].(float64))
+				}
+				var signs []bool
+				stage := NewStageToolLoop(ToolLoopDeps{MaxIterations: 1, ClientFactory: func(*Turn) llm.Chatter { return &dedupChatter{} }, BuiltinHandler: func(_ context.Context, _ string, args map[string]any) (string, error) {
+					signs = append(signs, sign(args))
+					if fails {
+						return "", failure
+					}
+					return "ok", nil
+				}})
+				turn := &Turn{User: &config.UserConfig{Name: "tester", Role: "child"}, Tools: []Tool{{Name: name}}}
+				turn.SetMeta("pending_tool_calls", []llm.ToolCall{
+					{Function: llm.ToolCallFunction{Name: name, Arguments: decode(firstNegative)}},
+					{Function: llm.ToolCallFunction{Name: name, Arguments: decode(!firstNegative)}},
+				})
+				turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "search"}})
+				if err := stage(context.Background(), turn); err != nil {
+					t.Fatal(err)
+				}
+				if len(turn.ToolCalls) != 2 {
+					t.Fatalf("recorded calls = %d, want 2", len(turn.ToolCalls))
+				}
+				if got := sign(turn.ToolCalls[0].Args); got != firstNegative {
+					t.Errorf("first recorded sign = %t, want %t", got, firstNegative)
+				}
+				wantCalls := 2
+				if fails {
+					wantCalls = 1
+				}
+				if len(signs) != wantCalls {
+					t.Fatalf("handler calls = %d, want %d", len(signs), wantCalls)
+				}
+				if signs[0] != firstNegative || (!fails && signs[1] == firstNegative) {
+					t.Errorf("handler signs = %v", signs)
+				}
+				if got := errors.Is(turn.ToolCalls[1].Error, ErrToolAlreadyFailed); got != fails {
+					t.Errorf("retry suppressed = %t, want %t", got, fails)
+				}
+				first, second := turn.ToolCalls[0], turn.ToolCalls[1]
+				if fails {
+					if !errors.Is(first.Error, failure) || first.Outcome != OutcomeFailure || first.Disposition != DispositionAttempted || second.Disposition != DispositionSkipped || second.Outcome != OutcomeUnknown {
+						t.Errorf("failed call and retry: %+v, %+v", first, second)
+					}
+				} else if first.Error != nil || second.Error != nil || first.Outcome != OutcomeSuccess || second.Outcome != OutcomeSuccess || first.Disposition != DispositionAttempted || second.Disposition != DispositionAttempted {
+					t.Errorf("successful calls: %+v, %+v", first, second)
+				}
+			})
+		}
+	}
+}
+
 func TestUnsuccessfulCallIndex(t *testing.T) {
 	cycle := map[string]any{}
 	cycle["self"] = cycle
