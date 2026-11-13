@@ -98,6 +98,14 @@ func (c *Client) Start(ctx context.Context) error {
 
 // start serializes handshakes while allowing Stop to detach concurrently.
 func (c *Client) start(ctx context.Context, reopen bool) error {
+	c.mu.Lock()
+	if c.inner != nil && c.ready {
+		err := ctx.Err()
+		c.mu.Unlock()
+		return err
+	}
+	c.mu.Unlock()
+
 	startCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	c.mu.Lock()
