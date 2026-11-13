@@ -89,6 +89,21 @@ func (p *Pool) lifecycle(name string) *serverLifecycle {
 	return p.lifecycles[name]
 }
 
+type closingTransport struct {
+	inner interface{ Close() error }
+	life  *serverLifecycle
+}
+
+func closeRetiredTransport(t closingTransport) {
+	if t.inner.Close() != nil {
+		log.Print("[mcp-pool] transport close failed")
+	}
+	t.life.mu.Lock()
+	t.life.closes--
+	t.life.finishLocked()
+	t.life.mu.Unlock()
+}
+
 // UpdateFromConfig synchronizes the pool's MCP servers with the provided configuration.
 // It adds new servers, updates existing ones that have changed, and removes servers
 // that are no longer present in the configuration. It returns names that need a start.
@@ -140,6 +155,23 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		<-wait
 	}
 	changed := make([]string, 0)
+	var transports []closingTransport
+	retire := func(mc *managedClient) {
+		mc.mu.Lock()
+		inner := mc.retire()
+		mc.mu.Unlock()
+		if inner == nil {
+			return
+		}
+		life := p.lifecycle(mc.name)
+		life.mu.Lock()
+		if life.closing == nil {
+			life.closing = make(chan struct{})
+		}
+		life.closes++
+		life.mu.Unlock()
+		transports = append(transports, closingTransport{inner, life})
+	}
 	// Remove old tool aliases before mutating server clients; otherwise aliases
 	// can continue pointing at stopped clients after a configuration change.
 	for key, mc := range p.clients {
@@ -152,9 +184,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 	for name, newCfg := range servers {
 		if newCfg.Disabled {
 			if mc, exists := p.clients[name]; exists && mc.name == name {
-				mc.mu.Lock()
-				mc.retire()
-				mc.mu.Unlock()
+				retire(mc)
 				delete(p.clients, name)
 			}
 			continue
@@ -174,9 +204,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 				!mapEqual(mc.env, credentials[name]) {
 
 				// Stop the existing client without racing a tool call or start.
-				mc.mu.Lock()
-				mc.retire()
-				mc.mu.Unlock()
+				retire(mc)
 
 				// Create a new client with the updated config
 				c := NewTransportClient(name, newCfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
@@ -218,9 +246,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		if !exists || cfg.Disabled {
 			// Stop and remove the server
 			if mc != nil {
-				mc.mu.Lock()
-				mc.retire()
-				mc.mu.Unlock()
+				retire(mc)
 				delete(p.clients, name)
 			}
 		}
@@ -253,6 +279,9 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		lifecycle.mu.Unlock()
 	}
 	p.mu.Unlock()
+	for _, transport := range transports {
+		go closeRetiredTransport(transport)
+	}
 	return changed
 }
 
@@ -419,12 +448,12 @@ func (mc *managedClient) snapshotClient() *Client {
 
 // retire fences lookups captured before a config removal or replacement.
 // The caller holds mc.mu, so no active call remains.
-func (mc *managedClient) retire() {
+func (mc *managedClient) retire() interface{ Close() error } {
 	mc.stateMu.Lock()
 	mc.generation++
 	c := mc.client
 	mc.stateMu.Unlock()
-	c.Stop()
+	return c.detach()
 }
 
 // NewPool creates an empty MCP pool. sandboxRoot is the on-disk directory
@@ -694,13 +723,7 @@ func (p *Pool) callManagedWithLifecycle(ctx context.Context, name string, args m
 	}
 	lifecycle.mu.Unlock()
 	if inner != nil {
-		if inner.Close() != nil {
-			log.Print("[mcp-pool] transport close failed")
-		}
-		lifecycle.mu.Lock()
-		lifecycle.closes--
-		lifecycle.finishLocked()
-		lifecycle.mu.Unlock()
+		go closeRetiredTransport(closingTransport{inner, lifecycle})
 	}
 	mc.stateMu.Lock()
 	if mc.generation == generation {
@@ -809,10 +832,6 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 func (p *Pool) StopAll() {
 	p.mu.Lock()
 	seen := make(map[*managedClient]bool)
-	type closingTransport struct {
-		inner interface{ Close() error }
-		life  *serverLifecycle
-	}
 	var transports []closingTransport
 	var waits []<-chan struct{}
 	for _, mc := range p.clients {
@@ -847,17 +866,17 @@ func (p *Pool) StopAll() {
 		life.mu.Unlock()
 		waits = append(waits, done)
 	}
+	// Removed and disabled servers may still have a transport closing.
+	for _, life := range p.lifecycles {
+		life.mu.Lock()
+		if life.closing != nil {
+			waits = append(waits, life.closing)
+		}
+		life.mu.Unlock()
+	}
 	p.mu.Unlock()
 	for _, t := range transports {
-		go func(t closingTransport) {
-			if t.inner.Close() != nil {
-				log.Print("[mcp-pool] transport close failed")
-			}
-			t.life.mu.Lock()
-			t.life.closes--
-			t.life.finishLocked()
-			t.life.mu.Unlock()
-		}(t)
+		go closeRetiredTransport(t)
 	}
 	for _, done := range waits {
 		<-done

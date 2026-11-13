@@ -165,6 +165,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		lastModelText := turn.Output
 
 		failedCalls := newUnsuccessfulCallIndex()
+		var readOnlyCache readOnlyIndexCache
 
 		// Execute tool calls
 		for i := 0; i < deps.MaxIterations; i++ {
@@ -184,7 +185,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			}
 
 			// Resolve read-only status without conflating tools with the same bare name.
-			turnReadOnly := buildReadOnlyIndex(turn.Tools)
+			turnReadOnly := readOnlyCache.get(turn.Tools)
 
 			// pageChanged is reset per-batch: set when a mutating tool call
 			// produces a different URL than the last known one.
@@ -672,7 +673,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 		}
 		// Summarize attempted outcomes separately from policy and skipped
 		// dispositions, including turns that exhaust the iteration budget.
-		warning := outcomeWarning(turn.ToolCalls, turn.Tools)
+		warning := outcomeWarningWithIndex(turn.ToolCalls, readOnlyCache.get(turn.Tools))
 		if len(pendingCalls) > 0 {
 			// The model's last text is an intermediate report, not a completed
 			// answer: it still requests calls the budget prevented us from
@@ -697,6 +698,37 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 		return nil
 	}
+}
+
+type readOnlyIndexEntry struct {
+	name     string
+	readOnly bool
+}
+
+type readOnlyIndexCache struct {
+	metadata []readOnlyIndexEntry
+	index    map[string]bool
+}
+
+func (c *readOnlyIndexCache) get(tools []Tool) map[string]bool {
+	if c.index != nil && len(c.metadata) == len(tools) {
+		same := true
+		for i, tool := range tools {
+			if c.metadata[i].name != tool.Name || c.metadata[i].readOnly != tool.ReadOnly {
+				same = false
+				break
+			}
+		}
+		if same {
+			return c.index
+		}
+	}
+	c.metadata = make([]readOnlyIndexEntry, len(tools))
+	for i, tool := range tools {
+		c.metadata[i] = readOnlyIndexEntry{name: tool.Name, readOnly: tool.ReadOnly}
+	}
+	c.index = buildReadOnlyIndex(tools)
+	return c.index
 }
 
 // buildReadOnlyIndex gives exact names priority and only adds unambiguous bare aliases.
@@ -735,7 +767,10 @@ func turnReadOnlyLookup(set map[string]bool, name string) bool {
 // ReadOnly identifies a declaration, not proof of the effects of a call.
 // Tools absent from the registry remain potentially mutating.
 func outcomeWarning(calls []ToolResult, registry []Tool) string {
-	readOnly := buildReadOnlyIndex(registry)
+	return outcomeWarningWithIndex(calls, buildReadOnlyIndex(registry))
+}
+
+func outcomeWarningWithIndex(calls []ToolResult, readOnly map[string]bool) string {
 	isReadOnly := func(name string) bool {
 		return turnReadOnlyLookup(readOnly, name)
 	}
