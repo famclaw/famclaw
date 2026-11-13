@@ -217,7 +217,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					})
 					continue
 				}
-				log.Printf("[agentcore] tool_call: %s", tc.Function.Name)
+				log.Printf("[agentcore][%s] tool_call: %s", turn.User.Name, tc.Function.Name)
 				start := time.Now()
 
 				// Local LLMs occasionally emit the bare tool name
