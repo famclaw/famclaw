@@ -196,6 +196,11 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 			var batchImages []string
 
 			for _, tc := range pendingCalls {
+				// An omitted arguments field decodes to nil; explicit null and {}
+				// decode to an empty map. Treat these no-argument calls alike.
+				if tc.Function.Arguments == nil {
+					tc.Function.Arguments = llm.ToolCallArguments{}
+				}
 				// Abort remaining queued calls if an earlier mutating action
 				// changed the page — those refs are now stale.
 				if pageChanged && deps.AbortQueueOnPageChange {
