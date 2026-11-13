@@ -465,7 +465,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						}
 					}
 					if detector != nil {
-						detector.Push(tc.Function.Name, tc.Function.Arguments)
+						detector.Push(tc.Function.Name, invocationArgs)
 					}
 					continue
 				}
@@ -559,7 +559,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					ToolCallID: tc.ID,
 				})
 				if detector != nil {
-					detector.Push(tc.Function.Name, tc.Function.Arguments)
+					detector.Push(tc.Function.Name, invocationArgs)
 				}
 				if err == nil && deps.AbortQueueOnPageChange && isMutatingBrowserAction(tc.Function.Name) {
 					if u := extractFirstURL(toolText); u != "" {
