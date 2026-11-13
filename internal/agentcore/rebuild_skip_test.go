@@ -64,7 +64,7 @@ func TestRebuildHistorySkippedUnknownTool(t *testing.T) {
 	for _, message := range chatter.captured[1] {
 		history += message.Content
 	}
-	if strings.Count(history, "skip=skipped; not run") != 2 || strings.Contains(history, "err=skipped; not run") {
+	if strings.Count(history, "skip=tool unavailable; not run") != 2 || strings.Contains(history, "err=") {
 		t.Fatalf("rebuilt history: %q", history)
 	}
 }

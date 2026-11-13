@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"reflect"
@@ -247,6 +248,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				// must not be described as having failed either.
 				if prior, found := failedCalls.find(tc.Function.Name, tc.Function.Arguments, turn.ToolCalls); found {
 					reason := "this call was not successful earlier in this turn."
+					duplicateErr := ErrToolAlreadyFailed
 					switch prior.Disposition {
 					case DispositionDenied:
 						// A denial has two distinct causes: the tool is absent
@@ -262,6 +264,10 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						}
 					case DispositionSkipped:
 						reason = "this call was skipped earlier in this turn and was not run; try a different approach instead of repeating it."
+						if errors.Is(prior.Error, ErrUnknownTool) {
+							reason = "tool unavailable; not run; this call was skipped earlier. Try a different approach."
+							duplicateErr = fmt.Errorf("%w: %w", ErrToolAlreadyFailed, ErrUnknownTool)
+						}
 					case DispositionPending:
 						reason = "this call is pending approval earlier in this turn; try a different approach instead of repeating it."
 					case DispositionAttempted:
@@ -270,7 +276,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 							reason = "the outcome of this exact tool call is uncertain; verify before trying again"
 						}
 					}
-					injectToolError(&llmMsgs, turn, tc, ErrToolAlreadyFailed, reason, start)
+					injectToolError(&llmMsgs, turn, tc, duplicateErr, reason, start)
 					continue
 				}
 
@@ -472,7 +478,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName:    tc.Function.Name,
 						Args:        invocationArgs,
-						Error:       fmt.Errorf("unknown tool %q", tc.Function.Name),
+						Error:       fmt.Errorf("%w %q", ErrUnknownTool, tc.Function.Name),
 						Disposition: DispositionSkipped,
 						Duration:    time.Since(start),
 					})
@@ -806,7 +812,7 @@ func outcomeWarning(calls []ToolResult, registry []Tool) string {
 // pattern used across the policy gate and tool-dispatch paths.
 func injectToolError(llmMsgs *[]llm.Message, turn *Turn, tc llm.ToolCall, err error, reason string, start time.Time) {
 	disposition := DispositionDenied
-	if err == ErrToolAlreadyFailed {
+	if errors.Is(err, ErrToolAlreadyFailed) {
 		disposition = DispositionSkipped
 	}
 	*llmMsgs = append(*llmMsgs, llm.Message{
@@ -831,6 +837,9 @@ func injectToolError(llmMsgs *[]llm.Message, turn *Turn, tc llm.ToolCall, err er
 // ErrApprovalRequested / ErrApprovalPending, which gate execution via the
 // OPA tool_policy engine.
 var ErrToolAlreadyFailed = fmt.Errorf("tool call already failed this turn")
+
+// ErrUnknownTool identifies a call that could not be dispatched to a registered tool.
+var ErrUnknownTool = errors.New("unknown tool")
 
 // priorUnsuccessfulCall finds a matching prior error or attempted non-success.
 // Map comparison is order independent; successful attempts may run again.
@@ -945,6 +954,9 @@ func rebuildResultLine(tr ToolResult) string {
 			state = "approval pending; not run"
 		case DispositionSkipped:
 			state = "skipped; not run"
+			if errors.Is(tr.Error, ErrUnknownTool) {
+				state = "tool unavailable; not run"
+			}
 		case DispositionAttempted:
 			if tr.Outcome == OutcomeUnknown {
 				state = "outcome uncertain; effects may have occurred"
