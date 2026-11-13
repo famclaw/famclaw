@@ -250,18 +250,26 @@ func (c *Client) start(ctx context.Context, reopen bool) error {
 
 	// List available tools
 	toolsResult, err := inner.ListTools(startCtx, mcp.ListToolsRequest{})
+	if err := c.completeStartup(inner, generation, toolsResult, err); err != nil {
+		return err
+	}
+	ready = true
+	return nil
+}
+
+// completeStartup releases c.mu before the caller's startup cleanup can run.
+func (c *Client) completeStartup(inner client.MCPClient, generation uint64, toolsResult *mcp.ListToolsResult, listErr error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.inner != inner || c.closed || c.generation != generation {
 		return errClientStopped
 	}
-	if err != nil {
-		log.Printf("[mcp] tools/list failed for %q: %v", c.name, err)
+	if listErr != nil {
+		log.Printf("[mcp] tools/list failed for %q: %v", c.name, listErr)
 	} else {
 		c.tools = toolsResult.Tools
 	}
 	c.ready = true
-	ready = true
 	return nil
 }
 

@@ -2028,6 +2028,18 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 	return websearch.FormatHits(hits), nil
 }
 
+type safeSearchError struct {
+	marker string
+	cause  error
+}
+
+func (e *safeSearchError) Error() string { return e.marker }
+func (e *safeSearchError) Unwrap() error { return e.cause }
+
+func classifiedSearchError(marker string, cause error) (string, error) {
+	return marker, &safeSearchError{marker: marker, cause: cause}
+}
+
 // webSearchError preserves the diagnostic cause while returning a static,
 // neutral classification for the tool loop to render from its allowlist.
 // The marker constants are owned by agentcore (websearch_markers.go): the
@@ -2043,13 +2055,13 @@ func webSearchError(err error) (string, error) {
 	}
 	var hostErr *webfetch.HostNotAllowedError
 	if errors.As(err, &hostErr) {
-		return agentcore.WebSearchMarkerHostNotPermitted, err
+		return classifiedSearchError(agentcore.WebSearchMarkerHostNotPermitted, err)
 	}
 	// Provider-boundary configuration gaps (web-retrieval plan, Slice 1):
 	// unknown provider name or hosted provider without a key. Classified by
 	// the sentinel, so upstream rewording cannot break the mapping.
 	if errors.Is(err, websearch.ErrProviderNotConfigured) {
-		return agentcore.WebSearchMarkerProviderNotConfigured, err
+		return classifiedSearchError(agentcore.WebSearchMarkerProviderNotConfigured, err)
 	}
 	// Classified backend failures (web-retrieval plan, Slice 2): check the
 	// specific classes BEFORE the ErrUnavailable umbrella they all wrap —
@@ -2058,25 +2070,25 @@ func webSearchError(err error) (string, error) {
 	switch {
 	case errors.Is(err, websearch.ErrRateLimited):
 		log.Print("[agent] web_search backend error")
-		return agentcore.WebSearchMarkerRateLimited, err
+		return classifiedSearchError(agentcore.WebSearchMarkerRateLimited, err)
 	case errors.Is(err, websearch.ErrProvider5xx):
 		log.Print("[agent] web_search backend error")
-		return agentcore.WebSearchMarkerBackendError, err
+		return classifiedSearchError(agentcore.WebSearchMarkerBackendError, err)
 	case errors.Is(err, websearch.ErrTimeout):
 		log.Print("[agent] web_search backend error")
-		return agentcore.WebSearchMarkerTimeout, err
+		return classifiedSearchError(agentcore.WebSearchMarkerTimeout, err)
 	case errors.Is(err, websearch.ErrConnection):
 		log.Print("[agent] web_search backend error")
-		return agentcore.WebSearchMarkerBackendUnreachable, err
+		return classifiedSearchError(agentcore.WebSearchMarkerBackendUnreachable, err)
 	case errors.Is(err, websearch.ErrAuthConfig):
 		log.Print("[agent] web_search backend error")
-		return agentcore.WebSearchMarkerBackendAuthConfig, err
+		return classifiedSearchError(agentcore.WebSearchMarkerBackendAuthConfig, err)
 	case errors.Is(err, websearch.ErrMalformed):
 		log.Print("[agent] web_search backend error")
-		return agentcore.WebSearchMarkerInvalidResponse, err
+		return classifiedSearchError(agentcore.WebSearchMarkerInvalidResponse, err)
 	case errors.Is(err, websearch.ErrUnavailable):
 		log.Print("[agent] web_search backend error")
-		return agentcore.WebSearchMarkerUnavailable, err
+		return classifiedSearchError(agentcore.WebSearchMarkerUnavailable, err)
 	}
 	return "", err
 }
