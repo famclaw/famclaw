@@ -2098,7 +2098,14 @@ func (a *Agent) handleBrowser(ctx context.Context, toolName string, args map[str
 		HostCheck: a.hostValidator,
 	})
 	if err != nil {
-		log.Print("[agent] browser tool failed")
+		category := "failed"
+		switch {
+		case errors.Is(err, context.Canceled):
+			category = "cancelled"
+		case errors.Is(err, context.DeadlineExceeded):
+			category = "timeout"
+		}
+		log.Printf("[agent][%q] %s %s", a.user.Name, toolName, category)
 		return "", err
 	}
 	log.Printf("[agent][%s] %s ok bytes=%d", a.user.Name, toolName, len(out))
