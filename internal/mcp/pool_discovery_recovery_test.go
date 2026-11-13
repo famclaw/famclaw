@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -18,6 +20,20 @@ import (
 )
 
 func TestPoolDiscoverySurvivesAmbiguousCall(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		http500 bool
+	}{
+		{name: "lost response"},
+		{name: "http 500 with private cause", http500: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testPoolDiscoverySurvivesAmbiguousCall(t, tc.http500) })
+	}
+}
+
+func testPoolDiscoverySurvivesAmbiguousCall(t *testing.T, http500 bool) {
+	t.Helper()
+	const privateCanary = "private-transport-error-canary"
 	var mutations, reconciliations, otherCalls atomic.Int32
 	s := server.NewMCPServer("primary", "1", server.WithToolCapabilities(true))
 	s.AddTool(protocol.NewTool("mutate", protocol.WithDescription("write")), func(context.Context, protocol.CallToolRequest) (*protocol.CallToolResult, error) {
@@ -54,12 +70,16 @@ func TestPoolDiscoverySurvivesAmbiguousCall(t *testing.T) {
 		if req.Method == "tools/call" && req.Params.Name == "mutate" && dropped.CompareAndSwap(false, true) {
 			recorder := httptest.NewRecorder()
 			h.ServeHTTP(recorder, r) // execute the real handler, then lose its response
-			conn, _, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				t.Error(err)
-				return
+			if http500 {
+				http.Error(w, privateCanary, http.StatusInternalServerError)
+			} else {
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				_ = conn.Close()
 			}
-			_ = conn.Close()
 			return
 		}
 		h.ServeHTTP(w, r)
@@ -95,6 +115,23 @@ func TestPoolDiscoverySurvivesAmbiguousCall(t *testing.T) {
 	if err == nil || result != nil || mutations.Load() != 1 {
 		t.Errorf("ambiguous call: result=%v err=%v mutation calls=%d", result, err, mutations.Load())
 	}
+	var callErr *toolCallError
+	if http500 && (!errors.As(err, &callErr) || !strings.Contains(callErr.cause.Error(), privateCanary)) {
+		t.Fatalf("test transport did not include private canary in the underlying cause: %v", err)
+	}
+	assertPrimary := func(wantStatus, wantError string) {
+		t.Helper()
+		for _, state := range p.ServerStates() {
+			if state.Name == "primary" {
+				if state.Status != wantStatus || state.Error != wantError || strings.Contains(state.Error, privateCanary) {
+					t.Errorf("primary state = %+v, want status %q and safe error %q", state, wantStatus, wantError)
+				}
+				return
+			}
+		}
+		t.Error("primary state missing")
+	}
+	assertPrimary("failed", "MCP connection failed after tool call")
 	afterNames, afterInfos := snapshot()
 	if !reflect.DeepEqual(names, afterNames) {
 		t.Errorf("discovery lost after reset: before=%v after=%v", names, afterNames)
@@ -112,6 +149,7 @@ func TestPoolDiscoverySurvivesAmbiguousCall(t *testing.T) {
 	if err == nil || result != nil || mutations.Load() != 1 || reconciliations.Load() != 0 {
 		t.Fatalf("offline reconciliation: result=%v err=%v mutation calls=%d reconciliation calls=%d", result, err, mutations.Load(), reconciliations.Load())
 	}
+	assertPrimary("failed", "MCP connection failed after tool call")
 	// New metadata arrives on reconnect, but aliases are only rebuilt by
 	// StartAll; a miss must not become a permanent negative entry.
 	s.AddTool(protocol.NewTool("new_tool"), func(context.Context, protocol.CallToolRequest) (*protocol.CallToolResult, error) {
@@ -121,6 +159,13 @@ func TestPoolDiscoverySurvivesAmbiguousCall(t *testing.T) {
 	result, err = p.CallTool(context.Background(), "reconcile", map[string]any{"key": "x"})
 	if err != nil || result == nil || reconciliations.Load() != 1 || mutations.Load() != 1 {
 		t.Errorf("distinct reconnect: result=%v err=%v reconciliation calls=%d mutation calls=%d", result, err, reconciliations.Load(), mutations.Load())
+	}
+	assertPrimary("started", "")
+	p.clients["primary"].stateMu.Lock()
+	staleError := p.clients["primary"].lastError
+	p.clients["primary"].stateMu.Unlock()
+	if staleError != nil {
+		t.Errorf("successful reconnect retained stale error: %v", staleError)
 	}
 	if p.HasTool("new_tool") {
 		t.Fatal("lazy reconnect unexpectedly rebuilt pool aliases")

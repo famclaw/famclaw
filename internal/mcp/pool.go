@@ -668,6 +668,11 @@ func (p *Pool) callManagedWithLifecycle(ctx context.Context, name string, args m
 		if err := c.start(callCtx, false); err != nil {
 			return nil, fmt.Errorf("starting MCP server %q for tool %q: %w", mc.name, name, err)
 		}
+		mc.stateMu.Lock()
+		if mc.generation == generation && mc.client == c {
+			mc.lastError = nil
+		}
+		mc.stateMu.Unlock()
 	}
 	lifecycle.finishStart()
 	startPending = false
@@ -703,6 +708,7 @@ func (p *Pool) callManagedWithLifecycle(ctx context.Context, name string, args m
 		next.env = mc.env
 		next.tools = tools
 		mc.client = next
+		mc.lastError = errors.New("MCP connection failed after tool call")
 	}
 	mc.stateMu.Unlock()
 	return nil, &toolCallError{cause: err}
