@@ -68,7 +68,9 @@ func TestStartPanicClosesOwnedTransportAndAllowsRetry(t *testing.T) {
 	srv := httptest.NewServer(server.NewStreamableHTTPServer(backend))
 	defer srv.Close()
 	c := NewTransportClient("fixture", config.MCPServerConfig{Transport: "http", URL: srv.URL}, "", false, false)
-	hook := &panicListTransport{base: http.DefaultTransport, owner: c}
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	hook := &panicListTransport{base: originalTransport, owner: c}
 	http.DefaultTransport = hook
 	var recovered any
 	func() { defer func() { recovered = recover() }(); _ = c.Start(context.Background()) }()
@@ -222,7 +224,9 @@ func TestPoolCallStartupPanicUnwindsAdmission(t *testing.T) {
 	defer srv.Close()
 	cfg := config.MCPServerConfig{Transport: "http", URL: srv.URL}
 	c := NewTransportClient("fixture", cfg, "", false, false)
-	hook := &panicListTransport{base: http.DefaultTransport, owner: c}
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	hook := &panicListTransport{base: originalTransport, owner: c}
 	http.DefaultTransport = hook
 	p := NewPool("", false, false)
 	p.clients["fixture"] = &managedClient{name: "fixture", cfg: cfg, client: c}

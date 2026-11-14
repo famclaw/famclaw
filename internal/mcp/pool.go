@@ -430,8 +430,8 @@ func mapEqual(a, b map[string]string) bool {
 }
 
 // Locking: callers may hold mu while briefly taking lifecycle.mu or stateMu.
-// StopAll takes lifecycle.mu then stateMu but never mu. Lifecycle begin returns
-// unlocked; configuration retirement releases mu before taking lifecycle.mu.
+// Never hold lifecycle.mu while waiting for mu: begin returns unlocked, StopAll
+// never takes mu, and configuration retirement releases mu before lifecycle.mu.
 type managedClient struct {
 	mu         sync.Mutex
 	stateMu    sync.Mutex

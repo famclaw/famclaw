@@ -222,6 +222,8 @@ func (c *Client) start(ctx context.Context, reopen bool) error {
 	if err != nil {
 		return fmt.Errorf("creating MCP client %q (%s): %w", c.name, c.transportType, err)
 	}
+	// inner remains locally owned until publication under c.mu. On a failed
+	// generation check, Stop cannot have detached or closed this transport.
 	c.mu.Lock()
 	if c.closed || c.generation != generation {
 		c.mu.Unlock()
