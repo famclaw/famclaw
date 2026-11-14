@@ -103,6 +103,10 @@ func related(op fsnotify.Op) bool {
 }
 
 func (w *ConfigWatcher) loop() {
+	w.loopChannels(w.eventCh, w.errorCh)
+}
+
+func (w *ConfigWatcher) loopChannels(eventCh func() <-chan fsnotify.Event, errorCh func() <-chan error) {
 	defer close(w.done)
 	var timer *time.Timer
 	for {
@@ -112,7 +116,7 @@ func (w *ConfigWatcher) loop() {
 				timer.Stop()
 			}
 			return
-		case err, ok := <-w.errorCh():
+		case err, ok := <-errorCh():
 			if !ok {
 				return
 			}
@@ -120,7 +124,7 @@ func (w *ConfigWatcher) loop() {
 			case w.errors <- err:
 			default: // drop to avoid blocking on full buffer
 			}
-		case ev, ok := <-w.eventCh():
+		case ev, ok := <-eventCh():
 			if !ok {
 				return
 			}
