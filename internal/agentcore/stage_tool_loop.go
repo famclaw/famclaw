@@ -247,6 +247,8 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				// the original operation may already have taken effect. A call
 				// that never executed (denied by policy, pending approval)
 				// must not be described as having failed either.
+				// Each lookup indexes results appended since the previous call,
+				// including earlier denials and skips in this batch.
 				if prior, found := failedCalls.find(tc.Function.Name, tc.Function.Arguments, turn.ToolCalls); found {
 					reason := "this call was not successful earlier in this turn."
 					duplicateErr := ErrToolAlreadyFailed
