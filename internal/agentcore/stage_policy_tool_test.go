@@ -3,6 +3,8 @@ package agentcore
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -241,6 +243,34 @@ func TestStagePolicyToolCall_AllowedCallIsRetryable(t *testing.T) {
 	}
 	if _, found := priorUnsuccessfulCall(tool, args, turn.ToolCalls); found {
 		t.Errorf("policy-allowed result matched priorUnsuccessfulCall; a call failing later in the tool loop would be deduped instead of retried")
+	}
+}
+
+func TestStagePolicyToolCall_PreservesPriorAttempt(t *testing.T) {
+	for _, outcome := range []ExecutionOutcome{OutcomeSuccess, OutcomeFailure, OutcomeUnknown} {
+		t.Run(fmt.Sprint(outcome), func(t *testing.T) {
+			prior := ToolResult{ToolName: "builtin__web_fetch", Args: map[string]any{"url": "https://example.invalid"}, Output: "result", Outcome: outcome, Disposition: DispositionAttempted, Duration: time.Second}
+			turn := &Turn{
+				User:      &config.UserConfig{Name: "alice", Role: "child", AgeGroup: "age_8_12"},
+				ToolCalls: []ToolResult{prior, {ToolName: "builtin__file_write"}},
+			}
+			eval := &fakeToolEval{decisions: map[string]policy.ToolDecision{
+				"web_fetch":  {Allow: true},
+				"file_write": {Allow: false, Action: "block"},
+			}}
+			if err := NewStagePolicyToolCall(eval)(context.Background(), turn); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(turn.ToolCalls[0], prior) {
+				t.Errorf("prior attempt changed: got %+v, want %+v", turn.ToolCalls[0], prior)
+			}
+			if got := turn.ToolCalls[1]; !errors.Is(got.Error, ErrToolBlocked) || got.Disposition != DispositionDenied {
+				t.Errorf("new call did not undergo policy: error=%v disposition=%v", got.Error, got.Disposition)
+			}
+			if len(eval.calls) != 1 || eval.calls[0].ToolName != "file_write" {
+				t.Errorf("policy calls = %+v, want only the new call", eval.calls)
+			}
+		})
 	}
 }
 

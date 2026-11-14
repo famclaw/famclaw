@@ -37,6 +37,7 @@ type ToolPolicyEvaluator interface {
 // errors set DispositionDenied, approval requests set DispositionPending.
 // Allowed calls leave DispositionUnknown — the tool loop sets
 // DispositionAttempted only once the call is actually dispatched.
+// Previously attempted results are retained; policy applies before dispatch.
 // These results persist in turn.ToolCalls across iterations, so outcomeWarning
 // must not classify them as attempted failures ("changes may have occurred").
 //
@@ -50,7 +51,7 @@ func NewStagePolicyToolCall(eval ToolPolicyEvaluator) Stage {
 		}
 		for i := range turn.ToolCalls {
 			tc := &turn.ToolCalls[i]
-			if tc.Error != nil {
+			if tc.Error != nil || tc.Disposition == DispositionAttempted {
 				continue
 			}
 			input := policy.ToolCallInput{

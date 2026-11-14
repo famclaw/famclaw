@@ -536,6 +536,8 @@ func sandboxDecision(allowUnconfined, landlockOK, seccompOK bool) (proceed bool,
 // the syscall-level isolation the rest of the system relies on. The
 // probe below fails fast at boot rather than discovering the gap at the
 // first tool call.
+// Startup does not hold the pool lock during the handshake, so StopAll can
+// interrupt a server that is still starting.
 func (p *Pool) StartAll(ctx context.Context) error {
 	if p.Sandbox {
 		proceed, warn, err := sandboxDecision(p.AllowUnconfined, checkLandlockSupport(), checkSeccompSupport())
