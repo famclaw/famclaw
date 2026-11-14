@@ -25,6 +25,7 @@ type Pool struct {
 	clients     map[string]*managedClient // server name + tool name → client
 	mu          sync.RWMutex
 	reloadMu    sync.Mutex
+	lifecycles  map[string]*serverLifecycle
 	SandboxRoot string
 	// Sandbox == true means every stdio MCP server is **required** to be
 	// launched inside the sandbox-restricted child process (landlock +
@@ -42,12 +43,137 @@ type Pool struct {
 	AllowUnconfined bool
 }
 
+// serverLifecycle prevents a replacement start while a prior transport closes.
+// It is keyed by server name so removal and re-addition retain the fence.
+type serverLifecycle struct {
+	mu      sync.Mutex
+	closing chan struct{}
+	starts  int
+	closes  int
+}
+
+// begin reserves a start without retaining the lifecycle mutex on return.
+func (l *serverLifecycle) begin(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for {
+		l.mu.Lock()
+		if l.closing == nil {
+			l.starts++
+			l.mu.Unlock()
+			return nil
+		}
+		done := l.closing
+		l.mu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+func (l *serverLifecycle) finishStart() { l.mu.Lock(); l.starts--; l.finishLocked(); l.mu.Unlock() }
+func (l *serverLifecycle) finishLocked() {
+	if l.closing != nil && l.starts == 0 && l.closes == 0 {
+		close(l.closing)
+		l.closing = nil
+	}
+}
+func (p *Pool) lifecycle(name string) *serverLifecycle {
+	if p.lifecycles == nil {
+		p.lifecycles = make(map[string]*serverLifecycle)
+	}
+	if p.lifecycles[name] == nil {
+		p.lifecycles[name] = &serverLifecycle{}
+	}
+	return p.lifecycles[name]
+}
+
+type closingTransport struct {
+	inner interface{ Close() error }
+	life  *serverLifecycle
+}
+
+func closeRetiredTransport(t closingTransport) {
+	if t.inner.Close() != nil {
+		log.Print("[mcp-pool] transport close failed")
+	}
+	t.life.mu.Lock()
+	t.life.closes--
+	t.life.finishLocked()
+	t.life.mu.Unlock()
+}
+
 // UpdateFromConfig synchronizes the pool's MCP servers with the provided configuration.
 // It adds new servers, updates existing ones that have changed, and removes servers
 // that are no longer present in the configuration. It returns names that need a start.
 func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, credentials map[string]map[string]string) []string {
-	p.mu.Lock()
+	var reserved []*serverLifecycle
+	for {
+		reserved = nil
+		p.mu.Lock()
+		var wait <-chan struct{}
+		for name, lifecycle := range p.lifecycles {
+			old := p.clients[name]
+			if old != nil && old.name != name {
+				old = nil
+			}
+			cfg, exists := servers[name]
+			affected := old == nil && exists && !cfg.Disabled
+			if old != nil && old.name == name {
+				affected = !exists || cfg.Disabled || old.cfg.Transport != cfg.Transport || old.cfg.Command != cfg.Command || !sliceEqual(old.cfg.Args, cfg.Args) || old.cfg.URL != cfg.URL || !mapEqual(old.cfg.Headers, cfg.Headers) || !mapEqual(old.env, credentials[name])
+			}
+			if !affected {
+				continue
+			}
+			lifecycle.mu.Lock()
+			if lifecycle.closing != nil {
+				wait = lifecycle.closing
+			} else if lifecycle.starts > 0 {
+				lifecycle.closing = make(chan struct{})
+				wait = lifecycle.closing
+			} else {
+				lifecycle.closing = make(chan struct{})
+				lifecycle.closes++
+				reserved = append(reserved, lifecycle)
+			}
+			lifecycle.mu.Unlock()
+			if wait != nil {
+				break
+			}
+		}
+		if wait == nil {
+			break
+		}
+		for _, lifecycle := range reserved {
+			lifecycle.mu.Lock()
+			lifecycle.closes--
+			lifecycle.finishLocked()
+			lifecycle.mu.Unlock()
+		}
+		p.mu.Unlock()
+		<-wait
+	}
 	changed := make([]string, 0)
+	var transports []closingTransport
+	// Release the managed-client mutex before acquiring the lifecycle mutex.
+	retire := func(mc *managedClient) {
+		mc.mu.Lock()
+		inner := mc.retire()
+		mc.mu.Unlock()
+		if inner == nil {
+			return
+		}
+		life := p.lifecycle(mc.name)
+		life.mu.Lock()
+		if life.closing == nil {
+			life.closing = make(chan struct{})
+		}
+		life.closes++
+		life.mu.Unlock()
+		transports = append(transports, closingTransport{inner, life})
+	}
 	// Remove old tool aliases before mutating server clients; otherwise aliases
 	// can continue pointing at stopped clients after a configuration change.
 	for key, mc := range p.clients {
@@ -60,9 +186,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 	for name, newCfg := range servers {
 		if newCfg.Disabled {
 			if mc, exists := p.clients[name]; exists && mc.name == name {
-				mc.mu.Lock()
-				mc.client.Stop()
-				mc.mu.Unlock()
+				retire(mc)
 				delete(p.clients, name)
 			}
 			continue
@@ -82,9 +206,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 				!mapEqual(mc.env, credentials[name]) {
 
 				// Stop the existing client without racing a tool call or start.
-				mc.mu.Lock()
-				mc.client.Stop()
-				mc.mu.Unlock()
+				retire(mc)
 
 				// Create a new client with the updated config
 				c := NewTransportClient(name, newCfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
@@ -126,9 +248,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		if !exists || cfg.Disabled {
 			// Stop and remove the server
 			if mc != nil {
-				mc.mu.Lock()
-				mc.client.Stop()
-				mc.mu.Unlock()
+				retire(mc)
 				delete(p.clients, name)
 			}
 		}
@@ -141,7 +261,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		if mc.name != name {
 			continue
 		}
-		for _, tool := range mc.client.Tools() {
+		for _, tool := range mc.snapshotClient().Tools() {
 			toolAliases[tool.Name] = mc
 		}
 	}
@@ -154,7 +274,16 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		}
 		p.clients[toolName] = mc
 	}
+	for _, lifecycle := range reserved {
+		lifecycle.mu.Lock()
+		lifecycle.closes--
+		lifecycle.finishLocked()
+		lifecycle.mu.Unlock()
+	}
 	p.mu.Unlock()
+	for _, transport := range transports {
+		go closeRetiredTransport(transport)
+	}
 	return changed
 }
 
@@ -167,25 +296,49 @@ func (p *Pool) ReloadConfig(cfg *config.Config) map[string]error {
 	var wg sync.WaitGroup
 	var resultMu sync.Mutex
 	for _, name := range changed {
-		p.mu.RLock()
+		p.mu.Lock()
 		mc := p.clients[name]
-		p.mu.RUnlock()
 		if mc == nil {
+			p.mu.Unlock()
 			continue
 		}
+		mc.stateMu.Lock()
+		generation := mc.generation
+		mc.stateMu.Unlock()
+		lifecycle := p.lifecycle(name)
+		p.mu.Unlock()
 		wg.Add(1)
-		go func(name string, mc *managedClient) {
+		go func(name string, mc *managedClient, generation uint64, lifecycle *serverLifecycle) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			mc.mu.Lock()
-			err := mc.client.Start(ctx)
-			mc.lastError = err
-			mc.mu.Unlock()
+			err := lifecycle.begin(ctx)
+			if err == nil {
+				func() {
+					defer lifecycle.finishStart()
+					mc.mu.Lock()
+					defer mc.mu.Unlock()
+					mc.stateMu.Lock()
+					c := mc.client
+					valid := mc.generation == generation
+					mc.stateMu.Unlock()
+					if valid {
+						err = c.start(ctx, false)
+					} else {
+						err = errClientStopped
+					}
+					mc.stateMu.Lock()
+					if mc.generation == generation {
+						mc.lastError = err
+					}
+					mc.stateMu.Unlock()
+				}()
+			}
+
 			resultMu.Lock()
 			results[name] = err
 			resultMu.Unlock()
-		}(name, mc)
+		}(name, mc, generation, lifecycle)
 	}
 	wg.Wait()
 	p.refreshToolAliases()
@@ -201,9 +354,7 @@ func (p *Pool) refreshToolAliases() {
 		if mc == nil || mc.name != name {
 			continue
 		}
-		mc.mu.Lock()
-		tools := mc.client.Tools()
-		mc.mu.Unlock()
+		tools := mc.snapshotClient().Tools()
 		for _, tool := range tools {
 			aliases[tool.Name] = mc
 		}
@@ -234,15 +385,18 @@ func (p *Pool) ServerStates() []ServerState {
 		if mc == nil || mc.name != name {
 			continue
 		}
-		mc.mu.Lock()
-		state := ServerState{Name: name, Transport: mc.client.transportType, Status: "pending", Tools: len(mc.client.Tools())}
-		if mc.client.inner != nil {
+		c := mc.snapshotClient()
+		state := ServerState{Name: name, Transport: c.transportType, Status: "pending", Tools: len(c.Tools())}
+		if c.started() {
 			state.Status = "started"
-		} else if mc.lastError != nil {
-			state.Status = "failed"
-			state.Error = mc.lastError.Error()
+		} else {
+			mc.stateMu.Lock()
+			if mc.lastError != nil {
+				state.Status = "failed"
+				state.Error = mc.lastError.Error()
+			}
+			mc.stateMu.Unlock()
 		}
-		mc.mu.Unlock()
 		states = append(states, state)
 	}
 	sort.Slice(states, func(i, j int) bool { return states[i].Name < states[j].Name })
@@ -275,14 +429,36 @@ func mapEqual(a, b map[string]string) bool {
 	return true
 }
 
+// Locking: callers may hold mu while briefly taking lifecycle.mu or stateMu.
+// Never hold lifecycle.mu while waiting for mu: begin returns unlocked, StopAll
+// never takes mu, and configuration retirement releases mu before lifecycle.mu.
 type managedClient struct {
 	mu         sync.Mutex
+	stateMu    sync.Mutex
+	generation uint64
+	cancel     context.CancelFunc
 	lastError  error
 	client     *Client
 	name       string
 	cfg        config.MCPServerConfig
 	env        map[string]string
-	restartCnt int
+}
+
+// snapshotClient synchronizes the client pointer with replacement and shutdown.
+func (mc *managedClient) snapshotClient() *Client {
+	mc.stateMu.Lock()
+	defer mc.stateMu.Unlock()
+	return mc.client
+}
+
+// retire fences lookups captured before a config removal or replacement.
+// The caller holds mc.mu, so no active call remains.
+func (mc *managedClient) retire() interface{ Close() error } {
+	mc.stateMu.Lock()
+	mc.generation++
+	c := mc.client
+	mc.stateMu.Unlock()
+	return c.detach()
 }
 
 // NewPool creates an empty MCP pool. sandboxRoot is the on-disk directory
@@ -361,9 +537,6 @@ func sandboxDecision(allowUnconfined, landlockOK, seccompOK bool) (proceed bool,
 // probe below fails fast at boot rather than discovering the gap at the
 // first tool call.
 func (p *Pool) StartAll(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.Sandbox {
 		proceed, warn, err := sandboxDecision(p.AllowUnconfined, checkLandlockSupport(), checkSeccompSupport())
 		if err != nil {
@@ -377,74 +550,196 @@ func (p *Pool) StartAll(ctx context.Context) error {
 		}
 	}
 
-	toolAliases := make(map[string]*managedClient)
-	for name, mc := range p.clients {
-		if err := mc.client.Start(ctx); err != nil {
-			mc.lastError = err
-			log.Printf("[mcp-pool] failed to start %s: %v", name, err)
-			continue
-		}
-		mc.lastError = nil
-		for _, tool := range mc.client.Tools() {
-			toolAliases[tool.Name] = mc
-		}
+	type startEntry struct {
+		name       string
+		mc         *managedClient
+		client     *Client
+		generation uint64
+		lifecycle  *serverLifecycle
 	}
-	// Add tool-name aliases, but never overwrite a server entry
-	for toolName, mc := range toolAliases {
-		if _, isServer := p.clients[toolName]; isServer {
-			log.Printf("[mcp-pool] tool %q shadows server name — skipping alias", toolName)
+	p.mu.Lock()
+	var entries []startEntry
+	for name, mc := range p.clients {
+		if mc == nil || name != mc.name {
 			continue
 		}
-		p.clients[toolName] = mc
+		mc.stateMu.Lock()
+		entries = append(entries, startEntry{name, mc, mc.client, mc.generation, p.lifecycle(name)})
+		mc.stateMu.Unlock()
+	}
+	p.mu.Unlock()
+
+	// Do not hold the pool lock across startup: StopAll must be able to
+	// detach a transport whose initialize handshake is still in progress.
+	type aliasEntry struct {
+		entry startEntry
+		name  string
+	}
+	var aliases []aliasEntry
+	var aliasesMu sync.Mutex
+	var starts sync.WaitGroup
+	for _, entry := range entries {
+		starts.Add(1)
+		go func(entry startEntry) {
+			defer starts.Done()
+			err := entry.lifecycle.begin(ctx)
+			if err == nil {
+				func() {
+					defer entry.lifecycle.finishStart()
+					entry.mc.stateMu.Lock()
+					current := entry.mc.client == entry.client && entry.mc.generation == entry.generation
+					entry.mc.stateMu.Unlock()
+					if current {
+						err = entry.client.start(ctx, false)
+					} else {
+						err = errClientStopped
+					}
+				}()
+			}
+			entry.mc.stateMu.Lock()
+			current := entry.mc.client == entry.client && entry.mc.generation == entry.generation
+			if current {
+				entry.mc.lastError = err
+			}
+			entry.mc.stateMu.Unlock()
+			if err == nil && current {
+				aliasesMu.Lock()
+				for _, tool := range entry.client.Tools() {
+					aliases = append(aliases, aliasEntry{entry, tool.Name})
+				}
+				aliasesMu.Unlock()
+			}
+			if err != nil {
+				log.Printf("[mcp-pool] failed to start %s: %v", entry.name, err)
+			}
+		}(entry)
+	}
+	starts.Wait()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, alias := range aliases {
+		entry := alias.entry
+		if p.clients[entry.name] != entry.mc {
+			continue
+		}
+		entry.mc.stateMu.Lock()
+		current := entry.mc.client == entry.client && entry.mc.generation == entry.generation
+		entry.mc.stateMu.Unlock()
+		if !current {
+			continue
+		}
+		if _, exists := p.clients[alias.name]; exists {
+			log.Printf("[mcp-pool] tool %q shadows server name — skipping alias", alias.name)
+			continue
+		}
+		p.clients[alias.name] = entry.mc
 	}
 	return nil
 }
 
-// CallTool calls a tool by name, lazily starting the server if needed.
-// Restarts failed servers once. Resets restart count on success.
-func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {
-	p.mu.RLock()
-	mc, ok := p.clients[name]
-	p.mu.RUnlock()
+// toolCallError retains the private cause for errors.Is/As without formatting it
+// into messages or logs. A transport error does not prove whether effects occurred.
+type toolCallError struct{ cause error }
 
+func (e *toolCallError) Error() string { return "MCP tool outcome uncertain" }
+func (e *toolCallError) Unwrap() error { return e.cause }
+
+// CallTool calls a tool by name, lazily starting the server if needed.
+// A failed call is never reissued: its effect may already have occurred.
+func (p *Pool) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {
+	p.mu.Lock()
+	mc, ok := p.clients[name]
 	if !ok {
+		p.mu.Unlock()
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+	mc.stateMu.Lock()
+	generation := mc.generation
+	mc.stateMu.Unlock()
+	lifecycle := p.lifecycle(mc.name)
+	p.mu.Unlock()
+	return p.callManagedWithLifecycle(ctx, name, args, mc, generation, lifecycle)
+}
 
+// callManaged retains the testable generation-fenced entry point.
+func (p *Pool) callManaged(ctx context.Context, name string, args map[string]any, mc *managedClient, generation uint64) (*mcp.CallToolResult, error) {
+	p.mu.Lock()
+	lifecycle := p.lifecycle(mc.name)
+	p.mu.Unlock()
+	return p.callManagedWithLifecycle(ctx, name, args, mc, generation, lifecycle)
+}
+
+// callManaged rejects work that resolved a client before a stop or replacement.
+func (p *Pool) callManagedWithLifecycle(ctx context.Context, name string, args map[string]any, mc *managedClient, generation uint64, lifecycle *serverLifecycle) (*mcp.CallToolResult, error) {
+	if err := lifecycle.begin(ctx); err != nil {
+		return nil, err
+	}
+	startPending := true
+	defer func() {
+		if startPending {
+			lifecycle.finishStart()
+		}
+	}()
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	mc.stateMu.Lock()
+	if mc.generation != generation {
+		mc.stateMu.Unlock()
+		return nil, errClientStopped
+	}
+	c := mc.client
+	mc.cancel = cancel
+	mc.stateMu.Unlock()
+	defer func() {
+		mc.stateMu.Lock()
+		mc.cancel = nil
+		mc.stateMu.Unlock()
+	}()
 
-	// Lazy start: if server failed at boot or hasn't started yet
-	if mc.client.inner == nil {
-		if err := mc.client.Start(ctx); err != nil {
+	if !c.started() {
+		if err := c.start(callCtx, false); err != nil {
 			return nil, fmt.Errorf("starting MCP server %q for tool %q: %w", mc.name, name, err)
 		}
+		mc.stateMu.Lock()
+		if mc.generation == generation && mc.client == c {
+			mc.lastError = nil
+		}
+		mc.stateMu.Unlock()
 	}
-
-	result, err := mc.client.CallTool(ctx, name, args)
+	lifecycle.finishStart()
+	startPending = false
+	result, err := c.CallTool(callCtx, name, args)
 	if err == nil {
-		mc.restartCnt = 0
 		return result, nil
 	}
 
-	// Auto-restart once on failure
-	if mc.restartCnt < 1 {
-		log.Printf("[mcp-pool] tool %q failed, restarting %s: %v", name, mc.name, err)
-		mc.restartCnt++
-		mc.client.Stop()
-		mc.client = NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
-		mc.client.env = mc.env
-		if startErr := mc.client.Start(ctx); startErr != nil {
-			return nil, fmt.Errorf("restarting MCP server %q for tool %q: %w", mc.name, name, startErr)
+	// Never reissue a call whose effects are unknown. Preserve the discovery
+	// snapshot for a later, distinct call and retain the original error cause.
+	tools := c.Tools()
+	lifecycle.mu.Lock()
+	inner := c.detach()
+	if inner != nil {
+		if lifecycle.closing == nil {
+			lifecycle.closing = make(chan struct{})
 		}
-		result, err = mc.client.CallTool(ctx, name, args)
-		if err == nil {
-			mc.restartCnt = 0
-		}
-		return result, err
+		lifecycle.closes++
 	}
-
-	return nil, err
+	lifecycle.mu.Unlock()
+	if inner != nil {
+		go closeRetiredTransport(closingTransport{inner, lifecycle})
+	}
+	mc.stateMu.Lock()
+	if mc.generation == generation {
+		next := NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
+		next.env = mc.env
+		next.tools = tools
+		mc.client = next
+		mc.lastError = errors.New("MCP connection failed after tool call")
+	}
+	mc.stateMu.Unlock()
+	return nil, &toolCallError{cause: err}
 }
 
 // HasTool returns true if the pool has a handler for the given tool.
@@ -455,7 +750,7 @@ func (p *Pool) HasTool(name string) bool {
 	return ok
 }
 
-// ListTools returns all available tool names.
+// ListTools returns tool names with registered routes, not a reachability check.
 func (p *Pool) ListTools() []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -463,10 +758,12 @@ func (p *Pool) ListTools() []string {
 	seen := make(map[string]bool)
 	var names []string
 	for _, mc := range p.clients {
-		mc.mu.Lock()
-		tools := mc.client.Tools()
-		mc.mu.Unlock()
+		tools := mc.snapshotClient().Tools()
 		for _, tool := range tools {
+			// StartAll uses the raw tool.Name from Tools() as the alias key, subject to collisions.
+			if p.clients[tool.Name] != mc {
+				continue
+			}
 			if !seen[tool.Name] {
 				seen[tool.Name] = true
 				names = append(names, tool.Name)
@@ -483,9 +780,13 @@ type ToolInfo struct {
 	InputSchema map[string]any
 	ServerName  string
 	ScanTarget  string // URL or binary path for security scanning
+	// ReadOnly is true when the MCP server declares the tool with a
+	// readOnlyHint annotation. A server-provided hint is not proof of the
+	// tool's effects. An absent hint stays false.
+	ReadOnly bool
 }
 
-// ListToolInfos returns tool metadata for all available tools.
+// ListToolInfos returns metadata for routed tools; a route does not imply reachability.
 func (p *Pool) ListToolInfos() []ToolInfo {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -493,12 +794,14 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 	seen := make(map[string]bool)
 	var infos []ToolInfo
 	for _, mc := range p.clients {
-		mc.mu.Lock()
-		tools := mc.client.Tools()
+		tools := mc.snapshotClient().Tools()
 		cfg := mc.cfg
 		name := mc.name
-		mc.mu.Unlock()
 		for _, tool := range tools {
+			// StartAll uses the raw tool.Name from Tools() as the alias key, subject to collisions.
+			if p.clients[tool.Name] != mc {
+				continue
+			}
 			if seen[tool.Name] {
 				continue
 			}
@@ -522,23 +825,66 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 				InputSchema: schema,
 				ServerName:  name,
 				ScanTarget:  scanTarget,
+				ReadOnly:    tool.Annotations.ReadOnlyHint != nil && *tool.Annotations.ReadOnlyHint,
 			})
 		}
 	}
 	return infos
 }
 
-// StopAll terminates all MCP server connections.
+// StopAll detaches transports under the pool lock, then closes them without
+// blocking pool readers. A same-server replacement waits for prior closure.
 func (p *Pool) StopAll() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	stopped := make(map[*Client]bool)
+	seen := make(map[*managedClient]bool)
+	var transports []closingTransport
+	var waits []<-chan struct{}
 	for _, mc := range p.clients {
-		if !stopped[mc.client] {
-			mc.client.Stop()
-			stopped[mc.client] = true
+		if mc == nil || seen[mc] {
+			continue
 		}
+		seen[mc] = true
+		life := p.lifecycle(mc.name)
+		life.mu.Lock()
+		if life.closing == nil {
+			life.closing = make(chan struct{})
+		}
+		done := life.closing
+		mc.stateMu.Lock()
+		mc.generation++
+		if mc.cancel != nil {
+			mc.cancel()
+		}
+		old := mc.client
+		tools := old.Tools()
+		inner := old.detach()
+		next := NewTransportClient(mc.name, mc.cfg, p.SandboxRoot, p.Sandbox, p.AllowUnconfined)
+		next.env = mc.env
+		next.tools = tools
+		mc.client = next
+		mc.stateMu.Unlock()
+		if inner != nil {
+			life.closes++
+			transports = append(transports, closingTransport{inner, life})
+		}
+		life.finishLocked()
+		life.mu.Unlock()
+		waits = append(waits, done)
+	}
+	// Removed and disabled servers may still have a transport closing.
+	for _, life := range p.lifecycles {
+		life.mu.Lock()
+		if life.closing != nil {
+			waits = append(waits, life.closing)
+		}
+		life.mu.Unlock()
+	}
+	p.mu.Unlock()
+	for _, t := range transports {
+		go closeRetiredTransport(t)
+	}
+	for _, done := range waits {
+		<-done
 	}
 }
 

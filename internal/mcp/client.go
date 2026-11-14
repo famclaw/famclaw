@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"sync"
 
 	"time"
 
@@ -40,9 +41,15 @@ type Client struct {
 	// for platforms like macOS that lack landlock/seccomp, with a loud warning.
 	AllowUnconfined bool
 	env             map[string]string // per-skill credential env vars
+	mu              sync.Mutex
+	startGate       chan struct{}
 	inner           client.MCPClient
+	lifetime        context.Context
+	cancelLifetime  context.CancelFunc
 	tools           []mcp.Tool
 	closed          bool
+	ready           bool
+	generation      uint64
 }
 
 // checkLandlockSupport returns true if Landlock is supported on the current system
@@ -88,13 +95,54 @@ func NewTransportClient(name string, cfg config.MCPServerConfig, sandboxRoot str
 // Start connects to the MCP server and performs the initialize handshake.
 // For stdio: spawns the process. For HTTP/SSE: connects to the remote server.
 func (c *Client) Start(ctx context.Context) error {
-	if c.inner != nil {
-		return nil
-	}
+	return c.start(ctx, true)
+}
 
-	// Timeout for connection — remote servers may be slow or unreachable
+// start serializes handshakes while allowing Stop to detach concurrently.
+func (c *Client) start(ctx context.Context, reopen bool) error {
+	c.mu.Lock()
+	if c.inner != nil && c.ready {
+		err := ctx.Err()
+		c.mu.Unlock()
+		return err
+	}
+	c.mu.Unlock()
+
 	startCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	c.mu.Lock()
+	generation := c.generation
+	if c.startGate == nil {
+		c.startGate = make(chan struct{}, 1)
+		c.startGate <- struct{}{}
+	}
+	gate := c.startGate
+	c.mu.Unlock()
+	select {
+	case <-startCtx.Done():
+		return startCtx.Err()
+	case <-gate:
+	}
+	defer func() { gate <- struct{}{} }()
+	c.mu.Lock()
+	if err := startCtx.Err(); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if c.generation != generation {
+		c.mu.Unlock()
+		return errClientStopped
+	}
+	if c.inner != nil && c.ready {
+		c.mu.Unlock()
+		return nil
+	}
+	if c.closed && !reopen {
+		c.mu.Unlock()
+		return errClientStopped
+	}
+	c.closed = false
+	c.mu.Unlock()
 
 	var inner client.MCPClient
 	var err error
@@ -174,59 +222,177 @@ func (c *Client) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating MCP client %q (%s): %w", c.name, c.transportType, err)
 	}
+	// inner remains locally owned until publication under c.mu. On a failed
+	// generation check, Stop cannot have detached or closed this transport.
+	c.mu.Lock()
+	if c.closed || c.generation != generation {
+		c.mu.Unlock()
+		inner.Close()
+		return errClientStopped
+	}
+	lifetime, cancelLifetime := context.WithCancel(context.Background())
 	c.inner = inner
+	c.lifetime = lifetime
+	c.cancelLifetime = cancelLifetime
+	c.mu.Unlock()
+
+	// Keep ownership until startup is ready. On an unexpected unwind, close
+	// only this still-attached transport before releasing the startup gate.
+	ready := false
+	defer func() {
+		if !ready {
+			c.closeUnready(inner)
+		}
+	}()
+
+	// SSE keeps its stream on the Start context after initialization. Bind it
+	// to this transport's lifetime while allowing startup cancellation.
+	stopStartupCancel := context.AfterFunc(startCtx, cancelLifetime)
+	defer stopStartupCancel()
+	if c.transportType == "sse" {
+		starter, ok := inner.(interface{ Start(context.Context) error })
+		if !ok {
+			return fmt.Errorf("MCP transport %q does not support startup", c.name)
+		}
+		if err := starter.Start(lifetime); err != nil {
+			if ctxErr := startCtx.Err(); ctxErr != nil {
+				return fmt.Errorf("starting MCP transport %q: %w", c.name, ctxErr)
+			}
+			return fmt.Errorf("starting MCP transport %q: %w", c.name, err)
+		}
+	}
 
 	// Initialize handshake
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initReq.Params.ClientInfo = mcp.Implementation{Name: "famclaw", Version: "1.0.0"}
 
-	_, err = c.inner.Initialize(startCtx, initReq)
+	_, err = inner.Initialize(startCtx, initReq)
 	if err != nil {
-		c.inner.Close()
-		c.inner = nil
 		return fmt.Errorf("MCP initialize %q: %w", c.name, err)
 	}
 
 	// List available tools
-	toolsResult, err := c.inner.ListTools(startCtx, mcp.ListToolsRequest{})
-	if err != nil {
-		log.Printf("[mcp] tools/list failed for %q: %v", c.name, err)
-	} else {
-		c.tools = toolsResult.Tools
+	toolsResult, err := inner.ListTools(startCtx, mcp.ListToolsRequest{})
+	stopStartupCancel()
+	if err := startCtx.Err(); err != nil {
+		return err
 	}
-
+	if err := c.completeStartup(inner, generation, toolsResult, err); err != nil {
+		return err
+	}
+	ready = true
 	return nil
 }
 
-// CallTool invokes a tool on the MCP server.
+// completeStartup releases c.mu before the caller's startup cleanup can run.
+func (c *Client) completeStartup(inner client.MCPClient, generation uint64, toolsResult *mcp.ListToolsResult, listErr error) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.inner != inner || c.closed || c.generation != generation {
+		return errClientStopped
+	}
+	if listErr != nil {
+		log.Printf("[mcp] tools/list failed for %q: %v", c.name, listErr)
+	} else {
+		c.tools = toolsResult.Tools
+	}
+	c.ready = true
+	return nil
+}
+
+var errClientStopped = fmt.Errorf("MCP client stopped")
+
+// started reports whether a transport is currently attached.
+func (c *Client) started() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inner != nil && c.ready
+}
+
+// CallTool invokes a tool on the MCP server using a stable transport snapshot.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {
-	if c.inner == nil {
-		if err := c.Start(ctx); err != nil {
-			return nil, err
+	if err := c.start(ctx, true); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	inner := c.inner
+	lifetime := c.lifetime
+	c.mu.Unlock()
+	if inner == nil {
+		return nil, errClientStopped
+	}
+	callCtx := ctx
+	if lifetime != nil {
+		if err := lifetime.Err(); err != nil {
+			return nil, errClientStopped
+		}
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		stop := context.AfterFunc(lifetime, cancel)
+		defer stop()
+		if lifetime.Err() != nil {
+			return nil, errClientStopped
 		}
 	}
-
 	req := mcp.CallToolRequest{}
 	req.Params.Name = name
 	req.Params.Arguments = args
-
-	result, err := c.inner.CallTool(ctx, req)
+	result, err := inner.CallTool(callCtx, req)
 	if err != nil {
 		return nil, fmt.Errorf("calling tool %q on %q: %w", name, c.name, err)
 	}
 	return result, nil
 }
 
-// Tools returns the list of available tools.
-func (c *Client) Tools() []mcp.Tool { return c.tools }
+// Tools returns a snapshot of the available tools.
+func (c *Client) Tools() []mcp.Tool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]mcp.Tool(nil), c.tools...)
+}
 
-// Stop terminates the MCP server connection.
-func (c *Client) Stop() {
-	if c.inner != nil && !c.closed {
-		c.inner.Close()
-		c.closed = true
+// closeUnready closes an interrupted startup only while it still owns it.
+func (c *Client) closeUnready(inner client.MCPClient) {
+	c.mu.Lock()
+	owned := c.inner == inner
+	if owned {
 		c.inner = nil
+		c.ready = false
+		if c.cancelLifetime != nil {
+			c.cancelLifetime()
+		}
+		c.lifetime = nil
+		c.cancelLifetime = nil
+	}
+	c.mu.Unlock()
+	if owned {
+		_ = inner.Close()
+	}
+}
+
+// detach atomically prevents further use of this transport; Close may block.
+func (c *Client) detach() client.MCPClient {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	inner := c.inner
+	if c.cancelLifetime != nil {
+		c.cancelLifetime()
+	}
+	c.inner = nil
+	c.lifetime = nil
+	c.cancelLifetime = nil
+	c.ready = false
+	c.closed = true
+	c.generation++
+	return inner
+}
+
+// Stop terminates the currently attached transport.
+func (c *Client) Stop() {
+	if inner := c.detach(); inner != nil {
+		inner.Close()
 	}
 }
 

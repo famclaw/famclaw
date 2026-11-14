@@ -14,11 +14,12 @@ import (
 // but the LLM output claims success, the output is neutralized with a correction.
 func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 	cases := []struct {
-		name               string
-		setup              func(deps *ToolLoopDeps, turn *Turn)
-		wantOutputContains string // substring that should be in the final output
-		wantOutputExact    string // if non-empty, the output must equal this exactly
-		wantOutputNotEqual string // if non-empty, the output must not equal this
+		name                  string
+		setup                 func(deps *ToolLoopDeps, turn *Turn)
+		wantOutputContains    string // substring that should be in the final output
+		wantOutputNotContains string // substring that must NOT be in the final output
+		wantOutputExact       string // if non-empty, the output must equal this exactly
+		wantOutputNotEqual    string // if non-empty, the output must not equal this
 	}{
 		{
 			name: "genuine tool success",
@@ -115,7 +116,77 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Done! I saved the file.",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
+		},
+		{
+			name: "read-only builtin failure carries no mutation warning",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// Simulates a rate-limited search backend: the tool is
+				// declared ReadOnly in the turn registry, so its failure
+				// must describe that declaration without asserting effects.
+				// Builtin handler that fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("search backend rate-limited")
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__web_search", ReadOnly: true}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__web_search", Arguments: map[string]any{"query": "sample"}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "Sorry, the search failed."},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputContains:    "A tool marked read-only reported a failure; its effects are not verified.",
+			wantOutputNotContains: "changes may",
+		},
+		{
+			name: "mutation builtin failure keeps the mutation warning",
+			setup: func(deps *ToolLoopDeps, turn *Turn) {
+				// A tool with no ReadOnly declaration in the registry is
+				// conservatively treated as potentially mutating.
+				// Builtin handler that fails
+				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
+					return "", errors.New("write failed")
+				}
+				turn.User = &config.UserConfig{Name: "tester", Role: "child"}
+				turn.Tools = []Tool{{Name: "builtin__file_write"}}
+				// Simulate that the first LLM response (with tool call) has been received
+				turn.Output = ""
+				toolCalls := []llm.ToolCall{{
+					ID:       "call1",
+					Function: llm.ToolCallFunction{Name: "builtin__file_write", Arguments: map[string]any{}},
+				}}
+				turn.SetMeta("pending_tool_calls", toolCalls)
+				turn.SetMeta("llm_messages", []llm.Message{
+					{Role: "user", Content: "hello"}, // placeholder
+				})
+				// The mockChatter should return the final response when ChatWithTools is called
+				var callCount int
+				deps.ClientFactory = func(*Turn) llm.Chatter {
+					return &mockChatter{
+						responses: []llm.Message{
+							{Content: "Done!"},
+						},
+						callCount: &callCount,
+					}
+				}
+			},
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "purely conversational turn (no tool attempted)",
@@ -174,7 +245,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Listo, lo he guardado.",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "German false success",
@@ -207,7 +278,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Fertig, gespeichert.",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "Japanese false success",
@@ -240,7 +311,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "完了しました。",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "English success without tool call (should not trigger)",
@@ -387,7 +458,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Done — all taken care of!",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
 			name: "model already mentions failure — note still prepended (no silent skip)",
@@ -420,10 +491,10 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				}
 			},
 			wantOutputNotEqual: "Sorry, all my tools failed to run.",
-			wantOutputContains: "No action was completed",
+			wantOutputContains: "The tool reported a failure; some changes may still have occurred",
 		},
 		{
-			name: "cap exhausted: model never stops, output unchanged (language-independent)",
+			name: "cap exhausted: model never stops, notes lead and last text is preserved (language-independent)",
 			setup: func(deps *ToolLoopDeps, turn *Turn) {
 				// Builtin handler that always fails
 				deps.BuiltinHandler = func(ctx context.Context, name string, args map[string]any) (string, error) {
@@ -443,11 +514,10 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				})
 				// Mock returns the SAME response with tool calls every time
 				// the model is called — it never produces a final answer. With
-				// MaxIterations=1 the loop exits by exhausting the cap
-				// (pendingCalls stays non-empty), so the note must NOT fire.
-				// The turn never made a claim, so output is byte-identical.
-				// This mirrors the TestAgentChatPoolNil scenario at the stage
-				// level and is language-independent by construction.
+				// MaxIterations=1 the loop exits by exhausting the cap.
+				// The cap must not hide an observed failure, and must not
+				// discard the model's last intermediate text: it is preserved,
+				// with the failure and cap notes preceding it.
 				var callCount int
 				deps.ClientFactory = func(*Turn) llm.Chatter {
 					return &mockChatter{
@@ -464,7 +534,7 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 					}
 				}
 			},
-			wantOutputExact: "Let me check...", // no note: cap exhausted, model never claimed
+			wantOutputExact: "The tool reported a failure; some changes may still have occurred. Verify before trying again. Tool iteration limit reached; remaining requested calls were not run.\n\nLet me check...",
 		},
 	}
 
@@ -499,6 +569,11 @@ func TestStageToolLoop_FalseCompletionNeutralization(t *testing.T) {
 				if tc.wantOutputNotEqual != "" {
 					if turn.Output == tc.wantOutputNotEqual {
 						t.Errorf("output should not be equal to %q, but got %q", tc.wantOutputNotEqual, turn.Output)
+					}
+				}
+				if tc.wantOutputNotContains != "" {
+					if strings.Contains(turn.Output, tc.wantOutputNotContains) {
+						t.Errorf("output should not contain %q, but got %q", tc.wantOutputNotContains, turn.Output)
 					}
 				}
 			}
@@ -612,6 +687,52 @@ func TestShouldPrependFailureNote(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := shouldPrependFailureNote(tc.toolCalls, tc.modelStopped); got != tc.want {
 				t.Errorf("shouldPrependFailureNote(_, %v) = %v, want %v", tc.modelStopped, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOutcomeCapDisclosurePrecedesIntermediateText(t *testing.T) {
+	const capNote = "Tool iteration limit reached; remaining requested calls were not run."
+	const warning = "The tool reported a failure; some changes may still have occurred. Verify before trying again."
+	for _, tc := range []struct {
+		name, text string
+		fail       bool
+	}{
+		{"failure success claim", "Everything is complete.", true},
+		{"failure non-English", "Tout est terminé.", true},
+		{"success non-English", "Tout est terminé.", false},
+		{"success empty text", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := llm.ToolCall{ID: "one", Function: llm.ToolCallFunction{Name: "builtin__operation", Arguments: map[string]any{}}}
+			count, calls := 0, 0
+			chatter := &mockChatter{responses: []llm.Message{{Content: tc.text, ToolCalls: []llm.ToolCall{call}}}, callCount: &count}
+			turn := &Turn{User: &config.UserConfig{Name: "tester", Role: "child"}, Tools: []Tool{{Name: "builtin__operation"}}}
+			turn.SetMeta("pending_tool_calls", []llm.ToolCall{call})
+			turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "go"}})
+			deps := ToolLoopDeps{MaxIterations: 1, ClientFactory: func(*Turn) llm.Chatter { return chatter }, BuiltinHandler: func(context.Context, string, map[string]any) (string, error) {
+				calls++
+				if tc.fail {
+					return "", errors.New("failed")
+				}
+				return "ok", nil
+			}}
+			if err := NewStageToolLoop(deps)(context.Background(), turn); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("handler calls=%d, want 1", calls)
+			}
+			want := capNote
+			if tc.fail {
+				want = warning + " " + want
+			}
+			if tc.text != "" {
+				want += "\n\n" + tc.text
+			}
+			if turn.Output != want {
+				t.Errorf("output = %q, want %q", turn.Output, want)
 			}
 		})
 	}

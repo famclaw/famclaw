@@ -560,6 +560,11 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 				Source:      "mcp",
 				ServerName:  info.ServerName,
 				ScanTarget:  info.ScanTarget,
+				// Propagate the server's readOnlyHint so the loop's
+				// turnReadOnly / outcomeWarning classification covers MCP
+				// tools too; without it a read-only MCP failure degrades to
+				// the conservative "changes may have occurred" display.
+				ReadOnly: info.ReadOnly,
 			}
 			if t.AllowedForRole(a.user.Role) {
 				turn.Tools = append(turn.Tools, t)
@@ -1261,9 +1266,22 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	// Subagents inherit the parent's identity but stay read-only: any tool
 	// that mutates shared family state is filtered out here.
 	builtinDefs := make([]llm.ToolDef, 0, len(a.builtinTools))
+	builtinReadOnly := make(map[string]bool, len(a.builtinTools)*2)
 	for _, t := range a.builtinTools {
 		if isSubagentExcludedTool(t.Name) {
 			continue
+		}
+		if t.ReadOnly {
+			// Key both name forms, mirroring turnReadOnly in the main tool
+			// loop (agentcore/stage_tool_loop.go): dispatchSubagentTool
+			// looks up deps.BuiltinReadOnly[name] with the name as emitted
+			// by the LLM, and local LLMs may emit the bare form
+			// ("web_search") rather than the namespaced registry form
+			// ("builtin__web_search"). A lookup keyed on a single form
+			// would silently miss the other and conservatively report a
+			// read-only failure as potentially mutating.
+			builtinReadOnly[t.Name] = true
+			builtinReadOnly[strings.TrimPrefix(t.Name, "builtin__")] = true
 		}
 		builtinDefs = append(builtinDefs, llm.ToolDef{
 			Type: "function",
@@ -1276,13 +1294,14 @@ func (a *Agent) handleSpawnAgent(ctx context.Context, args map[string]any) (stri
 	}
 
 	execDeps := subagent.ExecutorDeps{
-		Pool:           a.pool,
-		Config:         a.cfg,
-		Temperature:    a.cfg.LLM.Temperature,
-		MaxTokens:      a.cfg.LLM.MaxResponseTokens,
-		BuiltinDefs:    builtinDefs,
-		BuiltinHandler: a.makeBuiltinHandler(),
-		ReasoningCache: a.reasoningCache,
+		Pool:            a.pool,
+		Config:          a.cfg,
+		Temperature:     a.cfg.LLM.Temperature,
+		MaxTokens:       a.cfg.LLM.MaxResponseTokens,
+		BuiltinDefs:     builtinDefs,
+		BuiltinHandler:  a.makeBuiltinHandler(),
+		BuiltinReadOnly: builtinReadOnly,
+		ReasoningCache:  a.reasoningCache,
 	}
 
 	// The subagent's timeout context is rooted at the server-lifetime context
@@ -1663,6 +1682,31 @@ func (a *Agent) hostValidator(ctx context.Context, host string) error {
 	return nil
 }
 
+// webFetchFailureClass returns only fixed labels or a bounded HTTP status.
+// It never formats the URL or the underlying diagnostic error.
+func webFetchFailureClass(result *webfetch.Result, err error) string {
+	if result != nil && result.StatusCode >= 100 && result.StatusCode <= 599 {
+		return fmt.Sprintf("status=%d", result.StatusCode)
+	}
+	var hostErr *webfetch.HostNotAllowedError
+	var dnsErr *net.DNSError
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "class=canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "class=deadline"
+	case errors.As(err, &hostErr):
+		return "class=host_denied"
+	case errors.As(err, &dnsErr):
+		return "class=dns"
+	case errors.As(err, &netErr):
+		return "class=network"
+	default:
+		return "class=unknown"
+	}
+}
+
 // handleWebFetch dispatches the builtin__web_fetch tool. Auth boundary:
 // validates scheme, enforces the mode-aware host gate (allowlist or denylist,
 // see hostDecision), and propagates the same gate into webfetch.Fetch as a
@@ -1735,7 +1779,7 @@ func (a *Agent) handleWebFetch(ctx context.Context, args map[string]any) (string
 	// authoritative; a second render would add latency, not text.
 	browserTried := false
 	if err != nil {
-		log.Print("[agent] web_fetch failed")
+		log.Printf("[agent] web_fetch failed %s", webFetchFailureClass(result, err))
 		// F7 fix (web-retrieval plan, slice 3b): a 403/429 is usually
 		// upstream bot-blocking of this client, not a dead page — the same
 		// URL often renders fine in a real browser. When the browser
@@ -1970,59 +2014,54 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 		AllowPrivateNetworks: !fcfg.BlockPrivateNetworks,
 		TavilyAPIKey:         cfg.TavilyAPIKey,
 	})
+	// Marker returned directly to tool loop; IsSafeWebSearchMarker consumes it without intermediate discard.
 	if provErr != nil {
-		return webSearchError(provErr, cfg.Endpoint)
+		return webSearchError(provErr)
 	}
 
 	hits, err := prov.Search(ctx, query, maxResults)
+	// Marker returned directly to tool loop; IsSafeWebSearchMarker consumes it without intermediate discard.
 	if err != nil {
-		return webSearchError(err, cfg.Endpoint)
+		return webSearchError(err)
 	}
 	log.Printf("[agent] web_search hits=%d", len(hits))
 	return websearch.FormatHits(hits), nil
 }
 
-// webSearchError translates a web_search error into a (result, error) pair
-// that the agent's tool loop can feed to the LLM. Each backend failure class
-// maps to a short NEUTRAL marker returned as the RESULT string with a nil
-// error — this is critical because the tool loop formats non-nil errors as
-// "Error: <msg>", which the LLM may treat as a system failure and ignore in
-// favour of hallucination. A result string with nil error is treated as a
-// normal tool output, so the LLM relays the marker honestly. Class-specific
-// markers (rate-limited vs down vs misconfigured) let the model report the
-// real reason instead of a blanket "unavailable."
-//
-// The markers are intentionally NOT full English sentences addressed to the
-// user. The behavioural rule in internal/prompt/components.go instructs the
-// model to convey this in the family member's language. Returning a
-// pre-written sentence would force it into English regardless of who is
-// asking.
-//
-// The sanitized endpoint is logged server-side for debugging but never
-// echoed to the family chat — it may contain internal hostnames,
-// credentials, or network topology that should not reach the user.
-//
-// Host-not-allowed errors and configuration gaps (unknown provider, hosted
-// provider without a key) are translated into sanitized result strings so
-// the tool loop does not format them as "Error: <msg>". Both pre-request
-// checks key on typed sentinels, never message text, so an upstream rework
-// of the wording cannot change the classification: errors.As on
-// *webfetch.HostNotAllowedError, and errors.Is on
-// websearch.ErrProviderNotConfigured. Other genuine errors pass through as
-// ("", err) for the tool loop to surface.
-func webSearchError(err error, endpoint string) (string, error) {
+type safeSearchError struct {
+	marker string
+	cause  error
+}
+
+func (e *safeSearchError) Error() string { return e.marker }
+func (e *safeSearchError) Unwrap() error { return e.cause }
+
+func classifiedSearchError(marker string, cause error) (string, error) {
+	return marker, &safeSearchError{marker: marker, cause: cause}
+}
+
+// webSearchError preserves the diagnostic cause while returning a static,
+// neutral classification for the tool loop to render from its allowlist.
+// The marker constants are owned by agentcore (websearch_markers.go): the
+// tool loop only renders them verbatim when IsSafeWebSearchMarker accepts
+// them, so producer and consumer share one definition.
+// Providers may retry transient failures; any final failure remains an error.
+// The tool loop suppresses the same failed tool name and arguments for the rest
+// of that turn to avoid retry loops; a later turn may retry. Unknown errors
+// return no display text; causes are not logged.
+func webSearchError(err error) (string, error) {
 	if err == nil {
 		return "", nil
 	}
 	var hostErr *webfetch.HostNotAllowedError
 	if errors.As(err, &hostErr) {
-		return "web_search: host not permitted", nil
+		return classifiedSearchError(agentcore.WebSearchMarkerHostNotPermitted, err)
 	}
 	// Provider-boundary configuration gaps (web-retrieval plan, Slice 1):
 	// unknown provider name or hosted provider without a key. Classified by
 	// the sentinel, so upstream rewording cannot break the mapping.
 	if errors.Is(err, websearch.ErrProviderNotConfigured) {
-		return "web_search: provider not configured", nil
+		return classifiedSearchError(agentcore.WebSearchMarkerProviderNotConfigured, err)
 	}
 	// Classified backend failures (web-retrieval plan, Slice 2): check the
 	// specific classes BEFORE the ErrUnavailable umbrella they all wrap —
@@ -2030,26 +2069,26 @@ func webSearchError(err error, endpoint string) (string, error) {
 	// the historical "unavailable" marker.
 	switch {
 	case errors.Is(err, websearch.ErrRateLimited):
-		log.Printf("[agent] web_search rate-limited (429) at %s", websearch.SanitizeEndpoint(endpoint))
-		return "web_search: rate limited", nil
+		log.Print("[agent] web_search backend error")
+		return classifiedSearchError(agentcore.WebSearchMarkerRateLimited, err)
 	case errors.Is(err, websearch.ErrProvider5xx):
-		log.Printf("[agent] web_search backend server error (5xx) at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
-		return "web_search: search backend error", nil
+		log.Print("[agent] web_search backend error")
+		return classifiedSearchError(agentcore.WebSearchMarkerBackendError, err)
 	case errors.Is(err, websearch.ErrTimeout):
-		log.Printf("[agent] web_search request timed out at %s", websearch.SanitizeEndpoint(endpoint))
-		return "web_search: search timed out", nil
+		log.Print("[agent] web_search backend error")
+		return classifiedSearchError(agentcore.WebSearchMarkerTimeout, err)
 	case errors.Is(err, websearch.ErrConnection):
-		log.Printf("[agent] web_search connection failure at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
-		return "web_search: search backend unreachable", nil
+		log.Print("[agent] web_search backend error")
+		return classifiedSearchError(agentcore.WebSearchMarkerBackendUnreachable, err)
 	case errors.Is(err, websearch.ErrAuthConfig):
-		log.Printf("[agent] web_search backend rejected the request (401/403) at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
-		return "web_search: search backend auth or config error", nil
+		log.Print("[agent] web_search backend error")
+		return classifiedSearchError(agentcore.WebSearchMarkerBackendAuthConfig, err)
 	case errors.Is(err, websearch.ErrMalformed):
-		log.Printf("[agent] web_search malformed backend response at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
-		return "web_search: invalid search backend response", nil
+		log.Print("[agent] web_search backend error")
+		return classifiedSearchError(agentcore.WebSearchMarkerInvalidResponse, err)
 	case errors.Is(err, websearch.ErrUnavailable):
-		log.Printf("[agent] web_search backend unreachable at %s: %v", websearch.SanitizeEndpoint(endpoint), err)
-		return "web_search: unavailable", nil
+		log.Print("[agent] web_search backend error")
+		return classifiedSearchError(agentcore.WebSearchMarkerUnavailable, err)
 	}
 	return "", err
 }
@@ -2071,7 +2110,14 @@ func (a *Agent) handleBrowser(ctx context.Context, toolName string, args map[str
 		HostCheck: a.hostValidator,
 	})
 	if err != nil {
-		log.Printf("[agent][%s] %s err=%v", a.user.Name, toolName, err)
+		category := "failed"
+		switch {
+		case errors.Is(err, context.Canceled):
+			category = "cancelled"
+		case errors.Is(err, context.DeadlineExceeded):
+			category = "timeout"
+		}
+		log.Printf("[agent][%q] %s %s", a.user.Name, toolName, category)
 		return "", err
 	}
 	log.Printf("[agent][%s] %s ok bytes=%d", a.user.Name, toolName, len(out))

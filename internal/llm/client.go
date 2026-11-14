@@ -334,6 +334,9 @@ func (a *ToolCallArguments) UnmarshalJSON(data []byte) error {
 			}
 			return fmt.Errorf("parsing arguments JSON from string: %w", err)
 		}
+		if m == nil {
+			m = make(map[string]any)
+		}
 		*a = m
 		return nil
 	}
