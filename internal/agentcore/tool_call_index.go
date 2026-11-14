@@ -25,7 +25,9 @@ func newUnsuccessfulCallIndex() *unsuccessfulCallIndex {
 
 // find mutates the supplied results slice, replacing each newly observed Args
 // with a best-effort snapshot before indexing. Unsupported values retain their
-// original aliases; callers must not access the slice concurrently.
+// original aliases; callers must not access the slice concurrently. When a copy
+// succeeds, the result entry no longer retains its previous map; references
+// held elsewhere are unaffected.
 func (idx *unsuccessfulCallIndex) find(name string, args map[string]any, results []ToolResult) (ToolResult, bool) {
 	for ; idx.next < len(results); idx.next++ {
 		results[idx.next].Args = snapshotCallArgs(results[idx.next].Args)

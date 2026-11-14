@@ -62,7 +62,8 @@ type ToolLoopDeps struct {
 	// when over budget. This is the v0.5.9 web_fetch overflow fix.
 	ContextWindow int
 	// BuiltinHandler dispatches builtin tools (spawn_agent, etc.) that are
-	// not in the MCP pool. Keyed by tool name prefix "builtin__".
+	// not in the MCP pool. Keyed by tool name prefix "builtin__"; it returns
+	// response text as a string and an error.
 	BuiltinHandler func(ctx context.Context, name string, args map[string]any) (string, error)
 	// PolicyEvaluator gates each tool call through the OPA tool_policy rules.
 	// When nil, no per-call policy enforcement is applied (useful for tests).

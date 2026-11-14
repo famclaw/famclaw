@@ -138,6 +138,8 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 			if lifecycle.closing != nil {
 				wait = lifecycle.closing
 			} else if lifecycle.starts > 0 {
+				// No close is reserved here. Start and close completion signal
+				// when both counts reach zero; this update then retries.
 				lifecycle.closing = make(chan struct{})
 				wait = lifecycle.closing
 			} else {
