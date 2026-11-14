@@ -194,6 +194,9 @@ func TestPoolRestartAndStaleLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	mc := p.clients["echo"]
+	if mc == nil || mc != p.clients["test"] {
+		t.Fatal("discovered tool alias does not refer to the server client")
+	}
 	mc.stateMu.Lock()
 	oldGeneration := mc.generation
 	mc.stateMu.Unlock()
