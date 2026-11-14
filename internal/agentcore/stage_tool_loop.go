@@ -881,7 +881,8 @@ var ErrUnknownTool = errors.New("unknown tool")
 
 // priorUnsuccessfulCall finds a matching prior error or attempted non-success.
 // Map comparison is order independent; successful attempts may run again.
-// This fallback also supports arbitrary non-JSON Go values.
+// The index calls this scan when the query cannot be encoded as an index key,
+// including non-JSON values and values exceeding the encoding budget.
 func priorUnsuccessfulCall(name string, args map[string]any, results []ToolResult) (ToolResult, bool) {
 	for _, r := range results {
 		// Skips with errors (such as unavailable tools) are deduplicated.

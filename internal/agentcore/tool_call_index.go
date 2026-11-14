@@ -11,8 +11,10 @@ type callIndexKey struct {
 	args string
 }
 
-// unsuccessfulCallIndex indexes ordinary JSON arguments while retaining a
-// linear fallback for arbitrary Go values. Indices preserve result order.
+// unsuccessfulCallIndex indexes supported arguments within the key encoding
+// budget and uses a linear fallback for other values. Repeated fallback lookups
+// can take quadratic total comparisons as history grows; retaining that history
+// helps prevent failed calls from being replayed. Indices preserve result order.
 type unsuccessfulCallIndex struct {
 	next     int
 	byKey    map[callIndexKey][]int
