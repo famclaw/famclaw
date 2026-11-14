@@ -25,6 +25,7 @@ type Pool struct {
 	clients     map[string]*managedClient // server name + tool name → client
 	mu          sync.RWMutex
 	reloadMu    sync.Mutex
+	configMu    sync.Mutex
 	lifecycles  map[string]*serverLifecycle
 	SandboxRoot string
 	// Sandbox == true means every stdio MCP server is **required** to be
@@ -109,9 +110,12 @@ func closeRetiredTransport(t closingTransport) {
 // It adds new servers, updates existing ones that have changed, and removes servers
 // that are no longer present in the configuration. It returns names that need a start.
 func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, credentials map[string]map[string]string) []string {
+	p.configMu.Lock()
+	defer p.configMu.Unlock()
 	var reserved []*serverLifecycle
+	owned := make(map[*serverLifecycle]bool)
+	var locked map[*managedClient]bool
 	for {
-		reserved = nil
 		p.mu.Lock()
 		var wait <-chan struct{}
 		for name, lifecycle := range p.lifecycles {
@@ -127,6 +131,9 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 			if !affected {
 				continue
 			}
+			if owned[lifecycle] {
+				continue
+			}
 			lifecycle.mu.Lock()
 			if lifecycle.closing != nil {
 				wait = lifecycle.closing
@@ -137,31 +144,51 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 				lifecycle.closing = make(chan struct{})
 				lifecycle.closes++
 				reserved = append(reserved, lifecycle)
+				owned[lifecycle] = true
 			}
 			lifecycle.mu.Unlock()
 			if wait != nil {
 				break
 			}
 		}
+		var busy *managedClient
+		locked = make(map[*managedClient]bool)
 		if wait == nil {
-			break
+			var affected []*managedClient
+			for name, mc := range p.clients {
+				if mc == nil || mc.name != name {
+					continue
+				}
+				cfg, exists := servers[name]
+				if exists && !cfg.Disabled && mc.cfg.Transport == cfg.Transport && mc.cfg.Command == cfg.Command && sliceEqual(mc.cfg.Args, cfg.Args) && mc.cfg.URL == cfg.URL && mapEqual(mc.cfg.Headers, cfg.Headers) && mapEqual(mc.env, credentials[name]) {
+					continue
+				}
+				affected = append(affected, mc)
+			}
+			locked, busy = tryLockManagedClients(affected)
+			if busy == nil {
+				break
+			}
 		}
-		for _, lifecycle := range reserved {
-			lifecycle.mu.Lock()
-			lifecycle.closes--
-			lifecycle.finishLocked()
-			lifecycle.mu.Unlock()
+		for mc := range locked {
+			mc.mu.Unlock()
 		}
 		p.mu.Unlock()
-		<-wait
+		if wait != nil {
+			<-wait
+		} else {
+			// Wait without the pool lock, then recompute against current state.
+			busy.mu.Lock()
+			busy.mu.Unlock()
+		}
 	}
 	changed := make([]string, 0)
 	var transports []closingTransport
 	// Release the managed-client mutex before acquiring the lifecycle mutex.
 	retire := func(mc *managedClient) {
-		mc.mu.Lock()
 		inner := mc.retire()
 		mc.mu.Unlock()
+		delete(locked, mc)
 		if inner == nil {
 			return
 		}
@@ -274,6 +301,9 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		}
 		p.clients[toolName] = mc
 	}
+	for mc := range locked {
+		mc.mu.Unlock()
+	}
 	for _, lifecycle := range reserved {
 		lifecycle.mu.Lock()
 		lifecycle.closes--
@@ -285,6 +315,21 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		go closeRetiredTransport(transport)
 	}
 	return changed
+}
+
+// tryLockManagedClients releases partial acquisitions on contention.
+func tryLockManagedClients(clients []*managedClient) (map[*managedClient]bool, *managedClient) {
+	locked := make(map[*managedClient]bool, len(clients))
+	for _, mc := range clients {
+		if !mc.mu.TryLock() {
+			for acquired := range locked {
+				acquired.mu.Unlock()
+			}
+			return nil, mc
+		}
+		locked[mc] = true
+	}
+	return locked, nil
 }
 
 // ReloadConfig synchronizes server registrations and starts changed servers outside the pool lock.

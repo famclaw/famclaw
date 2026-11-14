@@ -40,7 +40,10 @@ const (
 
 // ToolResult captures one tool call and its outcome.
 type ToolResult struct {
-	ToolName    string
+	ToolName string
+	// The tool loop records arguments with best-effort snapshots; unsupported
+	// values may retain aliases. Treat Args as turn-owned: map identity and
+	// concurrent access are not guaranteed.
 	Args        map[string]any
 	Output      string
 	Error       error // private diagnostic; never render directly
