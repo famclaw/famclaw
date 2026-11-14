@@ -2069,25 +2069,25 @@ func webSearchError(err error) (string, error) {
 	// the historical "unavailable" marker.
 	switch {
 	case errors.Is(err, websearch.ErrRateLimited):
-		log.Print("[agent] web_search backend error")
+		log.Print("[agent] web_search backend error: rate_limited")
 		return classifiedSearchError(agentcore.WebSearchMarkerRateLimited, err)
 	case errors.Is(err, websearch.ErrProvider5xx):
-		log.Print("[agent] web_search backend error")
+		log.Print("[agent] web_search backend error: backend_error")
 		return classifiedSearchError(agentcore.WebSearchMarkerBackendError, err)
 	case errors.Is(err, websearch.ErrTimeout):
-		log.Print("[agent] web_search backend error")
+		log.Print("[agent] web_search backend error: timeout")
 		return classifiedSearchError(agentcore.WebSearchMarkerTimeout, err)
 	case errors.Is(err, websearch.ErrConnection):
-		log.Print("[agent] web_search backend error")
+		log.Print("[agent] web_search backend error: connection")
 		return classifiedSearchError(agentcore.WebSearchMarkerBackendUnreachable, err)
 	case errors.Is(err, websearch.ErrAuthConfig):
-		log.Print("[agent] web_search backend error")
+		log.Print("[agent] web_search backend error: auth_config")
 		return classifiedSearchError(agentcore.WebSearchMarkerBackendAuthConfig, err)
 	case errors.Is(err, websearch.ErrMalformed):
-		log.Print("[agent] web_search backend error")
+		log.Print("[agent] web_search backend error: invalid_response")
 		return classifiedSearchError(agentcore.WebSearchMarkerInvalidResponse, err)
 	case errors.Is(err, websearch.ErrUnavailable):
-		log.Print("[agent] web_search backend error")
+		log.Print("[agent] web_search backend error: unavailable")
 		return classifiedSearchError(agentcore.WebSearchMarkerUnavailable, err)
 	}
 	return "", err
