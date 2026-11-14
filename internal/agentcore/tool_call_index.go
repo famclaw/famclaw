@@ -23,6 +23,8 @@ func newUnsuccessfulCallIndex() *unsuccessfulCallIndex {
 	return &unsuccessfulCallIndex{byKey: make(map[callIndexKey][]int)}
 }
 
+// find replaces each newly observed result's Args with a best-effort snapshot
+// before indexing; unsupported values retain their original aliases.
 func (idx *unsuccessfulCallIndex) find(name string, args map[string]any, results []ToolResult) (ToolResult, bool) {
 	for ; idx.next < len(results); idx.next++ {
 		results[idx.next].Args = snapshotCallArgs(results[idx.next].Args)

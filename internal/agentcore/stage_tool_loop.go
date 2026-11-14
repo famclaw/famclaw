@@ -425,7 +425,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					duration := time.Since(start)
 					if err != nil {
 						log.Printf("[agentcore] builtin tool %s reported an error (%s)", tc.Function.Name, duration)
-						display := ToolErrorDisplay(tc.Function.Name, turnReadOnlyLookup(turnReadOnly, tc.Function.Name), result)
+						display := ToolErrorDisplayWithCause(tc.Function.Name, turnReadOnlyLookup(turnReadOnly, tc.Function.Name), result, err)
 						llmMsgs = append(llmMsgs, llm.Message{
 							Role:       "tool",
 							Content:    display,

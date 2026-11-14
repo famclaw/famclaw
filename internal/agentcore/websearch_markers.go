@@ -1,5 +1,12 @@
 package agentcore
 
+import (
+	"context"
+	"errors"
+	"io/fs"
+	"strings"
+)
+
 // Fixed, non-diagnostic error markers for the web_search tool.
 //
 // These constants are the single source of truth for the marker vocabulary
@@ -82,6 +89,30 @@ func ToolErrorDisplay(toolName string, readOnly bool, result string) string {
 		display = result
 	}
 	return display
+}
+
+// ToolErrorDisplayWithCause adds a fixed error class for builtins when the
+// cause matches a standard sentinel. It never formats the error or raw result.
+// The existing uncertainty warning and exact web-search marker policy remain.
+func ToolErrorDisplayWithCause(toolName string, readOnly bool, result string, err error) string {
+	display := ToolErrorDisplay(toolName, readOnly, result)
+	if !strings.HasPrefix(toolName, "builtin__") || toolName == "builtin__web_search" {
+		return display
+	}
+	var class string
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		class = "timeout"
+	case errors.Is(err, context.Canceled):
+		class = "cancelled"
+	case errors.Is(err, fs.ErrNotExist):
+		class = "not found"
+	case errors.Is(err, fs.ErrPermission):
+		class = "permission denied"
+	default:
+		return display
+	}
+	return display + " Error class: " + class + "."
 }
 
 // IsSafeWebSearchMarker accepts only the fixed, non-diagnostic search

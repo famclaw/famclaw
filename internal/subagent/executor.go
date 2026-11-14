@@ -280,7 +280,7 @@ func dispatchSubagentTool(
 		duration := time.Since(start)
 		if err != nil {
 			log.Printf("[subagent] builtin tool reported an error (%s)", duration)
-			return agentcore.ToolErrorDisplay(name, deps.BuiltinReadOnly[name], out), true
+			return agentcore.ToolErrorDisplayWithCause(name, deps.BuiltinReadOnly[name], out, err), true
 		}
 		log.Printf("[subagent] tool_ok: %s (%s)", name, duration)
 		if out == "" {
