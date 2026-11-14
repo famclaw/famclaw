@@ -28,10 +28,10 @@ func TestSubagentMCPUncertainReadOnly(t *testing.T) {
 		readonly, annotated, nilResult bool
 		want                           string
 	}{
-		{"readonly lost response", true, true, false, "Tool outcome uncertain; verify before trying again."},
+		{"readonly lost response", true, true, false, "Tool outcome uncertain. It is marked read-only; its effects are not verified. Verify before trying again."},
 		{"mutating lost response", false, true, false, "Tool outcome uncertain; some changes may have occurred. Verify before trying again."},
 		{"unannotated lost response", false, false, false, "Tool outcome uncertain; some changes may have occurred. Verify before trying again."},
-		{"readonly nil server result", true, true, true, "Tool outcome uncertain; verify before trying again."},
+		{"readonly nil server result", true, true, true, "Tool outcome uncertain. It is marked read-only; its effects are not verified. Verify before trying again."},
 		{"mutating nil server result", false, true, true, "Tool outcome uncertain; some changes may have occurred. Verify before trying again."},
 		{"unannotated nil server result", false, false, true, "Tool outcome uncertain; some changes may have occurred. Verify before trying again."},
 	} {
