@@ -42,14 +42,16 @@ type Client struct {
 	AllowUnconfined bool
 	env             map[string]string // per-skill credential env vars
 	mu              sync.Mutex
-	startGate       chan struct{}
-	inner           client.MCPClient
-	lifetime        context.Context
-	cancelLifetime  context.CancelFunc
-	tools           []mcp.Tool
-	closed          bool
-	ready           bool
-	generation      uint64
+	// startGate is retained across stop/restart generations: replacing it could
+	// let a new start overlap a previous start that still owns its token.
+	startGate      chan struct{}
+	inner          client.MCPClient
+	lifetime       context.Context
+	cancelLifetime context.CancelFunc
+	tools          []mcp.Tool
+	closed         bool
+	ready          bool
+	generation     uint64
 }
 
 // checkLandlockSupport returns true if Landlock is supported on the current system

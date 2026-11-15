@@ -49,6 +49,34 @@ func toolApprovalID(userName, toolName string, args map[string]any) string {
 	return hex.EncodeToString(h[:8])
 }
 
+// A qualified approval can supersede a legacy denial only when the store can
+// establish decision order and the qualified approval remains valid. Old rows
+// have sequence zero; a positive sequence was assigned after migration.
+func laterQualifiedApproval(value any, legacy map[string]any, now time.Time) bool {
+	qualified, ok := value.(map[string]any)
+	if !ok || qualified["status"] != "approved" {
+		return false
+	}
+	prior, ok := legacy["decision_sequence"].(int64)
+	if !ok || prior < 0 {
+		return false
+	}
+	next, ok := qualified["decision_sequence"].(int64)
+	if !ok || next <= prior {
+		return false
+	}
+	legacyActor, ok := legacy["decided_by"].(string)
+	if !ok || strings.TrimSpace(legacyActor) == "" {
+		return false
+	}
+	actor, ok := qualified["decided_by"].(string)
+	if !ok || strings.TrimSpace(actor) == "" {
+		return false
+	}
+	expires, ok := qualified["expires_at"].(time.Time)
+	return ok && now.Before(expires)
+}
+
 // ToolLoopDeps holds dependencies for the tool loop stage.
 type ToolLoopDeps struct {
 	Pool          *mcp.Pool
@@ -337,7 +365,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					// Old bare-name approvals did not identify the implementation.
 					// Carry forward only denials, in an isolated OPA input map.
 					// Legacy approvals and pending requests need a fresh identity-specific decision.
-					if legacy, ok := input.Approvals[legacyID].(map[string]any); ok && legacy["status"] == "denied" {
+					if legacy, ok := input.Approvals[legacyID].(map[string]any); ok && legacy["status"] == "denied" && !laterQualifiedApproval(input.Approvals[requestID], legacy, time.Now()) {
 						approvals := make(map[string]any, len(input.Approvals)+1)
 						for id, approval := range input.Approvals {
 							approvals[id] = approval
@@ -423,7 +451,8 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				// Snapshot the actual invocation before a handler can mutate its arguments.
 				invocationArgs := snapshotCallArgs(tc.Function.Arguments)
 
-				// Builtin tools (spawn_agent, etc.) route to the handler, not MCP pool
+				// The explicit builtin namespace selects the handler even when an
+				// allowed MCP tool has the same bare name.
 				if strings.HasPrefix(tc.Function.Name, "builtin__") && deps.BuiltinHandler != nil {
 					result, err := deps.BuiltinHandler(ctx, tc.Function.Name, tc.Function.Arguments)
 					duration := time.Since(start)

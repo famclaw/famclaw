@@ -354,8 +354,8 @@ func TestToolApprovalLegacyDecisions(t *testing.T) {
 					if err := NewStageToolLoop(deps)(ctx, retry); err != nil {
 						t.Fatal(err)
 					}
-					if len(retry.ToolCalls) != 1 || !errors.Is(retry.ToolCalls[0].Error, ErrToolBlocked) || builtinCalls != 0 || *mcpCalls != 0 {
-						t.Errorf("legacy denial must override v2 grant: %+v", retry.ToolCalls)
+					if len(retry.ToolCalls) != 1 || retry.ToolCalls[0].Error != nil || builtinCalls+*mcpCalls != 1 {
+						t.Errorf("later qualified grant should allow only its identity: %+v", retry.ToolCalls)
 					}
 					stored, err := db.GetApproval(ctx, id)
 					if err != nil || stored == nil || stored.Status != "approved" {

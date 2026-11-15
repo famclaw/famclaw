@@ -146,7 +146,10 @@ curl -fsSL https://raw.githubusercontent.com/famclaw/famclaw/main/scripts/update
 
 After upgrading, legacy tool approvals and pending requests that identified only
 the bare tool name require a fresh parent decision for the specific implementation.
-Legacy denials remain in effect.
+Legacy denials remain in effect unless a later, unexpired decision explicitly
+approves the qualified identity. Historical decisions have unknown ordering
+relative to one another; a newly recorded decision can follow a historical one.
+Stop old-version writers before upgrading the approval database.
 
 ### Build from source
 ```bash

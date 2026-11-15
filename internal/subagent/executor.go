@@ -268,6 +268,8 @@ func dispatchSubagentTool(
 	// call is rejected as unknown, and a bare web_search failure cannot match
 	// ToolErrorDisplay's builtin__web_search-specific safe-marker
 	// branch.
+	// An explicitly qualified builtin name selects that builtin even when an
+	// allowed MCP tool has the same bare name; bare offered names stay exact.
 	if !allowedTools[name] && !strings.HasPrefix(name, "builtin__") && !strings.HasPrefix(name, "mcp__") {
 		if allowedBuiltins["builtin__"+name] {
 			log.Printf("[subagent] tool_call normalized: %s -> builtin__%s", name, name)

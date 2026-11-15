@@ -423,6 +423,13 @@ func (d *DB) migrate() error {
 		}
 	}
 
+	// Existing decisions have unknown relative order; new decisions get a sequence.
+	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE approvals ADD COLUMN decision_sequence INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate add approval decision sequence: %w", err)
+		}
+	}
+
 	// Persist successful parent notifications with their approval generation.
 	if _, err := d.sql.ExecContext(context.Background(), `ALTER TABLE approvals ADD COLUMN notification_sent INTEGER NOT NULL DEFAULT 0`); err != nil {
 		if !strings.Contains(err.Error(), "duplicate column name") {
@@ -849,15 +856,24 @@ func (d *DB) GetApproval(ctx context.Context, id string) (*Approval, error) {
 }
 
 func (d *DB) DecideApproval(id, status, decidedBy string) error {
-	res, err := d.sql.Exec(`
-		UPDATE approvals SET status=?, decided_by=?, updated_at=CURRENT_TIMESTAMP
-		WHERE id=? AND status='pending'`, status, decidedBy, id)
+	return d.decideApproval(context.Background(), id, status, decidedBy, nil)
+}
+
+func (d *DB) decideApproval(ctx context.Context, id, status, decidedBy string, note *string) error {
+	// SQLite serializes this UPDATE with other writers. The sequence orders
+	// surviving decisions even when their second-resolution timestamps tie.
+	res, err := d.sql.ExecContext(ctx, `
+		UPDATE approvals SET status=?, decided_by=?, updated_at=CURRENT_TIMESTAMP,
+		decision_sequence=(SELECT COALESCE(MAX(decision_sequence), 0) + 1 FROM approvals),
+		decision_note=COALESCE(?, decision_note)
+		WHERE id=? AND status='pending'
+		AND (SELECT COALESCE(MAX(decision_sequence), 0) FROM approvals) < 9223372036854775807`, status, decidedBy, note, id)
 	if err != nil {
 		return err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("approval %s not found or already decided", id)
+		return fmt.Errorf("approval %s: %w", id, ErrApprovalAlreadyDecided)
 	}
 	return nil
 }
@@ -868,17 +884,7 @@ func (d *DB) DecideApproval(id, status, decidedBy string) error {
 // flipping approve→deny). Returns ErrApprovalAlreadyDecided if no pending
 // row matches.
 func (d *DB) DecideApprovalWithNote(ctx context.Context, id, status, decidedBy, note string) error {
-	res, err := d.sql.ExecContext(ctx, `
-		UPDATE approvals SET status = ?, decided_by = ?, updated_at = CURRENT_TIMESTAMP, decision_note = ?
-		WHERE id = ? AND status = 'pending'`, status, decidedBy, note, id)
-	if err != nil {
-		return fmt.Errorf("decide approval with note: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("decide approval with note %s: %w", id, ErrApprovalAlreadyDecided)
-	}
-	return nil
+	return d.decideApproval(ctx, id, status, decidedBy, &note)
 }
 
 func (d *DB) PendingApprovals(ctx context.Context) ([]*Approval, error) {
@@ -909,7 +915,7 @@ func (d *DB) RecentApprovals(limit int) ([]*Approval, error) {
 
 // AllApprovalsForOPA returns approvals as map[id]→{status,...} for OPA input.
 func (d *DB) AllApprovalsForOPA() (map[string]any, error) {
-	rows, err := d.sql.Query(`SELECT id, status, COALESCE(decided_by,'') FROM approvals`)
+	rows, err := d.sql.Query(`SELECT id, status, COALESCE(decided_by,''), decision_sequence, expires_at FROM approvals`)
 	if err != nil {
 		return nil, err
 	}
@@ -918,12 +924,14 @@ func (d *DB) AllApprovalsForOPA() (map[string]any, error) {
 	out := make(map[string]any)
 	for rows.Next() {
 		var id, status, decidedBy string
-		if err := rows.Scan(&id, &status, &decidedBy); err != nil {
-			continue
+		var seq int64
+		var expires time.Time
+		if err := rows.Scan(&id, &status, &decidedBy, &seq, &expires); err != nil {
+			return nil, err
 		}
-		out[id] = map[string]any{"status": status, "decided_by": decidedBy}
+		out[id] = map[string]any{"status": status, "decided_by": decidedBy, "decision_sequence": seq, "expires_at": expires}
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 func scanApprovals(rows *sql.Rows) ([]*Approval, error) {
