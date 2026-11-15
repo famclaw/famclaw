@@ -172,6 +172,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 			}
 			locked, busy = tryLockManagedClients(affected)
 			if busy == nil {
+				// Keep p.mu write-locked for the map updates below.
 				break
 			}
 		}

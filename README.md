@@ -144,6 +144,10 @@ in-place overwrite):
 curl -fsSL https://raw.githubusercontent.com/famclaw/famclaw/main/scripts/update.sh | bash
 ```
 
+After upgrading, legacy tool approvals and pending requests that identified only
+the bare tool name require a fresh parent decision for the specific implementation.
+Legacy denials remain in effect.
+
 ### Build from source
 ```bash
 git clone https://github.com/famclaw/famclaw

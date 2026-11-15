@@ -336,6 +336,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 					// Old bare-name approvals did not identify the implementation.
 					// Carry forward only denials, in an isolated OPA input map.
+					// Legacy approvals and pending requests need a fresh identity-specific decision.
 					if legacy, ok := input.Approvals[legacyID].(map[string]any); ok && legacy["status"] == "denied" {
 						approvals := make(map[string]any, len(input.Approvals)+1)
 						for id, approval := range input.Approvals {
@@ -494,7 +495,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 				var toolText string
 				if err != nil {
-					toolText = "Tool outcome uncertain; verify before trying again."
+					toolText = "Tool outcome uncertain; verify before trying again." + MCPUncertainCauseSuffix(err)
 					turn.ToolCalls = append(turn.ToolCalls, ToolResult{
 						ToolName:    tc.Function.Name,
 						Args:        invocationArgs,

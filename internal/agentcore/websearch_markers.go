@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"strings"
+	"syscall"
 )
 
 // Fixed, non-diagnostic error markers for the web_search tool.
@@ -74,6 +75,21 @@ const (
 	// ToolOutcomeUncertainChangesMayHaveOccurred describes an uncertain call that may mutate state.
 	ToolOutcomeUncertainChangesMayHaveOccurred = "Tool outcome uncertain; some changes may have occurred. Verify before trying again."
 )
+
+// MCPUncertainCauseSuffix returns only fixed classes for recognized causes.
+// It never includes error text, server output, or a claim about side effects.
+func MCPUncertainCauseSuffix(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return " Error class: timeout."
+	case errors.Is(err, context.Canceled):
+		return " Error class: cancelled."
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return " Error class: connection refused."
+	default:
+		return ""
+	}
+}
 
 // ToolErrorDisplay computes the truthful failure display for a tool call
 // that reported an error:
