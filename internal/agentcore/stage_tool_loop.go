@@ -534,6 +534,9 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 						Duration:    duration,
 					})
 				} else if result == nil || result.IsError {
+					// MCP error content is untrusted: do not copy or parse it as a
+					// builtin search cause. Outcome records unknown versus failure so
+					// rebuilt history preserves that distinction with a generic error.
 					outcome := OutcomeFailure
 					if result == nil {
 						outcome = OutcomeUnknown
