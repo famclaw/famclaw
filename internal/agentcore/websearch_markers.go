@@ -67,6 +67,14 @@ const (
 	ToolErrorDisplayChangesMayHaveOccurred = "Tool reported an error; some changes may still have occurred. Verify before trying again."
 )
 
+const (
+	// ToolOutcomeUncertainReadOnly describes an uncertain call marked read-only.
+	ToolOutcomeUncertainReadOnly = "Tool outcome uncertain. It is marked read-only; its effects are not verified. Verify before trying again."
+
+	// ToolOutcomeUncertainChangesMayHaveOccurred describes an uncertain call that may mutate state.
+	ToolOutcomeUncertainChangesMayHaveOccurred = "Tool outcome uncertain; some changes may have occurred. Verify before trying again."
+)
+
 // ToolErrorDisplay computes the truthful failure display for a tool call
 // that reported an error:
 //   - a tool marked ReadOnly is described without asserting its effects;

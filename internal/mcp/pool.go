@@ -81,6 +81,9 @@ func (l *serverLifecycle) finishLocked() {
 		l.closing = nil
 	}
 }
+
+// lifecycle accesses the lifecycle map; the caller must hold p.mu for writing
+// or otherwise have exclusive access to the pool.
 func (p *Pool) lifecycle(name string) *serverLifecycle {
 	if p.lifecycles == nil {
 		p.lifecycles = make(map[string]*serverLifecycle)

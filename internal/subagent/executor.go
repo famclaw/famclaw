@@ -295,9 +295,9 @@ func dispatchSubagentTool(
 		if err != nil || result == nil {
 			log.Printf("[subagent] tool outcome uncertain (%s)", duration)
 			if mcpReadOnly[name] {
-				return "Tool outcome uncertain. It is marked read-only; its effects are not verified. Verify before trying again.", true
+				return agentcore.ToolOutcomeUncertainReadOnly, true
 			}
-			return "Tool outcome uncertain; some changes may have occurred. Verify before trying again.", true
+			return agentcore.ToolOutcomeUncertainChangesMayHaveOccurred, true
 		}
 		if result.IsError {
 			log.Printf("[subagent] tool reported an error (%s)", duration)
