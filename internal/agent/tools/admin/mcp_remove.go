@@ -36,12 +36,20 @@ func HandleMCPRemove(ctx context.Context, deps Deps, args map[string]any) (strin
 			return "", fmt.Errorf("mcp_remove: saving config: %w", err)
 		}
 	}
+	reloadFailed := false
 	if deps.MCP != nil {
-		_ = deps.MCP.ReloadConfig(deps.Cfg)
+		for _, err := range deps.MCP.ReloadConfig(deps.Cfg) {
+			if err != nil {
+				reloadFailed = true
+			}
+		}
 	}
 	auditArgs, _ := json.Marshal(map[string]string{"name": name})
 	if err := logAudit(ctx, deps, toolNameMCPRemove, json.RawMessage(auditArgs)); err != nil {
 		log.Printf("[admin] audit log failed for %s: %v", toolNameMCPRemove, err)
+	}
+	if reloadFailed {
+		return fmt.Sprintf("MCP server %q removed from configuration. MCP reload failed; runtime state may differ from configuration.", name), nil
 	}
 	return fmt.Sprintf("MCP server %q removed.", name), nil
 }

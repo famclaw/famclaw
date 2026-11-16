@@ -113,14 +113,36 @@ func closeRetiredTransport(t closingTransport) {
 // It adds new servers, updates existing ones that have changed, and removes servers
 // that are no longer present in the configuration. It returns names that need a start.
 func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, credentials map[string]map[string]string) []string {
-	p.configMu.Lock()
+	changed, _ := p.updateFromConfig(servers, credentials, false)
+	return changed
+}
+
+// ErrReloadBusy indicates that the reload did not acquire a required lifecycle
+// or client lock. The caller may retry after the in-flight operation finishes.
+var ErrReloadBusy = errors.New("mcp reload busy; retry later")
+
+func (p *Pool) updateFromConfig(servers map[string]config.MCPServerConfig, credentials map[string]map[string]string, failFast bool) ([]string, error) {
+	if failFast {
+		if !p.configMu.TryLock() {
+			return nil, ErrReloadBusy
+		}
+	} else {
+		p.configMu.Lock()
+	}
 	defer p.configMu.Unlock()
 	var reserved []*serverLifecycle
 	owned := make(map[*serverLifecycle]bool)
 	var locked map[*managedClient]bool
 	for {
-		p.mu.Lock()
+		if failFast {
+			if !p.mu.TryLock() {
+				return nil, ErrReloadBusy
+			}
+		} else {
+			p.mu.Lock()
+		}
 		var wait <-chan struct{}
+		busyLifecycle := false
 		for name, lifecycle := range p.lifecycles {
 			old := p.clients[name]
 			if old != nil && old.name != name {
@@ -141,6 +163,11 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 			if lifecycle.closing != nil {
 				wait = lifecycle.closing
 			} else if lifecycle.starts > 0 {
+				if failFast {
+					busyLifecycle = true
+					lifecycle.mu.Unlock()
+					break
+				}
 				// No close is reserved here. Start and close completion signal
 				// when both counts reach zero; this update then retries.
 				lifecycle.closing = make(chan struct{})
@@ -158,7 +185,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		}
 		var busy *managedClient
 		locked = make(map[*managedClient]bool)
-		if wait == nil {
+		if wait == nil && !busyLifecycle {
 			var affected []*managedClient
 			for name, mc := range p.clients {
 				if mc == nil || mc.name != name {
@@ -178,6 +205,16 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 		}
 		for mc := range locked {
 			mc.mu.Unlock()
+		}
+		if failFast {
+			for _, lifecycle := range reserved {
+				lifecycle.mu.Lock()
+				lifecycle.closes--
+				lifecycle.finishLocked()
+				lifecycle.mu.Unlock()
+			}
+			p.mu.Unlock()
+			return nil, ErrReloadBusy
 		}
 		p.mu.Unlock()
 		if wait != nil {
@@ -253,6 +290,15 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 					env:    c.env,
 				}
 				changed = append(changed, name)
+			} else if failFast {
+				// A previous reload may have registered this configuration but
+				// been unable to acquire its startup lock. Retry that start.
+				mc.stateMu.Lock()
+				retry := mc.reloadStartPending
+				mc.stateMu.Unlock()
+				if retry {
+					changed = append(changed, name)
+				}
 			}
 			// If config hasn't changed, we keep the existing client
 		} else {
@@ -320,7 +366,7 @@ func (p *Pool) UpdateFromConfig(servers map[string]config.MCPServerConfig, crede
 	for _, transport := range transports {
 		go closeRetiredTransport(transport)
 	}
-	return changed
+	return changed, nil
 }
 
 // tryLockManagedClients releases partial acquisitions on contention.
@@ -339,10 +385,17 @@ func tryLockManagedClients(clients []*managedClient) (map[*managedClient]bool, *
 }
 
 // ReloadConfig synchronizes server registrations and starts changed servers outside the pool lock.
+// A non-nil error under the empty key means the reload could not begin; errors
+// under server names describe individual starts.
 func (p *Pool) ReloadConfig(cfg *config.Config) map[string]error {
-	p.reloadMu.Lock()
+	if !p.reloadMu.TryLock() {
+		return map[string]error{"": ErrReloadBusy}
+	}
 	defer p.reloadMu.Unlock()
-	changed := p.UpdateFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials)
+	changed, updateErr := p.updateFromConfig(cfg.Skills.MCPServers, cfg.Skills.Credentials, true)
+	if updateErr != nil {
+		return map[string]error{"": updateErr}
+	}
 	results := make(map[string]error, len(changed))
 	var wg sync.WaitGroup
 	var resultMu sync.Mutex
@@ -363,29 +416,7 @@ func (p *Pool) ReloadConfig(cfg *config.Config) map[string]error {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			err := lifecycle.begin(ctx)
-			if err == nil {
-				func() {
-					defer lifecycle.finishStart()
-					mc.mu.Lock()
-					defer mc.mu.Unlock()
-					mc.stateMu.Lock()
-					c := mc.client
-					valid := mc.generation == generation
-					mc.stateMu.Unlock()
-					if valid {
-						err = c.start(ctx, false)
-					} else {
-						err = errClientStopped
-					}
-					mc.stateMu.Lock()
-					if mc.generation == generation {
-						mc.lastError = err
-					}
-					mc.stateMu.Unlock()
-				}()
-			}
-
+			err := startReloadClient(ctx, mc, generation, lifecycle)
 			resultMu.Lock()
 			results[name] = err
 			resultMu.Unlock()
@@ -394,6 +425,46 @@ func (p *Pool) ReloadConfig(cfg *config.Config) map[string]error {
 	wg.Wait()
 	p.refreshToolAliases()
 	return results
+}
+
+func startReloadClient(ctx context.Context, mc *managedClient, generation uint64, lifecycle *serverLifecycle) error {
+	recordPending := func(err error) error {
+		mc.stateMu.Lock()
+		if mc.generation == generation {
+			mc.lastError = err
+			mc.reloadStartPending = true
+		}
+		mc.stateMu.Unlock()
+		return err
+	}
+	if err := lifecycle.begin(ctx); err != nil {
+		return recordPending(err)
+	}
+	defer lifecycle.finishStart()
+	if !mc.mu.TryLock() {
+		return recordPending(ErrReloadBusy)
+	}
+	defer mc.mu.Unlock()
+	mc.stateMu.Lock()
+	c := mc.client
+	valid := mc.generation == generation
+	if valid {
+		mc.reloadStartPending = false
+	}
+	mc.stateMu.Unlock()
+	err := errClientStopped
+	if valid {
+		err = c.start(ctx, false)
+	}
+	mc.stateMu.Lock()
+	if mc.generation == generation {
+		mc.lastError = err
+		if err != nil && ctx.Err() != nil {
+			mc.reloadStartPending = true
+		}
+	}
+	mc.stateMu.Unlock()
+	return err
 }
 
 // refreshToolAliases rebuilds tool-name lookups after clients have started.
@@ -484,15 +555,16 @@ func mapEqual(a, b map[string]string) bool {
 // Never hold lifecycle.mu while waiting for mu: begin returns unlocked, StopAll
 // never takes mu, and configuration retirement releases mu before lifecycle.mu.
 type managedClient struct {
-	mu         sync.Mutex
-	stateMu    sync.Mutex
-	generation uint64
-	cancel     context.CancelFunc
-	lastError  error
-	client     *Client
-	name       string
-	cfg        config.MCPServerConfig
-	env        map[string]string
+	mu                 sync.Mutex
+	stateMu            sync.Mutex
+	generation         uint64
+	cancel             context.CancelFunc
+	lastError          error
+	reloadStartPending bool
+	client             *Client
+	name               string
+	cfg                config.MCPServerConfig
+	env                map[string]string
 }
 
 // snapshotClient synchronizes the client pointer with replacement and shutdown.
@@ -961,7 +1033,11 @@ func (r ReloadReloader) ReloadConfig(cfg *config.Config) error {
 	var errs []error
 	for name, err := range results {
 		if err != nil {
-			errs = append(errs, fmt.Errorf("starting MCP server %q: %w", name, err))
+			if name == "" {
+				errs = append(errs, fmt.Errorf("updating MCP servers: %w", err))
+			} else {
+				errs = append(errs, fmt.Errorf("starting MCP server %q: %w", name, err))
+			}
 		}
 	}
 	return errors.Join(errs...)

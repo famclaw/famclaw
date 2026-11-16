@@ -151,7 +151,9 @@ func HandleMCPAdd(ctx context.Context, deps Deps, args map[string]any) (string, 
 	poolNote := ""
 	if deps.MCP != nil {
 		results := deps.MCP.ReloadConfig(deps.Cfg)
-		if err, ok := results[name]; ok && err != nil {
+		if err := results[""]; err != nil {
+			poolNote = " MCP reload failed; runtime state may differ from configuration."
+		} else if err, ok := results[name]; ok && err != nil {
 			poolNote = fmt.Sprintf(" Start failed: %v. The server is saved to config.", err)
 		} else if _, ok := results[name]; ok {
 			poolNote = " Server started successfully."

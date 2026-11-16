@@ -354,3 +354,26 @@ func TestMCPRemoveDefinitionParentOnly(t *testing.T) {
 		t.Fatalf("unexpected remove definition: %#v", def)
 	}
 }
+
+func TestMCPAdminReportsGlobalReloadFailure(t *testing.T) {
+	for _, operation := range []string{"add", "remove"} {
+		t.Run(operation, func(t *testing.T) {
+			deps := newMCPTestDeps(t)
+			deps.MCP = &mockMCPManager{reloadErr: fmt.Errorf("private diagnostic"), serverName: ""}
+			var out string
+			var err error
+			if operation == "add" {
+				out, err = HandleMCPAdd(context.Background(), deps, map[string]any{"name": "test", "transport": "stdio", "command": "test"})
+			} else {
+				deps.Cfg.Skills.MCPServers["test"] = config.MCPServerConfig{Transport: "stdio", Command: "test"}
+				out, err = HandleMCPRemove(context.Background(), deps, map[string]any{"name": "test"})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, "MCP reload failed") || strings.Contains(out, "private diagnostic") {
+				t.Fatalf("reload failure not safely reported: %q", out)
+			}
+		})
+	}
+}
