@@ -177,6 +177,10 @@ func TestHandleWebFetchFailureDiagnosticsArePrivate(t *testing.T) {
 		want   string
 	}{
 		{"status", &webfetch.Result{StatusCode: 503}, errors.New(secret), "status=503"},
+		{"canceled after 200 headers", &webfetch.Result{StatusCode: 200}, fmt.Errorf("%s: %w", secret, context.Canceled), "class=canceled"},
+		{"deadline after 200 headers", &webfetch.Result{StatusCode: 200}, fmt.Errorf("%s: %w", secret, context.DeadlineExceeded), "class=deadline"},
+		{"canceled with non-2xx status", &webfetch.Result{StatusCode: 503}, fmt.Errorf("%s: %w", secret, context.Canceled), "class=canceled"},
+		{"deadline with non-2xx status", &webfetch.Result{StatusCode: 503}, fmt.Errorf("%s: %w", secret, context.DeadlineExceeded), "class=deadline"},
 		{"canceled", nil, fmt.Errorf("%s: %w", secret, context.Canceled), "class=canceled"},
 		{"deadline", nil, fmt.Errorf("%s: %w", secret, context.DeadlineExceeded), "class=deadline"},
 		{"host", nil, webfetch.NewHostNotAllowedError(secret), "class=host_denied"},

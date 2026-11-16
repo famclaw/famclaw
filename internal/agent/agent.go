@@ -1685,6 +1685,12 @@ func (a *Agent) hostValidator(ctx context.Context, host string) error {
 // webFetchFailureClass returns only fixed labels or a bounded HTTP status.
 // It never formats the URL or the underlying diagnostic error.
 func webFetchFailureClass(result *webfetch.Result, err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "class=canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "class=deadline"
+	}
 	if result != nil && result.StatusCode >= 100 && result.StatusCode <= 599 {
 		return fmt.Sprintf("status=%d", result.StatusCode)
 	}
@@ -1692,10 +1698,6 @@ func webFetchFailureClass(result *webfetch.Result, err error) string {
 	var dnsErr *net.DNSError
 	var netErr net.Error
 	switch {
-	case errors.Is(err, context.Canceled):
-		return "class=canceled"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "class=deadline"
 	case errors.As(err, &hostErr):
 		return "class=host_denied"
 	case errors.As(err, &dnsErr):
