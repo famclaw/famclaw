@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -21,6 +22,17 @@ import (
 	"github.com/famclaw/famclaw/internal/policy"
 	"github.com/famclaw/famclaw/internal/store"
 )
+
+type observingToolPolicy struct {
+	evaluator *policy.Evaluator
+	status    string
+}
+
+func (o *observingToolPolicy) EvaluateToolCall(ctx context.Context, input policy.ToolCallInput) (policy.ToolDecision, error) {
+	approval, _ := input.Approvals[input.RequestID].(map[string]any)
+	o.status, _ = approval["status"].(string)
+	return o.evaluator.EvaluateToolCall(ctx, input)
+}
 
 type localReapprovalChat struct{}
 
@@ -71,7 +83,8 @@ func TestSignedLegacyDenyThenQualifiedApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	deps := agentcore.ToolLoopDeps{PolicyEvaluator: evaluator, ApprovalStore: db, MaxIterations: 1,
+	observed := &observingToolPolicy{evaluator: evaluator}
+	deps := agentcore.ToolLoopDeps{PolicyEvaluator: observed, ApprovalStore: db, MaxIterations: 1,
 		ClientFactory:  func(*agentcore.Turn) llm.Chatter { return localReapprovalChat{} },
 		BuiltinHandler: func(context.Context, string, map[string]any) (string, error) { calls++; return "ok", nil },
 	}
@@ -113,6 +126,17 @@ func TestSignedLegacyDenyThenQualifiedApproval(t *testing.T) {
 		server.bgWG.Wait()
 	}
 	decide(legacyID, "deny")
+	blocked := turn("builtin__file_write")
+	if !errors.Is(blocked.ToolCalls[0].Error, agentcore.ErrToolBlocked) || blocked.ToolCalls[0].Disposition != agentcore.DispositionDenied || calls != 0 {
+		t.Fatalf("pending qualified request must not override legacy denial: %+v calls=%d", blocked.ToolCalls, calls)
+	}
+	if observed.status != "denied" {
+		t.Fatalf("policy did not receive legacy denial: status=%q", observed.status)
+	}
+	stillPending, err := db.GetApproval(ctx, v2ID)
+	if err != nil || stillPending == nil || !reflect.DeepEqual(stillPending, pending) {
+		t.Fatalf("qualified pending approval changed: before=%+v after=%+v err=%v", pending, stillPending, err)
+	}
 	decide(v2ID, "approve")
 	legacy, err := db.GetApproval(ctx, legacyID)
 	if err != nil {
