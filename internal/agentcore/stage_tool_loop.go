@@ -20,7 +20,10 @@ import (
 )
 
 // ApprovalStore provides approval persistence for the tool-call approval
-// flow. *store.DB satisfies this interface.
+// flow. *store.DB satisfies this interface. Its approval projection supplies
+// decision_sequence as int64 and expires_at as time.Time directly. Alternative
+// stores must preserve those types; missing or differently typed evidence cannot
+// supersede a legacy denial.
 type ApprovalStore interface {
 	UpsertApproval(ctx context.Context, a *store.Approval) (bool, error)
 	AllApprovalsForOPA() (map[string]any, error)
