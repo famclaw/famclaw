@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/famclaw/famclaw/internal/config"
+	"github.com/famclaw/famclaw/internal/llm"
 	"math"
 	"strings"
 	"testing"
-
-	"github.com/famclaw/famclaw/internal/config"
-	"github.com/famclaw/famclaw/internal/llm"
 )
 
 func TestToolLoopSnapshotsInvocationArguments(t *testing.T) {
@@ -349,5 +348,232 @@ func TestToolLoopDeduplicatesDecodedEmptyArguments(t *testing.T) {
 	}
 	if calls != 1 || len(turn.ToolCalls) != 2 || !errors.Is(turn.ToolCalls[1].Error, ErrToolAlreadyFailed) {
 		t.Errorf("handler calls = %d; retry was not deduplicated", calls)
+	}
+}
+
+func TestSameBatchDedupIndexesNewDenialsAndSkips(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		tool        string
+		allowed     []Tool
+		first       ToolDisposition
+		wantMessage string
+	}{
+		{"allowlist denial", "builtin__denied", []Tool{{Name: "builtin__other"}}, DispositionDenied, "not in the turn allowlist"},
+		{"unknown tool skip", "unknown_tool", []Tool{{Name: "unknown_tool"}}, DispositionSkipped, "tool unavailable; not run"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chatter := &dedupChatter{responses: []llm.Message{{Role: "assistant", Content: "done"}}}
+			calls := 0
+			turn := &Turn{User: &config.UserConfig{Name: "tester"}, Tools: tc.allowed}
+			turn.SetMeta("pending_tool_calls", []llm.ToolCall{
+				{ID: "first", Function: llm.ToolCallFunction{Name: tc.tool, Arguments: map[string]any{"x": "same"}}},
+				{ID: "duplicate", Function: llm.ToolCallFunction{Name: tc.tool, Arguments: map[string]any{"x": "same"}}},
+				{ID: "different", Function: llm.ToolCallFunction{Name: tc.tool, Arguments: map[string]any{"x": "different"}}},
+			})
+			turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "go"}})
+			stage := NewStageToolLoop(ToolLoopDeps{MaxIterations: 1,
+				ClientFactory:  func(*Turn) llm.Chatter { return chatter },
+				BuiltinHandler: func(context.Context, string, map[string]any) (string, error) { calls++; return "ok", nil },
+			})
+			if err := stage(context.Background(), turn); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 0 || len(turn.ToolCalls) != 3 {
+				t.Fatalf("calls=%d, results=%+v", calls, turn.ToolCalls)
+			}
+			if turn.ToolCalls[0].Disposition != tc.first || turn.ToolCalls[0].Error == nil {
+				t.Fatalf("first=%+v", turn.ToolCalls[0])
+			}
+			if turn.ToolCalls[1].Disposition != DispositionSkipped || !errors.Is(turn.ToolCalls[1].Error, ErrToolAlreadyFailed) {
+				t.Fatalf("duplicate=%+v", turn.ToolCalls[1])
+			}
+			if turn.ToolCalls[2].Disposition != tc.first || errors.Is(turn.ToolCalls[2].Error, ErrToolAlreadyFailed) {
+				t.Fatalf("different args=%+v", turn.ToolCalls[2])
+			}
+			var found bool
+			for _, batch := range chatter.captured {
+				for _, msg := range batch {
+					if msg.Role == "tool" && msg.ToolCallID == "duplicate" && strings.Contains(msg.Content, tc.wantMessage) {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("missing duplicate feedback: %+v", chatter.captured)
+			}
+		})
+	}
+}
+
+func TestToolLoopNormalizesOmittedTopLevelArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name, first, second string
+		wantCalls           int
+	}{
+		{"omitted then empty", "", `,"arguments":"{}"`, 1},
+		{"empty then omitted", `,"arguments":"{}"`, "", 1},
+		{"omitted then null", "", `,"arguments":null`, 1},
+		{"different nonempty", `,"arguments":{"x":1}`, `,"arguments":{"x":2}`, 2},
+		{"nested null versus empty", `,"arguments":{"x":null}`, `,"arguments":{"x":{}}`, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []llm.ToolCall
+			raw := fmt.Sprintf(`[{"id":"one","function":{"name":"builtin__operation"%s}},{"id":"two","function":{"name":"builtin__operation"%s}}]`, tc.first, tc.second)
+			if err := json.Unmarshal([]byte(raw), &calls); err != nil {
+				t.Fatal(err)
+			}
+			invocations := 0
+			deps := ToolLoopDeps{MaxIterations: 1, ClientFactory: func(*Turn) llm.Chatter { return &dedupChatter{} },
+				BuiltinHandler: func(_ context.Context, _ string, args map[string]any) (string, error) {
+					invocations++
+					if args == nil {
+						t.Error("handler received nil top-level arguments")
+					}
+					return "", errors.New("ambiguous failure")
+				}}
+			turn := &Turn{User: &config.UserConfig{Name: "tester", Role: "child"}, Tools: []Tool{{Name: "builtin__operation"}}}
+			turn.SetMeta("pending_tool_calls", calls)
+			turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "go"}})
+			if err := NewStageToolLoop(deps)(context.Background(), turn); err != nil {
+				t.Fatal(err)
+			}
+			if invocations != tc.wantCalls {
+				t.Errorf("handler invoked %d times, want %d", invocations, tc.wantCalls)
+			}
+			if len(turn.ToolCalls) != 2 {
+				t.Fatalf("recorded %d tool results, want 2", len(turn.ToolCalls))
+			}
+			if suppressed := errors.Is(turn.ToolCalls[1].Error, ErrToolAlreadyFailed); suppressed != (tc.wantCalls == 1) {
+				t.Errorf("second-call suppression = %v, want %v", suppressed, tc.wantCalls == 1)
+			}
+		})
+	}
+}
+
+func TestLoopDetectorUsesInvocationArguments(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			stub := newStubChatterClickLoop(6)
+			calls := 0
+			deps := ToolLoopDeps{ClientFactory: func(*Turn) llm.Chatter { return stub }, MaxIterations: 20, RebuildHistory: true, EnableLoopDetector: enabled, BuiltinHandler: func(_ context.Context, _ string, args map[string]any) (string, error) {
+				calls++
+				args["ref"] = fmt.Sprintf("mutated-%d", calls)
+				return "ok", nil
+			}}
+			turn := &Turn{User: &config.UserConfig{Name: "tester"}, Tools: []Tool{{Name: "builtin__browser_click"}}}
+			turn.SetMeta("pending_tool_calls", []llm.ToolCall{{ID: "first", Function: llm.ToolCallFunction{Name: "builtin__browser_click", Arguments: map[string]any{"ref": "e1"}}}})
+			turn.SetMeta("llm_messages", []llm.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "keep clicking"}})
+			if err := NewStageToolLoop(deps)(context.Background(), turn); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 7 || len(turn.ToolCalls) != 7 {
+				t.Fatalf("handler calls=%d, results=%d; want 7 each", calls, len(turn.ToolCalls))
+			}
+			for _, r := range turn.ToolCalls {
+				if r.Args["ref"] != "e1" || r.Outcome != OutcomeSuccess || r.Error != nil {
+					t.Fatalf("unexpected result: %+v", r)
+				}
+			}
+			saw := false
+			for _, batch := range stub.captured {
+				for _, m := range batch {
+					if m.Role == "user" && strings.Contains(m.Content, "If this repetition is intentional") {
+						saw = true
+					}
+				}
+			}
+			if saw != enabled {
+				t.Errorf("nudge seen=%t, want %t", saw, enabled)
+			}
+		})
+	}
+}
+
+func TestUnsuccessfulCallIndexSnapshotIsolation(t *testing.T) {
+	original := map[string]any{"nested": map[string]any{"value": "before"}}
+	results := []ToolResult{{ToolName: "tool", Args: original, Error: errors.New("failed"), Disposition: DispositionAttempted, Outcome: OutcomeFailure}}
+	idx := newUnsuccessfulCallIndex()
+	if _, found := idx.find("tool", map[string]any{"nested": map[string]any{"value": "before"}}, results); !found {
+		t.Fatal("original arguments did not match")
+	}
+	results[0].Args["nested"].(map[string]any)["value"] = "result changed"
+	if got := original["nested"].(map[string]any)["value"]; got != "before" {
+		t.Errorf("result mutation changed external argument: %v", got)
+	}
+	original["nested"].(map[string]any)["value"] = "external changed"
+	if got := results[0].Args["nested"].(map[string]any)["value"]; got != "result changed" {
+		t.Errorf("external mutation changed result snapshot: %v", got)
+	}
+}
+
+func TestToolLoopSnapshotsLargeJSONArguments(t *testing.T) {
+	const name = "builtin__search"
+	large := strings.Repeat("x", (1<<20)+1)
+	for _, tc := range []struct{ name, key, value string }{
+		{"large string", "payload", large},
+		{"large key", large, "payload"},
+	} {
+		for _, fail := range []bool{false, true} {
+			label := "success"
+			if fail {
+				label = "failure"
+			}
+			t.Run(tc.name+"/"+label, func(t *testing.T) {
+				data, err := json.Marshal(map[string]any{tc.key: tc.value, "mode": "original"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				decode := func() map[string]any {
+					var args map[string]any
+					if err := json.Unmarshal(data, &args); err != nil {
+						t.Fatal(err)
+					}
+					return args
+				}
+				args := decode()
+				if _, ok := callArgsKey(args); ok {
+					t.Fatal("large argument unexpectedly indexable")
+				}
+				failure := errors.New("failed")
+				calls := 0
+				stage := NewStageToolLoop(ToolLoopDeps{MaxIterations: 1, ClientFactory: func(*Turn) llm.Chatter { return &dedupChatter{} }, BuiltinHandler: func(_ context.Context, _ string, args map[string]any) (string, error) {
+					calls++
+					args["mode"] = "mutated"
+					if fail {
+						return "", failure
+					}
+					return "ok", nil
+				}})
+				turn := &Turn{User: &config.UserConfig{Name: "tester", Role: "child"}, Tools: []Tool{{Name: name}}}
+				turn.SetMeta("pending_tool_calls", []llm.ToolCall{{Function: llm.ToolCallFunction{Name: name, Arguments: args}}, {Function: llm.ToolCallFunction{Name: name, Arguments: decode()}}})
+				turn.SetMeta("llm_messages", []llm.Message{{Role: "user", Content: "search"}})
+				if err := stage(context.Background(), turn); err != nil {
+					t.Fatal(err)
+				}
+				if len(turn.ToolCalls) != 2 {
+					t.Fatalf("recorded calls=%d", len(turn.ToolCalls))
+				}
+				want := 2
+				if fail {
+					want = 1
+				}
+				if calls != want {
+					t.Errorf("handler calls=%d, want %d", calls, want)
+				}
+				if got := turn.ToolCalls[0].Args["mode"]; got != "original" {
+					t.Errorf("recorded mode=%v, want original", got)
+				}
+				if got := errors.Is(turn.ToolCalls[1].Error, ErrToolAlreadyFailed); got != fail {
+					t.Errorf("retry suppressed=%t, want %t", got, fail)
+				}
+				if fail && (!errors.Is(turn.ToolCalls[0].Error, failure) || turn.ToolCalls[0].Outcome != OutcomeFailure || turn.ToolCalls[1].Disposition != DispositionSkipped) {
+					t.Error("incorrect failed/retry metadata")
+				}
+				if !fail && (turn.ToolCalls[0].Outcome != OutcomeSuccess || turn.ToolCalls[1].Outcome != OutcomeSuccess) {
+					t.Error("incorrect success metadata")
+				}
+			})
+		}
 	}
 }

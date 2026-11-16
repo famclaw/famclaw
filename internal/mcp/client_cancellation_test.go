@@ -5,16 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/famclaw/famclaw/internal/config"
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	protocol "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
-
-	"github.com/famclaw/famclaw/internal/config"
-	protocol "github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 )
 
 func newBlockingSSEServer(t *testing.T) (*httptest.Server, <-chan struct{}) {
@@ -289,5 +290,119 @@ func TestSSEStopDuringStartupAllowsRestart(t *testing.T) {
 	}
 	if _, err := c.CallTool(ctx, "echo", nil); err != nil {
 		t.Fatalf("restart call: %v", err)
+	}
+}
+
+func TestSSEStartupPreservesDeadlineCause(t *testing.T) {
+	entered := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(entered); <-r.Context().Done() }))
+	defer srv.Close()
+	c := NewTransportClient("fixture", config.MCPServerConfig{Transport: "sse", URL: srv.URL + "/sse"}, "", false, false)
+	defer c.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Start(ctx) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("startup did not enter")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("start error = %v; want deadline exceeded", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup did not return")
+	}
+}
+
+func TestClientStopWhileStartWaitsForGate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// Hold the token as an in-progress handshake would, without transport I/O.
+		gate := make(chan struct{}, 1)
+		c := &Client{startGate: gate}
+		startResult := make(chan error, 1)
+		go func() { startResult <- c.Start(context.Background()) }()
+		synctest.Wait() // Start has captured the generation and is waiting for the gate.
+
+		stopped := make(chan struct{})
+		go func() {
+			c.Stop()
+			close(stopped)
+		}()
+		synctest.Wait()
+		select {
+		case <-stopped:
+		default:
+			t.Error("Stop did not complete while Start waited for the gate")
+		}
+
+		gate <- struct{}{}
+		if err := <-startResult; !errors.Is(err, errClientStopped) {
+			t.Errorf("Start after Stop returned %v, want errClientStopped", err)
+		}
+		<-stopped
+	})
+}
+
+type countingWarmClient struct {
+	mcpclient.MCPClient
+	calls atomic.Int32
+}
+
+func (c *countingWarmClient) CallTool(ctx context.Context, request protocol.CallToolRequest) (*protocol.CallToolResult, error) {
+	c.calls.Add(1)
+	return c.MCPClient.CallTool(ctx, request)
+}
+
+func TestWarmCallBypassesHeldStartupGateAndHonorsCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cancelled bool
+		wantCalls int32
+	}{
+		{name: "warm call", wantCalls: 1},
+		{name: "cancelled warm call", cancelled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTestClient(t)
+			inner := &countingWarmClient{MCPClient: c.inner}
+			c.inner = inner
+			// A completed handshake can have marked the client ready before its
+			// deferred gate release. Hold the token to reproduce that window.
+			c.startGate = make(chan struct{}, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			if tc.cancelled {
+				cancel()
+			}
+			result, err := c.CallTool(ctx, "echo", map[string]any{"text": "hello"})
+			if tc.cancelled {
+				if !errors.Is(err, context.Canceled) || result != nil {
+					t.Fatalf("cancelled call result=%v err=%v", result, err)
+				}
+			} else if err != nil || result == nil {
+				t.Fatalf("ready call should not wait for startup gate: result=%v err=%v", result, err)
+			}
+			if got := inner.calls.Load(); got != tc.wantCalls {
+				t.Errorf("transport calls = %d, want %d", got, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func BenchmarkClientWarmStart(b *testing.B) {
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
+	c := &Client{inner: &countingWarmClient{}, ready: true, startGate: gate}
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := c.start(ctx, true); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
