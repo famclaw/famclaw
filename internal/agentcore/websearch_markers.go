@@ -117,7 +117,8 @@ func ToolErrorDisplay(toolName string, readOnly bool, result string) string {
 
 // ToolErrorDisplayWithCause adds a fixed error class for builtins when the
 // cause matches a standard sentinel. It never formats the error or raw result.
-// The existing uncertainty warning and exact web-search marker policy remain.
+// The parent tool loop and subagent dispatch both use this helper; the existing
+// uncertainty warning and exact web-search marker policy remain.
 func ToolErrorDisplayWithCause(toolName string, readOnly bool, result string, err error) string {
 	display := ToolErrorDisplay(toolName, readOnly, result)
 	if !strings.HasPrefix(toolName, "builtin__") || toolName == "builtin__web_search" {

@@ -914,6 +914,8 @@ func (d *DB) RecentApprovals(limit int) ([]*Approval, error) {
 }
 
 // AllApprovalsForOPA returns approvals as map[id]→{status,...} for OPA input.
+// The supported schema requires a non-null expiry; malformed values fail closed
+// rather than returning an incomplete approval map.
 func (d *DB) AllApprovalsForOPA() (map[string]any, error) {
 	rows, err := d.sql.Query(`SELECT id, status, COALESCE(decided_by,''), decision_sequence, expires_at FROM approvals`)
 	if err != nil {

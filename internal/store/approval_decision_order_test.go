@@ -55,3 +55,23 @@ func TestConcurrentDecisionSequenceAndRollback(t *testing.T) {
 		t.Fatalf("sequence changed: %d %v", after, err)
 	}
 }
+
+func TestAllApprovalsForOPARejectsMalformedExpiry(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	for _, id := range []string{"valid", "malformed"} {
+		if _, err := db.UpsertApproval(context.Background(), &Approval{ID: id, UserName: "test", UserDisplay: "Test", AgeGroup: "adult", Category: "test", QueryText: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.SQL().Exec(`UPDATE approvals SET expires_at=NULL WHERE id='malformed'`); err == nil {
+		t.Fatal("schema unexpectedly permits NULL expiry")
+	}
+	if _, err := db.SQL().Exec(`UPDATE approvals SET expires_at='not-a-date' WHERE id='malformed'`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.AllApprovalsForOPA()
+	if err == nil || got != nil {
+		t.Fatalf("malformed expiry should fail closed without partial map: got=%v err=%v", got, err)
+	}
+}

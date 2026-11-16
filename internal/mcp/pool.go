@@ -809,8 +809,13 @@ func (p *Pool) ListTools() []string {
 	defer p.mu.RUnlock()
 
 	seen := make(map[string]bool)
+	seenClients := make(map[*managedClient]bool)
 	var names []string
 	for _, mc := range p.clients {
+		if seenClients[mc] {
+			continue
+		}
+		seenClients[mc] = true
 		tools := mc.snapshotClient().Tools()
 		for _, tool := range tools {
 			// StartAll uses the raw tool.Name from Tools() as the alias key, subject to collisions.
@@ -845,8 +850,13 @@ func (p *Pool) ListToolInfos() []ToolInfo {
 	defer p.mu.RUnlock()
 
 	seen := make(map[string]bool)
+	seenClients := make(map[*managedClient]bool)
 	var infos []ToolInfo
 	for _, mc := range p.clients {
+		if seenClients[mc] {
+			continue
+		}
+		seenClients[mc] = true
 		tools := mc.snapshotClient().Tools()
 		cfg := mc.cfg
 		name := mc.name
