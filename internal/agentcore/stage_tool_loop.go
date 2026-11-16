@@ -749,6 +749,7 @@ type readOnlyIndexCache struct {
 	index    map[string]bool
 }
 
+// get reuses the index only while each ordered name and read-only flag matches.
 func (c *readOnlyIndexCache) get(tools []Tool) map[string]bool {
 	if c.index != nil && len(c.metadata) == len(tools) {
 		same := true
@@ -1019,8 +1020,9 @@ func rebuildResultLine(tr ToolResult) string {
 
 	var line string
 	if tr.Error != nil || tr.Disposition == DispositionSkipped {
-		// Diagnostic causes and input arguments can contain secrets. Render
-		// only trusted structural state and allowlisted search classifications.
+		// Diagnostic causes and input arguments can contain secrets. Rebuilt
+		// history uses structural state and allowlisted search classifications;
+		// fixed transport-cause labels remain in the immediate tool message.
 		state := "tool reported an error"
 		switch tr.Disposition {
 		case DispositionDenied:

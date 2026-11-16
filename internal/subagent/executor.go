@@ -295,6 +295,7 @@ func dispatchSubagentTool(
 		result, err := deps.Pool.CallTool(ctx, name, tc.Function.Arguments)
 		duration := time.Since(start)
 		if err != nil || result == nil {
+			// The cause suffix accepts nil when only the result is missing.
 			log.Printf("[subagent] tool outcome uncertain (%s)", duration)
 			if mcpReadOnly[name] {
 				return agentcore.ToolOutcomeUncertainReadOnly + agentcore.MCPUncertainCauseSuffix(err), true

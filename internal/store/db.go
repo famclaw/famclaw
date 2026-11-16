@@ -860,8 +860,8 @@ func (d *DB) DecideApproval(id, status, decidedBy string) error {
 }
 
 func (d *DB) decideApproval(ctx context.Context, id, status, decidedBy string, note *string) error {
-	// SQLite serializes this UPDATE with other writers. The sequence orders
-	// surviving decisions even when their second-resolution timestamps tie.
+	// SQLite serializes this UPDATE with other writers. The table-wide sequence
+	// orders surviving decisions across approvals even when timestamps tie.
 	res, err := d.sql.ExecContext(ctx, `
 		UPDATE approvals SET status=?, decided_by=?, updated_at=CURRENT_TIMESTAMP,
 		decision_sequence=(SELECT COALESCE(MAX(decision_sequence), 0) + 1 FROM approvals),

@@ -946,6 +946,8 @@ func (p *Pool) StopAll() {
 	for _, t := range transports {
 		go closeRetiredTransport(t)
 	}
+	// Same-server fences remain until starts and closes finish. Wait for them.
+	// Final process shutdown bounds its wait externally; this does not cancel Close.
 	for _, done := range waits {
 		<-done
 	}
