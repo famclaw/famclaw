@@ -7,7 +7,6 @@ import (
 	"errors"
 	"github.com/famclaw/famclaw/internal/config"
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
 	protocol "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"io"
@@ -398,13 +397,13 @@ func TestPoolFirstCauseAndCancellation(t *testing.T) {
 // explicitly-false hints must stay false so the conservative
 // "changes may have occurred" display is preserved.
 func TestListToolInfosSurfacesReadOnlyHint(t *testing.T) {
-	ok := func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return mcp.NewToolResultText("ok"), nil
+	ok := func(context.Context, protocol.CallToolRequest) (*protocol.CallToolResult, error) {
+		return protocol.NewToolResultText("ok"), nil
 	}
 	srv := server.NewMCPServer("hint-test", "1")
-	srv.AddTool(mcp.NewTool("readonly_lookup", mcp.WithReadOnlyHintAnnotation(true)), ok)
-	srv.AddTool(mcp.NewTool("mutating_write"), ok)
-	srv.AddTool(mcp.NewTool("explicit_false_hint", mcp.WithReadOnlyHintAnnotation(false)), ok)
+	srv.AddTool(protocol.NewTool("readonly_lookup", protocol.WithReadOnlyHintAnnotation(true)), ok)
+	srv.AddTool(protocol.NewTool("mutating_write"), ok)
+	srv.AddTool(protocol.NewTool("explicit_false_hint", protocol.WithReadOnlyHintAnnotation(false)), ok)
 
 	pool := NewPool("", false, false)
 	if err := pool.RegisterInProcessServer("hint-test", srv); err != nil {
