@@ -3,11 +3,15 @@ package mcp
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/famclaw/famclaw/internal/config"
+	protocol "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 func TestReloadReportsPriorCloseBusy(t *testing.T) {
@@ -148,8 +152,17 @@ func TestReloadAdapterReportsGlobalBusy(t *testing.T) {
 func TestReloadRetriesStartPreviouslyBlockedByClientLock(t *testing.T) {
 	for _, reason := range []string{"lock", "canceled"} {
 		t.Run(reason, func(t *testing.T) {
+			var calls atomic.Int32
+			s := server.NewMCPServer("retry", "1", server.WithToolCapabilities(true))
+			s.AddTool(protocol.NewTool("retry_probe"), func(context.Context, protocol.CallToolRequest) (*protocol.CallToolResult, error) {
+				calls.Add(1)
+				return protocol.NewToolResultText("ok"), nil
+			})
+			endpoint := httptest.NewServer(server.NewStreamableHTTPServer(s))
+			defer endpoint.Close()
 			p := NewPool("", false, false)
-			cfg := config.MCPServerConfig{Transport: "http", URL: "http://example.invalid"}
+			defer p.StopAll()
+			cfg := config.MCPServerConfig{Transport: "http", URL: endpoint.URL}
 			mc := &managedClient{name: "server", cfg: cfg, client: NewTransportClient("server", cfg, "", false, false)}
 			p.clients["server"] = mc
 			life := p.lifecycle("server")
@@ -169,9 +182,25 @@ func TestReloadRetriesStartPreviouslyBlockedByClientLock(t *testing.T) {
 			if !errors.Is(err, want) || life.starts != 0 {
 				t.Fatalf("start result %v; starts=%d", err, life.starts)
 			}
-			changed, err := p.updateFromConfig(map[string]config.MCPServerConfig{"server": cfg}, nil, true)
-			if err != nil || len(changed) != 1 || changed[0] != "server" {
-				t.Fatalf("start was not scheduled for retry: %v %v", changed, err)
+			retryConfig := &config.Config{Skills: config.SkillsConfig{MCPServers: map[string]config.MCPServerConfig{"server": cfg}}}
+			results := p.ReloadConfig(retryConfig)
+			if result, ok := results["server"]; !ok || result != nil {
+				t.Fatalf("retry did not start server: %v", results)
+			}
+			if !p.HasTool("retry_probe") {
+				t.Fatal("retry did not expose discovered tool")
+			}
+			if _, err := p.CallTool(context.Background(), "retry_probe", nil); err != nil || calls.Load() != 1 {
+				t.Fatalf("retried tool call: err=%v calls=%d", err, calls.Load())
+			}
+			mc.stateMu.Lock()
+			pending := mc.reloadStartPending
+			mc.stateMu.Unlock()
+			life.mu.Lock()
+			starts, closes, closing := life.starts, life.closes, life.closing
+			life.mu.Unlock()
+			if pending || starts != 0 || closes != 0 || closing != nil {
+				t.Fatal("retry did not clear pending state and balance lifecycle")
 			}
 		})
 	}
