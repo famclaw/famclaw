@@ -158,7 +158,7 @@ func TestStageToolLoop_ToolCallIDPropagation(t *testing.T) {
 					return "", errors.New("synthetic builtin failure")
 				}
 			},
-			wantContent: "Error: synthetic builtin failure",
+			wantContent: "Tool reported an error; some changes may still have occurred. Verify before trying again.",
 		},
 		{
 			name:     "builtin handler success",

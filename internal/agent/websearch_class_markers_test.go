@@ -5,17 +5,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/famclaw/famclaw/internal/agentcore"
 	"github.com/famclaw/famclaw/internal/webfetch"
 	"github.com/famclaw/famclaw/internal/websearch"
 )
 
-// TestWebSearchError_ClassMarkers is the Slice 2d contract: each classified
-// backend failure maps to its own short neutral marker (nil error, so the
-// tool loop hands it to the LLM as ordinary output instead of an "Error:"
-// blob), the pre-class special cases keep their existing markers, and
-// anything unclassified passes through as a plain error. Every marker is
-// neutral English and must never leak the endpoint (hostnames,
-// credentials, network topology stay server-side).
+// TestWebSearchError_ClassMarkers checks static display markers and retained
+// private causes for classified failures, with unclassified errors passed through.
 func TestWebSearchError_ClassMarkers(t *testing.T) {
 	const endpoint = "http://10.0.0.7:8080"
 
@@ -84,7 +80,7 @@ func TestWebSearchError_ClassMarkers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg, err := webSearchError(tc.err, endpoint)
+			msg, err := webSearchError(tc.err)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected the error to pass through, got nil (msg=%q)", msg)
@@ -94,11 +90,17 @@ func TestWebSearchError_ClassMarkers(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("classified failure must return a nil error so the tool loop hands the marker to the LLM, got %v", err)
+			if err == nil {
+				t.Fatal("classified failure must retain its cause")
 			}
 			if msg != tc.want {
 				t.Errorf("marker = %q, want %q", msg, tc.want)
+			}
+			// PR #431 invariant: every marker webSearchError returns must be
+			// accepted by the tool loop's allowlist, or the tool loop falls
+			// back to the generic error display and the classification is lost.
+			if tc.want != "" && !agentcore.IsSafeWebSearchMarker(tc.want) {
+				t.Errorf("producer marker %q is not accepted by agentcore.IsSafeWebSearchMarker — maintenance coupling between webSearchError and the tool loop allowlist", tc.want)
 			}
 			// The endpoint (and anything it carries) must never reach the
 			// family chat via the marker.
@@ -136,9 +138,9 @@ func providerForGap(t *testing.T, name string) error {
 // switch must return the class-specific "rate limited" marker, not fall
 // through to the umbrella's generic "unavailable" one.
 func TestWebSearchError_ClassBeforeUmbrella(t *testing.T) {
-	msg, err := webSearchError(&dualError{class: websearch.ErrRateLimited, umbrella: websearch.ErrUnavailable}, "http://search.local")
-	if err != nil {
-		t.Fatalf("expected a nil error with a marker, got %v", err)
+	msg, err := webSearchError(&dualError{class: websearch.ErrRateLimited, umbrella: websearch.ErrUnavailable})
+	if err == nil {
+		t.Fatal("expected classified error with a marker")
 	}
 	if msg != "web_search: rate limited" {
 		t.Errorf("class-specific checks must run before the umbrella: got %q, want the rate-limited marker", msg)
@@ -159,7 +161,7 @@ func (d *dualError) Unwrap() []error { return []error{d.class, d.umbrella} }
 // TestWebSearchError_NoPanicOnNil: a nil error must not panic; it passes
 // through as ("", nil).
 func TestWebSearchError_NoPanicOnNil(t *testing.T) {
-	msg, err := webSearchError(nil, "http://search.local")
+	msg, err := webSearchError(nil)
 	if err != nil {
 		t.Fatalf("nil in, got error %v", err)
 	}
@@ -181,9 +183,9 @@ func TestWebSearchError_SentinelSurvivesReworkedWording(t *testing.T) {
 		inner := providerForGap(t, "tavily")
 		// Simulate an upstream rework: entirely new wording, same sentinel.
 		reworked := fmt.Errorf("web_search: provider setup failed: %w", inner)
-		msg, err := webSearchError(reworked, "http://10.0.0.7:8080")
-		if err != nil {
-			t.Fatalf("expected a sanitized marker, got error %v", err)
+		msg, err := webSearchError(reworked)
+		if err == nil {
+			t.Fatal("expected classified error with a sanitized marker")
 		}
 		if msg != "web_search: provider not configured" {
 			t.Errorf("marker = %q, want %q — classification must key on the sentinel, not the wording",
@@ -197,7 +199,7 @@ func TestWebSearchError_SentinelSurvivesReworkedWording(t *testing.T) {
 		// configuration gap and must pass through (surfaced by the tool
 		// loop), not be silently labelled one.
 		plain := fmt.Errorf("web_search: tavily provider selected but no API key is set (env FAMCLAW_WEB_SEARCH_API_KEY or tools.web_search.tavily_api_key)")
-		msg, err := webSearchError(plain, "")
+		msg, err := webSearchError(plain)
 		if err == nil {
 			t.Fatalf("expected the error to pass through, got marker %q", msg)
 		}

@@ -59,6 +59,39 @@ func TestDashboardUpdatePIIChildScoping(t *testing.T) {
 	}
 	defer parentConn.Close()
 
+	// A successful upgrade can precede server-side registration. A pong is
+	// sent from the registered client loop, so wait for it on both sockets.
+	waitRegistered := func(conn *websocket.Conn, who string) {
+		t.Helper()
+		if err := conn.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatalf("%s: write deadline: %v", who, err)
+		}
+		if err := conn.WriteJSON(map[string]string{"type": "ping"}); err != nil {
+			t.Fatalf("%s: ping: %v", who, err)
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatalf("%s: read deadline: %v", who, err)
+		}
+		for i := 0; i < 10; i++ {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				t.Fatalf("%s: waiting for pong: %v", who, err)
+			}
+			var msg struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				t.Fatalf("%s: pong frame: %v", who, err)
+			}
+			if msg.Type == "pong" {
+				return
+			}
+		}
+		t.Fatalf("%s: no pong within 10 frames", who)
+	}
+	waitRegistered(childConn, "child")
+	waitRegistered(parentConn, "parent")
+
 	// Sanity: both sockets registered with the expected session role. The
 	// server map is keyed by the SERVER-side conn from Upgrade, so look the
 	// clients up by userName instead of the client-side conn from Dial.

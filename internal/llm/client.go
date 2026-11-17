@@ -308,9 +308,10 @@ type ToolCallFunction struct {
 type ToolCallArguments map[string]any
 
 // UnmarshalJSON accepts both the spec-compliant string form and the
-// lenient object form. Empty string and null both decode to an empty
-// map (the LLM emitted no arguments).
+// lenient object form. Empty string, literal null, and string-encoded null
+// decode to an empty map (the LLM emitted no arguments).
 func (a *ToolCallArguments) UnmarshalJSON(data []byte) error {
+	// Handle literal null before object decoding; encoded null is handled below.
 	if len(data) == 0 || string(data) == "null" {
 		*a = ToolCallArguments{}
 		return nil
@@ -333,6 +334,9 @@ func (a *ToolCallArguments) UnmarshalJSON(data []byte) error {
 				return fmt.Errorf("%w: %v (raw: %q)", ErrToolCallArgsTruncated, err, s)
 			}
 			return fmt.Errorf("parsing arguments JSON from string: %w", err)
+		}
+		if m == nil {
+			m = make(map[string]any)
 		}
 		*a = m
 		return nil

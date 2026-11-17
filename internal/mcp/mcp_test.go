@@ -72,6 +72,7 @@ func newTestClient(t *testing.T) *Client {
 		name:          "mock",
 		transportType: "inprocess",
 		inner:         inner,
+		ready:         true,
 		tools:         toolsResult.Tools,
 	}
 }

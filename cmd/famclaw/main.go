@@ -522,7 +522,13 @@ func main() {
 	}
 	var mcpPool *mcp.Pool
 	mcpPool, skippedMCPs, _ := initMCPPool(context.Background(), cfg, sandboxRoot)
-	defer mcpPool.StopAll()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := shutdownMCP(ctx, mcpPool.StopAll); err != nil {
+			log.Printf("MCP shutdown: %v", err)
+		}
+	}()
 
 	// HoneyBadger client + quarantine for runtime scanning. famclaw owns its
 	// scanner dependency: when seccheck is enabled and the binary is missing,
@@ -1134,6 +1140,22 @@ func main() {
 		log.Printf("Waiting for web background work: %v", backgroundErr)
 	}
 	log.Println("Stopped.")
+}
+
+// shutdownMCP bounds the final process shutdown wait. StopAll continues to hold
+// its lifecycle fences until transports close, even if the caller stops waiting.
+func shutdownMCP(ctx context.Context, stop func()) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stop()
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func shutdownWeb(ctx context.Context, shutdown, wait func(context.Context) error) (error, error) {

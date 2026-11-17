@@ -107,14 +107,17 @@ func turnToLLMMessages(msgs []Message) []llm.Message {
 }
 
 func toolsToLLMDefs(tools []Tool) []llm.ToolDef {
+	rawNames := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		if !strings.HasPrefix(tool.Name, "builtin__") {
+			rawNames[tool.Name] = true
+		}
+	}
 	defs := make([]llm.ToolDef, len(tools))
 	for i, t := range tools {
-		// Strip the "builtin__" prefix so the name advertised to the LLM
-		// matches the capabilities prompt ("web_search", not
-		// "builtin__web_search"). MCP names keep their
-		// "mcp__<server>__<tool>" namespace for disambiguation.
+		// Advertise builtins by bare name unless an offered raw tool owns it.
 		name := t.Name
-		if bare, ok := strings.CutPrefix(name, "builtin__"); ok {
+		if bare, ok := strings.CutPrefix(name, "builtin__"); ok && !rawNames[bare] {
 			name = bare
 		}
 		defs[i] = llm.ToolDef{

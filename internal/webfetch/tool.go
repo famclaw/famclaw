@@ -9,6 +9,7 @@ func Tool(allowedRoles []string) agentcore.Tool {
 	return agentcore.Tool{
 		Name:        "builtin__web_fetch",
 		Source:      "builtin",
+		ReadOnly:    true, // fetch performs no external state mutation
 		Description: "Fetch a URL and return extracted text. Use for current events, weather, or public documentation. Subject to family policy and per-user URL allowlist; size and timeout are capped.",
 		Roles:       allowedRoles,
 		InputSchema: map[string]any{

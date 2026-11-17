@@ -46,6 +46,7 @@ func (p *Pool) RegisterInProcessServer(name string, srv *server.MCPServer) error
 		transportType: "inprocess",
 		SandboxRoot:   p.SandboxRoot,
 		inner:         inner,
+		ready:         true,
 		tools:         toolsResult.Tools,
 	}
 
