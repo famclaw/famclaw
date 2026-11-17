@@ -16,7 +16,7 @@ elif n=='partprobe' and case=='partprobe':sys.exit(37)
 elif n=='parted':(root/'parted').touch()
 elif n=='blockdev':print(2048 if (root/'parted').exists() and case!='no_partition_growth' else 1024)
 elif n=='e2fsck':sys.exit(int(os.environ['FS_STATUS']))
-elif n=='dumpe2fs':print('Block count: '+('200' if (root/'resized').exists() and case!='no_fs_growth' else '100'))
+elif n=='dumpe2fs':print('Block count: '+('invalid' if case=='invalid_fs' and (root/'resized').exists() else ('200' if (root/'resized').exists() and case!='no_fs_growth' else '100')))
 elif n=='resize2fs':(root/'resized').touch()
 elif n=='install' and case=='after_bootmount':sys.exit(37)
 elif n=='umount' and case=='cleanup_failure':sys.exit(37)
@@ -56,6 +56,8 @@ class BuilderMocks(unittest.TestCase):
   for case in ['no_partition_growth','no_fs_growth']:
    with self.subTest(case=case):
     r,e=self.run_case(case);self.assertNotEqual(r.returncode,0);self.assertTrue(any(x[0]=='losetup' and x[1:]==['-d','/dev/loop-test'] for x in e));self.assertFalse(any(x[0]=='mount' for x in e))
+ def test_invalid_filesystem_block_count_fails_closed(self):
+  r,e=self.run_case('invalid_fs');self.assertNotEqual(r.returncode,0);self.assertFalse(any(x[0]=='mount' for x in e))
  def test_partition_growth_precedes_filesystem_resize(self):
   r,e=self.run_case();self.assertEqual(r.returncode,0);names=[x[0] for x in e]
   self.assertLess(names.index('parted'),names.index('e2fsck'));self.assertLess(names.index('e2fsck'),names.index('resize2fs'));self.assertLess(names.index('resize2fs'),names.index('mount'))

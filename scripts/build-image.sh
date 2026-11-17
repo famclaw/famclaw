@@ -89,7 +89,8 @@ old_blocks=$(dumpe2fs -h "$ROOT_PART" 2>/dev/null | awk '/^Block count:/ {print 
 [[ "$old_blocks" =~ ^[0-9]+$ ]]
 resize2fs "$ROOT_PART"
 new_blocks=$(dumpe2fs -h "$ROOT_PART" 2>/dev/null | awk '/^Block count:/ {print $3}')
-[[ "$new_blocks" =~ ^[0-9]+$ ]] && (( new_blocks > old_blocks ))
+[[ "$new_blocks" =~ ^[0-9]+$ ]]
+(( new_blocks > old_blocks ))
 
 MOUNT_ROOT="$WORK_DIR/root"
 MOUNT_BOOT="$WORK_DIR/boot"
