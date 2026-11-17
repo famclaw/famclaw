@@ -4,6 +4,26 @@ All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
+## v0.15.0 — 2026-11-17
+
+### Added
+- **Android control:** an MCP server supports policy-gated phone control and a vision pipeline. (#417)
+- **Shared family information:** tools can share and list family facts, and a shared task store records named owners. (#421, #420)
+- **Web fetch policy:** configurable URL allowlist and denylist modes include a kid-safe default. (#423)
+- **Operator guides:** Linux installation, capability views, and household backup procedures are documented. (#422)
+
+### Changed
+- **Tool outcomes:** MCP errors and uncertain outcomes are reported distinctly, with conservative handling of retries and potentially changed effects. (#431)
+- **Identity and access:** session principals, role and cohort handling, promotion limits, and parent-only family-state mutation checks are strengthened. (#429, #432)
+
+### Fixed
+- **MCP reload:** report a busy retirement or startup accurately, preserving lifecycle fencing and allowing a later retry. (#431)
+- **Search and reminders:** recover stale-search refusals, report missing delivery senders, and preserve truthful terminal reminder status. (#424, #419, #428)
+- **Web shutdown:** prevent a background-work synchronization race. (#427)
+
+### Dependencies
+- Updated Go dependencies and the release workflow's cosign installer. (#418, #425, #434, #435, #433)
+
 ## v0.14.2 — 2026-10-21
 
 ### Fixed
