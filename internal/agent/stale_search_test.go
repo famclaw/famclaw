@@ -118,29 +118,25 @@ func TestTrailingHistoryHasFailureClaim(t *testing.T) {
 	}
 }
 
-func TestWebSearchAvailableAndRecorded(t *testing.T) {
-	turn := &agentcore.Turn{
-		Tools: []agentcore.Tool{
-			{Name: "builtin__spawn_agent"},
-			{Name: "builtin__web_search"},
-		},
+func TestHasAnyToolOffered(t *testing.T) {
+	cases := []struct {
+		name  string
+		tools []agentcore.Tool
+		want  bool
+	}{
+		{name: "empty", tools: nil, want: false},
+		{name: "no_tools_slice", tools: []agentcore.Tool{}, want: false},
+		{name: "web_search_only", tools: []agentcore.Tool{{Name: "builtin__web_search"}}, want: true},
+		{name: "mcp_only", tools: []agentcore.Tool{{Name: "mcp__external_resource__read_records"}}, want: true},
+		{name: "mixed", tools: []agentcore.Tool{{Name: "builtin__spawn_agent"}, {Name: "mcp__phone__screenshot"}}, want: true},
 	}
-	if !webSearchAvailable(turn) {
-		t.Error("web_search in Tools should be reported available")
-	}
-	noSearch := &agentcore.Turn{Tools: []agentcore.Tool{{Name: "builtin__spawn_agent"}}}
-	if webSearchAvailable(noSearch) {
-		t.Error("no web_search in Tools should be reported unavailable")
-	}
-
-	if recordedWebSearchThisTurn(nil) {
-		t.Error("no results should not count as recorded")
-	}
-	if recordedWebSearchThisTurn([]agentcore.ToolResult{{ToolName: "builtin__spawn_agent"}}) {
-		t.Error("non-web_search result should not count as recorded")
-	}
-	if !recordedWebSearchThisTurn([]agentcore.ToolResult{{ToolName: "builtin__web_search"}}) {
-		t.Error("web_search result should count as recorded")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hasAnyToolOffered(&agentcore.Turn{Tools: tc.tools})
+			if got != tc.want {
+				t.Errorf("hasAnyToolOffered = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -155,7 +151,14 @@ func TestShouldFreshSearchRetry(t *testing.T) {
 		t.Error("claim + available + no record should fire the retry")
 	}
 
-	// A real web_search result recorded this turn suppresses the retry.
+	// A tool recorded this turn suppresses the retry: after ANY executed
+	// tool the recorded execution outcome is preserved and no second
+	// pipeline run may follow (applies to web_search and to opaque MCP
+	// tools alike).
+	turn.ToolCalls = []agentcore.ToolResult{{ToolName: "mcp__external_resource__read_records"}}
+	if (&Agent{}).shouldFreshSearchRetry(turn) {
+		t.Error("any tool recorded this turn should suppress the retry")
+	}
 	turn.ToolCalls = []agentcore.ToolResult{{ToolName: "builtin__web_search"}}
 	if (&Agent{}).shouldFreshSearchRetry(turn) {
 		t.Error("recorded web_search result should suppress the retry")
@@ -169,11 +172,18 @@ func TestShouldFreshSearchRetry(t *testing.T) {
 		t.Error("no failure claim should not fire the retry")
 	}
 
-	// web_search not offered does not fire.
+	// No tools offered at all does not fire.
 	turn.Output = "I can't access that."
-	turn.Tools = []agentcore.Tool{{Name: "builtin__spawn_agent"}}
+	turn.Tools = nil
 	if (&Agent{}).shouldFreshSearchRetry(turn) {
-		t.Error("web_search unavailable should not fire the retry")
+		t.Error("no offered tools should not fire the retry")
+	}
+
+	// An opaque MCP tool offered (no web_search) DOES fire when nothing was
+	// attempted — MCP-only recovery is required to reconsider.
+	turn.Tools = []agentcore.Tool{{Name: "mcp__external_resource__read_records"}}
+	if !(&Agent{}).shouldFreshSearchRetry(turn) {
+		t.Error("opaque MCP tool offered + inability claim + zero attempted should fire the retry")
 	}
 }
 
@@ -205,8 +215,30 @@ type staleSearchChatter struct {
 	recorded [][]llm.Message
 }
 
-func (m *staleSearchChatter) Chat(context.Context, []llm.Message, float64, int, func(string)) (string, error) {
-	return "", errors.New("staleSearchChatter.Chat: unexpected")
+func (m *staleSearchChatter) nextMsg() (*llm.Message, error) {
+	idx := m.calls
+	m.calls++
+	if idx >= len(m.script) {
+		return nil, fmt.Errorf("staleSearchChatter: script exhausted (call %d of %d)", idx, len(m.script))
+	}
+	return m.script[idx], nil
+}
+
+// Chat serves the scripted plain-text response for the non-tool path. Records
+// exactly one call and invokes the streaming callback when provided.
+func (m *staleSearchChatter) Chat(_ context.Context, msgs []llm.Message, _ float64, _ int, onToken func(string)) (string, error) {
+	msg, err := m.nextMsg()
+	if err != nil {
+		return "", err
+	}
+	m.recorded = append(m.recorded, msgs)
+	if msg.Content == "" || len(msg.ToolCalls) > 0 {
+		return "", fmt.Errorf("staleSearchChatter.Chat: scripted response %d is not plain text (got tool-calls=%d content=%q)", m.calls-1, len(msg.ToolCalls), msg.Content)
+	}
+	if onToken != nil {
+		onToken(msg.Content)
+	}
+	return msg.Content, nil
 }
 
 func (m *staleSearchChatter) ChatMessage(context.Context, []llm.Message, float64, int) (*llm.Message, error) {
@@ -218,13 +250,12 @@ func (m *staleSearchChatter) ChatSync(context.Context, []llm.Message, float64, i
 }
 
 func (m *staleSearchChatter) ChatWithTools(_ context.Context, msgs []llm.Message, _ float64, _ int, _ []llm.ToolDef) (*llm.Message, error) {
-	idx := m.calls
-	m.calls++
-	m.recorded = append(m.recorded, msgs)
-	if idx >= len(m.script) {
-		idx = len(m.script) - 1
+	msg, err := m.nextMsg()
+	if err != nil {
+		return nil, err
 	}
-	return m.script[idx], nil
+	m.recorded = append(m.recorded, msgs)
+	return msg, nil
 }
 
 // TestStaleSearchFailRecoverRetryEndToEnd is the offline regression for the
@@ -583,10 +614,12 @@ func TestStaleSearchBoundedSecondFailureDelivered(t *testing.T) {
 
 	cfg := staleSearchTestCfg(searxng.URL)
 
-	// Turn 1: web_search was NOT offered (the backend was down — the butler's
-	// original attempt), so the guard cannot re-prompt; the refusal is
-	// delivered as-is and recorded. Exactly one LLM call.
+	// Turn 1: NO tools were offered at all (web_search disabled AND parent
+	// builtins cleared — the butler's original attempt), so the guard cannot
+	// re-prompt; the refusal is delivered as-is and recorded. Exactly one LLM
+	// call.
 	agent1 := buildStaleSearchAgent(t, db, cfg, mock, convID, false)
+	agent1.builtinTools = nil
 	resp1, err := agent1.Chat(context.Background(), "What's the latest pricing?", func(string) {})
 	if err != nil {
 		t.Fatalf("Chat #1: %v", err)

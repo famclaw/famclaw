@@ -225,6 +225,16 @@ famclaw code must be correct, efficient, tested, and idiomatic Go. The bug class
 
 ---
 
+## Architecture boundary — external integrations stay outside core
+- **Decide destination/layer before implementing.** For any change that touches tool handling, recovery, or MCP interaction, first determine whether the logic belongs in core (generic), a native builtin (web_search, web_fetch, browser, file_*), or an MCP/skill server (calendars, phones, domain-specific providers). Review the destination against this boundary before writing code.
+- **What "opaque" means — and what it does not.** Core treats external MCP tool names as **routing-neutral**: no hardcoded tool-name allowlists, no intent classifiers, no provider/date/domain routing in `internal/agent` or `internal/agentcore`. This does **not** mean core ignores schemas or results. Existing schema validation, role/tool allowlists (`AllowedForRole`), and the input/tool/output policy gates remain **mandatory**. "Opaque" scopes the *routing and recovery* layer, not the *validation and authorization* layer.
+- **What is forbidden in core.** Hardcoded external-business routing (e.g. "if tool name contains `calendar`, treat as date semantics") is forbidden. Generic provider-neutral recovery is required.
+- **Core recovery is provider-neutral.** Both the explicit "try again" prelude and the post-output backstop reconsideration fire on ANY actually offered tool (built-in or MCP), never on a hardcoded public-search directive. The reconsideration runs exactly once and only when zero tools were attempted this turn; after any recorded execution outcome (success, error, uncertain mutation, skipped, pending, or denied) the outcome is preserved and no automatic second pipeline run occurs. Read-only hints and successful tool output never certify a result as authoritative.
+- **CI regression requirement.** Normal CI must include generic MCP rename, source-neutral retry, and no-replay-after-attempted-tool regression tests (in `internal/agent/mcp_contract_test.go`), not only deployment-specific overlays.
+- Passing tests document behavior; they do not approve moving external-integration semantics into core.
+
+---
+
 ## Test commands
 - `go test ./...`  
 - `opa test internal/policy/policies/family/ internal/policy/policies/data/ -v`  
