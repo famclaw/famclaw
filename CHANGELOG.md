@@ -4,6 +4,9 @@ All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
+### Fixed
+- **Calendar grounding guard:** when a user asks about personal schedule or which calendars are available, the agent now requires a successful event-read (list-events/search-events) or calendar-list (list-calendars) tool call in the same turn before delivering the answer. Without one, the ungrounded output is replaced with an honest "I can't verify" message before it can stream or persist. The guard is scoped by request kind: discovery follow-ups after an inventory remain discovery; contents-ellipsis ("what in it?") transitions to event-read; corrections preserve the current domain; unrelated topics and calendar mutations are unaffected. Stale-search web-search retry is excluded for personal-calendar requests so a private calendar denial is not recovered by a public search.
+
 ## v0.15.0 — 2026-11-17
 
 ### Added

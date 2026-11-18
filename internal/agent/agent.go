@@ -658,9 +658,24 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// "try X" messages or when search isn't actually available this turn. The
 	// system role is used so StageCompress pins it (system messages are never
 	// dropped) and it reaches the wire as the last instruction the model sees.
-	if isRetryIntent(userMessage) && webSearchAvailable(turn) && trailingHistoryHasFailureClaim(history) {
+	// Personal-calendar requests are excluded: a calendar denial must NOT be
+	// recovered by public web search.
+	if isRetryIntent(userMessage) && webSearchAvailable(turn) && trailingHistoryHasFailureClaim(history) && !isPersonalCalendarRequest(userMessage, history) {
 		log.Printf("[agent][%s] stale-search retry detected; injecting fresh-search directive", a.user.Name)
 		turn.Messages = append(turn.Messages, agentcore.Message{Role: "system", Content: freshSearchDirective})
+	}
+
+	// Calendar tool instruction: inject a kind-scoped directive when the
+	// resolved domain matches the available tools. Discovery requests get the
+	// inventory instruction; event-read requests get the schedule instruction.
+	// Mutations receive no read-only schedule instruction.
+	if hasCalendarEventTool(turn) {
+		switch resolveCalendarRequestKind(userMessage, history) {
+		case calendarDiscovery:
+			turn.Messages = append(turn.Messages, agentcore.Message{Role: "system", Content: calendarDiscoveryToolInstruction})
+		case calendarEventRead:
+			turn.Messages = append(turn.Messages, agentcore.Message{Role: "system", Content: calendarToolInstruction})
+		}
 	}
 
 	err := pipeline.Run(ctx, turn)
@@ -695,7 +710,9 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	// directive. Bounded to one retry; a second failed attempt is delivered
 	// as-is (logged) rather than looped. This backstop also covers the very
 	// first turn, where there is no prior "try again" intent to trigger Fix 1.
-	if a.shouldFreshSearchRetry(turn) {
+	// Personal-calendar requests are excluded: routing a private calendar
+	// denial to public web search would leak intent to an external endpoint.
+	if a.shouldFreshSearchRetry(turn) && !isPersonalCalendarRequest(userMessage, history) {
 		prevOutput, prevTokens := turn.Output, bufferedTokens
 		// Guard against a double-append: when Fix 1 (retry-intent, above)
 		// already injected the fresh-search directive this turn, it is the
@@ -724,6 +741,27 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 			// blocked retry supersedes the earlier answer).
 			log.Printf("[agent][%s] fresh-search retry pipeline error: %v (keeping first-attempt output)", a.user.Name, err2)
 			turn.Output, bufferedTokens = prevOutput, prevTokens
+		}
+	}
+
+	// Calendar grounding guard: if the user asked for personal calendar data
+	// (discovery or event read) and no successful relevant tool was recorded
+	// this turn, the model's output is ungrounded. Replace it with an honest
+	// inability message. Mutations (create/modify) are excluded — their
+	// success is the tool result, not a read.
+	if calendarKind := resolveCalendarRequestKind(userMessage, history); calendarKind == calendarDiscovery || calendarKind == calendarEventRead {
+		if !recordedCalendarEvidence(turn.ToolCalls, calendarKind) {
+			msg := calendarUnverifiedMsg
+			if calendarKind == calendarDiscovery {
+				msg = calendarDiscoveryUnverifiedMsg
+			}
+			log.Printf("[agent][%s] calendar grounding guard: no successful %s-read this turn; replacing ungrounded output", a.user.Name, kindName(calendarKind))
+			turn.Output = msg
+			// Re-evaluate the replacement through the same output policy gate
+			// before it can buffer, drain, or persist.
+			if resp, done := a.gateOutput(ctx, turn); done {
+				return resp, nil
+			}
 		}
 	}
 
