@@ -10,31 +10,41 @@ import (
 	"github.com/famclaw/famclaw/internal/store"
 )
 
-// This file implements the two hard guards for the "stale web-search" failure
-// documented in internal/agentcore and the butler-stale-search root-cause
-// report. The failure signature: the LLM emits "I can't access / check /
-// search X" WITHOUT calling web_search, then re-emits the same stale claim
-// verbatim when the user says "try search again" — because the prior failed
-// assistant message sits in the conversation history and the model reuses it
-// instead of running a fresh search.
+// This file implements the provider-neutral tool-reconsideration guards:
+// a single one-time re-prompt that fires when the model's final output
+// claims inability and zero tools were attempted this turn, and the
+// matching "try again" prelude when the user explicitly asks to retry and
+// a failure-claim sits in the trailing history.
+//
+// Both paths are generic: they match on ANY actually offered tool (built-in
+// or opaque MCP), never on a specific tool name or provider. After ANY
+// recorded execution outcome (success, error, uncertain mutation, skipped,
+// pending, or denied) the recorded outcome is preserved and no automatic
+// second pipeline run occurs. Tool receipts are not truth or authority
+// certification; read-only hints and successful output never certify a
+// result.
 //
 // Fix 1 (isRetryIntent + trailingHistoryHasFailureClaim): on an explicit
-// "try again"/"search again" request, append a point-in-time system directive
-// so the model is forced to run a NEW search this turn.
+// "try again" request, append a point-in-time system directive so the model
+// reconsiders the request with the tools actually offered this turn.
 //
 // Fix 3 (shouldFreshSearchRetry): cross-turn near-duplicate backstop. If
-// web_search was available and the final output still claims it couldn't
-// check/search WITHOUT a real web_search ToolResult this turn, re-prompt ONCE.
-// Bounded to one retry; a second failed attempt is delivered as-is (logged)
-// rather than looped. This also covers the very first turn (no "try again"
-// intent), which is where the original failure actually started.
+// tools were offered and the final output still claims inability without a
+// recorded tool call this turn, re-prompt ONCE. Bounded to one retry; a
+// second failed attempt is delivered as-is (logged) rather than looped.
+// This also covers the very first turn (no "try again" intent), which is
+// where the original failure actually started.
 
 // freshSearchDirective is the point-in-time instruction appended to the
-// conversation when a stale "couldn't check/search" answer must be re-run. It
+// conversation when a stale "couldn't check/access" answer must be re-run. It
 // is sent as a system-role message so StageCompress pins it (system messages
 // are never dropped) and it reaches the wire as the LAST instruction the model
-// sees, steering it to run a NEW search instead of reusing the prior answer.
-const freshSearchDirective = "The web search tool is available now. Your previous answer said you could not check or search, and that is out of date. Call web_search for this request and answer ONLY from this turn's fresh results — do not reuse the earlier answer. If the new search still returns nothing useful, say so plainly rather than guessing."
+// sees, steering it to reconsider the request with the tools ACTUALLY offered
+// this turn — never forcing a specific provider — instead of reusing the prior
+// answer. The retry predicate only fires when zero tools were attempted this
+// turn, so the recorded execution outcome from any tool (built-in or MCP)
+// is preserved; read-only hints and tool results never certify truth.
+const freshSearchDirective = "Your previous answer claimed you could not check, search, or access this. Reconsider the request using the tools actually offered this turn, preserving any recorded execution outcome. If no offered tool can resolve it, say so plainly rather than guessing; do not fabricate results."
 
 // isRetryIntent reports whether the user is explicitly asking to try a
 // previous attempt again. Deliberately narrow — only strong "do it again"
@@ -104,37 +114,27 @@ func trailingHistoryHasFailureClaim(history []*store.Message) bool {
 	return false
 }
 
-// webSearchAvailable reports whether web_search is in the turn's tool allowlist
-// (i.e. it was actually offered to the LLM this turn).
-func webSearchAvailable(turn *agentcore.Turn) bool {
-	for _, t := range turn.Tools {
-		if t.Name == "builtin__web_search" || t.Name == "web_search" {
-			return true
-		}
-	}
-	return false
-}
-
-// recordedWebSearchThisTurn reports whether a web_search ToolResult was
-// actually recorded this turn (canonical "builtin__web_search" name, with the
-// bare name checked defensively).
-func recordedWebSearchThisTurn(results []agentcore.ToolResult) bool {
-	for _, tr := range results {
-		if tr.ToolName == "builtin__web_search" || tr.ToolName == "web_search" {
-			return true
-		}
-	}
-	return false
+// hasAnyToolOffered reports whether any tool at all is in the turn's tool
+// allowlist (i.e. was actually offered to the LLM this turn) — builtins or
+// opaque MCP tools alike. Both the prelude retry-intent path and the
+// post-output backstop reconsideration use this single generic check; no
+// tool-name-based provider routing prerequisite remains in either path.
+func hasAnyToolOffered(turn *agentcore.Turn) bool {
+	return len(turn.Tools) > 0
 }
 
 // shouldFreshSearchRetry reports whether the cross-turn near-duplicate guard
-// (Fix 3) should fire: web_search is available this turn, the model's final
-// output still claims it couldn't check/search, and no web_search ToolResult
-// was actually recorded this turn.
+// (Fix 3) should fire: tools are offered this turn, the model's final output
+// still claims inability, and NO tool call was recorded this turn. The
+// one-time re-prompt must only fire when nothing was attempted: after ANY
+// executed tool (success, error, uncertain mutation, skipped, pending, or
+// denied) the recorded execution outcome is preserved and an automatic second
+// pipeline run would re-execute an already-attempted action or discard that
+// receipt.
 func (a *Agent) shouldFreshSearchRetry(turn *agentcore.Turn) bool {
-	return webSearchAvailable(turn) &&
+	return hasAnyToolOffered(turn) &&
 		hasSearchFailureClaim(turn.Output) &&
-		!recordedWebSearchThisTurn(turn.ToolCalls)
+		len(turn.ToolCalls) == 0
 }
 
 // gateOutput runs the output policy gate against turn.Output. When the output

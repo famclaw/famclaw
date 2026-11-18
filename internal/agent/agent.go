@@ -651,15 +651,17 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 	pipeline := agentcore.FamilyPipeline(deps)
 
 	// Fix 1 — retry-intent directive. When the user explicitly asks to "try
-	// again"/"search again" and a web_search failure-claim sits in the trailing
-	// history, append a point-in-time system directive so the model is forced
-	// to run a FRESH search this turn instead of reusing the prior failed
-	// answer. Gated on all three conditions so it never fires on unrelated
-	// "try X" messages or when search isn't actually available this turn. The
-	// system role is used so StageCompress pins it (system messages are never
-	// dropped) and it reaches the wire as the last instruction the model sees.
-	if isRetryIntent(userMessage) && webSearchAvailable(turn) && trailingHistoryHasFailureClaim(history) {
-		log.Printf("[agent][%s] stale-search retry detected; injecting fresh-search directive", a.user.Name)
+	// again"/"search again" and a failure-claim sits in the trailing history,
+	// append a point-in-time system directive so the model is steered to
+	// reconsider the request with the tools actually offered this turn —
+	// whether those are public web_search, an opaque MCP resource, or any
+	// other capability — instead of reusing the prior failed answer. Gated
+	// on all three conditions so it never fires on unrelated "try X" messages
+	// or when no tool was actually offered this turn. The system role is used
+	// so StageCompress pins it (system messages are never dropped) and it
+	// reaches the wire as the last instruction the model sees.
+	if isRetryIntent(userMessage) && hasAnyToolOffered(turn) && trailingHistoryHasFailureClaim(history) {
+		log.Printf("[agent][%s] retry-intent detected; injecting reconsideration directive", a.user.Name)
 		turn.Messages = append(turn.Messages, agentcore.Message{Role: "system", Content: freshSearchDirective})
 	}
 
@@ -689,12 +691,15 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		return resp, nil
 	}
 
-	// Fix 3 — cross-turn near-duplicate guard. If web_search was available and
-	// the model STILL claimed it couldn't check/search without recording a real
-	// web_search result this turn, re-prompt ONCE with the fresh-search
+	// Fix 3 — cross-turn near-duplicate guard. If tools were offered and the
+	// model STILL claimed inability without recording any tool result this
+	// turn, re-prompt ONCE with the provider-neutral reconsideration
 	// directive. Bounded to one retry; a second failed attempt is delivered
-	// as-is (logged) rather than looped. This backstop also covers the very
-	// first turn, where there is no prior "try again" intent to trigger Fix 1.
+	// as-is (logged) rather than looped. After any recorded tool attempt
+	// (success, error, uncertain, skipped, pending, or denied) this guard
+	// does not fire, so the recorded execution outcome is preserved. This
+	// backstop also covers the very first turn, where there is no prior
+	// "try again" intent to trigger Fix 1.
 	if a.shouldFreshSearchRetry(turn) {
 		prevOutput, prevTokens := turn.Output, bufferedTokens
 		// Guard against a double-append: when Fix 1 (retry-intent, above)
@@ -706,9 +711,13 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		if n == 0 || turn.Messages[n-1].Role != "system" || turn.Messages[n-1].Content != freshSearchDirective {
 			turn.Messages = append(turn.Messages, agentcore.Message{Role: "system", Content: freshSearchDirective})
 		}
-		turn.ToolCalls = nil
+		// Note: turn.ToolCalls is deliberately NOT cleared — the retry
+		// predicate already guaranteed it is empty, and preserving the
+		// recorded execution outcome (or its absence) is the whole point of
+		// the guard. Only buffered stream tokens are dropped, since the
+		// second pipeline run re-streams into its own buffer.
 		bufferedTokens = nil
-		log.Printf("[agent][%s] fresh-search re-prompt (retry 1/1): model claimed no search ability without calling web_search this turn", a.user.Name)
+		log.Printf("[agent][%s] tool reconsideration (retry 1/1): model claimed inability with zero attempted tools this turn", a.user.Name)
 		if err2 := pipeline.Run(ctx, turn); err2 == nil {
 			if resp, done := a.gateOutput(ctx, turn); done {
 				return resp, nil

@@ -4,6 +4,13 @@ All notable changes to FamClaw are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## Unreleased
 
+### Fixed
+- **Tool reconsideration no longer forces public search.** When a model answer claims inability and no tool was attempted this turn, the bounded re-prompt now points at the tools actually offered instead of forcing a public web search. The model may still choose `web_search` when it is offered; the core does not guarantee or forbid a specific source. After ANY recorded execution outcome (success, error, uncertain, skipped, pending, or denied) the outcome is preserved and no automatic second pipeline run occurs.
+- **MCP tools stay routing-neutral in core.** Real `Agent.Chat` regression tests cover renamed external MCP tools (domain request text is fixture data only), the source-neutral reconsideration, and no automatic replay after an attempted tool.
+
+### Changed
+- **Architecture boundary documented.** `AGENTS.md` now states that external integrations belong in MCP/skill servers: no tool-name allowlists, intent classifiers, or provider/date semantics in core; passing tests do not approve moving integration semantics into core.
+
 ## v0.15.0 — 2026-11-17
 
 ### Added
