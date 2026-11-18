@@ -79,6 +79,9 @@ jobs:
           ./scripts/test-install-rpi.sh
           .github/scripts/test-check-private-details.sh
 
+      - name: SD image builder regression tests
+        run: python3 .github/scripts/test-build-image.py
+
       - name: Unit tests
         run: go test ./... -v -coverprofile=coverage.out
         env:

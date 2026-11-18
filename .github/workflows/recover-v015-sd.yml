@@ -1,0 +1,100 @@
+name: Recover v0.15.0 SD images
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: recover-v015-sd-images
+  cancel-in-progress: false
+
+jobs:
+  sd-image:
+    if: github.repository == 'famclaw/famclaw' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            binary: famclaw-linux-arm64
+            archive_sha: dab6072c99b2cb9da8e13c60b4e0710ac779b84ca7f9a251c9a670d4fcecb884
+            image: famclaw-rpi4-arm64
+          - arch: armhf
+            binary: famclaw-linux-armv7
+            archive_sha: a7845382e8c417c0db58d0c97082e4a804a3a1039756ce2f1fea28e1d65b1190
+            image: famclaw-rpi3-armv7
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: famclaw/famclaw
+    steps:
+      - name: Check out reviewed workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: controls
+          persist-credentials: false
+      - name: Check immutable tag and release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_object=$(gh api repos/famclaw/famclaw/git/ref/tags/v0.15.0 --jq '.object.sha')
+          test "$tag_object" = 2347d8a057409abd304518ec2eaa38ba83e5e74a
+          gh api "repos/famclaw/famclaw/git/tags/$tag_object" | jq -e '.verification.verified == true and .object.sha == "f657decb03136ee3fe74c4b34e1e8277c5032749" and .object.type == "commit"' >/dev/null
+          gh api repos/famclaw/famclaw/releases/tags/v0.15.0 | jq -e '.tag_name == "v0.15.0" and .draft == false' >/dev/null
+      - name: Check out released source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: f657decb03136ee3fe74c4b34e1e8277c5032749
+          path: released
+          persist-credentials: false
+      - name: Verify original signed release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download v0.15.0 --pattern checksums.txt --pattern '${{ matrix.binary }}.tar.xz' --dir dist
+          printf '%s  %s\n' 0cfd7463abcb1b9149f6fa4cded1efc1049e3d5f79b4e105a96df913dbf4b0fd dist/checksums.txt | sha256sum --check --status
+          gh attestation verify dist/checksums.txt --repo famclaw/famclaw \
+            --source-digest f657decb03136ee3fe74c4b34e1e8277c5032749 \
+            --source-ref refs/tags/v0.15.0 \
+            --signer-workflow famclaw/famclaw/.github/workflows/release.yml \
+            --deny-self-hosted-runners
+          printf '%s  %s\n' '${{ matrix.archive_sha }}' 'dist/${{ matrix.binary }}.tar.xz' | sha256sum --check --status
+          (cd dist && grep -F '  ${{ matrix.binary }}.tar.xz' checksums.txt | sha256sum --check --status)
+          tar -xf 'dist/${{ matrix.binary }}.tar.xz' -C dist famclaw
+          chmod +x dist/famclaw
+      - name: Install host image tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y parted util-linux e2fsprogs xz-utils curl
+      - name: Build from verified base and released firstboot script
+        run: |
+          set -euo pipefail
+          mkdir -p builder
+          cp controls/scripts/build-image.sh builder/build-image.sh
+          cp released/scripts/firstboot.sh builder/firstboot.sh
+          sudo bash builder/build-image.sh dist/famclaw '${{ matrix.arch }}' 'dist/${{ matrix.image }}.img' v0.15.0
+          sudo chown "$(id -u):$(id -g)" 'dist/${{ matrix.image }}.img'
+          xz -9 --threads=2 'dist/${{ matrix.image }}.img'
+          (cd dist && sha256sum '${{ matrix.image }}.img.xz' > '${{ matrix.image }}.img.xz.sha256')
+      - name: Attest image and checksum
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/${{ matrix.image }}.img.xz*
+      - name: Upload absent assets only
+        shell: bash
+        run: |
+          set -euo pipefail
+          image='${{ matrix.image }}.img.xz'
+          checksum="$image.sha256"
+          assets=$(gh api repos/famclaw/famclaw/releases/tags/v0.15.0 --jq '[.assets[].name]')
+          jq -e --arg a "$image" --arg b "$checksum" 'index($a) == null and index($b) == null' <<<"$assets" >/dev/null
+          # No --clobber. A partial upload or name collision requires manual review.
+          gh release upload v0.15.0 "dist/$image"
+          assets=$(gh api repos/famclaw/famclaw/releases/tags/v0.15.0 --jq '[.assets[].name]')
+          jq -e --arg b "$checksum" 'index($b) == null' <<<"$assets" >/dev/null
+          gh release upload v0.15.0 "dist/$checksum"
