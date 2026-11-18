@@ -198,6 +198,7 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 
 		failedCalls := newUnsuccessfulCallIndex()
 		var readOnlyCache readOnlyIndexCache
+		var searchExcerpts []SearchExcerpt
 
 		// Execute tool calls
 		for i := 0; i < deps.MaxIterations; i++ {
@@ -457,7 +458,27 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				// The explicit builtin namespace selects the handler even when an
 				// allowed MCP tool has the same bare name.
 				if strings.HasPrefix(tc.Function.Name, "builtin__") && deps.BuiltinHandler != nil {
-					result, err := deps.BuiltinHandler(ctx, tc.Function.Name, tc.Function.Arguments)
+					callCtx := ctx
+					var searchSink *searchExcerptSink
+					if tc.Function.Name == "builtin__web_search" {
+						searchSink = &searchExcerptSink{}
+						callCtx = context.WithValue(ctx, searchExcerptKey{}, searchSink)
+					}
+					result, err := deps.BuiltinHandler(callCtx, tc.Function.Name, tc.Function.Arguments)
+					if err == nil && searchSink != nil {
+						for _, excerpt := range searchSink.values {
+							duplicate := false
+							for _, prior := range searchExcerpts {
+								if prior == excerpt {
+									duplicate = true
+									break
+								}
+							}
+							if !duplicate && len(searchExcerpts) < 3 {
+								searchExcerpts = append(searchExcerpts, excerpt)
+							}
+						}
+					}
 					duration := time.Since(start)
 					if err != nil {
 						log.Printf("[agentcore] builtin tool %s reported an error (%s)", tc.Function.Name, duration)
@@ -710,6 +731,10 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 				llmMsgs = append(llmMsgs, *msg)
 			}
 		}
+		if strings.TrimSpace(turn.Output) == "" {
+			turn.Output = renderSearchExcerpts(searchExcerpts)
+		}
+
 		// Summarize attempted outcomes separately from policy and skipped
 		// dispositions, including turns that exhaust the iteration budget.
 		warning := outcomeWarningWithIndex(turn.ToolCalls, readOnlyCache.get(turn.Tools))

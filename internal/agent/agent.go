@@ -2026,6 +2026,11 @@ func (a *Agent) handleWebSearch(ctx context.Context, args map[string]any) (strin
 	if err != nil {
 		return webSearchError(err)
 	}
+	excerpts := make([]agentcore.SearchExcerpt, 0, len(hits))
+	for _, hit := range hits {
+		excerpts = append(excerpts, agentcore.SearchExcerpt{Title: hit.Title, URL: hit.URL, Snippet: hit.Content})
+	}
+	agentcore.RecordSearchExcerpts(ctx, excerpts)
 	log.Printf("[agent] web_search hits=%d", len(hits))
 	return websearch.FormatHits(hits), nil
 }
