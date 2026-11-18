@@ -291,6 +291,8 @@ When the fallback is active and the plain fetch returns fewer than `fallback_min
 
 Off by default. When enabled, the LLM gets a `web_search` tool that queries a search **provider** and returns structured title/url/snippet results. Use it before `web_fetch` when you don't already know an exact URL — results carry concrete URLs and snippets you can answer from directly.
 
+If the model ends a turn without an answer after a successful search, FamClaw can show up to three source-linked snippets from that turn. These are partial search results; the full pages have not been checked. Existing tool warnings and output policy checks still apply.
+
 Enable in `config.yaml`:
 
 ```yaml
