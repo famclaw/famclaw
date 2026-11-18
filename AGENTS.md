@@ -225,6 +225,12 @@ famclaw code must be correct, efficient, tested, and idiomatic Go. The bug class
 
 ---
 
+## Answer reliability — product requirement
+- Never guess or present assumptions as facts. Base claims on verified, authorized evidence, or explicitly say what is unknown or unverified. Do not invent accounts, permissions, tool results, actions, or successful outcomes.
+- Follow [the answer reliability acceptance requirements](docs/ANSWER_RELIABILITY.md), including correction, evidence, authorization, and no-replay cases. These are product requirements, not a claim that the current runtime enforces them.
+
+---
+
 ## Architecture boundary — external integrations stay outside core
 - **Decide destination/layer before implementing.** For any change that touches tool handling, recovery, or MCP interaction, first determine whether the logic belongs in core (generic), a native builtin (web_search, web_fetch, browser, file_*), or an MCP/skill server (calendars, phones, domain-specific providers). Review the destination against this boundary before writing code.
 - **What "opaque" means — and what it does not.** Core treats external MCP tool names as **routing-neutral**: no hardcoded tool-name allowlists, no intent classifiers, no provider/date/domain routing in `internal/agent` or `internal/agentcore`. This does **not** mean core ignores schemas or results. Existing schema validation, role/tool allowlists (`AllowedForRole`), and the input/tool/output policy gates remain **mandatory**. "Opaque" scopes the *routing and recovery* layer, not the *validation and authorization* layer.
