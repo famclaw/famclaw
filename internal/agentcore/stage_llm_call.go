@@ -81,30 +81,14 @@ func NewStageLLMCall(deps LLMCallDeps) Stage {
 	}
 }
 
+// turnToLLMMessages projects the turn's core messages onto the outgoing
+// llm.Message list using the shared complete typed conversion
+// (CoreToLLM), so every field the core message carries (Role, Content,
+// ContentParts, ToolCalls, ToolCallID) reaches the wire. This is the
+// single core→llm projection; it no longer maintains its own field-by-
+// field copy.
 func turnToLLMMessages(msgs []Message) []llm.Message {
-	result := make([]llm.Message, len(msgs))
-	for i, m := range msgs {
-		result[i] = llm.Message{
-			Role:         m.Role,
-			Content:      m.Content,
-			ContentParts: m.ContentParts,
-			ToolCallID:   m.ToolCallID,
-		}
-		if len(m.ToolCalls) > 0 {
-			result[i].ToolCalls = make([]llm.ToolCall, len(m.ToolCalls))
-			for j, tc := range m.ToolCalls {
-				result[i].ToolCalls[j] = llm.ToolCall{
-					ID:   tc.ID,
-					Type: tc.Type,
-					Function: llm.ToolCallFunction{
-						Name:      tc.Function.Name,
-						Arguments: tc.Function.Arguments,
-					},
-				}
-			}
-		}
-	}
-	return result
+	return CoreToLLM(msgs)
 }
 
 func toolsToLLMDefs(tools []Tool) []llm.ToolDef {

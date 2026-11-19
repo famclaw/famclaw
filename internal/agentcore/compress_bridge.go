@@ -8,7 +8,7 @@ import (
 	"github.com/famclaw/famclaw/internal/llm"
 )
 
-// llmToCompress converts an []llm.Message to []compress.Message, marking
+// LLMToCompress converts an []llm.Message to []compress.Message, marking
 // the indexes in prunableIdx as Prunable. Pinned is NOT set here —
 // CompressIndices already protects index 0 (system prompt) and the most
 // recent user-role message automatically.
@@ -18,7 +18,11 @@ import (
 // Serialized tool argument payloads are carried in ToolArgs so token
 // estimation accounts for large arguments on the wire. No interpretation
 // of tool names, arguments or content is performed.
-func llmToCompress(in []llm.Message, prunableIdx map[int]bool) []compress.Message {
+//
+// This is the single opaque LLM→compress bridge shared by the pipeline
+// (StageCompress, tool-loop) and by Agent.buildMessages, so the direct
+// build path does not maintain a separate lossy compressor.
+func LLMToCompress(in []llm.Message, prunableIdx map[int]bool) []compress.Message {
 	out := make([]compress.Message, len(in))
 	for i, msg := range in {
 		cm := compress.Message{
@@ -44,13 +48,13 @@ func llmToCompress(in []llm.Message, prunableIdx map[int]bool) []compress.Messag
 	return out
 }
 
-// compressToLLM restores the original llm.Messages at the positions
+// CompressToLLM restores the original llm.Messages at the positions
 // selected by CompressIndices. Because the selection is authoritative
 // (one position per retained message, in original order), no
 // comparator-based matching is performed. Each original message is
 // returned verbatim, preserving ToolCalls, ToolCallID, Reasoning,
 // ContentParts and every other field.
-func compressToLLM(orig []llm.Message, idx []int) []llm.Message {
+func CompressToLLM(orig []llm.Message, idx []int) []llm.Message {
 	out := make([]llm.Message, 0, len(idx))
 	for _, i := range idx {
 		if i >= 0 && i < len(orig) {
@@ -71,4 +75,94 @@ func toolCallFunctionString(tc llm.ToolCall) string {
 		return tc.Function.Name
 	}
 	return string(data)
+}
+
+// LLMToCore converts []llm.Message to []agentcore-style Message, copying
+// every field the core message type supports: Role, Content,
+// ContentParts, the complete ToolCalls slice (ID / Type / Function.Name /
+// Function.Arguments) and ToolCallID. This is the single complete typed
+// llm→core conversion; callers that need the full outgoing message list
+// (e.g. Agent.buildMessages → Chat) use it instead of a hand-rolled
+// field-by-field copy that would silently drop fields.
+//
+// Opaque tool-call data is copied verbatim without interpreting names,
+// arguments or provider semantics. Normal DB history is plain
+// role+content (no tool-call metadata), so this is a no-op beyond
+// Role/Content/ContentParts for that common case; it becomes complete
+// when a source actually carries tool calls.
+func LLMToCore(in []llm.Message) []Message {
+	out := make([]Message, len(in))
+	for i, m := range in {
+		out[i] = Message{
+			Role:         m.Role,
+			Content:      m.Content,
+			ContentParts: m.ContentParts,
+			ToolCallID:   m.ToolCallID,
+		}
+		if len(m.ToolCalls) > 0 {
+			out[i].ToolCalls = make([]ToolCall, len(m.ToolCalls))
+			for j, tc := range m.ToolCalls {
+				out[i].ToolCalls[j] = ToolCall{
+					ID:   tc.ID,
+					Type: tc.Type,
+					Function: ToolCallFunction{
+						Name:      tc.Function.Name,
+						Arguments: copyToolArguments(tc.Function.Arguments),
+					},
+				}
+			}
+		}
+	}
+	return out
+}
+
+// copyToolArguments returns a copy of the tool-call arguments map so the
+// core message owns its data. An empty/nil argument payload yields a nil
+// map (JSON-omitted, matching the source's absence of arguments).
+func copyToolArguments(args llm.ToolCallArguments) map[string]any {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		out[k] = v
+	}
+	return out
+}
+
+// CoreToLLM converts []Message back to []llm.Message, the inverse of
+// LLMToCore, copying Role, Content, ContentParts, the complete ToolCalls
+// slice and ToolCallID. It is the projection used to verify round-trips
+// (LLMToCore → CoreToLLM restores the original outgoing message list).
+func CoreToLLM(in []Message) []llm.Message {
+	out := make([]llm.Message, len(in))
+	for i, m := range in {
+		out[i] = llm.Message{
+			Role:         m.Role,
+			Content:      m.Content,
+			ContentParts: m.ContentParts,
+			ToolCallID:   m.ToolCallID,
+		}
+		if len(m.ToolCalls) > 0 {
+			out[i].ToolCalls = make([]llm.ToolCall, len(m.ToolCalls))
+			for j, tc := range m.ToolCalls {
+				var args llm.ToolCallArguments
+				if len(tc.Function.Arguments) > 0 {
+					args = make(llm.ToolCallArguments, len(tc.Function.Arguments))
+					for k, v := range tc.Function.Arguments {
+						args[k] = v
+					}
+				}
+				out[i].ToolCalls[j] = llm.ToolCall{
+					ID:   tc.ID,
+					Type: tc.Type,
+					Function: llm.ToolCallFunction{
+						Name:      tc.Function.Name,
+						Arguments: args,
+					},
+				}
+			}
+		}
+	}
+	return out
 }

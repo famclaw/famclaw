@@ -526,15 +526,13 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 		Input: userMessage,
 	}
 
-	// Convert messages to agentcore format
-	for _, m := range messages {
-		turn.Messages = append(turn.Messages, agentcore.Message{
-			Role:         m.Role,
-			Content:      m.Content,
-			ContentParts: m.ContentParts,
-			ToolCallID:   m.ToolCallID,
-		})
-	}
+	// Convert messages to agentcore format using the single complete
+	// typed llm→core conversion (agentcore.LLMToCore). This copies every
+	// field the core message supports — Role, Content, ContentParts,
+	// the complete ToolCalls slice and ToolCallID — so no field is
+	// silently dropped. Opaque tool-call data is carried through verbatim
+	// without interpreting names or provider semantics.
+	turn.Messages = agentcore.LLMToCore(messages)
 
 	// Resolve LLM profile. Prefer the injected backend (e.g. claude_cli)
 	// when provided; otherwise build an HTTP client from the per-user
@@ -2598,35 +2596,21 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 	}
 
 	// Compress the message list to fit within the configured context window,
-	// leaving room for the response. Reuse the same logic as the tool loop.
+	// leaving room for the response. Reuse the same logic as the tool loop:
+	// the single opaque LLM→compress bridge (agentcore.LLMToCompress) marks
+	// prunable positions, CompressIndices makes the authoritative selection
+	// by budget / response-reserve / group-aware eviction / current-user /
+	// pinned rules, and the original full llm.Message objects are projected
+	// back BY POSITION via agentcore.CompressToLLM. No field is lost or
+	// reconstructed: every retained message keeps ToolCalls, ToolCallID,
+	// Reasoning, ContentParts and all other fields verbatim.
 	if a.cfg.LLM.MaxContextTokens > 0 {
-		// Convert to compress messages
-		var cmsgs []compress.Message
-		for i, m := range msgs {
-			cmsgs = append(cmsgs, compress.Message{
-				Role:         m.Role,
-				Content:      m.Content,
-				ContentParts: m.ContentParts,
-				ToolCallID:   m.ToolCallID,
-				Prunable:     prunableIdx[i],
-			})
-		}
-		// Compress
 		budget := a.cfg.LLM.MaxContextTokens - a.cfg.LLM.MaxResponseTokens
 		if budget <= 0 {
 			budget = a.cfg.LLM.MaxContextTokens
 		}
-		compressed := compress.Compress(cmsgs, compress.Options{ContextWindow: budget})
-		// Convert back
-		msgs = make([]llm.Message, 0, len(compressed))
-		for _, cm := range compressed {
-			msgs = append(msgs, llm.Message{
-				Role:         cm.Role,
-				Content:      cm.Content,
-				ContentParts: cm.ContentParts,
-				ToolCallID:   cm.ToolCallID,
-			})
-		}
+		idx := compress.CompressIndices(agentcore.LLMToCompress(msgs, prunableIdx), compress.Options{ContextWindow: budget})
+		msgs = agentcore.CompressToLLM(msgs, idx)
 	}
 
 	return msgs
