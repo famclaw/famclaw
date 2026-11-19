@@ -269,12 +269,11 @@ func truncateIndices(messages []Message, budget int, est TokenEstimator) []int {
 //
 // A group consists of one assistant message with CallIDs plus every tool
 // result whose ToolCallID matches one of those CallIDs AND whose position
-// is strictly after the assistant message (results that follow their call
-// in the same round). Reused IDs across separate turns are NOT joined:
-// a tool result at position j is grouped with the assistant call at
-// position i only if i < j and the result has not already been assigned
-// to an earlier group. This prevents a later turn's result from being
-// absorbed into an earlier round's group.
+// is strictly after the assistant message and strictly before the next
+// assistant that also contains that CallID (the round boundary). This
+// ensures reused IDs across separate rounds are not joined: in the
+// ordering [assistant_X_old, result_X_old, assistant_X_new, result_X_new],
+// each result stays with its own chronological round.
 //
 // Orphan tool results (no matching assistant CallIDs before them) become
 // single-member groups. All other messages are single-member groups.
@@ -290,6 +289,43 @@ func buildGroups(messages []Message) [][]int {
 		if m.Role == "tool" && m.ToolCallID != "" {
 			toolIdx[m.ToolCallID] = append(toolIdx[m.ToolCallID], i)
 		}
+	}
+
+	// Precompute round boundaries: for each (assistant position i, call ID
+	// cid), the exclusive upper bound is the position of the next assistant
+	// that also contains cid (or n if none). Results at j where i < j < ub
+	// belong to this round; results at j >= ub belong to a later round.
+	assistants := make([]int, 0, n)
+	for i, m := range messages {
+		if m.Role == "assistant" && len(m.CallIDs) > 0 {
+			assistants = append(assistants, i)
+		}
+	}
+	cidAssistants := make(map[string][]int)
+	for _, i := range assistants {
+		for _, cid := range messages[i].CallIDs {
+			cidAssistants[cid] = append(cidAssistants[cid], i)
+		}
+	}
+	// boundary[i] maps cid -> exclusive upper bound for assistant at i.
+	boundary := make(map[int]map[string]int, len(assistants))
+	for _, i := range assistants {
+		bm := make(map[string]int)
+		for _, cid := range messages[i].CallIDs {
+			pos := cidAssistants[cid]
+			// Find i's index in pos.
+			ub := n
+			for k, p := range pos {
+				if p == i {
+					if k+1 < len(pos) {
+						ub = pos[k+1]
+					}
+					break
+				}
+			}
+			bm[cid] = ub
+		}
+		boundary[i] = bm
 	}
 
 	groupOf := make([]int, n)
@@ -317,14 +353,20 @@ func buildGroups(messages []Message) [][]int {
 		}
 
 		// Assistant with tool calls: gather matching tool results that
-		// follow this message and are not yet assigned.
+		// follow this message, are not yet assigned, and are before the
+		// round boundary for each call ID.
 		grp := []int{i}
 		assigned[i] = true
+		bm := boundary[i]
 		for _, cid := range m.CallIDs {
+			ub := bm[cid]
 			positions := toolIdx[cid]
 			for _, j := range positions {
 				if j <= i {
 					continue // result before the call — belongs to an earlier round
+				}
+				if j >= ub {
+					continue // result belongs to a later round with same ID
 				}
 				if assigned[j] {
 					continue // already grouped

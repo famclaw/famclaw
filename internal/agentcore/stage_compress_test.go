@@ -8,7 +8,8 @@ import (
 
 // TestStageCompressPreservesToolCalls verifies that StageCompress keeps
 // tool-call groups intact: after compression, every assistant ToolCalls
-// entry is preserved (the group's call IDs survive the eviction).
+// entry is preserved alongside its corresponding tool results. Tool results
+// carry explicit ToolCallID matching the assistant's call IDs.
 func TestStageCompressPreservesToolCalls(t *testing.T) {
 	turn := &Turn{
 		Messages: []Message{
@@ -21,8 +22,8 @@ func TestStageCompressPreservesToolCalls(t *testing.T) {
 					{ID: "call_sc2", Function: ToolCallFunction{Name: "g", Arguments: map[string]any{}}},
 				},
 			},
-			{Role: "tool", Content: strings.Repeat("A", 2000)},
-			{Role: "tool", Content: strings.Repeat("B", 2000)},
+			{Role: "tool", Content: strings.Repeat("A", 2000), ToolCallID: "call_sc1"},
+			{Role: "tool", Content: strings.Repeat("B", 2000), ToolCallID: "call_sc2"},
 			{Role: "user", Content: "q2"},
 			{Role: "assistant", Content: "a2"},
 			{Role: "user", Content: "q3"},
@@ -35,23 +36,56 @@ func TestStageCompressPreservesToolCalls(t *testing.T) {
 		t.Fatalf("stage: %v", err)
 	}
 
-	// The assistant message with tool_calls must retain its ToolCalls.
-	// If the tool results were evicted, the assistant message should
-	// either be evicted too (whole group) or retained with its ToolCalls.
-	var sawAssistantWithCalls bool
+	// After compression, check wire invariants: every assistant ToolCall
+	// ID must have a matching tool result with the same ToolCallID, and
+	// every tool result must have a matching assistant call.
+	assistantIDs := make(map[string]bool)
+	resultIDs := make(map[string]bool)
 	for _, m := range turn.Messages {
-		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
-			sawAssistantWithCalls = true
-			// Verify the call IDs are intact.
-			if len(m.ToolCalls) != 2 {
-				t.Errorf("expected 2 tool calls, got %d", len(m.ToolCalls))
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				assistantIDs[tc.ID] = true
+			}
+		}
+		if m.Role == "tool" && m.ToolCallID != "" {
+			resultIDs[m.ToolCallID] = true
+		}
+	}
+	// Bidirectional pairing.
+	for rid := range resultIDs {
+		if !assistantIDs[rid] {
+			t.Errorf("orphaned tool result ToolCallID=%q with no matching assistant call", rid)
+		}
+	}
+	for aid := range assistantIDs {
+		if !resultIDs[aid] {
+			t.Errorf("orphaned assistant call ID=%q with no matching tool result", aid)
+		}
+	}
+
+	// If the group was retained (not evicted), verify exact content and order.
+	if len(assistantIDs) > 0 {
+		// Find the assistant with calls and verify results follow it.
+		assistantIdx := -1
+		for i, m := range turn.Messages {
+			if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+				assistantIdx = i
+				break
+			}
+		}
+		if assistantIdx < 0 {
+			t.Fatal("no assistant with ToolCalls found after compression")
+		}
+		// Tool results must appear after the assistant message.
+		for i := assistantIdx + 1; i < len(turn.Messages); i++ {
+			m := turn.Messages[i]
+			if m.Role == "tool" {
+				if m.ToolCallID != "call_sc1" && m.ToolCallID != "call_sc2" {
+					t.Errorf("unexpected tool result ToolCallID=%q at position %d", m.ToolCallID, i)
+				}
 			}
 		}
 	}
-	// It's OK if the group was fully evicted (budget too tight) or fully
-	// retained. What matters is it's not split: if the assistant is present
-	// with calls, the structure is valid.
-	_ = sawAssistantWithCalls
 }
 
 // TestStageCompressPreservesPinnedAndLastThree verifies that the system
@@ -143,14 +177,14 @@ func TestStageCompressDuplicateContentSafe(t *testing.T) {
 					{ID: "call_dup_a", Function: ToolCallFunction{Name: "f1", Arguments: map[string]any{}}},
 				},
 			},
-			{Role: "tool", Content: "ra"},
+			{Role: "tool", Content: "ra", ToolCallID: "call_dup_a"},
 			{
 				Role: "assistant", Content: "identical",
 				ToolCalls: []ToolCall{
 					{ID: "call_dup_b", Function: ToolCallFunction{Name: "f2", Arguments: map[string]any{}}},
 				},
 			},
-			{Role: "tool", Content: "rb"},
+			{Role: "tool", Content: "rb", ToolCallID: "call_dup_b"},
 			{Role: "user", Content: "q2"},
 			{Role: "assistant", Content: "a2"},
 		},

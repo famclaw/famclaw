@@ -469,3 +469,120 @@ func TestToolArgsSameNameDifferentArgs(t *testing.T) {
 		t.Errorf("expected >=700 tokens (3000-char arg), got %d", tokens)
 	}
 }
+
+// TestBuildGroupsReusedIDBoundary verifies that when the same tool-call ID
+// appears in two separate assistant rounds, each round's result stays with
+// its own chronological round. The old (first) assistant must NOT claim the
+// new (second) result.
+//
+// Fixture: [sys, user, assistant(call_X), result_X_old, user,
+//
+//	assistant(call_X), result_X_new, user, assistant]
+//
+// The old group is (assistant_old, result_X_old); the new group is
+// (assistant_new, result_X_new). With a tight budget that evicts the old
+// group but retains the new group, result_X_new must NOT disappear.
+func TestBuildGroupsReusedIDBoundary(t *testing.T) {
+	oldResult := strings.Repeat("O", 2000)
+	newResult := "N42"
+
+	msgs := []Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "old question"},
+		{Role: "assistant", Content: "", CallIDs: []string{"call_reused"}, Prunable: true},
+		{Role: "tool", Content: oldResult, ToolCallID: "call_reused", Prunable: true},
+		{Role: "user", Content: "new question"},
+		{Role: "assistant", Content: "", CallIDs: []string{"call_reused"}, Prunable: true},
+		{Role: "tool", Content: newResult, ToolCallID: "call_reused", Prunable: true},
+		{Role: "user", Content: "current question"},
+		{Role: "assistant", Content: "current answer"},
+	}
+
+	// Verify grouping: call buildGroups directly.
+	groups := buildGroups(msgs)
+	// Find the group containing result_X_old (index 3).
+	// It should contain assistant_old (index 2) and result_X_old (index 3),
+	// but NOT result_X_new (index 6).
+	var oldGroup []int
+	var newGroup []int
+	for _, g := range groups {
+		for _, idx := range g {
+			if idx == 3 {
+				oldGroup = g
+			}
+			if idx == 6 {
+				newGroup = g
+			}
+		}
+	}
+	if len(oldGroup) == 0 {
+		t.Fatal("result_X_old (index 3) not assigned to any group")
+	}
+	if len(newGroup) == 0 {
+		t.Fatal("result_X_new (index 6) not assigned to any group")
+	}
+	// oldGroup must contain assistant_old (2) but not result_X_new (6).
+	for _, idx := range oldGroup {
+		if idx == 6 {
+			t.Errorf("old group incorrectly contains result_X_new (index 6): %v", oldGroup)
+		}
+	}
+	// newGroup must contain assistant_new (5) but not result_X_old (3).
+	for _, idx := range newGroup {
+		if idx == 3 {
+			t.Errorf("new group incorrectly contains result_X_old (index 3): %v", newGroup)
+		}
+	}
+	if !contains(oldGroup, 2) {
+		t.Errorf("old group missing assistant_old (index 2): %v", oldGroup)
+	}
+	if !contains(newGroup, 5) {
+		t.Errorf("new group missing assistant_new (index 5): %v", newGroup)
+	}
+
+	// Now force eviction of the old group only. Budget must be tight enough
+	// to evict old group (~505 tokens) but keep new group (~10 tokens).
+	// System + last 3 (user "current question", assistant "current answer")
+	// are protected.
+	out := Compress(msgs, Options{ContextWindow: 250})
+
+	// oldResult must be gone.
+	for _, m := range out {
+		if m.Content == oldResult {
+			t.Error("old result (call_reused, round 1) was not evicted")
+		}
+	}
+	// newResult must survive.
+	sawNew := false
+	for _, m := range out {
+		if m.Content == newResult {
+			sawNew = true
+			if m.ToolCallID != "call_reused" {
+				t.Errorf("new result lost ToolCallID; got %q", m.ToolCallID)
+			}
+		}
+	}
+	if !sawNew {
+		t.Error("new result (call_reused, round 2) was evicted; expected retention")
+	}
+	// The assistant for the new round must also survive (atomic group).
+	sawNewAssistant := false
+	for _, m := range out {
+		if m.Role == "assistant" && len(m.CallIDs) > 0 && m.CallIDs[0] == "call_reused" {
+			// This is the new round's assistant (the old one was evicted).
+			sawNewAssistant = true
+		}
+	}
+	if !sawNewAssistant {
+		t.Error("new round assistant (call_reused) was evicted; expected retention with its result")
+	}
+}
+
+func contains(slice []int, v int) bool {
+	for _, s := range slice {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}

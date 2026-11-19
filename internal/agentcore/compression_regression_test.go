@@ -452,3 +452,253 @@ func TestCompressionRegressionSelectiveEviction(t *testing.T) {
 		t.Error("eviction: call_g1 (big group) was never evicted — budget not applied")
 	}
 }
+
+// TestStageCompressToLLMRoundTrip verifies that ToolCallID on tool-role
+// messages in agentcore.Message survives the full pipeline:
+// StageCompress → turnToLLMMessages → serialized HTTP request.
+//
+// Without this propagation, the wire request would contain tool results
+// with no tool_call_id, breaking OpenAI wire invariants.
+//
+// Setup: two tool-call rounds with distinct IDs. The first round's group
+// is large enough to be evicted; the second round's group is small and
+// must survive. After compression + turnToLLMMessages, the retained tool
+// result must carry its ToolCallID in the serialized JSON.
+func TestStageCompressToLLMRoundTrip(t *testing.T) {
+	// Build a turn with:
+	//   Round 1 (old, big): assistant calls "call_rt1" → tool result (2000 chars)
+	//   Round 2 (new, small): assistant calls "call_rt2" → tool result (100 chars)
+	turn := &Turn{
+		Messages: []Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "history question"},
+			{
+				Role: "assistant", Content: "",
+				ToolCalls: []ToolCall{
+					{ID: "call_rt1", Function: ToolCallFunction{Name: "search", Arguments: map[string]any{"q": "old"}}},
+				},
+			},
+			{Role: "tool", Content: strings.Repeat("R", 2000), ToolCallID: "call_rt1"},
+			{Role: "user", Content: "new question"},
+			{
+				Role: "assistant", Content: "",
+				ToolCalls: []ToolCall{
+					{ID: "call_rt2", Function: ToolCallFunction{Name: "calc", Arguments: map[string]any{"x": 42}}},
+				},
+			},
+			{Role: "tool", Content: "result42", ToolCallID: "call_rt2"},
+			{Role: "user", Content: "follow up"},
+			{Role: "assistant", Content: "final answer"},
+		},
+	}
+
+	// Force eviction of round 1 (big) but retention of round 2 (small).
+	// Budget: system(~1) + history q(~5) + round1 group(~505) + new q(~5)
+	// + round2 group(~25) + follow up(~4) + final(~5) ≈ 550 tokens total.
+	// With budget=300, the big round 1 group must be evicted.
+	// The last 3 (follow up, final answer) and system are protected.
+	// Round 2 (new, small) should survive.
+	stage := NewStageCompress(300)
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatalf("StageCompress: %v", err)
+	}
+
+	// Convert to LLM messages (the actual outgoing wire path).
+	llmMsgs := turnToLLMMessages(turn.Messages)
+
+	// Verify: if call_rt2's tool result is present, it must carry ToolCallID.
+	sawResultRT2 := false
+	for _, m := range llmMsgs {
+		if m.Role == "tool" && m.Content == "result42" {
+			sawResultRT2 = true
+			if m.ToolCallID != "call_rt2" {
+				t.Errorf("tool result 'result42' lost ToolCallID after compression+conversion; got %q", m.ToolCallID)
+			}
+		}
+	}
+	// Round 2 should survive (small group, recent).
+	if !sawResultRT2 {
+		t.Error("round 2 tool result 'result42' was evicted; expected retention (small group, recent)")
+	}
+
+	// Verify: if call_rt1's tool result is evicted, its assistant must also be gone.
+	sawResultRT1 := false
+	sawCallRT1 := false
+	for i, m := range llmMsgs {
+		if m.Role == "tool" && m.ToolCallID == "call_rt1" {
+			sawResultRT1 = true
+		}
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "call_rt1" {
+					sawCallRT1 = true
+				}
+			}
+		}
+		_ = i
+	}
+	if sawResultRT1 != sawCallRT1 {
+		t.Errorf("round 1 split: callRT1=%v resultRT1=%v — group must be atomic", sawCallRT1, sawResultRT1)
+	}
+
+	// Bidirectional wire invariant on final messages.
+	assistantIDs := make(map[string]bool)
+	resultIDs := make(map[string]bool)
+	for _, m := range llmMsgs {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				assistantIDs[tc.ID] = true
+			}
+		}
+		if m.Role == "tool" && m.ToolCallID != "" {
+			resultIDs[m.ToolCallID] = true
+		}
+	}
+	for rid := range resultIDs {
+		if !assistantIDs[rid] {
+			t.Errorf("wire: orphaned tool_call_id=%q (no matching assistant call)", rid)
+		}
+	}
+	for aid := range assistantIDs {
+		if !resultIDs[aid] {
+			t.Errorf("wire: orphaned assistant call ID=%q (no matching tool result)", aid)
+		}
+	}
+}
+
+// TestStageCompressEvictionOldRoundPreservedNewRound verifies the reused-ID
+// boundary in buildGroups: when the same tool-call ID appears in two
+// separate rounds, eviction must remove the entire old round pair while
+// preserving the new round pair at their exact positions.
+//
+// The fixture:
+//
+//	[system, user_old, assistant_old(call_X), result_old(call_X, big),
+//	 user_new, assistant_new(call_X), result_new(call_X, small),
+//	 user_cur, assistant_cur]
+//
+// With a tight budget, the old group (assistant_old + result_old) must be
+// evicted as a unit. The new group (assistant_new + result_new) must be
+// retained. If the old assistant incorrectly claims result_new, the new
+// group becomes orphaned or split.
+func TestStageCompressEvictionOldRoundPreservedNewRound(t *testing.T) {
+	// Use the same ID "call_reused" in both rounds.
+	oldResult := strings.Repeat("O", 2000) // big — will be evicted
+	newResult := "N42"                     // small — must survive
+
+	turn := &Turn{
+		Messages: []Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "old question"},
+			{
+				Role: "assistant", Content: "",
+				ToolCalls: []ToolCall{
+					{ID: "call_reused", Function: ToolCallFunction{Name: "probe", Arguments: map[string]any{"round": 1}}},
+				},
+			},
+			{Role: "tool", Content: oldResult, ToolCallID: "call_reused"},
+			{Role: "user", Content: "new question"},
+			{
+				Role: "assistant", Content: "",
+				ToolCalls: []ToolCall{
+					{ID: "call_reused", Function: ToolCallFunction{Name: "probe", Arguments: map[string]any{"round": 2}}},
+				},
+			},
+			{Role: "tool", Content: newResult, ToolCallID: "call_reused"},
+			{Role: "user", Content: "current question"},
+			{Role: "assistant", Content: "current answer"},
+		},
+	}
+
+	// Budget forces eviction of the old group (~505 tokens) but retains
+	// the new group (~10 tokens). System + last 3 are protected.
+	stage := NewStageCompress(250)
+	if err := stage(context.Background(), turn); err != nil {
+		t.Fatalf("StageCompress: %v", err)
+	}
+
+	// Build LLM messages for wire check.
+	llmMsgs := turnToLLMMessages(turn.Messages)
+
+	// The old result (2000 chars of 'O') must be evicted.
+	for _, m := range llmMsgs {
+		if m.Role == "tool" && m.Content == oldResult {
+			t.Errorf("old round tool result (big, call_reused) was not evicted; budget=250")
+		}
+	}
+
+	// The new result ("N42") must survive with correct ToolCallID.
+	sawNew := false
+	for _, m := range llmMsgs {
+		if m.Role == "tool" && m.Content == newResult {
+			sawNew = true
+			if m.ToolCallID != "call_reused" {
+				t.Errorf("new round tool result lost ToolCallID; got %q", m.ToolCallID)
+			}
+		}
+	}
+	if !sawNew {
+		t.Error("new round tool result 'N42' was evicted; expected retention (small, recent)")
+	}
+
+	// The new round's assistant must also survive (atomic group).
+	sawNewAssistant := false
+	for _, m := range llmMsgs {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "call_reused" {
+					if args, ok := tc.Function.Arguments["round"]; ok {
+						if n, isInt := args.(int); isInt && n == 2 {
+							sawNewAssistant = true
+						}
+					}
+				}
+			}
+		}
+	}
+	if !sawNewAssistant {
+		t.Error("new round assistant (call_reused, round=2) was evicted; expected retention with its result")
+	}
+
+	// The old round's assistant must be evicted (its group was evicted).
+	sawOldAssistant := false
+	for _, m := range llmMsgs {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "call_reused" {
+					if args, ok := tc.Function.Arguments["round"]; ok {
+						if n, isInt := args.(int); isInt && n == 1 {
+							sawOldAssistant = true
+						}
+					}
+				}
+			}
+		}
+	}
+	if sawOldAssistant {
+		t.Error("old round assistant (call_reused, round=1) survived eviction; expected removal with its big result")
+	}
+
+	// Bidirectional wire invariant.
+	assistantIDs := make(map[string]bool)
+	resultIDs := make(map[string]bool)
+	for _, m := range llmMsgs {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				assistantIDs[tc.ID] = true
+			}
+		}
+		if m.Role == "tool" && m.ToolCallID != "" {
+			resultIDs[m.ToolCallID] = true
+		}
+	}
+	// Note: both old and new use "call_reused", so set-based checks alone
+	// cannot distinguish. We already verified above by content/args that
+	// old is gone and new is present. This check ensures no orphan from
+	// the new round.
+	for rid := range resultIDs {
+		if !assistantIDs[rid] {
+			t.Errorf("wire: orphaned tool_call_id=%q", rid)
+		}
+	}
+}

@@ -532,6 +532,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string, onToken func(strin
 			Role:         m.Role,
 			Content:      m.Content,
 			ContentParts: m.ContentParts,
+			ToolCallID:   m.ToolCallID,
 		})
 	}
 
@@ -2606,6 +2607,7 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 				Role:         m.Role,
 				Content:      m.Content,
 				ContentParts: m.ContentParts,
+				ToolCallID:   m.ToolCallID,
 				Prunable:     prunableIdx[i],
 			})
 		}
@@ -2622,6 +2624,7 @@ func (a *Agent) buildMessages(ctx context.Context, history []*store.Message, cur
 				Role:         cm.Role,
 				Content:      cm.Content,
 				ContentParts: cm.ContentParts,
+				ToolCallID:   cm.ToolCallID,
 			})
 		}
 	}
