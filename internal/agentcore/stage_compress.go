@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/famclaw/famclaw/internal/compress"
 )
@@ -23,13 +24,18 @@ func NewStageCompress(contextWindow int) Stage {
 				Role:         m.Role,
 				Content:      m.Content,
 				ContentParts: m.ContentParts,
+				ToolCallID:   m.ToolCallID,
 				Pinned:       m.Role == "system", // system prompt always pinned
 				Prunable:     m.Role == "tool",
 			}
 			if len(m.ToolCalls) > 0 {
 				cm.CallIDs = make([]string, len(m.ToolCalls))
+				cm.ToolArgs = make([]string, len(m.ToolCalls))
 				for k, tc := range m.ToolCalls {
 					cm.CallIDs[k] = tc.ID
+					// Complete serialized function payload (name + args)
+					// for opaque token accounting.
+					cm.ToolArgs[k] = toolCallFunctionStringAgentcore(tc)
 				}
 			}
 			msgs[i] = cm
@@ -51,4 +57,15 @@ func NewStageCompress(contextWindow int) Stage {
 
 		return nil
 	}
+}
+
+// toolCallFunctionStringAgentcore serializes the complete agentcore
+// ToolCallFunction (name + arguments) as JSON, matching the wire form.
+// Used for opaque token accounting in compression.
+func toolCallFunctionStringAgentcore(tc ToolCall) string {
+	data, err := json.Marshal(tc.Function)
+	if err != nil {
+		return tc.Function.Name
+	}
+	return string(data)
 }

@@ -36,7 +36,7 @@ func llmToCompress(in []llm.Message, prunableIdx map[int]bool) []compress.Messag
 				// One serialized payload per call, preserving order.
 				// Parallel calls to the same tool name each get their
 				// own entry — no keying by name.
-				cm.ToolArgs[j] = toolCallArgumentsString(tc)
+				cm.ToolArgs[j] = toolCallFunctionString(tc)
 			}
 		}
 		out[i] = cm
@@ -60,12 +60,14 @@ func compressToLLM(orig []llm.Message, idx []int) []llm.Message {
 	return out
 }
 
-// toolCallArgumentsString returns the JSON-encoded string form of
-// ToolCallFunction.Arguments, exactly as it appears on the wire.
-// This is used for opaque token accounting in compress.Message.ToolArgs.
-func toolCallArgumentsString(tc llm.ToolCall) string {
-	data, err := json.Marshal(tc.Function.Arguments)
+// toolCallFunctionString returns the complete serialized function payload
+// (name + arguments) for a single tool call, exactly as it appears on the
+// wire. This is used for opaque token accounting in compress.Message.
+// No parsing or interpretation of names/arguments is performed.
+func toolCallFunctionString(tc llm.ToolCall) string {
+	data, err := json.Marshal(tc.Function)
 	if err != nil {
+		// Fallback: at minimum count the name.
 		return tc.Function.Name
 	}
 	return string(data)

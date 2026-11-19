@@ -12,16 +12,17 @@ type Message struct {
 	// group pairing and eviction accounting — never interpreted by name,
 	// content or intent.
 	CallIDs []string // assistant messages: IDs of the tool calls requested
-	// ToolArgs carries the serialized opaque argument payloads, one per
-	// tool call in the same order as CallIDs. Each entry is the JSON-encoded
-	// argument string exactly as it will appear on the wire. This allows
-	// token estimation to account for large argument payloads without
+	// ToolArgs carries the complete serialized function payload per tool
+	// call (name + arguments), in the same order as CallIDs. Each entry
+	// is the JSON-encoded ToolCallFunction exactly as it appears on the
+	// wire. This allows token estimation to account for the full cost of
+	// repeated or long tool names and large argument payloads without
 	// interpreting their content. Parallel calls to the same tool name
 	// each get their own entry — no keying by name.
 	ToolArgs   []string
-	ToolCallID string   // tool messages: ID of the call this result answers
-	Pinned     bool     // pinned messages survive truncation
-	Prunable   bool     // prefer-drop messages (typically tool results) — Tier 0 evicts before non-Prunable
+	ToolCallID string // tool messages: ID of the call this result answers
+	Pinned     bool   // pinned messages survive truncation
+	Prunable   bool   // prefer-drop messages (typically tool results) — Tier 0 evicts before non-Prunable
 }
 
 // Options controls compression behavior.
@@ -152,6 +153,14 @@ func truncateIndices(messages []Message, budget int, est TokenEstimator) []int {
 
 	groups := buildGroups(messages)
 
+	// Pre-compute token cost per group (single pass over all messages).
+	groupCost := make([]int, len(groups))
+	for g, grp := range groups {
+		for _, idx := range grp {
+			groupCost[g] += messageTokens(messages[idx], est)
+		}
+	}
+
 	// keepGroup[g] starts true for every group; protected groups are
 	// immutable.
 	keepGroup := make([]bool, len(groups))
@@ -166,9 +175,16 @@ func truncateIndices(messages []Message, budget int, est TokenEstimator) []int {
 		}
 	}
 
+	// Track the current retained total incrementally.
+	retained := 0
+	for g := range groups {
+		if keepGroup[g] {
+			retained += groupCost[g]
+		}
+	}
+
 	// Pass 1: drop whole groups that contain ANY Prunable member
 	// (typically tool results are Prunable), oldest group first.
-	// ANY prunable member gives the whole group prune priority.
 	type candidate struct {
 		groupIdx int
 		firstIdx int
@@ -191,8 +207,9 @@ func truncateIndices(messages []Message, budget int, est TokenEstimator) []int {
 	}
 	sort.SliceStable(cand, func(i, j int) bool { return cand[i].firstIdx < cand[j].firstIdx })
 	for _, c := range cand {
-		if !protectedGroup[c.groupIdx] && keepGroup[c.groupIdx] && currentTokens(messages, keepGroup, groups, est) > budget {
+		if keepGroup[c.groupIdx] && retained > budget {
 			keepGroup[c.groupIdx] = false
+			retained -= groupCost[c.groupIdx]
 		}
 	}
 
@@ -207,8 +224,9 @@ func truncateIndices(messages []Message, budget int, est TokenEstimator) []int {
 	}
 	sort.SliceStable(cand2c, func(i, j int) bool { return cand2c[i].firstIdx < cand2c[j].firstIdx })
 	for _, c := range cand2c {
-		if !protectedGroup[c.groupIdx] && keepGroup[c.groupIdx] && currentTokens(messages, keepGroup, groups, est) > budget {
+		if keepGroup[c.groupIdx] && retained > budget {
 			keepGroup[c.groupIdx] = false
+			retained -= groupCost[c.groupIdx]
 		}
 	}
 
@@ -227,22 +245,12 @@ func truncateIndices(messages []Message, budget int, est TokenEstimator) []int {
 	// protected groups whole — a safe, well-formed transcript the model
 	// can still respond to, rather than a partial group that orphans
 	// tool-call IDs.
-	if currentTokens(messages, keepGroup, groups, est) > budget {
-		for g, grp := range groups {
+	if retained > budget {
+		for g := range groups {
 			if !protectedGroup[g] {
-				continue
-			}
-			for _, idx := range grp {
-				keptAt[idx] = true
-			}
-		}
-		// Clear non-protected groups.
-		for g, grp := range groups {
-			if protectedGroup[g] {
-				continue
-			}
-			for _, idx := range grp {
-				keptAt[idx] = false
+				for _, idx := range groups[g] {
+					keptAt[idx] = false
+				}
 			}
 		}
 	}
@@ -256,41 +264,31 @@ func truncateIndices(messages []Message, budget int, est TokenEstimator) []int {
 	return out
 }
 
-// currentTokens sums the token cost of every message whose group is
-// currently kept.
-func currentTokens(messages []Message, keepGroup []bool, groups [][]int, est TokenEstimator) int {
-	total := 0
-	for g, grp := range groups {
-		if !keepGroup[g] {
-			continue
-		}
-		for _, idx := range grp {
-			total += messageTokens(messages[idx], est)
-		}
-	}
-	return total
-}
-
-// buildGroups partitions messages into tool-call groups. A group is:
-//   - one assistant message carrying CallIDs, plus every tool message
-//     whose ToolCallID is in that CallIDs set; OR
-//   - a single tool message whose ToolCallID has no matching assistant
-//     CallIDs (an orphan from a partially truncated history — treated as
-//     its own group so it is evicted, never retained by itself).
+// buildGroups partitions messages into tool-call groups in a single pass
+// using an index from tool-result ID to the positions that carry it.
 //
-// All other messages are single-member groups. Groups are returned in
-// first-occurrence order so eviction can be applied oldest-first.
+// A group consists of one assistant message with CallIDs plus every tool
+// result whose ToolCallID matches one of those CallIDs AND whose position
+// is strictly after the assistant message (results that follow their call
+// in the same round). Reused IDs across separate turns are NOT joined:
+// a tool result at position j is grouped with the assistant call at
+// position i only if i < j and the result has not already been assigned
+// to an earlier group. This prevents a later turn's result from being
+// absorbed into an earlier round's group.
+//
+// Orphan tool results (no matching assistant CallIDs before them) become
+// single-member groups. All other messages are single-member groups.
+//
+// The returned groups preserve global order: groups are anchored at their
+// first (smallest) member index, and within a group members are sorted
+// ascending.
 func buildGroups(messages []Message) [][]int {
 	n := len(messages)
-	// Map from call ID -> index of the assistant message that requested it.
-	callOwner := make(map[string]int)
+	// Index tool results by ID: id -> list of positions.
+	toolIdx := make(map[string][]int)
 	for i, m := range messages {
-		if m.Role == "assistant" {
-			for _, cid := range m.CallIDs {
-				if _, exists := callOwner[cid]; !exists {
-					callOwner[cid] = i
-				}
-			}
+		if m.Role == "tool" && m.ToolCallID != "" {
+			toolIdx[m.ToolCallID] = append(toolIdx[m.ToolCallID], i)
 		}
 	}
 
@@ -301,39 +299,54 @@ func buildGroups(messages []Message) [][]int {
 	nextGroup := 0
 	var groups [][]int
 
-	// First pass: anchor groups on assistant messages that have CallIDs.
-	for i, m := range messages {
-		if m.Role == "assistant" && len(m.CallIDs) > 0 && groupOf[i] == -1 {
-			grp := []int{i}
-			for _, cid := range m.CallIDs {
-				for j, tm := range messages {
-					if tm.Role == "tool" && tm.ToolCallID == cid && groupOf[j] == -1 {
-						grp = append(grp, j)
-						groupOf[j] = nextGroup
-					}
-				}
-			}
-			for _, idx := range grp {
-				groupOf[idx] = nextGroup
-			}
-			groups = append(groups, grp)
-			nextGroup++
-		}
-	}
+	// Track which tool-result positions have been assigned to a group.
+	assigned := make([]bool, n)
 
-	// Second pass: orphan tool messages (no assistant call owner) become
-	// their own group so they cannot be retained without their call.
 	for i, m := range messages {
 		if groupOf[i] != -1 {
 			continue
 		}
-		if m.Role == "tool" && m.ToolCallID != "" {
-			if _, owned := callOwner[m.ToolCallID]; !owned {
-				groupOf[i] = nextGroup
-				groups = append(groups, []int{i})
-				nextGroup++
-				continue
+		if m.Role != "assistant" || len(m.CallIDs) == 0 {
+			// Single-member group (user, system, assistant without calls,
+			// or already-handled tool).
+			groupOf[i] = nextGroup
+			assigned[i] = true
+			groups = append(groups, []int{i})
+			nextGroup++
+			continue
+		}
+
+		// Assistant with tool calls: gather matching tool results that
+		// follow this message and are not yet assigned.
+		grp := []int{i}
+		assigned[i] = true
+		for _, cid := range m.CallIDs {
+			positions := toolIdx[cid]
+			for _, j := range positions {
+				if j <= i {
+					continue // result before the call — belongs to an earlier round
+				}
+				if assigned[j] {
+					continue // already grouped
+				}
+				grp = append(grp, j)
+				assigned[j] = true
 			}
+		}
+		// Sort group members ascending (CallIDs order may not match position).
+		sort.Ints(grp)
+		for _, idx := range grp {
+			groupOf[idx] = nextGroup
+		}
+		groups = append(groups, grp)
+		nextGroup++
+	}
+
+	// Second pass: any remaining unassigned messages (orphan tool results,
+	// etc.) become single-member groups.
+	for i := 0; i < n; i++ {
+		if groupOf[i] != -1 {
+			continue
 		}
 		groupOf[i] = nextGroup
 		groups = append(groups, []int{i})
@@ -358,11 +371,11 @@ func totalTokens(messages []Message, est TokenEstimator) int {
 // context-window management would keep too many messages, overshooting n_ctx.
 // messageTokens estimates the token count for a single message, including
 // Content, multimodal ContentParts, tool-call identity strings, and
-// serialized opaque tool argument payloads (ToolArgs). Tool call IDs
-// (assistant CallIDs, tool ToolCallID) are counted as chars/4 plus a
-// small per-ID overhead. ToolArgs values are the actual serialized
-// argument strings that appear on the wire, so their cost is counted
-// opaquely without interpreting names or intent.
+// complete serialized function payloads (ToolArgs: name + arguments per
+// call). Tool call IDs (assistant CallIDs, tool ToolCallID) are counted
+// as chars/4 plus a small per-ID overhead. ToolArgs entries are the actual
+// wire-form function payloads, so their cost is counted opaquely without
+// interpreting names or intent.
 func messageTokens(m Message, est TokenEstimator) int {
 	tokens := est.Estimate(m.Content) + 4 // ~4 tokens overhead per message
 	if len(m.ContentParts) > 0 {
