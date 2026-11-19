@@ -703,8 +703,8 @@ func NewStageToolLoop(deps ToolLoopDeps) Stage {
 					}
 					cmsgs := llmToCompress(llmMsgs, prunable)
 					opts := compress.Options{ContextWindow: deps.ContextWindow}
-					compressed := compress.Compress(cmsgs, opts)
-					llmMsgs = compressToLLM(cmsgs, compressed, llmMsgs)
+					idx := compress.CompressIndices(cmsgs, opts)
+					llmMsgs = compressToLLM(llmMsgs, idx)
 				}
 			}
 

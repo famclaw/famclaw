@@ -1,22 +1,11 @@
 package agentcore
 
 import (
+	"strings"
 	"testing"
 
-	"github.com/famclaw/famclaw/internal/compress"
 	"github.com/famclaw/famclaw/internal/llm"
 )
-
-// cmsgsOf builds a []compress.Message mirror of in with no Prunable/Pinned
-// flags, for bridge tests that only exercise the role/content/tool-identity
-// mapping.
-func cmsgsOf(in []llm.Message) []compress.Message {
-	out := make([]compress.Message, len(in))
-	for i, m := range in {
-		out[i] = llmToCompress([]llm.Message{m}, nil)[0]
-	}
-	return out
-}
 
 func TestLLMToCompressMarksPrunableByIndex(t *testing.T) {
 	in := []llm.Message{
@@ -84,9 +73,9 @@ func TestCompressToLLMFullKeepPreservesToolCalls(t *testing.T) {
 		}},
 		{Role: "tool", Content: "result", ToolCallID: "call1"},
 	}
-	cmsgs := cmsgsOf(orig)
-	compressed := cmsgs // full keep
-	out := compressToLLM(cmsgs, compressed, orig)
+	// Full keep: all positions retained.
+	idx := []int{0, 1, 2, 3}
+	out := compressToLLM(orig, idx)
 	if len(out) != 4 {
 		t.Fatalf("expected 4 messages, got %d", len(out))
 	}
@@ -98,17 +87,16 @@ func TestCompressToLLMFullKeepPreservesToolCalls(t *testing.T) {
 	}
 }
 
-func TestCompressToLLMDropsWalkPastSkipped(t *testing.T) {
+func TestCompressToLLMDropsByPosition(t *testing.T) {
 	orig := []llm.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "a"},
 		{Role: "tool", Content: "big result"}, // would be dropped
 		{Role: "user", Content: "b"},
 	}
-	cmsgs := cmsgsOf(orig)
-	// Simulate compress dropping the tool message
-	compressed := []compress.Message{cmsgs[0], cmsgs[1], cmsgs[3]}
-	out := compressToLLM(cmsgs, compressed, orig)
+	// Drop position 2 (the tool result).
+	idx := []int{0, 1, 3}
+	out := compressToLLM(orig, idx)
 	if len(out) != 3 {
 		t.Fatalf("expected 3 messages after drop, got %d", len(out))
 	}
@@ -117,58 +105,73 @@ func TestCompressToLLMDropsWalkPastSkipped(t *testing.T) {
 	}
 }
 
-func TestCompressToLLMHandlesSyntheticInsertion(t *testing.T) {
-	// Simulates the Tier 1 summary case where compress inserts a message
-	// that's not in the original.
-	orig := []llm.Message{
-		{Role: "system", Content: "sys"},
-		{Role: "user", Content: "a"},
-		{Role: "assistant", Content: "b"},
-	}
-	cmsgs := cmsgsOf(orig)
-	compressed := []compress.Message{
-		cmsgs[0],
-		{Role: "system", Content: "[summary]: prior turns covered X"}, // synthetic
-		cmsgs[1],
-		cmsgs[2],
-	}
-	out := compressToLLM(cmsgs, compressed, orig)
-	if len(out) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(out))
-	}
-	if out[1].Content != "[summary]: prior turns covered X" {
-		t.Errorf("expected synthetic summary at idx 1, got %q", out[1].Content)
-	}
-	if len(out[1].ToolCalls) != 0 {
-		t.Error("synthetic message should have no ToolCalls")
-	}
-}
-
 func TestCompressToLLMDuplicateContentSafe(t *testing.T) {
-	// Two assistant messages with same content — neither should
-	// short-circuit to the first match. The lockstep walker keeps both.
+	// Two user messages with identical text but different positions.
+	// Position-based restoration picks the exact right one — no aliasing.
 	orig := []llm.Message{
 		{Role: "system", Content: "sys"},
-		{Role: "assistant", Content: "ok", ToolCallID: "first"},
-		{Role: "assistant", Content: "ok", ToolCallID: "second"},
+		{Role: "user", Content: "same text"},
+		{Role: "user", Content: "same text"},
+		{Role: "user", Content: "same text"},
+		{Role: "user", Content: "same text"},
 	}
-	cmsgs := cmsgsOf(orig)
-	compressed := cmsgs
-	out := compressToLLM(cmsgs, compressed, orig)
+	// Select positions 0, 1, 4 (drop 2 and 3).
+	idx := []int{0, 1, 4}
+	out := compressToLLM(orig, idx)
 	if len(out) != 3 {
 		t.Fatalf("expected 3 messages, got %d", len(out))
 	}
-	if out[1].ToolCallID != "first" || out[2].ToolCallID != "second" {
-		t.Errorf("duplicate-content order not preserved: %q, %q",
-			out[1].ToolCallID, out[2].ToolCallID)
+	// All three should be "same text" (positions 1 and 4), plus system.
+	if out[0].Content != "sys" {
+		t.Errorf("expected 'sys', got %q", out[0].Content)
+	}
+	if out[1].Content != "same text" || out[2].Content != "same text" {
+		t.Errorf("expected two 'same text', got %q, %q", out[1].Content, out[2].Content)
+	}
+}
+
+func TestCompressToLLMEqualTextDifferentImages(t *testing.T) {
+	// Equal-text user messages with different ContentParts (images).
+	// Position-based restoration must pick the exact original including
+	// its specific ContentParts — no Role+Content matching can
+	// distinguish these.
+	orig := []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "look", ContentParts: []any{
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "img1"}},
+		}},
+		{Role: "user", Content: "look", ContentParts: []any{
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "img2"}},
+		}},
+		{Role: "user", Content: "look", ContentParts: []any{
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "img3"}},
+		}},
+		{Role: "user", Content: "look", ContentParts: []any{
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "img4"}},
+		}},
+	}
+	// Select positions 0 and 3 (the img3 user message at index 3).
+	// orig[0]=sys, orig[1]=img1, orig[2]=img2, orig[3]=img3, orig[4]=img4
+	idx := []int{0, 3}
+	out := compressToLLM(orig, idx)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(out))
+	}
+	// Verify the exact ContentParts from position 2.
+	cparts, ok := out[1].ContentParts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("ContentParts[0] not a map")
+	}
+	urlMap, _ := cparts["image_url"].(map[string]any)
+	url, _ := urlMap["url"].(string)
+	if url != "img3" {
+		t.Errorf("expected img3 at position 2, got %q", url)
 	}
 }
 
 // TestCompressToLLMRestoresRenamedToolCall: the tool name in the
 // assistant message is part of the original llm.ToolCall and must survive
-// the bridge even when the tool was renamed by the model (the schema and
-// result are unchanged — only the function name differs between the
-// request and any later representation).
+// the bridge even when the tool was renamed by the model.
 func TestCompressToLLMRestoresRenamedToolCall(t *testing.T) {
 	orig := []llm.Message{
 		{Role: "system", Content: "sys"},
@@ -182,9 +185,9 @@ func TestCompressToLLMRestoresRenamedToolCall(t *testing.T) {
 		{Role: "user", Content: "q3"},
 		{Role: "assistant", Content: "a3"},
 	}
-	cmsgs := cmsgsOf(orig)
-	compressed := cmsgs // full keep
-	out := compressToLLM(cmsgs, compressed, orig)
+	// Full keep.
+	idx := []int{0, 1, 2, 3, 4, 5, 6, 7}
+	out := compressToLLM(orig, idx)
 	if len(out) != 8 {
 		t.Fatalf("expected 8 messages, got %d", len(out))
 	}
@@ -196,5 +199,45 @@ func TestCompressToLLMRestoresRenamedToolCall(t *testing.T) {
 	}
 	if out[3].ToolCallID != "call_rn" {
 		t.Errorf("tool result ToolCallID = %q, want call_rn", out[3].ToolCallID)
+	}
+}
+
+// TestLLMToCompressToolArgsSameNameDifferentArgs verifies that parallel
+// calls to the same tool name each preserve their own serialized argument
+// payload in ToolArgs (one entry per call, in CallIDs order). No keying
+// by name — no overwrite. The budget behavior is verified through the
+// live bridge: a large argument in an earlier call must be counted.
+func TestLLMToCompressToolArgsSameNameDifferentArgs(t *testing.T) {
+	bigArg := make(map[string]any)
+	bigArg["url"] = strings.Repeat("a", 4000) // 4000-char URL
+	smallArg := map[string]any{"url": "https://short.example"}
+
+	in := []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "fetch these"},
+		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{
+			{ID: "call_1", Function: llm.ToolCallFunction{Name: "fetch", Arguments: bigArg}},
+			{ID: "call_2", Function: llm.ToolCallFunction{Name: "fetch", Arguments: smallArg}},
+		}},
+		{Role: "tool", Content: "result_1", ToolCallID: "call_1"},
+		{Role: "tool", Content: "result_2", ToolCallID: "call_2"},
+	}
+	c := llmToCompress(in, map[int]bool{3: true, 4: true})
+
+	// ToolArgs must have exactly 2 entries (one per call), not 1.
+	if len(c[2].ToolArgs) != 2 {
+		t.Fatalf("expected 2 ToolArgs entries, got %d", len(c[2].ToolArgs))
+	}
+	// The first entry (big arg) must be ~4000 chars.
+	if len(c[2].ToolArgs[0]) < 3000 {
+		t.Errorf("ToolArgs[0] too short: %d chars (big arg should be ~4000)", len(c[2].ToolArgs[0]))
+	}
+	// The second entry (small arg) must be short.
+	if len(c[2].ToolArgs[1]) > 200 {
+		t.Errorf("ToolArgs[1] too long: %d chars (small arg should be <200)", len(c[2].ToolArgs[1]))
+	}
+	// Both entries are distinct — no overwrite.
+	if c[2].ToolArgs[0] == c[2].ToolArgs[1] {
+		t.Error("ToolArgs[0] == ToolArgs[1] — earlier payload was overwritten")
 	}
 }

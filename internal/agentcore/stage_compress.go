@@ -35,59 +35,20 @@ func NewStageCompress(contextWindow int) Stage {
 			msgs[i] = cm
 		}
 
-		// Compress
-		compressed := compress.Compress(msgs, compress.Options{
-			ContextWindow: contextWindow,
-		})
+		// Single authoritative selection: CompressIndices returns the
+		// original positions of retained messages. Project the original
+		// agentcore.Messages from those positions — no comparator matching.
+		opts := compress.Options{ContextWindow: contextWindow}
+		idx := compress.CompressIndices(msgs, opts)
 
-		// Convert back. Because Compress is drop-only, each compressed entry
-		// maps to exactly one original turn.Message. Use identity-aware
-		// matching (Role+Content+CallIDs+ToolCallID) to avoid aliasing
-		// duplicate-content messages.
-		out := make([]Message, len(compressed))
-		j := 0
-		for i, m := range compressed {
-			for j < len(msgs) && !sameCompressStage(msgs[j], m) {
-				j++
-			}
-			if j < len(msgs) && sameCompressStage(msgs[j], m) {
-				orig := turn.Messages[j]
-				out[i] = Message{
-					Role:         m.Role,
-					Content:      m.Content,
-					ContentParts: m.ContentParts,
-					ToolCalls:    orig.ToolCalls,
-				}
-				j++
-				continue
-			}
-			out[i] = Message{
-				Role:         m.Role,
-				Content:      m.Content,
-				ContentParts: m.ContentParts,
+		out := make([]Message, 0, len(idx))
+		for _, i := range idx {
+			if i >= 0 && i < len(turn.Messages) {
+				out = append(out, turn.Messages[i])
 			}
 		}
 		turn.Messages = out
 
 		return nil
 	}
-}
-
-// sameCompressStage compares two compress.Message entries including the
-// tool-call identity fields (CallIDs, ToolCallID). This prevents
-// duplicate-content messages from being mis-matched during the lockstep
-// walk.
-func sameCompressStage(a, b compress.Message) bool {
-	if a.Role != b.Role || a.Content != b.Content || a.ToolCallID != b.ToolCallID {
-		return false
-	}
-	if len(a.CallIDs) != len(b.CallIDs) {
-		return false
-	}
-	for i := range a.CallIDs {
-		if a.CallIDs[i] != b.CallIDs[i] {
-			return false
-		}
-	}
-	return true
 }

@@ -2,17 +2,22 @@
 package agentcore
 
 import (
+	"encoding/json"
+
 	"github.com/famclaw/famclaw/internal/compress"
 	"github.com/famclaw/famclaw/internal/llm"
 )
 
 // llmToCompress converts an []llm.Message to []compress.Message, marking
-// the indexes in prunableIdx as Prunable. Pinned is NOT set here — Compress
-// already protects index 0 (system prompt) automatically.
+// the indexes in prunableIdx as Prunable. Pinned is NOT set here —
+// CompressIndices already protects index 0 (system prompt) and the most
+// recent user-role message automatically.
 //
 // Tool-call identities are carried opaquely into CallIDs / ToolCallID so
-// Compress can keep each assistant call / tool-result pair together. No
-// interpretation of tool names, arguments or content is performed.
+// Compress can keep each assistant call / tool-result pair together.
+// Serialized tool argument payloads are carried in ToolArgs so token
+// estimation accounts for large arguments on the wire. No interpretation
+// of tool names, arguments or content is performed.
 func llmToCompress(in []llm.Message, prunableIdx map[int]bool) []compress.Message {
 	out := make([]compress.Message, len(in))
 	for i, msg := range in {
@@ -25,8 +30,13 @@ func llmToCompress(in []llm.Message, prunableIdx map[int]bool) []compress.Messag
 		}
 		if len(msg.ToolCalls) > 0 {
 			cm.CallIDs = make([]string, len(msg.ToolCalls))
+			cm.ToolArgs = make([]string, len(msg.ToolCalls))
 			for j, tc := range msg.ToolCalls {
 				cm.CallIDs[j] = tc.ID
+				// One serialized payload per call, preserving order.
+				// Parallel calls to the same tool name each get their
+				// own entry — no keying by name.
+				cm.ToolArgs[j] = toolCallArgumentsString(tc)
 			}
 		}
 		out[i] = cm
@@ -34,50 +44,29 @@ func llmToCompress(in []llm.Message, prunableIdx map[int]bool) []compress.Messag
 	return out
 }
 
-// compressToLLM maps the compressed slice back to original llm.Messages.
-// Because Compress (Tier 0) is drop-only, the compressed list is a
-// subsequence of cmsgs, which is itself 1:1 with orig. So we can walk
-// cmsgs and orig in lockstep and pick the entries whose role/content
-// match the next compressed entry — this restores ToolCalls, ToolCallID,
-// Reasoning and every other original field verbatim.
-//
-// Synthetic inserted entries (future Tier 1) have no match in cmsgs and
-// are emitted as plain {Role, Content} messages with no tool data.
-func compressToLLM(cmsgs []compress.Message, compressed []compress.Message, orig []llm.Message) []llm.Message {
-	out := make([]llm.Message, 0, len(compressed))
-	j := 0
-	for i := 0; i < len(compressed); i++ {
-		for j < len(cmsgs) && !sameCompress(cmsgs[j], compressed[i]) {
-			j++
+// compressToLLM restores the original llm.Messages at the positions
+// selected by CompressIndices. Because the selection is authoritative
+// (one position per retained message, in original order), no
+// comparator-based matching is performed. Each original message is
+// returned verbatim, preserving ToolCalls, ToolCallID, Reasoning,
+// ContentParts and every other field.
+func compressToLLM(orig []llm.Message, idx []int) []llm.Message {
+	out := make([]llm.Message, 0, len(idx))
+	for _, i := range idx {
+		if i >= 0 && i < len(orig) {
+			out = append(out, orig[i])
 		}
-		if j < len(cmsgs) && sameCompress(cmsgs[j], compressed[i]) && j < len(orig) {
-			out = append(out, orig[j])
-			j++
-			continue
-		}
-		out = append(out, llm.Message{
-			Role:    compressed[i].Role,
-			Content: compressed[i].Content,
-		})
 	}
 	return out
 }
 
-// sameCompress compares two compress.Message entries including the
-// tool-call identity fields (CallIDs, ToolCallID). This prevents
-// duplicate-content messages from being mis-matched during the lockstep
-// walk.
-func sameCompress(a, b compress.Message) bool {
-	if a.Role != b.Role || a.Content != b.Content || a.ToolCallID != b.ToolCallID {
-		return false
+// toolCallArgumentsString returns the JSON-encoded string form of
+// ToolCallFunction.Arguments, exactly as it appears on the wire.
+// This is used for opaque token accounting in compress.Message.ToolArgs.
+func toolCallArgumentsString(tc llm.ToolCall) string {
+	data, err := json.Marshal(tc.Function.Arguments)
+	if err != nil {
+		return tc.Function.Name
 	}
-	if len(a.CallIDs) != len(b.CallIDs) {
-		return false
-	}
-	for i := range a.CallIDs {
-		if a.CallIDs[i] != b.CallIDs[i] {
-			return false
-		}
-	}
-	return true
+	return string(data)
 }

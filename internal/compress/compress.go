@@ -11,7 +11,14 @@ type Message struct {
 	// (llm.Message.ToolCall IDs / ToolCallID). They are used only for
 	// group pairing and eviction accounting — never interpreted by name,
 	// content or intent.
-	CallIDs    []string // assistant messages: IDs of the tool calls requested
+	CallIDs []string // assistant messages: IDs of the tool calls requested
+	// ToolArgs carries the serialized opaque argument payloads, one per
+	// tool call in the same order as CallIDs. Each entry is the JSON-encoded
+	// argument string exactly as it will appear on the wire. This allows
+	// token estimation to account for large argument payloads without
+	// interpreting their content. Parallel calls to the same tool name
+	// each get their own entry — no keying by name.
+	ToolArgs   []string
 	ToolCallID string   // tool messages: ID of the call this result answers
 	Pinned     bool     // pinned messages survive truncation
 	Prunable   bool     // prefer-drop messages (typically tool results) — Tier 0 evicts before non-Prunable
@@ -35,6 +42,23 @@ func (o *Options) estimator() TokenEstimator {
 // Applies Tier 0 (smart truncation) — drops oldest non-pinned messages.
 // Returns the compressed message list.
 func Compress(messages []Message, opts Options) []Message {
+	idx := CompressIndices(messages, opts)
+	out := make([]Message, 0, len(idx))
+	for _, i := range idx {
+		out = append(out, messages[i])
+	}
+	return out
+}
+
+// CompressIndices returns the original global index of each message
+// retained by the compression decision. This is the single authoritative
+// selection: Compress projects its output from these positions, and
+// callers (tool-loop, bridges) project the original LLM messages from
+// the SAME positions. No comparator-based matching is used.
+//
+// The returned slice has one entry per retained message, in original
+// order. idx[i] is the index into the input slice.
+func CompressIndices(messages []Message, opts Options) []int {
 	if opts.ContextWindow <= 0 {
 		opts.ContextWindow = 4096
 	}
@@ -60,16 +84,18 @@ func Compress(messages []Message, opts Options) []Message {
 	budget = int(float64(budget) * (1 - margin))
 
 	if total <= budget {
-		return messages // fits already
+		idx := make([]int, len(messages))
+		for i := range idx {
+			idx[i] = i
+		}
+		return idx
 	}
 
-	return truncate(messages, budget, est)
+	return truncateIndices(messages, budget, est)
 }
 
-// truncate implements Tier 0: drop oldest non-protected messages.
-// Two-pass drop: first prefer Prunable (typically tool results) so they
-// get evicted before conversation turns; then drop any non-protected if
-// still over budget.
+// truncateIndices returns the original indices of messages retained after
+// Tier-0 group-aware eviction. This is the single authoritative selection.
 //
 // Tool-call groups are preserved as units. A group consists of one
 // assistant message carrying opaque tool-call IDs (CallIDs) and every
@@ -80,16 +106,25 @@ func Compress(messages []Message, opts Options) []Message {
 // single-member groups and are also dropped together with any matching
 // call that does exist.
 //
-// Protected: system prompt (index 0), pinned messages, last 3 messages.
-// A group is protected if any of its members is protected; the whole
-// group is retained (never split) even when the retained group pushes
-// the result over budget.
-func truncate(messages []Message, budget int, est TokenEstimator) []Message {
+// Protected: system prompt (index 0), pinned messages, last 3 messages,
+// and the current user message (the most recent user-role message, which
+// may carry images). ANY protected/in-flight group member protects the
+// whole group.
+//
+// A group is evictable in Pass 1 if ANY of its members is Prunable
+// (typically tool results are Prunable, not the assistant anchor).
+// Pass 2 evicts any remaining non-protected group, oldest first.
+func truncateIndices(messages []Message, budget int, est TokenEstimator) []int {
 	if len(messages) <= 4 {
-		return messages // too few to truncate
+		idx := make([]int, len(messages))
+		for i := range idx {
+			idx[i] = i
+		}
+		return idx
 	}
 
-	// Always keep: system prompt (first), last 3 messages
+	// Always keep: system prompt (first), last 3 messages,
+	// and the current user message (most recent user-role entry).
 	keepEnd := 3
 	if keepEnd > len(messages)-1 {
 		keepEnd = len(messages) - 1
@@ -103,6 +138,15 @@ func truncate(messages []Message, budget int, est TokenEstimator) []Message {
 	for i, m := range messages {
 		if m.Pinned {
 			protected[i] = true
+		}
+	}
+	// Explicitly protect the most recent user-role message (the current
+	// request, which may carry images). After tool results accumulate,
+	// this message can fall outside the last-3 window; protect it here.
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			protected[i] = true
+			break
 		}
 	}
 
@@ -122,10 +166,9 @@ func truncate(messages []Message, budget int, est TokenEstimator) []Message {
 		}
 	}
 
-	// Pass 1: drop whole Prunable groups (oldest group first), but only
-	// groups whose first member is Prunable — this keeps the original
-	// "tool results evict before conversation turns" ordering while
-	// guaranteeing no group is split.
+	// Pass 1: drop whole groups that contain ANY Prunable member
+	// (typically tool results are Prunable), oldest group first.
+	// ANY prunable member gives the whole group prune priority.
 	type candidate struct {
 		groupIdx int
 		firstIdx int
@@ -135,7 +178,14 @@ func truncate(messages []Message, budget int, est TokenEstimator) []Message {
 		if !keepGroup[g] || protectedGroup[g] {
 			continue
 		}
-		if messages[grp[0]].Prunable {
+		anyPrunable := false
+		for _, idx := range grp {
+			if messages[idx].Prunable {
+				anyPrunable = true
+				break
+			}
+		}
+		if anyPrunable {
 			cand = append(cand, candidate{g, grp[0]})
 		}
 	}
@@ -172,37 +222,38 @@ func truncate(messages []Message, budget int, est TokenEstimator) []Message {
 			keptAt[idx] = true
 		}
 	}
-	result := make([]Message, 0, len(messages))
-	for i, m := range messages {
-		if keptAt[i] {
-			result = append(result, m)
-		}
-	}
 
 	// If even the protected-only result is over budget, return the
 	// protected groups whole — a safe, well-formed transcript the model
 	// can still respond to, rather than a partial group that orphans
 	// tool-call IDs.
 	if currentTokens(messages, keepGroup, groups, est) > budget {
-		keptProt := make([]bool, len(messages))
 		for g, grp := range groups {
 			if !protectedGroup[g] {
 				continue
 			}
 			for _, idx := range grp {
-				keptProt[idx] = true
+				keptAt[idx] = true
 			}
 		}
-		out := make([]Message, 0, len(messages))
-		for i, m := range messages {
-			if keptProt[i] {
-				out = append(out, m)
+		// Clear non-protected groups.
+		for g, grp := range groups {
+			if protectedGroup[g] {
+				continue
+			}
+			for _, idx := range grp {
+				keptAt[idx] = false
 			}
 		}
-		return out
 	}
 
-	return result
+	out := make([]int, 0, len(messages))
+	for i := range messages {
+		if keptAt[i] {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // currentTokens sums the token cost of every message whose group is
@@ -305,11 +356,13 @@ func totalTokens(messages []Message, est TokenEstimator) int {
 // messages that carry only ContentParts (e.g. a user image whose Content is
 // empty) would count as ~4 tokens — the image's real cost is hidden and
 // context-window management would keep too many messages, overshooting n_ctx.
-// messageTokens estimates the token count for a single message,
-// including Content, multimodal ContentParts, and tool-call identity
-// strings. Tool call IDs (assistant CallIDs, tool ToolCallID) are
-// counted as chars/4 plus a small per-ID overhead so large serialized
-// model requests with many tool calls are not undercounted.
+// messageTokens estimates the token count for a single message, including
+// Content, multimodal ContentParts, tool-call identity strings, and
+// serialized opaque tool argument payloads (ToolArgs). Tool call IDs
+// (assistant CallIDs, tool ToolCallID) are counted as chars/4 plus a
+// small per-ID overhead. ToolArgs values are the actual serialized
+// argument strings that appear on the wire, so their cost is counted
+// opaquely without interpreting names or intent.
 func messageTokens(m Message, est TokenEstimator) int {
 	tokens := est.Estimate(m.Content) + 4 // ~4 tokens overhead per message
 	if len(m.ContentParts) > 0 {
@@ -317,6 +370,9 @@ func messageTokens(m Message, est TokenEstimator) int {
 	}
 	for _, cid := range m.CallIDs {
 		tokens += est.Estimate(cid) + 4
+	}
+	for _, arg := range m.ToolArgs {
+		tokens += est.Estimate(arg) + 4
 	}
 	if m.ToolCallID != "" {
 		tokens += est.Estimate(m.ToolCallID) + 4

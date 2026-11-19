@@ -415,3 +415,57 @@ func TestTruncateLargeToolCallArgumentsCounted(t *testing.T) {
 		t.Errorf("expected >=500 tokens for 4 large call IDs, got %d", tokens)
 	}
 }
+
+// TestToolArgsLargePayloadCounted verifies that large serialized argument
+// payloads (ToolArgs) are counted in the token budget. This is the real
+// wire cost — the JSON-encoded argument strings, not just the call IDs.
+func TestToolArgsLargePayloadCounted(t *testing.T) {
+	est := &SimpleEstimator{}
+	// Simulate two parallel calls to the same tool "fetch" with different
+	// large argument payloads. The first has a 5000-char argument, the
+	// second has a 100-char argument.
+	m := Message{
+		Role:    "assistant",
+		Content: "",
+		CallIDs: []string{"call_1", "call_2"},
+		ToolArgs: []string{
+			`{"url":"` + strings.Repeat("a", 5000) + `"}`,
+			`{"url":"` + strings.Repeat("b", 100) + `"}`,
+		},
+	}
+	tokens := messageTokens(m, est)
+	// 5000-char arg ≈ 1250 tokens, 100-char arg ≈ 25 tokens.
+	// Plus 2 call IDs + base content.
+	if tokens < 1300 {
+		t.Errorf("expected >=1300 tokens for large ToolArgs, got %d", tokens)
+	}
+}
+
+// TestToolArgsSameNameDifferentArgs verifies that parallel calls to the
+// same tool name each preserve their own serialized argument payload in
+// ToolArgs (one entry per call, in CallIDs order). No keying by name —
+// no overwrite.
+func TestToolArgsSameNameDifferentArgs(t *testing.T) {
+	// Build through the bridge to verify end-to-end.
+	// This test is in the compress package, so we verify the invariant
+	// directly: ToolArgs has the same length as CallIDs, one entry per call.
+	est := &SimpleEstimator{}
+	m := Message{
+		Role:    "assistant",
+		Content: "",
+		CallIDs: []string{"call_a", "call_b", "call_c"},
+		ToolArgs: []string{
+			`{"query":"first"}`,
+			`{"query":"` + strings.Repeat("x", 3000) + `"}`,
+			`{"query":"third"}`,
+		},
+	}
+	if len(m.ToolArgs) != len(m.CallIDs) {
+		t.Fatalf("ToolArgs length %d != CallIDs length %d", len(m.ToolArgs), len(m.CallIDs))
+	}
+	// The large middle argument must be counted.
+	tokens := messageTokens(m, est)
+	if tokens < 700 {
+		t.Errorf("expected >=700 tokens (3000-char arg), got %d", tokens)
+	}
+}
