@@ -9,41 +9,75 @@ import (
 // llmToCompress converts an []llm.Message to []compress.Message, marking
 // the indexes in prunableIdx as Prunable. Pinned is NOT set here — Compress
 // already protects index 0 (system prompt) automatically.
+//
+// Tool-call identities are carried opaquely into CallIDs / ToolCallID so
+// Compress can keep each assistant call / tool-result pair together. No
+// interpretation of tool names, arguments or content is performed.
 func llmToCompress(in []llm.Message, prunableIdx map[int]bool) []compress.Message {
 	out := make([]compress.Message, len(in))
 	for i, msg := range in {
-		out[i] = compress.Message{
+		cm := compress.Message{
 			Role:         msg.Role,
 			Content:      msg.Content,
 			ContentParts: msg.ContentParts,
 			Prunable:     prunableIdx[i],
+			ToolCallID:   msg.ToolCallID,
 		}
+		if len(msg.ToolCalls) > 0 {
+			cm.CallIDs = make([]string, len(msg.ToolCalls))
+			for j, tc := range msg.ToolCalls {
+				cm.CallIDs[j] = tc.ID
+			}
+		}
+		out[i] = cm
 	}
 	return out
 }
 
-// compressToLLM walks orig and c in lockstep, returning the subset of orig
-// whose (Role, Content) matches the next c entry. Preserves ToolCalls and
-// ToolCallID from the original llm.Message. Handles the drop-only case;
-// inserted messages (e.g. synthetic summaries from Tier 1) that don't
-// match any orig entry are carried as plain llm.Message{Role, Content}
-// with no tool data.
-func compressToLLM(c []compress.Message, orig []llm.Message) []llm.Message {
-	out := make([]llm.Message, 0, len(c))
+// compressToLLM maps the compressed slice back to original llm.Messages.
+// Because Compress (Tier 0) is drop-only, the compressed list is a
+// subsequence of cmsgs, which is itself 1:1 with orig. So we can walk
+// cmsgs and orig in lockstep and pick the entries whose role/content
+// match the next compressed entry — this restores ToolCalls, ToolCallID,
+// Reasoning and every other original field verbatim.
+//
+// Synthetic inserted entries (future Tier 1) have no match in cmsgs and
+// are emitted as plain {Role, Content} messages with no tool data.
+func compressToLLM(cmsgs []compress.Message, compressed []compress.Message, orig []llm.Message) []llm.Message {
+	out := make([]llm.Message, 0, len(compressed))
 	j := 0
-	for i := 0; i < len(c); i++ {
-		for j < len(orig) && (orig[j].Role != c[i].Role || orig[j].Content != c[i].Content) {
+	for i := 0; i < len(compressed); i++ {
+		for j < len(cmsgs) && !sameCompress(cmsgs[j], compressed[i]) {
 			j++
 		}
-		if j < len(orig) && orig[j].Role == c[i].Role && orig[j].Content == c[i].Content {
+		if j < len(cmsgs) && sameCompress(cmsgs[j], compressed[i]) && j < len(orig) {
 			out = append(out, orig[j])
 			j++
-		} else {
-			out = append(out, llm.Message{
-				Role:    c[i].Role,
-				Content: c[i].Content,
-			})
+			continue
 		}
+		out = append(out, llm.Message{
+			Role:    compressed[i].Role,
+			Content: compressed[i].Content,
+		})
 	}
 	return out
+}
+
+// sameCompress compares two compress.Message entries including the
+// tool-call identity fields (CallIDs, ToolCallID). This prevents
+// duplicate-content messages from being mis-matched during the lockstep
+// walk.
+func sameCompress(a, b compress.Message) bool {
+	if a.Role != b.Role || a.Content != b.Content || a.ToolCallID != b.ToolCallID {
+		return false
+	}
+	if len(a.CallIDs) != len(b.CallIDs) {
+		return false
+	}
+	for i := range a.CallIDs {
+		if a.CallIDs[i] != b.CallIDs[i] {
+			return false
+		}
+	}
+	return true
 }
