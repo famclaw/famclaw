@@ -40,6 +40,10 @@ type Message struct {
 	Content      string     `json:"content"`
 	ContentParts []any      // multimodal content (images) — mirrors llm.Message.ContentParts
 	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID identifies which tool call this result answers. Set on
+	// tool-role messages; empty for all other roles. Carried through
+	// compression so tool-call groups stay intact.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // ToolCall is a tool invocation requested by the LLM.

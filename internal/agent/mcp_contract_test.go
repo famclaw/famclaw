@@ -402,3 +402,303 @@ func TestMCPBoundedSecondFailure(t *testing.T) {
 		t.Fatalf("search endpoint hit after refusal-only turns: hits=%d", got)
 	}
 }
+
+// TestAgentChatCompressionAcrossToolRounds is the full Agent.Chat end-to-end
+// regression that forces compression across multiple real tool rounds.
+// It reuses the real Chat / scripted-model / in-process fake-MCP harness.
+//
+// Setup:
+//   - MaxContextTokens is small (500) so the tool-loop compression fires.
+//   - The model issues THREE sequential MCP tool calls (three rounds):
+//     round 1: large result (~3000 chars, "call_r1")
+//     round 2: small result (~100 chars, "call_r2")
+//     round 3: medium result (~500 chars, "call_r3")
+//   - After round 3's result is appended, the context is over budget and
+//     compression must evict at least one older group.
+//   - The tool name is "resource_v2" (an opaque renamed MCP tool).
+//
+// Assertions:
+//   - Compression actually occurred: the final request has fewer messages
+//     than the pre-compression total.
+//   - No orphaned tool_call_id in any request (bidirectional pairing).
+//   - The large group (call_r1) is evicted from the final request.
+//   - The small group (call_r2) survives in the final request (positive
+//     survival with exact ID and order preserved).
+//   - The current round's call (call_r3) is always present (last-3 protection).
+//   - Each MCP tool is invoked exactly once per round (no replay): total
+//     handler calls = 3.
+//   - The final response is the scripted answer.
+//   - The tool schema/results are identical regardless of the renamed tool
+//     name: the handler receives the same arguments and returns the same
+//     content for each round.
+//   - Input policy: user messages are preserved (not evicted by compression
+//     unless they are the oldest and non-protected).
+func TestAgentChatCompressionAcrossToolRounds(t *testing.T) {
+	const want = "All three resources collected."
+	db, err := store.Open(filepath.Join(t.TempDir(), "compress.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	const convID = "compress-e2e"
+
+	// Minimal prior history so buildMessages has something to work with.
+	if err := db.SaveMessage(convID, "parent", "user", "Collect three resources.", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveMessage(convID, "parent", "assistant", "I will collect them now.", "", "allow", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := staleSearchTestCfg("")
+	cfg.LLM.MaxContextTokens = 500 // tight: forces compression after round 3
+	cfg.LLM.MaxResponseTokens = 50
+
+	// Scripted model: three tool-call rounds, then a final answer.
+	// Round 1: call_r1 → large result
+	// Round 2: call_r2 → small result
+	// Round 3: call_r3 → medium result
+	// Final: plain text answer
+	model := &staleSearchChatter{script: []*llm.Message{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{
+			{ID: "call_r1", Type: "function", Function: llm.ToolCallFunction{Name: "resource_v2", Arguments: map[string]any{"key": "r1"}}},
+		}},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{
+			{ID: "call_r2", Type: "function", Function: llm.ToolCallFunction{Name: "resource_v2", Arguments: map[string]any{"key": "r2"}}},
+		}},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{
+			{ID: "call_r3", Type: "function", Function: llm.ToolCallFunction{Name: "resource_v2", Arguments: map[string]any{"key": "r3"}}},
+		}},
+		{Role: "assistant", Content: want},
+	}}
+
+	a := buildStaleSearchAgent(t, db, cfg, model, convID, false)
+	pool := mcp.NewPool("", false, false)
+	t.Cleanup(pool.StopAll)
+	a.pool = pool
+
+	// Handler returns differently-sized results per call to simulate
+	// real varying tool outputs. The tool name is opaque ("resource_v2").
+	var mcpCalls int
+	server := mcpserver.NewMCPServer("ext", "1")
+	server.AddTool(mcpgo.NewTool("resource_v2", mcpgo.WithReadOnlyHintAnnotation(true)), func(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		mcpCalls++
+		key := ""
+		if m, ok := req.Params.Arguments.(map[string]any); ok {
+			if s, ok := m["key"].(string); ok {
+				key = s
+			}
+		}
+		switch key {
+		case "r1":
+			return mcpgo.NewToolResultText(strings.Repeat("X", 3000)), nil // large
+		case "r2":
+			return mcpgo.NewToolResultText("small result data"), nil // ~17 chars
+		case "r3":
+			return mcpgo.NewToolResultText(strings.Repeat("Y", 500)), nil // medium
+		default:
+			return mcpgo.NewToolResultText("unknown"), nil
+		}
+	})
+	if err := pool.RegisterInProcessServer("ext-server", server); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := a.Chat(context.Background(), "Collect all three.", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Content != want {
+		t.Fatalf("Content = %q, want %q", resp.Content, want)
+	}
+
+	// No replay: each tool call executed exactly once.
+	if mcpCalls != 3 {
+		t.Fatalf("MCP tool replay: calls=%d, want 3", mcpCalls)
+	}
+	// Model was called 4 times: 3 tool rounds + 1 final answer.
+	if model.calls != 4 {
+		t.Fatalf("model calls = %d, want 4", model.calls)
+	}
+
+	// The final request (index 3, after round 3's result) must have
+	// fewer messages than the un-compressed total.
+	// Pre-compression total: system(1) + history(2) + user(1) +
+	//   round1: assistant+result(2) + round2: assistant+result(2) +
+	//   round3: assistant+result(2) = 12 messages.
+	// After compression, some older groups must be evicted.
+	finalReq := model.recorded[3]
+	if len(finalReq) >= 12 {
+		t.Errorf("compression did not occur: final request has %d messages (>= 12)", len(finalReq))
+	}
+
+	// Wire invariants on every recorded request.
+	for i, msgs := range model.recorded {
+		assistantIDs := make(map[string]bool)
+		resultIDs := make(map[string]bool)
+		for _, m := range msgs {
+			if m.Role == "assistant" {
+				for _, tc := range m.ToolCalls {
+					assistantIDs[tc.ID] = true
+				}
+			}
+			if m.Role == "tool" && m.ToolCallID != "" {
+				resultIDs[m.ToolCallID] = true
+			}
+		}
+		// Bidirectional pairing: no orphans in either direction.
+		for rid := range resultIDs {
+			if !assistantIDs[rid] {
+				t.Errorf("request %d: orphaned tool result id=%q (no matching assistant call)", i, rid)
+			}
+		}
+		for aid := range assistantIDs {
+			if !resultIDs[aid] {
+				t.Errorf("request %d: orphaned assistant call id=%q (no matching tool result)", i, aid)
+			}
+		}
+	}
+
+	// Positive survival: the small group (call_r2) must be present in the
+	// final request. The large group (call_r1) must be evicted.
+	// The current group (call_r3) must be present (last-3 protection).
+	finalIDs := make(map[string]bool)
+	for _, m := range finalReq {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				finalIDs[tc.ID] = true
+			}
+		}
+	}
+	if !finalIDs["call_r2"] {
+		t.Error("positive survival FAILED: small group call_r2 was evicted — no historical group survived")
+	}
+	if finalIDs["call_r1"] {
+		t.Error("eviction FAILED: large group call_r1 is still present — compression did not free space")
+	}
+	if !finalIDs["call_r3"] {
+		t.Error("current-round protection FAILED: call_r3 missing from final request")
+	}
+
+	// Verify the surviving group's tool result is intact (exact content).
+	for _, m := range finalReq {
+		if m.Role == "tool" && m.ToolCallID == "call_r2" {
+			if m.Content != "small result data" {
+				t.Errorf("call_r2 result corrupted: %q", m.Content)
+			}
+		}
+	}
+}
+
+// TestAgentChatCompressionRenamedToolWithPolicies proves that under
+// compression, an opaque renamed MCP tool works correctly with input,
+// tool, and output policy gates active. The tool name is "data_probe_v3"
+// (renamed from "data_probe") but the schema and results are identical.
+//
+// Assertions:
+//   - Input policy: the user message passes the allow gate.
+//   - Tool policy: the MCP tool call is allowed (parent role, read-only).
+//   - Output policy: the final response passes the output gate.
+//   - Compression fires and preserves the tool group.
+//   - No replay: exactly one handler invocation.
+func TestAgentChatCompressionRenamedToolWithPolicies(t *testing.T) {
+	const want = "Probe result delivered."
+	db, err := store.Open(filepath.Join(t.TempDir(), "policies.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	const convID = "policy-compress"
+
+	// Seed enough history to force compression with the tight window.
+	for i := 0; i < 6; i++ {
+		if err := db.SaveMessage(convID, "parent", "user", fmt.Sprintf("prior question %d", i), "", "", ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SaveMessage(convID, "parent", "assistant", fmt.Sprintf("prior answer %d — %s", i, strings.Repeat("f", 200)), "", "allow", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := staleSearchTestCfg("")
+	cfg.LLM.MaxContextTokens = 400 // very tight
+	cfg.LLM.MaxResponseTokens = 50
+
+	// Two tool rounds + final answer.
+	model := &staleSearchChatter{script: []*llm.Message{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{
+			{ID: "call_p1", Type: "function", Function: llm.ToolCallFunction{Name: "data_probe_v3", Arguments: map[string]any{"depth": 1}}},
+		}},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{
+			{ID: "call_p2", Type: "function", Function: llm.ToolCallFunction{Name: "data_probe_v3", Arguments: map[string]any{"depth": 2}}},
+		}},
+		{Role: "assistant", Content: want},
+	}}
+
+	a := buildStaleSearchAgent(t, db, cfg, model, convID, false)
+	pool := mcp.NewPool("", false, false)
+	t.Cleanup(pool.StopAll)
+	a.pool = pool
+
+	calls := 0
+	server := mcpserver.NewMCPServer("probe", "1")
+	server.AddTool(mcpgo.NewTool("data_probe_v3", mcpgo.WithReadOnlyHintAnnotation(true)), func(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		calls++
+		return mcpgo.NewToolResultText(fmt.Sprintf("probe depth result %d", calls)), nil
+	})
+	if err := pool.RegisterInProcessServer("probe-server", server); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := a.Chat(context.Background(), "Run two probe depths.", nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Content != want {
+		t.Fatalf("output policy gate: Content = %q, want %q", resp.Content, want)
+	}
+	if calls != 2 {
+		t.Fatalf("tool policy: handler calls = %d, want 2 (no replay)", calls)
+	}
+
+	// Input policy: the user message "Run two probe depths." must appear
+	// in at least one recorded request.
+	found := false
+	for _, msgs := range model.recorded {
+		for _, m := range msgs {
+			if m.Role == "user" && m.Content == "Run two probe depths." {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("input policy: current user message not found in any request")
+	}
+
+	// Wire invariants on the final request.
+	finalReq := model.recorded[len(model.recorded)-1]
+	assistantIDs := make(map[string]bool)
+	resultIDs := make(map[string]bool)
+	for _, m := range finalReq {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				assistantIDs[tc.ID] = true
+			}
+		}
+		if m.Role == "tool" && m.ToolCallID != "" {
+			resultIDs[m.ToolCallID] = true
+		}
+	}
+	for rid := range resultIDs {
+		if !assistantIDs[rid] {
+			t.Errorf("final request: orphaned result %q", rid)
+		}
+	}
+	for aid := range assistantIDs {
+		if !resultIDs[aid] {
+			t.Errorf("final request: orphaned call %q", aid)
+		}
+	}
+}

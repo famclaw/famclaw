@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/famclaw/famclaw/internal/compress"
 )
@@ -14,32 +15,57 @@ func NewStageCompress(contextWindow int) Stage {
 			return nil // too few to compress
 		}
 
-		// Convert to compress.Message format
+		// Convert to compress.Message format. Tool results are marked
+		// Prunable so they evict before conversation turns; tool-call
+		// identities are carried opaquely so groups stay intact.
 		msgs := make([]compress.Message, len(turn.Messages))
 		for i, m := range turn.Messages {
-			msgs[i] = compress.Message{
+			cm := compress.Message{
 				Role:         m.Role,
 				Content:      m.Content,
 				ContentParts: m.ContentParts,
+				ToolCallID:   m.ToolCallID,
 				Pinned:       m.Role == "system", // system prompt always pinned
+				Prunable:     m.Role == "tool",
 			}
+			if len(m.ToolCalls) > 0 {
+				cm.CallIDs = make([]string, len(m.ToolCalls))
+				cm.ToolArgs = make([]string, len(m.ToolCalls))
+				for k, tc := range m.ToolCalls {
+					cm.CallIDs[k] = tc.ID
+					// Complete serialized function payload (name + args)
+					// for opaque token accounting.
+					cm.ToolArgs[k] = toolCallFunctionStringAgentcore(tc)
+				}
+			}
+			msgs[i] = cm
 		}
 
-		// Compress
-		compressed := compress.Compress(msgs, compress.Options{
-			ContextWindow: contextWindow,
-		})
+		// Single authoritative selection: CompressIndices returns the
+		// original positions of retained messages. Project the original
+		// agentcore.Messages from those positions — no comparator matching.
+		opts := compress.Options{ContextWindow: contextWindow}
+		idx := compress.CompressIndices(msgs, opts)
 
-		// Convert back
-		turn.Messages = make([]Message, len(compressed))
-		for i, m := range compressed {
-			turn.Messages[i] = Message{
-				Role:         m.Role,
-				Content:      m.Content,
-				ContentParts: m.ContentParts,
+		out := make([]Message, 0, len(idx))
+		for _, i := range idx {
+			if i >= 0 && i < len(turn.Messages) {
+				out = append(out, turn.Messages[i])
 			}
 		}
+		turn.Messages = out
 
 		return nil
 	}
+}
+
+// toolCallFunctionStringAgentcore serializes the complete agentcore
+// ToolCallFunction (name + arguments) as JSON, matching the wire form.
+// Used for opaque token accounting in compression.
+func toolCallFunctionStringAgentcore(tc ToolCall) string {
+	data, err := json.Marshal(tc.Function)
+	if err != nil {
+		return tc.Function.Name
+	}
+	return string(data)
 }
